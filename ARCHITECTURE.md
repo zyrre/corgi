@@ -193,7 +193,10 @@ submodules are split by flow, each adding methods to the one `App`.
 - `mod.rs` is `App`: refresh, selection, the expanded transcript, the plan
   usage and Codex thread-name jobs, key dispatch, and the terminal loop.
   `App::headless` is the same app for the command-line and Omarchy paths,
-  which own no dashboard pane.
+  which own no dashboard pane. `sort_agents` orders each project's rows:
+  Steward, then state, then the most recent `state_change_seq` first. That
+  counter is one sequence for the whole Herdr session, not per agent, so it
+  compares across panes and the dashboard keeps no ordering state of its own.
 - `rows.rs` derives what a row shows from Herdr's metadata and the session
   facts: the project and its heading (`repo/checkout` for a linked worktree),
   the task summary, and the status-line bridge fallbacks.
