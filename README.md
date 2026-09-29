@@ -135,9 +135,11 @@ The agent Corgi launched as a project's Steward is marked on its pane, so it
 is recognized wherever the pane is moved: it is shown as `Steward`, in place
 of a task summary, and always comes first under its project heading. The
 other agents follow by state, so what needs attention is on top: blocked,
-working, done, idle, then those whose state is unknown, each alphabetically.
-Scratch sessions are ordered the same way. A row moves when its agent changes
-state; the selection stays on the same row. Other agents in the project's
+working, done, idle, then those whose state is unknown. Agents in the same
+state are listed with the one that entered it most recently first, then
+alphabetically when Herdr reports no order between them. Scratch sessions are
+ordered the same way. A row moves only when its own agent changes state; the
+selection stays on the same row. Other agents in the project's
 workspace, such as shared-checkout tabs or a worker in its root tab, are named
 after the repository.
 

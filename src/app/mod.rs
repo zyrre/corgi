@@ -743,10 +743,14 @@ impl App {
 /// Keeps related worktree sessions together, each project led by its
 /// Steward, and the scratch sessions after every project. Within a project
 /// the rest follow their live state, the ones needing attention first:
-/// blocked, working, done, idle, then unknown. A row therefore moves when its
-/// agent changes state, which is rare enough to be worth seeing at a glance
-/// what is blocked or busy; focus stays out of the key so moving between
-/// panes never reorders the list.
+/// blocked, working, done, idle, then unknown. Agents sharing a state are
+/// ordered by when they entered it, the most recent first, using Herdr's
+/// `state_change_seq`: one counter across the whole Herdr session that is
+/// bumped on every state change, so it compares between agents. A row
+/// therefore moves only when its own agent changes state, which is rare
+/// enough to be worth seeing at a glance what is blocked or busy; focus stays
+/// out of the key so moving between panes never reorders the list. Equal
+/// counters (older Herdr, or fixtures) fall back to name, then pane ID.
 fn sort_agents(agents: &mut [DashboardAgent]) {
     agents.sort_by(|left, right| {
         left.scratch
@@ -758,6 +762,7 @@ fn sort_agents(agents: &mut [DashboardAgent]) {
             })
             .then_with(|| right.steward.cmp(&left.steward))
             .then_with(|| state_rank(left.info.state).cmp(&state_rank(right.info.state)))
+            .then_with(|| right.info.state_change_seq.cmp(&left.info.state_change_seq))
             .then_with(|| {
                 left.info
                     .display_name()
@@ -944,6 +949,116 @@ mod tests {
                 "unknown"
             ]
         );
+    }
+
+    fn changed_at(mut agent: DashboardAgent, change: u64) -> DashboardAgent {
+        agent.info.state_change_seq = change;
+        agent
+    }
+
+    #[test]
+    fn agents_sharing_a_state_put_the_latest_change_first() {
+        let agents = vec![
+            changed_at(
+                sortable_agent(
+                    "working-old",
+                    "a",
+                    "corgi",
+                    AgentState::Working,
+                    false,
+                    false,
+                ),
+                10,
+            ),
+            changed_at(
+                sortable_agent("idle-new", "a", "corgi", AgentState::Idle, false, false),
+                40,
+            ),
+            changed_at(
+                sortable_agent(
+                    "working-new",
+                    "z",
+                    "corgi",
+                    AgentState::Working,
+                    false,
+                    false,
+                ),
+                30,
+            ),
+            changed_at(
+                sortable_agent("idle-old", "z", "corgi", AgentState::Idle, false, false),
+                20,
+            ),
+            changed_at(
+                sortable_agent("steward", "m", "corgi", AgentState::Idle, true, false),
+                5,
+            ),
+            changed_at(
+                sortable_agent("blocked", "m", "corgi", AgentState::Blocked, false, false),
+                1,
+            ),
+        ];
+        assert_eq!(
+            sorted_panes(agents),
+            [
+                "steward",
+                "blocked",
+                "working-new",
+                "working-old",
+                "idle-new",
+                "idle-old"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_state_change_moves_only_the_agent_that_changed() {
+        let before = vec![
+            changed_at(
+                sortable_agent("a", "a", "corgi", AgentState::Idle, false, false),
+                3,
+            ),
+            changed_at(
+                sortable_agent("b", "b", "corgi", AgentState::Idle, false, false),
+                2,
+            ),
+            changed_at(
+                sortable_agent("c", "c", "corgi", AgentState::Idle, false, false),
+                1,
+            ),
+        ];
+        assert_eq!(sorted_panes(before.clone()), ["a", "b", "c"]);
+
+        // A refresh where "a", already the latest, changed again reorders
+        // nothing; once "c" changes, it alone moves to the top.
+        let mut after = before;
+        after[0].info.state_change_seq = 5;
+        assert_eq!(sorted_panes(after.clone()), ["a", "b", "c"]);
+        after[2].info.state_change_seq = 6;
+        assert_eq!(sorted_panes(after), ["c", "a", "b"]);
+    }
+
+    #[test]
+    fn agents_that_changed_together_fall_back_to_name_then_pane() {
+        let agents = vec![
+            changed_at(
+                sortable_agent("p2", "Same", "corgi", AgentState::Done, false, false),
+                7,
+            ),
+            changed_at(
+                sortable_agent("p1", "same", "corgi", AgentState::Done, false, false),
+                7,
+            ),
+            changed_at(
+                sortable_agent("beta", "beta", "corgi", AgentState::Done, false, false),
+                7,
+            ),
+            changed_at(
+                sortable_agent("Alpha", "Alpha", "corgi", AgentState::Done, false, false),
+                7,
+            ),
+        ];
+        assert_eq!(sorted_panes(agents), ["Alpha", "beta", "p1", "p2"]);
     }
 
     #[test]
