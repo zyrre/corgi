@@ -1,0 +1,20 @@
+[package]
+name = "corgi"
+version = "0.1.0"
+edition = "2024"
+description = "A small, quick Herdr dashboard for coding agents"
+license = "MIT"
+repository = "https://github.com/zyrre/corgi"
+
+[dependencies]
+anyhow = "1.0"
+crossterm = "0.29"
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+regex = "1.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+unicode-width = "0.2"
+
+[profile.release]
+lto = "thin"
+strip = true

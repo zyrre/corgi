@@ -1,0 +1,326 @@
+#!/usr/bin/env bash
+# Shell tests for scripts/herdr-corgi-dashboard against a fake `herdr` binary.
+#
+# Run directly: scripts/test-herdr-corgi-dashboard
+#
+# Each test gets a fresh state directory holding the fake session (panes.json,
+# workspaces.json) and a calls.log the fake herdr appends one line to per
+# invocation, so a test can assert not just the script's exit code and
+# stdout/stderr but how many times (and with what arguments) it drove herdr.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+dashboard_script="$script_dir/herdr-corgi-dashboard"
+
+failures=0
+tests_run=0
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/corgi-dashboard-test.XXXXXX")"
+trap 'rm -rf "$work_root"' EXIT
+
+# --- fake herdr -------------------------------------------------------------
+#
+# Written fresh per test into $state/herdr so each test can tune behavior
+# (e.g. which panes it already knows as plugin panes) without touching a
+# shared script. Speaks just enough of the real JSON shapes that
+# scripts/herdr-corgi-dashboard's jq filters see what they expect.
+
+write_fake_herdr() {
+  local state="$1"
+  cat >"$state/herdr" <<'FAKE_HERDR'
+#!/usr/bin/env bash
+set -euo pipefail
+state="$FAKE_HERDR_STATE"
+mkdir -p "$state"
+: >>"$state/calls.log"
+printf '%s\n' "$*" >>"$state/calls.log"
+
+lock() {
+  local lockdir="$state/fake.lock.d"
+  local attempt
+  for (( attempt = 0; attempt < 100; attempt++ )); do
+    mkdir "$lockdir" 2>/dev/null && return 0
+    sleep 0.02
+  done
+  return 1
+}
+unlock() { rm -rf "$state/fake.lock.d" 2>/dev/null || true; }
+
+next_id() {
+  # Callers already hold the fake herdr's own lock for their whole
+  # read-modify-write section, so this must not lock again itself.
+  local namespace="$1" counter="$state/next_id.$1" n
+  n="$(cat "$counter" 2>/dev/null || echo 0)"
+  n=$((n + 1))
+  echo "$n" >"$counter"
+  echo "$n"
+}
+
+known_plugin_pane() {
+  grep -qxF "$1" "$state/known_plugin_panes.txt" 2>/dev/null
+}
+
+case "$1 $2" in
+  "api snapshot")
+    panes="$(cat "$state/panes.json" 2>/dev/null || echo '[]')"
+    workspaces="$(cat "$state/workspaces.json" 2>/dev/null || echo '[]')"
+    jq -n --argjson panes "$panes" --argjson workspaces "$workspaces" \
+      '{result: {snapshot: {panes: $panes, workspaces: $workspaces}}}'
+    ;;
+  "workspace focus")
+    ws="$3"
+    if [[ "${FAKE_FAIL_WORKSPACE_FOCUS:-}" == "$ws" || "${FAKE_FAIL_WORKSPACE_FOCUS:-}" == "*" ]]; then
+      echo '{"error":{"code":"workspace_not_found","message":"fake failure"}}'
+      exit 1
+    fi
+    if ! jq -e --arg id "$ws" 'any(.[]; .workspace_id == $id)' "$state/workspaces.json" >/dev/null; then
+      echo '{"error":{"code":"workspace_not_found","message":"no such workspace"}}'
+      exit 1
+    fi
+    echo '{"result":{"type":"workspace_info"}}'
+    ;;
+  "tab focus")
+    echo '{"result":{"type":"tab_info"}}'
+    ;;
+  "plugin pane")
+    sub="$3"
+    case "$sub" in
+      focus)
+        pane="$4"
+        if known_plugin_pane "$pane"; then
+          echo '{"result":{"type":"plugin_pane_focused"}}'
+        else
+          echo '{"error":{"code":"plugin_pane_not_found","message":"plugin pane not found"}}'
+          exit 1
+        fi
+        ;;
+      open)
+        lock
+        id="$(next_id open)"
+        pane_id="new-p$id"
+        workspace_id="new-w$id"
+        tab_id="new-t$id"
+        panes="$(cat "$state/panes.json" 2>/dev/null || echo '[]')"
+        panes="$(jq --arg p "$pane_id" --arg w "$workspace_id" --arg t "$tab_id" \
+          '. + [{"pane_id":$p,"workspace_id":$w,"tab_id":$t,"label":"Corgi"}]' <<<"$panes")"
+        echo "$panes" >"$state/panes.json"
+        workspaces="$(cat "$state/workspaces.json" 2>/dev/null || echo '[]')"
+        workspaces="$(jq --arg w "$workspace_id" --arg l "opening" \
+          '. + [{"workspace_id":$w,"label":$l}]' <<<"$workspaces")"
+        echo "$workspaces" >"$state/workspaces.json"
+        echo "$pane_id" >>"$state/known_plugin_panes.txt"
+        unlock
+        jq -n --arg p "$pane_id" '{result: {plugin_pane: {pane: {pane_id: $p}}}}'
+        ;;
+      *)
+        echo '{"error":{"code":"unsupported","message":"fake herdr does not support this"}}'
+        exit 1
+        ;;
+    esac
+    ;;
+  "pane move")
+    pane="$3"
+    shift 3
+    new_label=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --label) new_label="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    lock
+    id="$(next_id move)"
+    new_pane_id="moved-p$id"
+    new_workspace_id="moved-w$id"
+    new_tab_id="moved-t$id"
+    panes="$(cat "$state/panes.json" 2>/dev/null || echo '[]')"
+    panes="$(jq --arg old "$pane" --arg p "$new_pane_id" --arg w "$new_workspace_id" --arg t "$new_tab_id" \
+      'map(if .pane_id == $old then {"pane_id":$p,"workspace_id":$w,"tab_id":$t,"label":.label} else . end)' \
+      <<<"$panes")"
+    echo "$panes" >"$state/panes.json"
+    workspaces="$(cat "$state/workspaces.json" 2>/dev/null || echo '[]')"
+    workspaces="$(jq --arg w "$new_workspace_id" --arg l "$new_label" \
+      '. + [{"workspace_id":$w,"label":$l}]' <<<"$workspaces")"
+    echo "$workspaces" >"$state/workspaces.json"
+    if grep -qxF "$pane" "$state/known_plugin_panes.txt" 2>/dev/null; then
+      grep -vxF "$pane" "$state/known_plugin_panes.txt" >"$state/known_plugin_panes.txt.tmp" || true
+      mv "$state/known_plugin_panes.txt.tmp" "$state/known_plugin_panes.txt"
+      echo "$new_pane_id" >>"$state/known_plugin_panes.txt"
+    fi
+    unlock
+    jq -n --arg p "$new_pane_id" --arg w "$new_workspace_id" --arg t "$new_tab_id" \
+      '{result: {move_result: {pane: {pane_id: $p, workspace_id: $w, tab_id: $t}}}}'
+    ;;
+  *)
+    echo "fake herdr: unhandled command: $*" >&2
+    exit 1
+    ;;
+esac
+FAKE_HERDR
+  chmod +x "$state/herdr"
+}
+
+new_state() {
+  local state="$work_root/state-$1"
+  mkdir -p "$state"
+  echo '[]' >"$state/panes.json"
+  echo '[]' >"$state/workspaces.json"
+  : >"$state/known_plugin_panes.txt"
+  : >"$state/calls.log"
+  write_fake_herdr "$state"
+  echo "$state"
+}
+
+add_pane() {
+  local state="$1" pane_id="$2" workspace_id="$3" tab_id="$4" workspace_label="$5"
+  jq --arg p "$pane_id" --arg w "$workspace_id" --arg t "$tab_id" \
+    '. + [{"pane_id":$p,"workspace_id":$w,"tab_id":$t,"label":"Corgi"}]' \
+    "$state/panes.json" >"$state/panes.json.tmp"
+  mv "$state/panes.json.tmp" "$state/panes.json"
+  jq --arg w "$workspace_id" --arg l "$workspace_label" \
+    '. + [{"workspace_id":$w,"label":$l}]' \
+    "$state/workspaces.json" >"$state/workspaces.json.tmp"
+  mv "$state/workspaces.json.tmp" "$state/workspaces.json"
+}
+
+mark_known_plugin_pane() {
+  local state="$1" pane_id="$2"
+  echo "$pane_id" >>"$state/known_plugin_panes.txt"
+}
+
+run_script() {
+  local state="$1"
+  HERDR_BIN_PATH="$state/herdr" \
+  FAKE_HERDR_STATE="$state" \
+  XDG_RUNTIME_DIR="$state" \
+  bash "$dashboard_script"
+}
+
+count_calls() {
+  local state="$1" pattern="$2"
+  grep -c -- "$pattern" "$state/calls.log" 2>/dev/null || true
+}
+
+# Counts panes labeled Corgi whose workspace has the given label.
+corgi_pane_count() {
+  local state="$1" workspace_label="$2"
+  jq -n -r --arg l "$workspace_label" \
+    '($ARGS.positional[0] | fromjson) as $panes
+     | ($ARGS.positional[1] | fromjson) as $workspaces
+     | ($workspaces | map({(.workspace_id): .label}) | add // {}) as $wlabels
+     | [$panes[] | select(.label == "Corgi" and ($wlabels[.workspace_id] // "") == $l)] | length' \
+    --args "$(cat "$state/panes.json")" "$(cat "$state/workspaces.json")"
+}
+
+check() {
+  local description="$1" expected="$2" actual="$3"
+  tests_run=$((tests_run + 1))
+  if [[ "$expected" != "$actual" ]]; then
+    echo "FAIL: $description (expected [$expected], got [$actual])" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok: $description"
+  fi
+}
+
+# --- test: orphaned dashboard pane is focused, not duplicated ---------------
+test_orphaned_pane_is_focused() {
+  local state
+  state="$(new_state orphaned)"
+  add_pane "$state" "old-p1" "old-w1" "old-t1" "Corgi dashboard"
+  # No entry in known_plugin_panes.txt: simulates a Herdr restart, where the
+  # pane survives as an ordinary pane but the plugin bookkeeping is gone.
+
+  local out status
+  out="$(run_script "$state")"
+  status=$?
+  check "orphaned pane: exit status" "0" "$status"
+  check "orphaned pane: focuses the existing pane" "focused Corgi in old-p1" "$out"
+  check "orphaned pane: no new dashboard opened" "0" "$(count_calls "$state" "plugin pane open")"
+  check "orphaned pane: exactly one Corgi pane remains" "1" "$(corgi_pane_count "$state" "Corgi dashboard")"
+}
+
+# --- test: no dashboard running opens one, moved via pane move's own result -
+test_opens_and_moves_when_none_running() {
+  local state
+  state="$(new_state none-running)"
+
+  local out status
+  out="$(run_script "$state")"
+  status=$?
+  check "no dashboard: exit status" "0" "$status"
+  check "no dashboard: reports opened" "opened Corgi in moved-p1" "$out"
+  check "no dashboard: exactly one open call" "1" "$(count_calls "$state" "plugin pane open")"
+  check "no dashboard: exactly one move call" "1" "$(count_calls "$state" "pane move")"
+  check "no dashboard: pane ends up in its own workspace" "1" "$(corgi_pane_count "$state" "Corgi dashboard")"
+}
+
+# --- test: Corgi dashboard (old) is never treated as running ---------------
+test_ignores_renamed_old_workspace() {
+  local state
+  state="$(new_state old-workspace)"
+  add_pane "$state" "old-p1" "old-w1" "old-t1" "Corgi dashboard (old)"
+
+  local out status
+  out="$(run_script "$state")"
+  status=$?
+  check "old workspace: exit status" "0" "$status"
+  check "old workspace: opens a fresh dashboard" "opened Corgi in moved-p1" "$out"
+  check "old workspace: exactly one open call" "1" "$(count_calls "$state" "plugin pane open")"
+}
+
+# --- test: two concurrent runs open at most one dashboard -------------------
+test_concurrent_runs_open_one_dashboard() {
+  local state
+  state="$(new_state concurrent)"
+
+  run_script "$state" >"$state/run1.out" 2>"$state/run1.err" &
+  local pid1=$!
+  run_script "$state" >"$state/run2.out" 2>"$state/run2.err" &
+  local pid2=$!
+  wait "$pid1"
+  wait "$pid2"
+
+  check "concurrent: exactly one open call across both runs" "1" "$(count_calls "$state" "plugin pane open")"
+  check "concurrent: exactly one Corgi pane remains" "1" "$(corgi_pane_count "$state" "Corgi dashboard")"
+}
+
+# --- test: a stale lock (dead PID) is recovered rather than blocking -------
+test_stale_lock_is_recovered() {
+  local state
+  state="$(new_state stale-lock)"
+  add_pane "$state" "old-p1" "old-w1" "old-t1" "Corgi dashboard"
+
+  mkdir -p "$state/herdr-corgi-dashboard.lock.d"
+  echo "999999" >"$state/herdr-corgi-dashboard.lock.d/pid"
+
+  local out status
+  out="$(run_script "$state")"
+  status=$?
+  check "stale lock: exit status" "0" "$status"
+  check "stale lock: still focuses the pane" "focused Corgi in old-p1" "$out"
+}
+
+# --- test: workspace/tab focus failure is reported, no new dashboard opened -
+test_focus_failure_does_not_open_new_dashboard() {
+  local state
+  state="$(new_state focus-failure)"
+  add_pane "$state" "old-p1" "broken-w1" "broken-t1" "Corgi dashboard"
+
+  local out status
+  out="$(FAKE_FAIL_WORKSPACE_FOCUS="*" run_script "$state" 2>"$state/err.log")" || status=$?
+  status="${status:-0}"
+  check "focus failure: exits non-zero" "1" "$status"
+  check "focus failure: does not open a new dashboard" "0" "$(count_calls "$state" "plugin pane open")"
+}
+
+test_orphaned_pane_is_focused
+test_opens_and_moves_when_none_running
+test_ignores_renamed_old_workspace
+test_concurrent_runs_open_one_dashboard
+test_stale_lock_is_recovered
+test_focus_failure_does_not_open_new_dashboard
+
+echo
+echo "$tests_run tests run, $failures failed"
+[[ "$failures" -eq 0 ]]

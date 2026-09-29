@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.zyrre.corgi",
+  "name": "Corgi",
+  "version": "0.1.0",
+  "author": "zyrre",
+  "license": "MIT",
+  "description": "A compact Omarchy bar companion for the Corgi Herdr dashboard.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Corgi",
+    "description": "A compact Corgi dashboard with grouped agents, activity, and pane focusing.",
+    "category": "AI",
+    "aliases": [
+      "corgi",
+      "herdr-corgi",
+      "agent-dashboard"
+    ],
+    "defaults": {
+      "refreshIntervalSec": 5,
+      "display": "Icon"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 2,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "How frequently Corgi reads the current Herdr session snapshot."
+      },
+      {
+        "key": "display",
+        "type": "enum",
+        "label": "Bar display",
+        "options": [
+          "Compact",
+          "Icon"
+        ],
+        "defaultValue": "Icon",
+        "description": "Compact shows agent counts; Icon shows the Corgi mark with a subtle status underline."
+      },
+      {
+        "key": "binaryPath",
+        "type": "string",
+        "label": "Corgi binary",
+        "defaultValue": "corgi",
+        "description": "Path to a Corgi binary supporting --bar-stream."
+      },
+      {
+        "key": "socketPath",
+        "type": "string",
+        "label": "Herdr socket",
+        "description": "Socket of the Herdr session to display. Defaults to ~/.config/herdr/herdr.sock."
+      }
+    ]
+  }
+}

@@ -1,0 +1,14 @@
+/target/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Editor and OS metadata
+.DS_Store
+.idea/
+.vscode/

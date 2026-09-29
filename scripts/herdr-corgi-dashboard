@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Open the Corgi dashboard once per Herdr session, then always go to it.
+#
+# Herdr's plugin-pane bookkeeping is in-memory only: after a Herdr restart or
+# live handoff, a dashboard pane opened before the restart still exists (same
+# labels, same workspace) but Herdr no longer recognizes it as a plugin pane,
+# so `plugin pane focus` on it fails with `plugin_pane_not_found`. This script
+# must still find and focus that pane through its labels rather than treat
+# the failure as "no dashboard running".
+set -euo pipefail
+
+# Plugin actions run with a minimal PATH; Herdr injects its own binary path.
+herdr="${HERDR_BIN_PATH:-herdr}"
+plugin_id="io.github.zyrre.corgi"
+entrypoint="dashboard"
+workspace_label="Corgi dashboard"
+
+# mkdir is atomic on every POSIX filesystem, unlike flock which macOS does not
+# ship. The lock directory holds the PID that created it so a crashed or
+# killed holder's lock can be told apart from one still in use.
+lock_dir="${XDG_RUNTIME_DIR:-/tmp}/herdr-corgi-dashboard.lock.d"
+lock_pid_file="$lock_dir/pid"
+lock_stale_seconds=15
+lock_wait_attempts=25
+lock_wait_seconds=0.2
+
+lock_mtime() {
+  stat -f %m "$lock_dir" 2>/dev/null || stat -c %Y "$lock_dir" 2>/dev/null || echo 0
+}
+
+lock_is_stale() {
+  [[ -d "$lock_dir" ]] || return 0
+  local holder_pid
+  holder_pid="$(cat "$lock_pid_file" 2>/dev/null || true)"
+  if [[ -n "$holder_pid" ]] && ! kill -0 "$holder_pid" 2>/dev/null; then
+    return 0
+  fi
+  local age=$(( $(date +%s) - $(lock_mtime) ))
+  (( age > lock_stale_seconds ))
+}
+
+acquire_lock() {
+  local attempt
+  for (( attempt = 0; attempt < lock_wait_attempts; attempt++ )); do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      echo "$$" >"$lock_pid_file"
+      return 0
+    fi
+    if lock_is_stale; then
+      rm -rf "$lock_dir" 2>/dev/null || true
+      continue
+    fi
+    sleep "$lock_wait_seconds"
+  done
+  return 1
+}
+
+release_lock() {
+  rm -rf "$lock_dir" 2>/dev/null || true
+}
+
+if ! acquire_lock; then
+  echo "Corgi: another herdr-corgi-dashboard run holds the lock; giving up" >&2
+  exit 1
+fi
+trap release_lock EXIT
+
+# All currently open panes labeled Corgi in a workspace labeled exactly
+# "Corgi dashboard", as "pane_id<TAB>workspace_id<TAB>tab_id" lines. Exact
+# label match means a workspace renamed to "Corgi dashboard (old)" (as the
+# user's personal reload script does before calling this one) never counts
+# as a running dashboard.
+find_dashboard_candidates() {
+  "$herdr" api snapshot | jq -r \
+    --arg workspace_label "$workspace_label" \
+    '.result.snapshot as $s
+     | ($s.workspaces | map({(.workspace_id): .label}) | add // {}) as $wlabels
+     | $s.panes[]
+     | select(.label == "Corgi" and ($wlabels[.workspace_id] // "") == $workspace_label)
+     | [.pane_id, .workspace_id, .tab_id] | @tsv'
+}
+
+# Among several matching panes, prefer one Herdr still recognizes as a plugin
+# pane: `plugin pane focus` is the only cheap way to ask, since it fails
+# harmlessly for an orphaned pane and updates Herdr's bookkeeping for a live
+# one. If none answer to it (all orphaned, or there is exactly one), keep the
+# first match.
+pick_preferred_candidate() {
+  local candidates="$1" pane_id workspace_id tab_id first=""
+  while IFS=$'\t' read -r pane_id workspace_id tab_id; do
+    [[ -z "$pane_id" ]] && continue
+    if [[ -z "$first" ]]; then
+      first="$(printf '%s\t%s\t%s' "$pane_id" "$workspace_id" "$tab_id")"
+    fi
+    if "$herdr" plugin pane focus "$pane_id" >/dev/null 2>&1; then
+      printf '%s\t%s\t%s\n' "$pane_id" "$workspace_id" "$tab_id"
+      return 0
+    fi
+  done <<<"$candidates"
+  [[ -n "$first" ]] || return 1
+  printf '%s\n' "$first"
+}
+
+# `plugin pane focus` only updates Herdr's plugin bookkeeping when the pane is
+# still known to it. What makes the client actually show the pane is the
+# presentation family: focus the workspace, then the tab. A found pane whose
+# workspace or tab cannot be focused is a real error, not a signal to open a
+# new dashboard, so this reports it and returns non-zero without opening one.
+go_to_pane() {
+  local pane_id="$1" workspace_id="$2" tab_id="$3"
+  if [[ -n "$workspace_id" && "$workspace_id" != "null" ]]; then
+    if ! "$herdr" workspace focus "$workspace_id" >/dev/null; then
+      echo "Corgi: failed to focus workspace $workspace_id for pane $pane_id" >&2
+      return 1
+    fi
+  fi
+  if [[ -n "$tab_id" && "$tab_id" != "null" ]]; then
+    if ! "$herdr" tab focus "$tab_id" >/dev/null; then
+      echo "Corgi: failed to focus tab $tab_id for pane $pane_id" >&2
+      return 1
+    fi
+  fi
+  "$herdr" plugin pane focus "$pane_id" >/dev/null 2>&1 || true
+}
+
+candidates="$(find_dashboard_candidates)"
+if [[ -n "$candidates" ]]; then
+  if chosen="$(pick_preferred_candidate "$candidates")"; then
+    IFS=$'\t' read -r pane_id workspace_id tab_id <<<"$chosen"
+    go_to_pane "$pane_id" "$workspace_id" "$tab_id"
+    echo "focused Corgi in $pane_id"
+    exit 0
+  fi
+fi
+
+# The plugin CLI opens panes in the current workspace. Move the newly created
+# tab straight into its own workspace so Corgi never occupies an agent's tab.
+opened="$("$herdr" plugin pane open \
+  --plugin "$plugin_id" \
+  --entrypoint "$entrypoint" \
+  --placement tab \
+  --no-focus)"
+pane_id="$(jq -r '.result.plugin_pane.pane.pane_id // empty' <<<"$opened")"
+
+if [[ -z "$pane_id" ]]; then
+  echo "Corgi dashboard opened without a pane ID" >&2
+  exit 1
+fi
+
+moved="$("$herdr" pane move "$pane_id" \
+  --new-workspace \
+  --label "$workspace_label" \
+  --no-focus)"
+
+# The move renumbers the pane, since pane IDs are workspace-scoped; take the
+# new one straight from the move's own result rather than looking it up
+# again. Only fall back to the label lookup if a future Herdr version ever
+# omits it.
+pane_id="$(jq -r '.result.move_result.pane.pane_id // empty' <<<"$moved")"
+workspace_id="$(jq -r '.result.move_result.pane.workspace_id // empty' <<<"$moved")"
+tab_id="$(jq -r '.result.move_result.pane.tab_id // empty' <<<"$moved")"
+
+if [[ -z "$pane_id" ]]; then
+  fallback="$(find_dashboard_candidates)"
+  if [[ -z "$fallback" ]]; then
+    echo "Corgi dashboard pane disappeared after moving it to its own workspace" >&2
+    exit 1
+  fi
+  IFS=$'\t' read -r pane_id workspace_id tab_id <<<"$(head -n 1 <<<"$fallback")"
+fi
+
+go_to_pane "$pane_id" "$workspace_id" "$tab_id"
+echo "opened Corgi in $pane_id"

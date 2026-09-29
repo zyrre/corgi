@@ -1,0 +1,35 @@
+id = "io.github.zyrre.corgi"
+name = "Corgi"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+description = "A small, quick dashboard for Herdr coding agents."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["cargo", "build", "--release"]
+
+# Bind this to a key in ~/.config/herdr/config.toml:
+#   [[keys.command]]
+#   key = "prefix+d"
+#   type = "plugin_action"
+#   command = "io.github.zyrre.corgi.open"
+[[actions]]
+id = "open"
+title = "Corgi (open or focus)"
+description = "Opens the Corgi dashboard tab, or focuses the one already running."
+contexts = ["workspace", "pane"]
+command = ["bash", "scripts/herdr-corgi-dashboard"]
+
+[[panes]]
+id = "dashboard"
+title = "Corgi"
+placement = "tab"
+command = ["./target/release/corgi"]
+
+[[panes]]
+id = "quick"
+title = "Corgi"
+placement = "popup"
+width = "88%"
+height = "84%"
+command = ["./target/release/corgi", "--compact"]
