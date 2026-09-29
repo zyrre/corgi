@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# Shell tests for scripts/install.sh against a fake release and a fake `cargo`.
+#
+# Run directly: scripts/test-install
+#
+# Each test gets a fresh plugin checkout (the install script and a manifest)
+# and a fake release directory served through CORGI_DOWNLOAD_URL as a file://
+# URL. The fake cargo "builds" by writing a marker binary and appends one line
+# to calls.log, so a test can tell a download from a source build without
+# compiling anything.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+install_script="$script_dir/install.sh"
+
+failures=0
+tests_run=0
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/corgi-install-test.XXXXXX")"
+trap 'rm -rf "$work_root"' EXIT
+
+version=0.4.2
+
+# The fake release is served as a file:// URL, which only curl can fetch.
+if ! command -v curl >/dev/null 2>&1; then
+  echo "scripts/test-install needs curl" >&2
+  exit 1
+fi
+
+case "$(uname -s)" in
+  Darwin) os=apple-darwin ;;
+  *) os=unknown-linux-musl ;;
+esac
+case "$(uname -m)" in
+  arm64 | aarch64) arch=aarch64 ;;
+  *) arch=x86_64 ;;
+esac
+asset="corgi-$arch-$os"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256() { sha256sum "$1" | cut -d ' ' -f 1; }
+else
+  sha256() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
+fi
+
+# --- fixtures ---------------------------------------------------------------
+
+# Prints a fresh state directory holding checkout/, release/ and bin/.
+new_state() {
+  local state="$work_root/$1"
+  mkdir -p "$state/checkout/scripts" "$state/release" "$state/bin"
+  cp "$install_script" "$state/checkout/scripts/install.sh"
+  printf 'id = "io.github.zyrre.corgi"\nversion = "%s"\n' "$version" >"$state/checkout/herdr-plugin.toml"
+  : >"$state/calls.log"
+
+  cat >"$state/bin/cargo" <<'FAKE_CARGO'
+#!/bin/sh
+printf 'cargo %s\n' "$*" >>"$FAKE_STATE/calls.log"
+[ -z "${FAKE_CARGO_FAIL:-}" ] || exit 101
+mkdir -p target/release
+printf '#!/bin/sh\necho "corgi built from source"\n' >target/release/corgi
+chmod 755 target/release/corgi
+FAKE_CARGO
+  chmod 755 "$state/bin/cargo"
+  echo "$state"
+}
+
+# Publishes a release binary that reports $2 as its version, with a matching
+# SHA256SUMS entry.
+publish_release() {
+  local state="$1" reports="$2" dir="$1/release/v$version"
+  mkdir -p "$dir"
+  printf '#!/bin/sh\necho "%s"\n' "$reports" >"$dir/$asset"
+  printf '#!/bin/sh\necho "corgi %s"\n' "$version" >"$dir/corgi-other-target"
+  {
+    printf '%s  %s\n' "$(sha256 "$dir/corgi-other-target")" corgi-other-target
+    printf '%s  %s\n' "$(sha256 "$dir/$asset")" "$asset"
+  } >"$dir/SHA256SUMS"
+}
+
+make_git_checkout() {
+  local checkout="$1/checkout"
+  git -C "$checkout" init -q
+  git -C "$checkout" add .
+  git -C "$checkout" -c user.name=test -c user.email=test@example.com commit -q -m release
+  git -C "$checkout" tag "v$version"
+  echo "# after the release" >>"$checkout/herdr-plugin.toml"
+  git -C "$checkout" -c user.name=test -c user.email=test@example.com commit -q -am "past the release"
+}
+
+run_install() {
+  local state="$1"
+  FAKE_STATE="$state" \
+  CORGI_DOWNLOAD_URL="file://$state/release" \
+  PATH="$state/bin:$PATH" \
+  sh "$state/checkout/scripts/install.sh" 2>"$state/stderr.log"
+}
+
+installed() {
+  "$1/checkout/target/release/corgi" --version 2>/dev/null || echo "nothing installed"
+}
+
+count_cargo() {
+  grep -c '^cargo build --release --locked$' "$1/calls.log" || true
+}
+
+leftover_downloads() {
+  find "$1/checkout/target/release" -name '.download.*' 2>/dev/null | wc -l | tr -d ' '
+}
+
+check() {
+  local description="$1" expected="$2" actual="$3"
+  tests_run=$((tests_run + 1))
+  if [[ "$expected" != "$actual" ]]; then
+    echo "FAIL: $description (expected [$expected], got [$actual])" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok: $description"
+  fi
+}
+
+check_stderr() {
+  local description="$1" pattern="$2" state="$3"
+  if grep -qF -- "$pattern" "$state/stderr.log"; then
+    check "$description" found found
+  else
+    check "$description" "[$pattern] in stderr" "$(cat "$state/stderr.log")"
+  fi
+}
+
+# --- test: the matching release binary is downloaded and verified ----------
+test_downloads_release_binary() {
+  local state status=0
+  state="$(new_state download)"
+  publish_release "$state" "corgi $version"
+
+  run_install "$state" || status=$?
+  check "download: exit status" "0" "$status"
+  check "download: installs the release binary" "corgi $version" "$(installed "$state")"
+  check "download: cargo not run" "0" "$(count_cargo "$state")"
+  check "download: no download folder left behind" "0" "$(leftover_downloads "$state")"
+  check_stderr "download: says what it installed" "installed the prebuilt $asset v$version" "$state"
+}
+
+# --- test: a clean git checkout past the release commit still downloads ----
+test_clean_checkout_past_tag_downloads() {
+  local state status=0
+  state="$(new_state past-tag)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout "$state"
+
+  run_install "$state" || status=$?
+  check "past tag: exit status" "0" "$status"
+  check "past tag: installs the release binary" "corgi $version" "$(installed "$state")"
+  check "past tag: cargo not run" "0" "$(count_cargo "$state")"
+}
+
+# --- test: uncommitted changes build from source ---------------------------
+test_dirty_checkout_builds_from_source() {
+  local state status=0
+  state="$(new_state dirty)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout "$state"
+  echo "# local edit" >>"$state/checkout/scripts/install.sh"
+
+  run_install "$state" || status=$?
+  check "dirty checkout: exit status" "0" "$status"
+  check "dirty checkout: builds from source" "corgi built from source" "$(installed "$state")"
+  check_stderr "dirty checkout: says why" "this checkout has uncommitted changes" "$state"
+}
+
+# --- test: CORGI_BUILD=source skips the download ---------------------------
+test_forced_source_build() {
+  local state status=0
+  state="$(new_state forced-source)"
+  publish_release "$state" "corgi $version"
+
+  CORGI_BUILD=source run_install "$state" || status=$?
+  check "forced source: exit status" "0" "$status"
+  check "forced source: builds from source" "corgi built from source" "$(installed "$state")"
+  check "forced source: cargo run once" "1" "$(count_cargo "$state")"
+  check_stderr "forced source: says why" "CORGI_BUILD=source is set" "$state"
+}
+
+# --- test: a checksum mismatch builds from source --------------------------
+test_checksum_mismatch_builds_from_source() {
+  local state status=0
+  state="$(new_state checksum)"
+  publish_release "$state" "corgi $version"
+  echo "tampered" >>"$state/release/v$version/$asset"
+
+  run_install "$state" || status=$?
+  check "checksum mismatch: exit status" "0" "$status"
+  check "checksum mismatch: builds from source" "corgi built from source" "$(installed "$state")"
+  check "checksum mismatch: no download folder left behind" "0" "$(leftover_downloads "$state")"
+  check_stderr "checksum mismatch: says why" "does not match its SHA256SUMS entry" "$state"
+}
+
+# --- test: a release without this platform's binary builds from source -----
+test_missing_asset_builds_from_source() {
+  local state status=0
+  state="$(new_state missing-asset)"
+  publish_release "$state" "corgi $version"
+  grep -v -- "$asset" "$state/release/v$version/SHA256SUMS" >"$state/sums" || true
+  mv "$state/sums" "$state/release/v$version/SHA256SUMS"
+
+  run_install "$state" || status=$?
+  check "missing asset: builds from source" "corgi built from source" "$(installed "$state")"
+  check_stderr "missing asset: says why" "the v$version release has no $asset" "$state"
+}
+
+# --- test: no release for this version builds from source ------------------
+test_missing_release_builds_from_source() {
+  local state status=0
+  state="$(new_state missing-release)"
+
+  run_install "$state" || status=$?
+  check "missing release: exit status" "0" "$status"
+  check "missing release: builds from source" "corgi built from source" "$(installed "$state")"
+  check_stderr "missing release: says why" "could not download" "$state"
+}
+
+# --- test: a binary reporting another version builds from source -----------
+test_wrong_version_builds_from_source() {
+  local state status=0
+  state="$(new_state wrong-version)"
+  publish_release "$state" "corgi 0.0.1"
+
+  run_install "$state" || status=$?
+  check "wrong version: builds from source" "corgi built from source" "$(installed "$state")"
+  check_stderr "wrong version: says why" "is not $version (it said: corgi 0.0.1)" "$state"
+}
+
+# --- test: a failing cargo build fails the install --------------------------
+test_cargo_failure_fails_install() {
+  local state status=0
+  state="$(new_state cargo-fails)"
+
+  FAKE_CARGO_FAIL=1 CORGI_BUILD=source run_install "$state" || status=$?
+  check "cargo fails: exit status is cargo's" "101" "$status"
+}
+
+# --- test: building from source without cargo says so ----------------------
+test_no_cargo_fails_clearly() {
+  if [ -e /usr/bin/cargo ] || [ -e /bin/cargo ]; then
+    echo "skip: no cargo (cargo is installed system-wide)"
+    return
+  fi
+  local state status=0
+  state="$(new_state no-cargo)"
+  rm "$state/bin/cargo"
+
+  CORGI_BUILD=source PATH="/usr/bin:/bin" run_install "$state" || status=$?
+  check "no cargo: exits non-zero" "1" "$status"
+  check_stderr "no cargo: says cargo is missing" "cargo is not installed" "$state"
+}
+
+test_downloads_release_binary
+test_clean_checkout_past_tag_downloads
+test_dirty_checkout_builds_from_source
+test_forced_source_build
+test_checksum_mismatch_builds_from_source
+test_missing_asset_builds_from_source
+test_missing_release_builds_from_source
+test_wrong_version_builds_from_source
+test_cargo_failure_fails_install
+test_no_cargo_fails_clearly
+
+echo
+echo "$tests_run tests run, $failures failed"
+[[ "$failures" -eq 0 ]]
