@@ -70,6 +70,33 @@ from that primary checkout with `cargo build --release` and
 metadata changed. Quit and reopen only the Corgi dashboard when the running
 process must pick up a rebuilt binary; do not restart Herdr.
 
+## README screenshots and animation
+
+The images in `docs/images/` are drawn by Corgi's own UI code from made-up
+agents in `src/readme_shots.rs`; nothing of the machine they are drawn on
+may appear in them (no real home paths, work names or e-mails). After a UI
+change, draw them again with:
+
+```bash
+cargo readme-shots
+```
+
+It writes the SVG screenshots and `merge-outcomes.gif`, the merge popup's
+failure pulse and shake and its success stamp. The GIF plays the real
+effects of `src/motion.rs` on a manual clock at 25 frames a second, and
+rasterizes each frame with resvg (a dev-dependency) and the system's
+monospace fonts, so it needs no tool beyond Cargo. It takes about half a
+minute; keep the GIF well under 2 MB. Delete an image the README stops
+using.
+
+## Releasing
+
+Bump `version` in both `Cargo.toml` and `herdr-plugin.toml` (and run
+`cargo build` so `Cargo.lock` follows), commit, and push a `vX.Y.Z` tag
+matching it. `.github/workflows/release.yml` then builds the four binaries
+and publishes the GitHub release with them and their `SHA256SUMS`; it
+refuses a tag that does not match both versions.
+
 ## Applying Omarchy popup changes
 
 The running Omarchy bar loads `~/.config/omarchy/plugins/io.github.zyrre.corgi/`,

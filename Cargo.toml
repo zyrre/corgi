@@ -18,3 +18,8 @@ unicode-width = "0.2"
 [profile.release]
 lto = "thin"
 strip = true
+
+[dev-dependencies]
+color_quant = "1.1"
+gif = "0.14.2"
+resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
