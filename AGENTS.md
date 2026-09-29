@@ -56,6 +56,14 @@ bash scripts/test-herdr-corgi-dashboard
 shellcheck scripts/herdr-corgi-dashboard scripts/test-herdr-corgi-dashboard
 ```
 
+Before handing off changes to `scripts/install.sh`, run its shell test, which
+serves a fake release from a local directory and uses a fake `cargo`:
+
+```bash
+bash scripts/test-install
+shellcheck scripts/install.sh scripts/test-install
+```
+
 After reviewed changes are merged into the primary checkout, make them live
 from that primary checkout with `cargo build --release` and
 `herdr plugin link "$PWD"`. Reload Herdr configuration when actions or plugin

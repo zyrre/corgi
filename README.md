@@ -40,12 +40,10 @@ agent's current terminal activity at the center of each row.
   Claude Code) in the header.
 - Opens as either a persistent Herdr tab or a compact popup.
 
-## Build and link locally
+## Install
 
 ```bash
-cargo build --release
-herdr plugin link "$PWD"
-herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint dashboard
+herdr plugin install zyrre/corgi
 ```
 
 To open or focus the dashboard with one key, bind the plugin's `open` action in
@@ -416,6 +414,36 @@ corgi icon opens a compact dashboard with project groups, agent activity,
 model/context information, cache estimates, and plan usage. It uses Corgi's
 `--bar-stream <socket-path>` mode to share the TUI's data readers. See
 [the companion README](omarchy/README.md) for setup and controls.
+
+## Build from source
+
+`herdr plugin install` runs `scripts/install.sh`, which downloads the prebuilt
+binary of the release matching `version` in `herdr-plugin.toml` for this
+machine (macOS or Linux, arm64 or x86_64), checks it against the release's
+`SHA256SUMS`, and puts it at `target/release/corgi`. It builds with
+`cargo build --release --locked` instead when the checkout has uncommitted
+changes, when there is no binary for this platform, or when the download or
+its checksum fails; that needs a Rust toolchain. Set `CORGI_BUILD=source` to
+always build from source, or `CORGI_DOWNLOAD_URL=<url>` to download from
+`<url>/v<version>/` instead of the GitHub release.
+
+For a development checkout, build and link it yourself:
+
+```bash
+cargo build --release
+herdr plugin link "$PWD"
+herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint dashboard
+```
+
+Test the install script with `bash scripts/test-install`.
+
+### Releasing
+
+Bump `version` in both `Cargo.toml` and `herdr-plugin.toml` (and run
+`cargo build` so `Cargo.lock` follows), commit, and push a `vX.Y.Z` tag
+matching it. `.github/workflows/release.yml` then builds the four binaries and
+publishes the GitHub release with them and their `SHA256SUMS`; it refuses a
+tag that does not match both versions.
 
 ## License
 

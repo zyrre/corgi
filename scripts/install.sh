@@ -1,0 +1,115 @@
+#!/bin/sh
+# Puts the corgi binary at target/release/corgi, where the plugin's panes run it.
+#
+# Herdr runs this as the plugin's build step on `herdr plugin install`. It
+# downloads the prebuilt binary of the release named by herdr-plugin.toml's
+# `version` for this machine, checks it against the release's SHA256SUMS, and
+# falls back to `cargo build --release --locked` when there is no such binary
+# or it cannot be verified. A checkout with uncommitted changes to tracked
+# files is a developer's, so it always builds what it has.
+#
+# The release binary is used even when the checkout is past the release
+# commit: `main` may move ahead of the newest tag between releases.
+#
+#   CORGI_BUILD=source         always build from source
+#   CORGI_DOWNLOAD_URL=<url>   download from <url>/v<version>/ instead of the
+#                              GitHub release of `origin`
+set -u
+
+cd "$(dirname "$0")/.." || exit 1
+
+say() { printf 'corgi install: %s\n' "$*" >&2; }
+
+tmp=
+build_from_source() {
+  if [ -n "$tmp" ]; then
+    rm -rf "$tmp"
+    tmp=
+  fi
+  say "$1"
+  say "building from source instead: cargo build --release --locked (this takes a minute or two)"
+  if ! command -v cargo >/dev/null 2>&1; then
+    say "cargo is not installed. Install Rust (https://rustup.rs), then install again."
+    exit 1
+  fi
+  cargo build --release --locked || exit $?
+  exit 0
+}
+
+if [ "${CORGI_BUILD:-}" = source ]; then
+  build_from_source "CORGI_BUILD=source is set"
+fi
+
+version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' herdr-plugin.toml | head -n 1)
+[ -n "$version" ] || build_from_source "herdr-plugin.toml has no version"
+tag="v$version"
+
+case "$(uname -s)" in
+  Darwin) os=apple-darwin ;;
+  Linux) os=unknown-linux-musl ;;
+  *) build_from_source "there is no prebuilt binary for $(uname -s)" ;;
+esac
+case "$(uname -m)" in
+  arm64 | aarch64) arch=aarch64 ;;
+  x86_64 | amd64) arch=x86_64 ;;
+  *) build_from_source "there is no prebuilt binary for $(uname -m)" ;;
+esac
+asset="corgi-$arch-$os"
+
+origin=
+if [ -e .git ] && command -v git >/dev/null 2>&1; then
+  if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    build_from_source "this checkout has uncommitted changes"
+  fi
+  origin=$(git remote get-url origin 2>/dev/null)
+fi
+
+if [ -n "${CORGI_DOWNLOAD_URL:-}" ]; then
+  base="${CORGI_DOWNLOAD_URL%/}/$tag"
+else
+  repo=$(printf '%s\n' "$origin" | sed -n 's#^.*github\.com[:/]\([^/]*/[^/]*\)$#\1#p' | sed 's#\.git$##')
+  base="https://github.com/${repo:-zyrre/corgi}/releases/download/$tag"
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  fetch() { curl -fsSL --retry 2 --connect-timeout 10 -o "$2" "$1"; }
+elif command -v wget >/dev/null 2>&1; then
+  fetch() { wget -q -T 10 -O "$2" "$1"; }
+else
+  build_from_source "neither curl nor wget is installed"
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256() { sha256sum "$1" | cut -d ' ' -f 1; }
+elif command -v shasum >/dev/null 2>&1; then
+  sha256() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
+else
+  build_from_source "neither sha256sum nor shasum is installed to check the download"
+fi
+
+mkdir -p target/release
+tmp=$(mktemp -d "target/release/.download.XXXXXX") || {
+  tmp=
+  build_from_source "could not create a download folder"
+}
+trap '[ -z "$tmp" ] || rm -rf "$tmp"' EXIT
+
+say "downloading $asset $tag"
+fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" ||
+  build_from_source "could not download $base/SHA256SUMS"
+expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1 }' "$tmp/SHA256SUMS")
+[ -n "$expected" ] || build_from_source "the $tag release has no $asset"
+fetch "$base/$asset" "$tmp/$asset" ||
+  build_from_source "could not download $base/$asset"
+actual=$(sha256 "$tmp/$asset")
+[ "$actual" = "$expected" ] ||
+  build_from_source "the downloaded $asset does not match its SHA256SUMS entry (got $actual, expected $expected)"
+
+chmod 755 "$tmp/$asset"
+reported=$("$tmp/$asset" --version 2>/dev/null)
+[ "$reported" = "corgi $version" ] ||
+  build_from_source "the downloaded binary did not run or is not $version (it said: ${reported:-nothing})"
+
+# Rename, never copy over: macOS kills a binary rewritten in place.
+mv -f "$tmp/$asset" target/release/corgi ||
+  build_from_source "could not move the binary into target/release"
+say "installed the prebuilt $asset $tag"
