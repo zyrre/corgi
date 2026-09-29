@@ -5,6 +5,9 @@
 //!
 //! Regenerate them with `cargo readme-shots`, the alias for running the
 //! ignored test at the bottom of this file; they land in `docs/images/`.
+//! The animated one plays the popup motion of `motion.rs` frame by frame on
+//! a manual clock, and each frame is rasterized with resvg and the system's
+//! fonts into a GIF, since GitHub does not play an SVG's animation.
 
 use std::{
     fmt::Write as _,
@@ -26,13 +29,11 @@ use crate::{
     app::{
         App, Checkout, MergePhase, MergeWorktreeForm, NewAgentForm, NewField, Overlay, UsageSlot,
     },
-    choices::{ChoiceList, FreeText},
     defaults::HarnessDefaults,
     model::{
         Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, PromptCache, PromptCacheKind,
     },
-    motion::Motion,
-    projects::{Project, ProjectSource, project_choices},
+    motion::{CONTENT, Motion, OPEN},
     test_support::{test_app, test_terminal},
     time::unix_now,
     ui::draw,
@@ -69,11 +70,12 @@ const ANSI: [&str; 16] = [
 ];
 const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 
-/// The dashboard's size in the hero screenshot and the ones like it: wide
-/// enough for the header's whole band of cards, and tall enough for three
-/// projects.
+/// The dashboard's size in the screenshots cut from it: wide enough for the
+/// header's whole band of cards, and tall enough for three projects.
 const WIDTH: u16 = 112;
 const HEIGHT: u16 = 44;
+/// The hero's height: the header and one project of four agents.
+const HERO_HEIGHT: u16 = 28;
 
 /// The title of the terminal window a whole screen is shown in.
 const WINDOW_TITLE: &str = "corgi — herdr";
@@ -85,6 +87,12 @@ const CALLOUT_FONT: &str = "-apple-system, 'Segoe UI', Helvetica, Arial, sans-se
 const CALLOUT_FONT_SIZE: u32 = 13;
 const CALLOUT_GAP: u32 = 12;
 const CALLOUT_TIER: u32 = 18;
+/// An animation's frame time in milliseconds: 25 frames a second, which a
+/// GIF's hundredths of a second hold exactly.
+const GIF_FRAME: u16 = 40;
+/// How much larger than the SVG an animation is rasterized, so its text
+/// stays sharp on a high-density screen; the README shows it at SVG size.
+const GIF_SCALE: f32 = 2.0;
 
 /// A screenshot and the file it is written to, `docs/images/<name>.svg`.
 struct Shot {
@@ -97,21 +105,35 @@ fn shots() -> Vec<Shot> {
     let shot = |name, svg| Shot { name, svg };
     vec![
         shot("logo", logo()),
-        shot("dashboard", whole_screen(&mut dashboard())),
+        shot("dashboard", hero()),
         shot("row-anatomy", row_anatomy()),
-        shot("expanded-session", whole_screen(&mut expanded_session())),
-        shot("new-agent-form", whole_screen(&mut new_agent_form())),
+        shot("expanded-session", expanded_session()),
         shot(
-            "project-picker",
-            popup(&mut project_picker(), "◆ New agent"),
+            "new-agent-form",
+            popup(&mut new_agent_form(), "◆ New agent"),
         ),
-        shot(
-            "merge-confirm",
-            popup(&mut merge(MergePhase::Confirm), "◆ Merge"),
-        ),
-        shot("merge-stamp", merge_stamp()),
-        shot("usage-cards", usage_cards()),
     ]
+}
+
+/// An animated shot and the file it is written to, `docs/images/<name>.gif`.
+struct Animation {
+    name: &'static str,
+    frames: Vec<Still>,
+}
+
+/// One frame of an animation, and how long it shows in hundredths of a
+/// second, the unit a GIF counts in.
+struct Still {
+    svg: String,
+    centis: u16,
+}
+
+/// Every animated shot.
+fn animations() -> Vec<Animation> {
+    vec![Animation {
+        name: "merge-outcomes",
+        frames: merge_outcomes(),
+    }]
 }
 
 /// How a shot is framed.
@@ -150,9 +172,15 @@ fn screen(app: &mut App) -> Terminal<TestBackend> {
     terminal
 }
 
-/// The whole screen `app` draws, in a terminal window.
-fn whole_screen(app: &mut App) -> String {
-    let mut terminal = screen(app);
+/// The hero: the header over the webshop project, its Steward and a
+/// blocked, a working and a finished worker, in a terminal window just tall
+/// enough for them.
+fn hero() -> String {
+    let mut app = dashboard();
+    app.agents.retain(|agent| agent.project == "webshop");
+    app.status = format!("{} agents", app.agents.len());
+    let mut terminal = test_terminal(WIDTH, HERO_HEIGHT);
+    settle(&mut terminal, &mut app);
     let area = terminal.backend().buffer().area;
     svg(&mut terminal, area, Chrome::Window, &[])
 }
@@ -240,35 +268,6 @@ fn row_anatomy() -> String {
         right(2, "the command or tool it runs or last ran"),
     ];
     svg(&mut terminal, area, Chrome::Panel, &callouts)
-}
-
-/// The two plan-usage cards of the header.
-fn usage_cards() -> String {
-    let mut terminal = screen(&mut dashboard());
-    let buffer = terminal.backend().buffer();
-    let codex = find(buffer, "CODEX", buffer.area);
-    let claude = find(buffer, "CLAUDE", buffer.area);
-    let left = scan(buffer, codex, (-1, 0), "╭");
-    let right = scan(buffer, claude, (1, 0), "╮");
-    let bottom = scan(buffer, left, (0, 1), "╰");
-    let area = Rect::new(left.x, left.y, right.x + 1 - left.x, bottom.y + 1 - left.y);
-    svg(&mut terminal, area, Chrome::Panel, &[])
-}
-
-/// The merge popup's success, one frame into its check stamp: the stroke
-/// drawn and holding over the popup's faded content.
-fn merge_stamp() -> String {
-    let mut app = merge(MergePhase::Running(2));
-    let mut terminal = test_terminal(WIDTH, HEIGHT);
-    draw_at(&mut terminal, &mut app, 0);
-    draw_at(&mut terminal, &mut app, 1_000);
-    if let Some(form) = app.overlay.merge_worktree_form_mut() {
-        form.phase = MergePhase::Succeeded;
-    }
-    draw_at(&mut terminal, &mut app, 1_000);
-    draw_at(&mut terminal, &mut app, 1_400);
-    let area = popup_area(terminal.backend().buffer(), "Merged and pushed");
-    svg(&mut terminal, area, Chrome::Panel, &[])
 }
 
 /// Where `needle` first starts within `area` of the screen.
@@ -575,9 +574,91 @@ fn dashboard() -> App {
     app
 }
 
+/// The finished order-history worker opened with `space`, from its own row
+/// down to the oldest turn shown.
+fn expanded_session() -> String {
+    let mut terminal = screen(&mut expanded());
+    let buffer = terminal.backend().buffer();
+    let top = find(buffer, "Paginate the order history", buffer.area).y;
+    let bottom = find(buffer, "Keep the URL shareable", buffer.area).y;
+    // Inside the Agents box, so its borders stay out of the crop.
+    let area = Rect::new(1, top, WIDTH - 2, bottom + 1 - top);
+    svg(&mut terminal, area, Chrome::Panel, &[])
+}
+
+/// A merge that fails and then succeeds, as the popup plays it: the
+/// confirmation grows in, `Enter` finds the worker's checkout dirty and the
+/// popup pulses red and shakes; once that is committed, `Enter` retries,
+/// the steps run, and the success is stamped with its check before the
+/// popup closes, and the dashboard shows until it opens again.
+fn merge_outcomes() -> Vec<Still> {
+    enum Beat {
+        Phase(MergePhase),
+        Close,
+    }
+    let dirty = MergePhase::Failed("agent worktree has uncommitted or untracked changes".into());
+    // Every phase's popup and the columns its shake reaches, so no frame
+    // is cut off.
+    let area = [
+        (MergePhase::Confirm, "Merge reviewed work"),
+        (MergePhase::Running(0), "Merge and push"),
+        (dirty.clone(), "Merge/push error"),
+        (MergePhase::Succeeded, "Merged and pushed"),
+    ]
+    .into_iter()
+    .map(|(phase, title)| popup_area(screen(&mut merge(phase)).backend().buffer(), title))
+    .reduce(Rect::union)
+    .expect("a popup");
+    // When each beat starts, in milliseconds on the motion clock.
+    let beats: [(u64, Beat); 8] = [
+        (0, Beat::Phase(MergePhase::Confirm)),
+        (1_800, Beat::Phase(MergePhase::Running(0))),
+        (2_400, Beat::Phase(dirty)),
+        (4_800, Beat::Phase(MergePhase::Running(0))),
+        (5_200, Beat::Phase(MergePhase::Running(1))),
+        (5_800, Beat::Phase(MergePhase::Running(2))),
+        (6_400, Beat::Phase(MergePhase::Succeeded)),
+        (8_600, Beat::Close),
+    ];
+    let end: u64 = 9_400;
+
+    let mut app = merge(MergePhase::Confirm);
+    let mut terminal = test_terminal(WIDTH, HEIGHT);
+    let mut drawn = Vec::new();
+    let mut next = 0;
+    for millis in (0..end).step_by(usize::from(GIF_FRAME)) {
+        while let Some((_, beat)) = beats.get(next).filter(|(at, _)| *at <= millis) {
+            match beat {
+                Beat::Phase(phase) => {
+                    if let Some(form) = app.overlay.merge_worktree_form_mut() {
+                        form.phase = phase.clone();
+                    }
+                }
+                Beat::Close => app.overlay = Overlay::None,
+            }
+            next += 1;
+        }
+        draw_at(&mut terminal, &mut app, millis);
+        drawn.push(svg(&mut terminal, area, Chrome::Panel, &[]));
+    }
+    // The GIF starts on the settled confirmation, which is also what shows
+    // where it does not play; the popup growing in ends the loop instead.
+    let settled = OPEN + CONTENT;
+    drawn.rotate_left(settled.as_millis() as usize / usize::from(GIF_FRAME) + 1);
+    let mut frames: Vec<Still> = Vec::new();
+    for svg in drawn {
+        let centis = GIF_FRAME / 10;
+        match frames.last_mut() {
+            Some(last) if last.svg == svg => last.centis += centis,
+            _ => frames.push(Still { svg, centis }),
+        }
+    }
+    frames
+}
+
 /// The finished order-history worker opened with `space`: its latest turns,
 /// newest first, grow down from its row.
-fn expanded_session() -> App {
+fn expanded() -> App {
     use ActivityKind::*;
     let mut app = dashboard();
     app.selected = 3;
@@ -633,34 +714,6 @@ fn new_agent_form() -> App {
         prompt_caret: task.len(),
         prompt_width: 0,
     });
-    app
-}
-
-/// The new-agent form with its Project list open, listing a project from
-/// each place Corgi finds them.
-fn project_picker() -> App {
-    let mut app = new_agent_form();
-    let project = |name: &str, source| Project {
-        root: format!("{HOME}/repos/{name}"),
-        name: name.into(),
-        source,
-    };
-    let projects = [
-        project("webshop", ProjectSource::Agents(4)),
-        project("weather", ProjectSource::Agents(2)),
-        project("notes-app", ProjectSource::Agents(1)),
-        project("recipes", ProjectSource::Open),
-        project("dotfiles", ProjectSource::Nearby),
-        project("blog", ProjectSource::Remembered),
-    ];
-    if let Overlay::NewAgent(form) = &mut app.overlay {
-        form.field = NewField::Project;
-        form.list = Some(ChoiceList::new(
-            project_choices(&projects),
-            &form.project,
-            FreeText::Directory,
-        ));
-    }
     app
 }
 
@@ -781,6 +834,141 @@ fn svg(
     }
     out.push_str("</g>\n</svg>\n");
     out
+}
+
+/// `frames` as a GIF that loops, each rasterized at [`GIF_SCALE`] with the
+/// system's fonts. Each frame after the first holds only the pixels that
+/// changed, the rest transparent over the one before, which keeps the file
+/// small.
+fn gif(frames: &[Still]) -> Vec<u8> {
+    use resvg::{tiny_skia, usvg};
+    let mut options = usvg::Options::default();
+    options.fontdb_mut().load_system_fonts();
+    let raster = |svg: &str| {
+        let tree = usvg::Tree::from_str(svg, &options).expect("parse frame");
+        let size = tree
+            .size()
+            .to_int_size()
+            .scale_by(GIF_SCALE)
+            .expect("frame size");
+        let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).expect("pixmap");
+        resvg::render(
+            &tree,
+            tiny_skia::Transform::from_scale(GIF_SCALE, GIF_SCALE),
+            &mut pixmap.as_mut(),
+        );
+        let pixels: Vec<[u8; 4]> = pixmap
+            .pixels()
+            .iter()
+            .map(|pixel| {
+                let color = pixel.demultiply();
+                // A GIF pixel is opaque or not at all: the window's rounded
+                // corners are cut at half their coverage.
+                let alpha = if color.alpha() >= 128 { 255 } else { 0 };
+                [color.red(), color.green(), color.blue(), alpha]
+            })
+            .collect();
+        (size.width() as u16, size.height() as u16, pixels)
+    };
+
+    let mut out = Vec::new();
+    let (width, height, _) = raster(&frames.first().expect("a frame").svg);
+    let mut encoder = gif::Encoder::new(&mut out, width, height, &[]).expect("gif");
+    encoder.set_repeat(gif::Repeat::Infinite).expect("loop");
+    let mut previous: Option<Vec<[u8; 4]>> = None;
+    let mut pending: Option<gif::Frame<'static>> = None;
+    for still in frames {
+        let (_, _, pixels) = raster(&still.svg);
+        let changed = |x: u16, y: u16| {
+            let at = usize::from(y) * usize::from(width) + usize::from(x);
+            previous
+                .as_ref()
+                .is_none_or(|previous| previous[at] != pixels[at])
+        };
+        // The smallest box around every changed pixel.
+        let (mut left, mut top, mut right, mut bottom) = (width, height, 0, 0);
+        for y in 0..height {
+            for x in 0..width {
+                if changed(x, y) {
+                    (left, top) = (left.min(x), top.min(y));
+                    (right, bottom) = (right.max(x + 1), bottom.max(y + 1));
+                }
+            }
+        }
+        if left >= right {
+            // Nothing moved: the frame before just shows longer.
+            if let Some(frame) = &mut pending {
+                frame.delay += still.centis;
+            }
+            continue;
+        }
+        let mut patch = Vec::new();
+        for y in top..bottom {
+            for x in left..right {
+                let pixel = pixels[usize::from(y) * usize::from(width) + usize::from(x)];
+                patch.push((changed(x, y) && pixel[3] != 0).then_some(pixel));
+            }
+        }
+        let frame = gif::Frame {
+            left,
+            top,
+            width: right - left,
+            height: bottom - top,
+            delay: still.centis,
+            dispose: gif::DisposalMethod::Keep,
+            ..indexed(&patch)
+        };
+        if let Some(frame) = pending.replace(frame) {
+            encoder.write_frame(&frame).expect("write frame");
+        }
+        previous = Some(pixels);
+    }
+    if let Some(frame) = pending {
+        encoder.write_frame(&frame).expect("write frame");
+    }
+    drop(encoder);
+    out
+}
+
+/// `pixels`, `None` where transparent, as a frame's palette and indices: an
+/// exact palette when there are few enough colors, else NeuQuant's 255, and
+/// the last index for transparency.
+fn indexed(pixels: &[Option<[u8; 4]>]) -> gif::Frame<'static> {
+    const TRANSPARENT: u8 = 255;
+    let mut exact: Vec<[u8; 4]> = pixels.iter().flatten().copied().collect();
+    exact.sort_unstable();
+    exact.dedup();
+    let (mut palette, buffer): (Vec<u8>, Vec<u8>) = if exact.len() < usize::from(TRANSPARENT) {
+        let palette = exact
+            .iter()
+            .flat_map(|color| [color[0], color[1], color[2]]);
+        let index = |color: &[u8; 4]| exact.binary_search(color).expect("in the palette") as u8;
+        (
+            palette.collect(),
+            pixels
+                .iter()
+                .map(|pixel| pixel.as_ref().map_or(TRANSPARENT, index))
+                .collect(),
+        )
+    } else {
+        let samples: Vec<u8> = pixels.iter().flatten().flatten().copied().collect();
+        let quant = color_quant::NeuQuant::new(10, usize::from(TRANSPARENT), &samples);
+        let index = |color: &[u8; 4]| quant.index_of(color) as u8;
+        (
+            quant.color_map_rgb(),
+            pixels
+                .iter()
+                .map(|pixel| pixel.as_ref().map_or(TRANSPARENT, index))
+                .collect(),
+        )
+    };
+    palette.resize(256 * 3, 0);
+    gif::Frame {
+        buffer: buffer.into(),
+        palette: Some(palette),
+        transparent: Some(TRANSPARENT),
+        ..gif::Frame::default()
+    }
 }
 
 /// One callout: its label, and a dashed line from the label to its cell
@@ -1043,8 +1231,17 @@ mod tests {
 
     #[test]
     fn a_screenshot_is_the_same_every_time_it_is_drawn() {
-        let first: Vec<String> = shots().into_iter().map(|shot| shot.svg).collect();
-        let second: Vec<String> = shots().into_iter().map(|shot| shot.svg).collect();
+        let svgs = || {
+            let stills = animations()
+                .into_iter()
+                .flat_map(|animation| animation.frames);
+            shots()
+                .into_iter()
+                .map(|shot| shot.svg)
+                .chain(stills.map(|still| still.svg))
+                .collect::<Vec<String>>()
+        };
+        let (first, second) = (svgs(), svgs());
         assert_eq!(first, second);
         for svg in &first {
             assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\""));
@@ -1076,6 +1273,11 @@ mod tests {
         for shot in shots() {
             let path = directory.join(format!("{}.svg", shot.name));
             fs::write(&path, shot.svg).expect("write screenshot");
+            println!("wrote {}", path.display());
+        }
+        for animation in animations() {
+            let path = directory.join(format!("{}.gif", animation.name));
+            fs::write(&path, gif(&animation.frames)).expect("write animation");
             println!("wrote {}", path.display());
         }
     }

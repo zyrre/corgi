@@ -599,6 +599,203 @@ role. So Corgi keeps its own record and puts the tokens back.
   merges or closes them (`--bar-action`) with the TUI's own forms and launch
   sequence; prompting an existing agent remains in the TUI.
 
+## Behaviour in detail
+
+What the README leaves out, as the dashboard shows and does it.
+
+### Rows and their order
+
+Each agent takes three rows. The identity row holds its state, the task its
+CLI summarizes, model and effort, context used, the prompt cache, and its
+worktree checkout; a narrow pane drops these fields from the right before it
+clips the task. The message row is the newest thing said, with the live
+terminal filling in what the session file lacks, such as a permission prompt.
+The tool row is the command or tool running or last run, with its whole
+argument. Their marker says what they show:
+
+| Marker | Row shows |
+| --- | --- |
+| `»` | Your prompt |
+| `›` | The agent's reply |
+| `…` | Its thinking, or a progress notice while it works |
+| `?` | A question it is waiting on |
+| `$` | A shell command |
+| `●` | Any other tool, such as a file read or edit |
+| `○` | Nothing yet |
+
+The prompt-cache countdown (`⏱ 52m cache`) turns yellow in its last five
+minutes and red in its last minute; once cold it reads, for example,
+`⚠ 182k re-read`. A Codex estimate reads `≈ 18m cache`, then
+`⚠ cache may be cold`.
+
+Every project with an agent session gets a heading, its Steward first. Within
+a state, agents Herdr reports no order between are alphabetical. Scratch
+sessions are ordered the same way under Scratch. A row moves only when its own
+agent changes state, and the selection stays on the same row. Agents in
+linked worktrees are named `repo/checkout` (`webshop/order-pages-2d5a`);
+other agents in the project's workspace, such as shared-checkout tabs, are
+named after the repository.
+
+### The expanded session
+
+The newest turn, usually the closing summary, is shown in full and older
+turns two rows each; the heading and the sessions above keep their place.
+While expanded, `j` / `k` move to the next session and show it from its
+newest turn, and every other key keeps working, so an agent can be prompted,
+merged or closed without collapsing first. A session too far down for its
+transcript to be worth reading pulls the sessions above it off the top. A
+session with no readable file keeps its two rows and says why.
+
+### The new-agent form
+
+`n` presets the selected agent's repository, or the project used most
+recently when no agent is selected, and a session name from the project
+directory. The rows are Harness, Model, Effort (Codex and Claude Code only),
+Project and Checkout.
+
+| Key | In the form |
+| --- | --- |
+| `↑` / `↓`, `Tab` / `Shift+Tab` | Move between the task and the settings (`↓` on the task's last line steps into them; `Tab` wraps) |
+| `←` / `→` | Next harness, model, effort level, or the other checkout |
+| `Space`, or typing | Open the setting's list, filtered by what is typed |
+| `Enter` | Create the agent |
+| `Esc` | Cancel |
+
+In an open list, typing filters, `↑` / `↓` move, `Enter` chooses, `Tab`
+chooses and moves on, and `Esc` closes it unchanged. The harness and model
+lists also offer the typed text as a value of its own, so an agent kind or
+model Corgi does not know can still be used. When `Enter` cannot create the
+agent yet, such as with no task or a missing project directory, the form
+stays open, says why, and moves to the row that needs a value.
+
+- **Harness** lists `codex`, `claude`, `gemini`, `copilot` and `opencode`,
+  marking the CLIs found; any other kind Herdr supports can be typed.
+  Switching harness clears a model the new one cannot run.
+- **Model** starts on "Harness default", naming in parentheses what the CLI's
+  configuration chooses where Corgi reads it (Claude Code's
+  `settings.local.json` is read before `settings.json`). Choosing a model
+  updates the effort hint, since effort can be set per model.
+- **Effort** offers `low`, `medium`, `high`, `xhigh` and `max`.
+- **The first agent of a project**, new or with no agent session in any of
+  its workspaces, is its Steward, with the task as its first request; the
+  form says so in its title and above the keys. A Steward runs only on Claude
+  Code or Codex, so any other harness makes the form ask for one of them.
+
+### Projects
+
+The Project row's list is ordered by `src/projects.rs`, and opens by itself
+when no agent is selected and Corgi knows no project. Herdr keeps a
+repository's primary workspace open while any of its worktree workspaces
+exist, which is why an open workspace counts as a project. While an absolute
+path is typed, matching directories are offered as completions, and a
+complete directory path can be chosen even if Corgi has never seen it.
+
+A new project's name goes on the `new project` row (`↑` wraps straight to it
+when other projects match); a full path, `~` included, puts it elsewhere, and
+with no known project it goes in the home directory. Its Checkout row is
+hidden, since there is nothing to branch from yet. Corgi remembers a project
+when it starts an agent there or sees it open in Herdr. The `projects` file
+can be edited or deleted freely; missing directories are skipped. To make a
+repository known without running anything in it, open a workspace for it:
+`herdr workspace create --cwd ~/repos/webshop --no-focus`.
+
+### Worktrees, scratch sessions and closing
+
+`n` on an agent already in a worktree creates a sibling worktree of the same
+repository. Herdr picks a fresh `worktree/<name>` branch from `HEAD` and
+checks it out under its `worktrees.directory`
+(`~/.herdr/worktrees/<repo>/<branch-slug>` by default). Every worktree is
+grouped below the project's `<project> steward` workspace, so closing or
+restarting the dashboard cannot close workers. A label a user chose for that
+workspace is kept; only the bare repository name an older Corgi used is
+relabelled. With the Checkout row on "Project directory as is", the agent
+gets its own tab in that workspace, and closing it leaves the root tab and
+other agents alone. A directory outside a Git work tree always uses the plain
+directory, and the status line says so.
+
+`t` opens the form preset for `~`; a scratch session gets a plain `scratch`
+workspace, never a worktree or a Steward.
+
+`x` on a worktree agent runs Herdr's `worktree remove`: it stops the panes,
+closes the workspace, and deletes the checkout. A checkout with uncommitted
+changes is refused once, then removed by force if asked again. The branch is
+never deleted, so committed work survives; prune stale `worktree/*` branches
+with `git branch -D`.
+
+### Merging
+
+The confirmation shows the task, the worktree, the source branch, the branch
+checked out in the primary checkout, and the commits it brings in. Both
+checkouts are checked clean before it asks and again after `Enter`, and then
+`git merge --no-ff --no-edit` and `git push` run while the popup shows a
+spinner and each step. An error leaves the popup open with `Enter` to retry.
+Corgi never switches branches and never removes the worktree by itself: the
+finished popup offers `x` to close it, or keeps it open. Conflicts are
+resolved in the primary checkout.
+
+### `corgi spawn` and `corgi steward`
+
+`corgi spawn` runs inside Herdr, on the session's injected socket, and reads
+the task from stdin or `--task-file`, so a long brief needs no quoting:
+
+```bash
+corgi spawn --project ~/repos/webshop --harness claude --model opus --effort high <<'EOF'
+Add a --json flag to ...
+EOF
+```
+
+Every option defaults to the form's preset: the current directory, the
+default harness with its own model and effort, and a fresh worktree
+(`--checkout directory` for the shared checkout). `--name` picks an agent
+name not already in use. Progress goes to stderr; on success stdout is one
+JSON object with the agent's `name`, `pane_id`, `workspace_id`, `tab_id`,
+`cwd` and `location`, ready for `herdr agent prompt`, `wait` and `read`.
+
+`corgi steward <project>` greets with the project's state; with a request on
+stdin it takes that up instead, and `--harness codex` starts it on Codex. The
+Steward lists its workers with `corgi fleet` and reads each final report with
+`corgi report`.
+
+### Plan usage
+
+A card shows the plan, the reading's age, and the 5-hour and weekly usage
+with the time until each resets; a percentage turns yellow from 60% and red
+from 85%. Codex needs a signed-in `codex`. Claude Code needs a signed-in
+`claude` and `curl`: Corgi reads the token from `~/.claude/.credentials.json`
+or the macOS Keychain entry "Claude Code-credentials". This reuse of Claude
+Code's login is unofficial and read-only, and the endpoint is undocumented. A
+CLI with no reading at all gets no card, and the header's top right says why,
+such as an expired login. To check the Claude reader by hand:
+`cargo test -- --ignored live_claude_usage --nocapture`.
+
+### Configuration
+
+| Variable | Effect |
+| --- | --- |
+| `CORGI_DEFAULT_AGENT` | The harness the form presets, instead of the first of `codex` or `claude` found |
+| `CORGI_CODEX_BIN`, `CORGI_CLAUDE_BIN` | Where that CLI is, when it is outside `PATH` and the usual install directories (`~/.local/bin`, `/opt/homebrew/bin`, npm, bun, nvm, cargo, volta) |
+| `CORGI_PROJECTS_FILE` | Where the remembered projects are kept |
+| `CORGI_STEWARD_BIN` | The Corgi binary a Steward's commands call, such as a development build |
+| `XDG_STATE_HOME` | Where Corgi keeps its state (`~/.local/state` by default) |
+
+### Data and privacy
+
+Prompt text goes over the Herdr socket, never in process arguments. Terminal
+text is rendered as plain text after bounded cleanup and redaction of common
+tokens. The Claude Code token is sent to `api.anthropic.com` only, passed to
+`curl` on stdin rather than as an argument, and never stored.
+
+### Installing
+
+`scripts/install.sh`, the plugin's build step, downloads the release binary
+matching `version` in `herdr-plugin.toml` for macOS or Linux on arm64 or
+x86_64, checks it against the release's `SHA256SUMS` and its `--version`, and
+puts it at `target/release/corgi`. It runs `cargo build --release --locked`
+instead when the checkout has uncommitted changes to tracked files, there is
+no binary for the platform, or the download or either check fails. Herdr
+refuses to install over a linked plugin, so going back from a link needs
+`herdr plugin unlink io.github.zyrre.corgi` first.
+
 ## Session and failure boundaries
 
 Corgi operates only on the session represented by its injected socket. Losing
