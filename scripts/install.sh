@@ -11,14 +11,23 @@
 # The release binary is used even when the checkout is past the release
 # commit: `main` may move ahead of the newest tag between releases.
 #
+# Either way it then links ~/.local/bin/corgi to the binary (see
+# scripts/link-command.sh), which only warns when it cannot.
+#
 #   CORGI_BUILD=source         always build from source
 #   CORGI_DOWNLOAD_URL=<url>   download from <url>/v<version>/ instead of the
 #                              GitHub release of `origin`
+#   CORGI_LINK=0               do not link ~/.local/bin/corgi
+#   CORGI_BIN_DIR=<dir>        link <dir>/corgi instead
 set -u
 
 cd "$(dirname "$0")/.." || exit 1
 
 say() { printf 'corgi install: %s\n' "$*" >&2; }
+
+link_command() {
+  sh scripts/link-command.sh "$PWD" || say "could not link the corgi command"
+}
 
 tmp=
 build_from_source() {
@@ -33,6 +42,7 @@ build_from_source() {
     exit 1
   fi
   cargo build --release --locked || exit $?
+  link_command
   exit 0
 }
 
@@ -113,3 +123,4 @@ reported=$("$tmp/$asset" --version 2>/dev/null)
 mv -f "$tmp/$asset" target/release/corgi ||
   build_from_source "could not move the binary into target/release"
 say "installed the prebuilt $asset $tag"
+link_command

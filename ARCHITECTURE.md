@@ -792,7 +792,18 @@ matching `version` in `herdr-plugin.toml` for macOS or Linux on arm64 or
 x86_64, checks it against the release's `SHA256SUMS` and its `--version`, and
 puts it at `target/release/corgi`. It runs `cargo build --release --locked`
 instead when the checkout has uncommitted changes to tracked files, there is
-no binary for the platform, or the download or either check fails. Herdr
+no binary for the platform, or the download or either check fails.
+
+It then runs `scripts/link-command.sh`, which puts `corgi` on PATH. Herdr
+builds in `<plugins>/.tmp-install-*/checkout` and moves the checkout to
+`<plugins>/github/<id>-<first 12 hex digits of sha256(id)>` once the build
+passes, so the script links `~/.local/bin/corgi` (or `$CORGI_BIN_DIR`, else
+`$XDG_BIN_HOME`) to the binary's absolute final path there. Outside such a
+build it does nothing. It replaces a link into the plugin folder or a broken
+link, leaves a file, a folder or a working link elsewhere alone, and says
+when the folder is not on PATH; `CORGI_LINK=0` turns it off. It only warns,
+never fails the install. Herdr has no uninstall hook, so
+`herdr plugin uninstall` leaves the link behind. Herdr
 refuses to install over a linked plugin, so going back from a link needs
 `herdr plugin unlink io.github.zyrre.corgi` first.
 

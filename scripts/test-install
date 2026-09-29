@@ -8,7 +8,13 @@
 # URL. The fake cargo "builds" by writing a marker binary and appends one line
 # to calls.log, so a test can tell a download from a source build without
 # compiling anything.
+#
+# HOME is a fresh folder in each test, so linking the command never touches
+# the real ~/.local/bin. A test that installs the way Herdr does puts the
+# checkout at plugins/.tmp-install-*/checkout and afterwards moves it to
+# plugins/github/<id>-<hash>, as Herdr does once the build passes.
 set -euo pipefail
+unset XDG_BIN_HOME CORGI_BIN_DIR CORGI_LINK
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install_script="$script_dir/install.sh"
@@ -20,6 +26,7 @@ work_root="$(mktemp -d "${TMPDIR:-/tmp}/corgi-install-test.XXXXXX")"
 trap 'rm -rf "$work_root"' EXIT
 
 version=0.4.2
+plugin_id=io.github.zyrre.corgi
 
 # The fake release is served as a file:// URL, which only curl can fetch.
 if ! command -v curl >/dev/null 2>&1; then
@@ -48,9 +55,10 @@ fi
 # Prints a fresh state directory holding checkout/, release/ and bin/.
 new_state() {
   local state="$work_root/$1"
-  mkdir -p "$state/checkout/scripts" "$state/release" "$state/bin"
+  mkdir -p "$state/checkout/scripts" "$state/release" "$state/bin" "$state/home"
   cp "$install_script" "$state/checkout/scripts/install.sh"
-  printf 'id = "io.github.zyrre.corgi"\nversion = "%s"\n' "$version" >"$state/checkout/herdr-plugin.toml"
+  cp "$script_dir/link-command.sh" "$state/checkout/scripts/link-command.sh"
+  printf 'id = "%s"\nversion = "%s"\n' "$plugin_id" "$version" >"$state/checkout/herdr-plugin.toml"
   : >"$state/calls.log"
 
   cat >"$state/bin/cargo" <<'FAKE_CARGO'
@@ -78,6 +86,42 @@ publish_release() {
   } >"$dir/SHA256SUMS"
 }
 
+# Like new_state, but the checkout sits where Herdr builds an install;
+# $state/checkout links to it.
+new_herdr_state() {
+  local state
+  state="$(new_state "$1")"
+  mkdir -p "$state/plugins/.tmp-install-123-456"
+  mv "$state/checkout" "$state/plugins/.tmp-install-123-456/checkout"
+  ln -s "$state/plugins/.tmp-install-123-456/checkout" "$state/checkout"
+  echo "$state"
+}
+
+# Where Herdr moves the checkout once the build has passed.
+final_checkout() {
+  local hash
+  hash="$(printf %s "$plugin_id" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c 1-12)"
+  echo "$(cd "$1/plugins" && pwd -P)/github/$plugin_id-$hash"
+}
+
+# Does what Herdr does after a passing build.
+finish_herdr_install() {
+  local state="$1" final
+  final="$(final_checkout "$state")"
+  mkdir -p "$(dirname "$final")"
+  mv "$state/plugins/.tmp-install-123-456/checkout" "$final"
+  ln -sfn "$final" "$state/checkout"
+}
+
+# What the corgi command in bin folder $1 says, run through its link.
+command_version() {
+  "$1/corgi" --version 2>/dev/null || echo "no corgi command"
+}
+
+link_of() {
+  if [[ -L "$1" ]]; then readlink "$1"; else echo "not a link"; fi
+}
+
 make_git_checkout() {
   local checkout="$1/checkout"
   git -C "$checkout" init -q
@@ -91,6 +135,7 @@ make_git_checkout() {
 run_install() {
   local state="$1"
   FAKE_STATE="$state" \
+  HOME="$state/home" \
   CORGI_DOWNLOAD_URL="file://$state/release" \
   PATH="$state/bin:$PATH" \
   sh "$state/checkout/scripts/install.sh" 2>"$state/stderr.log"
@@ -255,6 +300,164 @@ test_no_cargo_fails_clearly() {
   check_stderr "no cargo: says cargo is missing" "cargo is not installed" "$state"
 }
 
+# --- test: a Herdr install links the command to the final checkout ---------
+test_herdr_install_links_command() {
+  local state status=0 bin
+  state="$(new_herdr_state link)"
+  bin="$state/home/.local/bin"
+  publish_release "$state" "corgi $version"
+
+  run_install "$state" || status=$?
+  check "link: exit status" "0" "$status"
+  check "link: links the final checkout's binary by its absolute path" \
+    "$(final_checkout "$state")/target/release/corgi" "$(link_of "$bin/corgi")"
+  check_stderr "link: says the folder is not on PATH" \
+    "linked $bin/corgi, but $bin is not on your PATH" "$state"
+  finish_herdr_install "$state"
+  check "link: corgi --version runs through the link" "corgi $version" "$(command_version "$bin")"
+}
+
+# --- test: a source build links the command too ----------------------------
+test_source_build_links_command() {
+  local state status=0 bin
+  state="$(new_herdr_state link-source)"
+  bin="$state/home/.local/bin"
+
+  CORGI_BUILD=source run_install "$state" || status=$?
+  finish_herdr_install "$state"
+  check "link after source build: exit status" "0" "$status"
+  check "link after source build: runs the built binary" \
+    "corgi built from source" "$(command_version "$bin")"
+}
+
+# --- test: no PATH hint when the folder is on PATH -------------------------
+test_link_on_path_has_no_hint() {
+  local state status=0
+  state="$(new_herdr_state link-on-path)"
+  publish_release "$state" "corgi $version"
+
+  PATH="$state/home/.local/bin:$PATH" run_install "$state" || status=$?
+  check "on PATH: exit status" "0" "$status"
+  check "on PATH: no hint" "0" "$(grep -c 'not on your PATH' "$state/stderr.log" || true)"
+  check_stderr "on PATH: says it linked" "linked $state/home/.local/bin/corgi" "$state"
+}
+
+# --- test: a link to an older install is replaced --------------------------
+test_link_to_older_install_replaced() {
+  local state status=0 bin
+  state="$(new_herdr_state link-older)"
+  bin="$state/home/.local/bin"
+  publish_release "$state" "corgi $version"
+  mkdir -p "$bin"
+  ln -s "$(cd "$state/plugins" && pwd -P)/github/old-checkout/target/release/corgi" "$bin/corgi"
+
+  run_install "$state" || status=$?
+  check "older link: exit status" "0" "$status"
+  check "older link: now links the new checkout" \
+    "$(final_checkout "$state")/target/release/corgi" "$(link_of "$bin/corgi")"
+}
+
+# --- test: a broken link elsewhere is replaced, a working one is kept ------
+test_links_elsewhere() {
+  local state status=0 bin
+  state="$(new_herdr_state link-broken)"
+  bin="$state/home/.local/bin"
+  publish_release "$state" "corgi $version"
+  mkdir -p "$bin"
+  ln -s "$state/gone/corgi" "$bin/corgi"
+
+  run_install "$state" || status=$?
+  check "broken link: exit status" "0" "$status"
+  check "broken link: replaced" \
+    "$(final_checkout "$state")/target/release/corgi" "$(link_of "$bin/corgi")"
+
+  status=0
+  state="$(new_herdr_state link-working)"
+  bin="$state/home/.local/bin"
+  publish_release "$state" "corgi $version"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\necho "my own corgi"\n' >"$state/my-corgi"
+  chmod 755 "$state/my-corgi"
+  ln -s "$state/my-corgi" "$bin/corgi"
+
+  run_install "$state" || status=$?
+  check "working link: exit status" "0" "$status"
+  check "working link: kept" "$state/my-corgi" "$(link_of "$bin/corgi")"
+  check_stderr "working link: says so" "left $bin/corgi alone: it links $state/my-corgi" "$state"
+}
+
+# --- test: a file or a folder in the way is left alone ---------------------
+test_file_or_folder_left_alone() {
+  local state status=0 bin
+  state="$(new_herdr_state link-file)"
+  bin="$state/home/.local/bin"
+  publish_release "$state" "corgi $version"
+  mkdir -p "$bin"
+  echo "mine" >"$bin/corgi"
+
+  run_install "$state" || status=$?
+  check "file in the way: exit status" "0" "$status"
+  check "file in the way: installs anyway" "corgi $version" "$(installed "$state")"
+  check "file in the way: kept" "mine" "$(cat "$bin/corgi")"
+  check_stderr "file in the way: says so" "left $bin/corgi alone: it is not a link" "$state"
+
+  status=0
+  state="$(new_herdr_state link-folder)"
+  bin="$state/home/.local/bin"
+  publish_release "$state" "corgi $version"
+  mkdir -p "$bin/corgi"
+
+  run_install "$state" || status=$?
+  check "folder in the way: exit status" "0" "$status"
+  check "folder in the way: kept" "folder" "$([[ -d "$bin/corgi" && ! -L "$bin/corgi" ]] && echo folder)"
+  check "folder in the way: nothing linked inside it" "0" "$(find "$bin/corgi" -mindepth 1 | wc -l | tr -d ' ')"
+}
+
+# --- test: CORGI_LINK=0 and CORGI_BIN_DIR ----------------------------------
+test_link_opt_out_and_override() {
+  local state status=0
+  state="$(new_herdr_state link-opt-out)"
+  publish_release "$state" "corgi $version"
+
+  CORGI_LINK=0 run_install "$state" || status=$?
+  check "CORGI_LINK=0: exit status" "0" "$status"
+  check "CORGI_LINK=0: nothing linked" "no" "$([[ -e "$state/home/.local" ]] && echo yes || echo no)"
+
+  status=0
+  state="$(new_herdr_state link-override)"
+  publish_release "$state" "corgi $version"
+
+  CORGI_BIN_DIR="$state/my bin" run_install "$state" || status=$?
+  check "CORGI_BIN_DIR: exit status" "0" "$status"
+  check "CORGI_BIN_DIR: links there" \
+    "$(final_checkout "$state")/target/release/corgi" "$(link_of "$state/my bin/corgi")"
+  check "CORGI_BIN_DIR: not in ~/.local/bin" "no" "$([[ -e "$state/home/.local" ]] && echo yes || echo no)"
+}
+
+# --- test: a link that cannot be made only warns ---------------------------
+test_link_failure_only_warns() {
+  local state status=0
+  state="$(new_herdr_state link-fails)"
+  publish_release "$state" "corgi $version"
+  echo "not a folder" >"$state/home/.local"
+
+  run_install "$state" || status=$?
+  check "link fails: exit status" "0" "$status"
+  check "link fails: installs anyway" "corgi $version" "$(installed "$state")"
+  check_stderr "link fails: says so" "could not link $state/home/.local/bin/corgi" "$state"
+}
+
+# --- test: outside a Herdr install nothing is linked -----------------------
+test_no_link_outside_herdr() {
+  local state status=0
+  state="$(new_state link-outside)"
+  publish_release "$state" "corgi $version"
+
+  run_install "$state" || status=$?
+  check "outside Herdr: exit status" "0" "$status"
+  check "outside Herdr: nothing linked" "no" "$([[ -e "$state/home/.local" ]] && echo yes || echo no)"
+}
+
 test_downloads_release_binary
 test_clean_checkout_past_tag_downloads
 test_dirty_checkout_builds_from_source
@@ -265,6 +468,15 @@ test_missing_release_builds_from_source
 test_wrong_version_builds_from_source
 test_cargo_failure_fails_install
 test_no_cargo_fails_clearly
+test_herdr_install_links_command
+test_source_build_links_command
+test_link_on_path_has_no_hint
+test_link_to_older_install_replaced
+test_links_elsewhere
+test_file_or_folder_left_alone
+test_link_opt_out_and_override
+test_link_failure_only_warns
+test_no_link_outside_herdr
 
 echo
 echo "$tests_run tests run, $failures failed"
