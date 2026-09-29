@@ -1,0 +1,4 @@
+[alias]
+# Redraws the README screenshots in docs/images/ from the dashboard's own UI
+# code and made-up agents; see src/readme_shots.rs.
+readme-shots = "test --lib readme_shots::tests::readme_shots -- --ignored --exact"

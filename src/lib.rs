@@ -10,6 +10,8 @@ pub mod model;
 pub(crate) mod motion;
 pub mod paths;
 pub mod projects;
+#[cfg(test)]
+mod readme_shots;
 pub mod session;
 pub mod steward;
 #[cfg(test)]
