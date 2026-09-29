@@ -56,12 +56,13 @@ bash scripts/test-herdr-corgi-dashboard
 shellcheck scripts/herdr-corgi-dashboard scripts/test-herdr-corgi-dashboard
 ```
 
-Before handing off changes to `scripts/install.sh`, run its shell test, which
-serves a fake release from a local directory and uses a fake `cargo`:
+Before handing off changes to `scripts/install.sh` or `scripts/link-command.sh`,
+run their shell test, which serves a fake release from a local directory and
+uses a fake `cargo`:
 
 ```bash
 bash scripts/test-install
-shellcheck scripts/install.sh scripts/test-install
+shellcheck scripts/install.sh scripts/link-command.sh scripts/test-install
 ```
 
 After reviewed changes are merged into the primary checkout, make them live
