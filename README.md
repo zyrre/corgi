@@ -75,8 +75,6 @@ For a compact popup instead of a tab, open the `quick` pane: `herdr plugin pane 
 
 `m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout.
 
-![The merge confirmation for the order-history worktree: the task, the branch and its target, the two commits it brings in, and the keys](docs/images/merge-confirm.svg)
-
 <img src="docs/images/merge-outcomes.gif" width="757" alt="A merge refused because the agent's worktree has uncommitted changes, the popup pulsing red and shaking; then retried, its steps running, and stamped with a big green check">
 
 ## The Steward

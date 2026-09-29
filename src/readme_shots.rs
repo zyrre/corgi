@@ -112,10 +112,6 @@ fn shots() -> Vec<Shot> {
             "new-agent-form",
             popup(&mut new_agent_form(), "◆ New agent"),
         ),
-        shot(
-            "merge-confirm",
-            popup(&mut merge(MergePhase::Confirm), "◆ Merge"),
-        ),
     ]
 }
 
