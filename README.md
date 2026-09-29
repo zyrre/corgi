@@ -6,22 +6,25 @@
   <b>The dashboard for your Herdr agents.</b><br>
   Every coding agent in your Herdr session in one pane, grouped by project:
   what it is doing, what it waits on, and what its context and prompt cache
-  cost you. Press <code>n</code> for a new agent in its own Git worktree.
+  cost you. Easily send prompts, start new sessions and close old ones
+  directly from the same place.
 </p>
 
 ![The Corgi dashboard: three projects, a Steward, and agents that are blocked, working, done and idle, with the header's herd and plan-usage cards](docs/images/dashboard.svg)
 
 ## Install as a Herdr plugin
 
-Corgi is a Rust program that runs as a Herdr plugin pane. It needs Herdr
-0.8.2 or newer, on Linux or macOS, and a Rust toolchain to build it.
+You need Herdr 0.8.2 or newer on Linux or macOS, and a Rust toolchain for
+the build step.
 
 ```bash
-git clone https://github.com/zyrre/corgi && cd corgi
-cargo build --release
-herdr plugin link "$PWD"
-herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint dashboard
+herdr plugin install zyrre/corgi
 ```
+
+Herdr clones the repository, shows what it will run, and after you confirm,
+builds Corgi (`cargo build --release`) and registers the plugin. Run the same
+command again to update, and `herdr plugin uninstall io.github.zyrre.corgi`
+to remove it.
 
 To open the dashboard with one key, or focus it when it is already open,
 bind the plugin's `open` action in `~/.config/herdr/config.toml`, then run
@@ -33,13 +36,6 @@ key = "prefix+d"
 type = "plugin_action"
 command = "io.github.zyrre.corgi.open"
 description = "Corgi (open or focus)"
-```
-
-The dashboard opens as a Herdr tab. The `quick` entrypoint opens a compact
-popup instead:
-
-```bash
-herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint quick
 ```
 
 ## What you get
@@ -59,6 +55,28 @@ herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint quick
   build and that dispatches the work to worktree agents.
 - **Plan usage**: the 5-hour and weekly limits of each installed CLI, in the
   header.
+
+### Keys
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, arrows | Select an agent |
+| `space` | Expand the selected session into its transcript, or collapse it again |
+| `u` / `d`, `PgUp` / `PgDn`, `Home` / `End` | Scroll the expanded transcript |
+| `p` | Prompt the selected agent (idle, done, working and unknown agents; a blocked one waits on its own question) |
+| `n` | Start a new agent in its own worktree; with no agent selected, the most recently used project is preset |
+| `t` | Start a [scratch session](#scratch-sessions) in your home directory |
+| `s` | Start the [Steward](#the-steward) of the selected agent's project, or focus it when one is already running |
+| `m` | [Merge and push](#merging) an agent's worktree branch (asks first) |
+| `f` or `Enter` | Focus the selected agent's pane |
+| `x` | [Close](#closing-an-agent) the selected agent; for a worktree agent this also deletes its checkout (asks first) |
+| `r` | Refresh now |
+| `Esc` | Collapse the expanded transcript, or close Corgi |
+| `q` | Close Corgi |
+
+Prompts go through Herdr's agent API. The dashboard opens as a Herdr tab;
+for a compact popup instead, open the plugin's `quick` pane:
+`herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint quick`.
 
 ### Reading a row
 
@@ -125,26 +143,6 @@ session with no readable file keeps its two normal rows and says why there
 is nothing more.
 
 ## Everyday use
-
-### Keys
-
-| Key | Action |
-| --- | --- |
-| `j` / `k`, arrows | Select an agent |
-| `space` | Expand the selected session into its transcript, or collapse it again |
-| `u` / `d`, `PgUp` / `PgDn`, `Home` / `End` | Scroll the expanded transcript |
-| `p` | Prompt the selected agent (idle, done, working and unknown agents; a blocked one waits on its own question) |
-| `n` | Start a new agent in its own worktree; with no agent selected, the most recently used project is preset |
-| `t` | Start a [scratch session](#scratch-sessions) in your home directory |
-| `s` | Start the [Steward](#the-steward) of the selected agent's project, or focus it when one is already running |
-| `m` | [Merge and push](#merging) an agent's worktree branch (asks first) |
-| `f` or `Enter` | Focus the selected agent's pane |
-| `x` | [Close](#closing-an-agent) the selected agent; for a worktree agent this also deletes its checkout (asks first) |
-| `r` | Refresh now |
-| `Esc` | Collapse the expanded transcript, or close Corgi |
-| `q` | Close Corgi |
-
-Prompts go through Herdr's agent API.
 
 ### How the list is ordered
 
@@ -364,7 +362,7 @@ worktree or a Steward, and is listed under Scratch.
 Each project can have one Steward: a long-lived Claude Code or Codex session
 in the root tab of the project's Corgi workspace. You talk to it about what
 to build, and it dispatches the work to worktree agents and reviews what
-they report.
+they report. Its role is [`steward/ROLE.md`](steward/ROLE.md).
 
 ```mermaid
 flowchart LR
@@ -375,17 +373,11 @@ flowchart LR
     steward -->|"corgi report, git log"| workers
 ```
 
-### Starting it
-
-Corgi launches the Steward with its role, [`steward/ROLE.md`](steward/ROLE.md),
-written into the project's Steward directory.
-
-- Claude Code gets the role appended to its system prompt.
-- Codex gets it as developer instructions (`-c developer_instructions`). It
-  runs in its workspace-write sandbox with network access, so that `herdr`
-  and `corgi` reach Herdr's socket, and with the Steward directory as an
-  extra writable root. Codex still asks you to approve anything else its
-  sandbox refuses, such as the `git init` of a new project.
+Press `s` in the dashboard to start the selected agent's Steward, or to
+focus it when it already runs. It starts on the harness, model, and effort
+it was last launched with (the first time, on the new-agent form's
+presets), and greets you with the project's state. The
+first agent you start in a new project is its Steward too. From a shell:
 
 ```bash
 corgi steward ~/repos/webshop                    # greets with the project's state
@@ -393,89 +385,13 @@ corgi steward ~/repos/webshop < first-request.md # takes that request up instead
 corgi steward ~/repos/webshop --harness codex    # on Codex instead of Claude Code
 ```
 
-In the dashboard, `s` does the same for the selected agent's project when no
-Steward runs there, even while other sessions of the project do. When one
-does, `s` focuses it instead, switching to its workspace and tab. `s` asks
-nothing: the Steward starts on the harness, model, and effort it was last
-launched with, or else on the new-agent form's presets, and greets you with
-the project's state. It takes the root tab of the project's Corgi workspace
-when no agent runs there; if one does, such as your own session, the Steward
-gets a new tab of that workspace instead and the root tab is left alone.
-Without a Corgi workspace for the project, one is created.
-
-Corgi marks the Steward's pane when it launches it, which is how the
-dashboard recognizes it wherever the pane is moved: it is shown as
-`Steward` in place of a task summary. The Steward can also start in a
-directory that is not a Git repository yet. Until the project has a first
-commit, it may run `git init` and commit a `README.md`, `.gitignore`, and
-`AGENTS.md` shaped by your first request, and nothing else in the checkout.
-
-The Steward's commands call the installed Corgi plugin's release build. To
-point a Steward at a development build instead, set `CORGI_STEWARD_BIN` to
-that binary when you launch it.
-
-### How it follows its workers
-
-The Steward starts workers with [`corgi spawn`](#corgi-spawn) and follows
-them with two more commands:
-
-- `corgi fleet [PROJECT]` lists the project's agents, one tab-separated row
-  each: name, role (`steward` or `worker`), state, task, model, context, and
-  working directory.
-- `corgi report NAME` prints the newest thing an agent said, which for a
-  worker is the report its brief asks it to end with. An agent without a
-  readable transcript shows its screen instead.
-
-The Steward does not wait for its workers; the Corgi dashboard wakes it.
-Whenever an agent of a project with a running Steward, other than the
-Steward itself, becomes done, idle, or blocked after working (including
-after you steered it), the dashboard prompts that Steward with one line,
-such as `[corgi] w-x is done. Run: corgi report w-x`.
-
-- Every agent of the project counts, whether the Steward or you started it.
-- The prompt waits until the Steward has finished its current turn.
-- The Steward stays out of your own sessions. When the turn that ended was
-  yours, in an agent it did not dispatch or in one of its workers you
-  steered, it only checks with `git status` and `git log` whether anything
-  changed. It says nothing, and it silently records only a significant
-  decision or architectural change in `decisions.md`, with where it was
-  observed. For a worker you steered, it also notes your change in its
-  ledger and judges the work against the brief plus that change.
-- Only changes the dashboard sees while it runs count, so opening it never
-  replays old states. With the dashboard closed nobody is woken; the Steward
-  then checks `corgi fleet` when you next talk to it.
-- With several dashboards open, such as the tab and the popup, the first to
-  take a lock under `$XDG_STATE_HOME/corgi/wake/` for its Herdr socket sends
-  the prompts, and another takes over when it quits.
-
-### Its memory
-
-The Steward keeps its memory outside the repository, in
-`$XDG_STATE_HOME/corgi/steward/<project>/` (`~/.local/state/…` by default):
-`decisions.md`, a `ledger.jsonl` of dispatched work, and every brief it sent,
-under `briefs/`.
-
-### Trust prompts
-
-Claude Code asks whether to trust a directory the first time it runs in one.
-A Git repository does not inherit the trust of the folder it sits in, and a
-worktree's trust is its main repository's, so the first worker of a new
-repository is asked even when the Steward was not. Codex asks the same
-question, keyed the same way.
-
-For a project Corgi created itself, recorded in
-`$XDG_STATE_HOME/corgi/created-projects`, Corgi answers that one question:
-
-- For Claude Code, Corgi answers Yes when it starts an agent there, but only
-  when exactly that question is on screen and is about the agent's own
-  directory.
-- For Codex, Corgi passes that project as trusted with `-c projects={…}` on
-  the command line, so Codex does not ask and nothing is written to
-  `~/.codex/config.toml`.
-
-Every other question, and the trust question in any other project, waits
-for you in the agent's pane. Corgi waits up to ten minutes for your answer
-before it hands over the first prompt.
+The Steward starts workers with [`corgi spawn`](#corgi-spawn), lists them
+with `corgi fleet`, and reads each one's final report with `corgi report`.
+It does not poll: while a dashboard runs, it prompts the Steward with one
+line whenever one of the project's agents becomes done, idle, or blocked
+after working. The Steward keeps its decisions, a ledger of dispatched work,
+and every brief it sent outside the repository, in
+`$XDG_STATE_HOME/corgi/steward/<project>/`.
 
 ## For scripts and other agents
 
@@ -579,6 +495,21 @@ activity, model and context information, cache estimates, and plan usage. It
 uses Corgi's `--bar-stream <socket-path>` mode to share the dashboard's data
 readers. See [the companion README](omarchy/README.md) for setup and
 controls.
+
+### Build from source
+
+To work on Corgi, link a checkout instead of installing it. Both use the
+same plugin id, so run `herdr plugin uninstall io.github.zyrre.corgi` before
+you link. Herdr refuses to install over a linked plugin, so to go back,
+`herdr plugin unlink io.github.zyrre.corgi` first.
+
+```bash
+git clone https://github.com/zyrre/corgi && cd corgi
+cargo build --release
+herdr plugin link "$PWD"
+```
+
+[AGENTS.md](AGENTS.md) has the checks to run before handing off a change.
 
 ### Screenshots
 
