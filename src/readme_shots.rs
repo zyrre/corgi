@@ -6,7 +6,12 @@
 //! Regenerate them with `cargo readme-shots`, the alias for running the
 //! ignored test at the bottom of this file; they land in `docs/images/`.
 
-use std::{fmt::Write as _, fs, path::Path, sync::Arc};
+use std::{
+    fmt::Write as _,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use ratatui::{
     Terminal,
@@ -18,11 +23,16 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::{App, Checkout, NewAgentForm, NewField, Overlay, UsageSlot},
+    app::{
+        App, Checkout, MergePhase, MergeWorktreeForm, NewAgentForm, NewField, Overlay, UsageSlot,
+    },
+    choices::{ChoiceList, FreeText},
     defaults::HarnessDefaults,
-    model::PromptCacheKind,
-    model::{Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, PromptCache},
+    model::{
+        Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, PromptCache, PromptCacheKind,
+    },
     motion::Motion,
+    projects::{Project, ProjectSource, project_choices},
     test_support::{test_app, test_terminal},
     time::unix_now,
     ui::draw,
@@ -65,78 +75,263 @@ const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 const WIDTH: u16 = 112;
 const HEIGHT: u16 = 44;
 
-/// A screenshot: the file it is written to, the window title, and the cells
-/// of the rendered screen it shows.
+/// The title of the terminal window a whole screen is shown in.
+const WINDOW_TITLE: &str = "corgi — herdr";
+// The labels of the row anatomy: their color, which no part of the dashboard
+// uses, so a label never reads as part of the screen, their font, and the
+// rows they stack in above the screen.
+const CALLOUT: &str = "#ff9e64";
+const CALLOUT_FONT: &str = "-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif";
+const CALLOUT_FONT_SIZE: u32 = 13;
+const CALLOUT_GAP: u32 = 12;
+const CALLOUT_TIER: u32 = 18;
+
+/// A screenshot and the file it is written to, `docs/images/<name>.svg`.
 struct Shot {
     name: &'static str,
-    title: Option<&'static str>,
     svg: String,
 }
 
 /// Every screenshot, in the order the README shows them.
 fn shots() -> Vec<Shot> {
+    let shot = |name, svg| Shot { name, svg };
     vec![
-        logo_shot(),
-        Shot {
-            name: "dashboard",
-            title: Some("corgi — herdr"),
-            svg: String::new(),
-        }
-        .drawn(&mut dashboard()),
-        Shot {
-            name: "expanded-session",
-            title: Some("corgi — herdr"),
-            svg: String::new(),
-        }
-        .drawn(&mut expanded_session()),
-        Shot {
-            name: "new-agent-form",
-            title: Some("corgi — herdr"),
-            svg: String::new(),
-        }
-        .drawn(&mut new_agent_form()),
+        shot("logo", logo()),
+        shot("dashboard", whole_screen(&mut dashboard())),
+        shot("row-anatomy", row_anatomy()),
+        shot("expanded-session", whole_screen(&mut expanded_session())),
+        shot("new-agent-form", whole_screen(&mut new_agent_form())),
+        shot(
+            "project-picker",
+            popup(&mut project_picker(), "◆ New agent"),
+        ),
+        shot(
+            "merge-confirm",
+            popup(&mut merge(MergePhase::Confirm), "◆ Merge"),
+        ),
+        shot("merge-stamp", merge_stamp()),
+        shot("usage-cards", usage_cards()),
     ]
 }
 
-impl Shot {
-    /// The shot with `app` drawn into it as a whole screen, popups and their
-    /// effects played out to where they rest.
-    fn drawn(mut self, app: &mut App) -> Self {
-        let mut terminal = test_terminal(WIDTH, HEIGHT);
-        settle(&mut terminal, app);
-        let area = terminal.backend().buffer().area;
-        self.svg = svg(&mut terminal, area, self.title);
-        self
-    }
+/// How a shot is framed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chrome {
+    /// A terminal window with a title bar, for a whole screen.
+    Window,
+    /// A rounded panel of the terminal's background, for part of a screen.
+    Panel,
+    /// The cells alone on a transparent background, for the logo.
+    Bare,
+}
+
+/// A label pointing at one cell of a shot, at `x`, `y` in the shot's area.
+struct Callout {
+    x: u16,
+    y: u16,
+    label: &'static str,
+    place: Place,
+}
+
+/// Where a callout's label goes.
+enum Place {
+    /// Above the shot, in the given row of labels counted up from the
+    /// nearest, with a line down to its cell.
+    Above(u32),
+    /// On the cell's own row, starting at the given column, with a line
+    /// back to the cell.
+    Right(u16),
+}
+
+/// The screen `app` draws, its popups and their effects played out.
+fn screen(app: &mut App) -> Terminal<TestBackend> {
+    let mut terminal = test_terminal(WIDTH, HEIGHT);
+    settle(&mut terminal, app);
+    terminal
+}
+
+/// The whole screen `app` draws, in a terminal window.
+fn whole_screen(app: &mut App) -> String {
+    let mut terminal = screen(app);
+    let area = terminal.backend().buffer().area;
+    svg(&mut terminal, area, Chrome::Window, &[])
+}
+
+/// The popup titled `title` that `app` has open, with its shadow and a
+/// little of the dimmed dashboard around it.
+fn popup(app: &mut App, title: &str) -> String {
+    let mut terminal = screen(app);
+    let area = popup_area(terminal.backend().buffer(), title);
+    svg(&mut terminal, area, Chrome::Panel, &[])
+}
+
+/// Draws `app` at `millis` on its manual clock.
+fn draw_at(terminal: &mut Terminal<TestBackend>, app: &mut App, millis: u64) {
+    app.motion
+        .set_time(std::time::Duration::from_millis(millis));
+    terminal.draw(|frame| draw(frame, app)).expect("draw shot");
 }
 
 /// Draws `app` on a manual clock until its popup, if it has one, has grown
 /// in and the dashboard behind it has dimmed. A key was just pressed before
 /// the last frame, so a text field's caret is in its on phase.
 fn settle(terminal: &mut Terminal<TestBackend>, app: &mut App) {
-    for millis in [0, 1_000, 3_000] {
-        app.motion
-            .set_time(std::time::Duration::from_millis(millis));
-        if millis == 3_000 {
-            app.motion.key_pressed();
-        }
-        terminal.draw(|frame| draw(frame, app)).expect("draw shot");
-    }
+    draw_at(terminal, app, 0);
+    draw_at(terminal, app, 1_000);
+    app.motion.key_pressed();
+    draw_at(terminal, app, 3_000);
 }
 
 /// The corgi and the wordmark on their own, cut from the header with no
 /// window around them, for the top of the README.
-fn logo_shot() -> Shot {
-    let mut app = dashboard();
-    let mut terminal = test_terminal(WIDTH, HEIGHT);
-    settle(&mut terminal, &mut app);
+fn logo() -> String {
+    let mut terminal = screen(&mut dashboard());
     // The mascot is sixteen cells wide, then two of gap and the 38-cell
     // wordmark; the header is seven rows tall.
-    Shot {
-        name: "logo",
-        title: None,
-        svg: svg(&mut terminal, Rect::new(0, 0, 16 + 2 + 38, 7), None),
+    svg(
+        &mut terminal,
+        Rect::new(0, 0, 16 + 2 + 38, 7),
+        Chrome::Bare,
+        &[],
+    )
+}
+
+/// The blocked agent's three rows from the hero dashboard, with a label on
+/// every part of them.
+fn row_anatomy() -> String {
+    let mut terminal = screen(&mut dashboard());
+    let buffer = terminal.backend().buffer();
+    let task = find(buffer, "Retry failed card payments", buffer.area);
+    // Inside the Agents box, so its borders stay out of the crop.
+    let area = Rect::new(1, task.y, WIDTH - 2, 3);
+    let identity = Rect::new(area.x, task.y, area.width, 1);
+    let above = |needle: &str, label: &'static str, tier: u32| {
+        let at = find(buffer, needle, identity);
+        Callout {
+            x: at.x - area.x,
+            y: 0,
+            label,
+            place: Place::Above(tier),
+        }
+    };
+    // The two rows below end where their text does; their labels line up a
+    // few columns past the longer of them.
+    let ends = [1, 2].map(|row| last_column(buffer, area, task.y + row) - area.x);
+    let labels_at = ends.iter().max().copied().unwrap_or_default() + 4;
+    let right = |row: u16, label: &'static str| Callout {
+        x: ends[usize::from(row) - 1],
+        y: row,
+        label,
+        place: Place::Right(labels_at),
+    };
+    let callouts = [
+        above("██", "selected", 0),
+        above("BLOCKED", "state", 1),
+        above("Retry", "task", 0),
+        above("Sonnet", "model", 1),
+        above("medium", "effort", 0),
+        above("41%", "context used", 1),
+        above("⏱", "prompt cache left", 0),
+        above("⑂", "worktree", 1),
+        right(
+            1,
+            "newest thing said: your prompt, its reply or thinking, or a question",
+        ),
+        right(2, "the command or tool it runs or last ran"),
+    ];
+    svg(&mut terminal, area, Chrome::Panel, &callouts)
+}
+
+/// The two plan-usage cards of the header.
+fn usage_cards() -> String {
+    let mut terminal = screen(&mut dashboard());
+    let buffer = terminal.backend().buffer();
+    let codex = find(buffer, "CODEX", buffer.area);
+    let claude = find(buffer, "CLAUDE", buffer.area);
+    let left = scan(buffer, codex, (-1, 0), "╭");
+    let right = scan(buffer, claude, (1, 0), "╮");
+    let bottom = scan(buffer, left, (0, 1), "╰");
+    let area = Rect::new(left.x, left.y, right.x + 1 - left.x, bottom.y + 1 - left.y);
+    svg(&mut terminal, area, Chrome::Panel, &[])
+}
+
+/// The merge popup's success, one frame into its check stamp: the stroke
+/// drawn and holding over the popup's faded content.
+fn merge_stamp() -> String {
+    let mut app = merge(MergePhase::Running(2));
+    let mut terminal = test_terminal(WIDTH, HEIGHT);
+    draw_at(&mut terminal, &mut app, 0);
+    draw_at(&mut terminal, &mut app, 1_000);
+    if let Some(form) = app.overlay.merge_worktree_form_mut() {
+        form.phase = MergePhase::Succeeded;
     }
+    draw_at(&mut terminal, &mut app, 1_000);
+    draw_at(&mut terminal, &mut app, 1_400);
+    let area = popup_area(terminal.backend().buffer(), "Merged and pushed");
+    svg(&mut terminal, area, Chrome::Panel, &[])
+}
+
+/// Where `needle` first starts within `area` of the screen.
+fn find(buffer: &Buffer, needle: &str, area: Rect) -> Position {
+    for y in area.top()..area.bottom() {
+        let mut row = String::new();
+        let mut starts = Vec::new();
+        for x in area.left()..area.right() {
+            starts.push((row.len(), x));
+            row.push_str(buffer[(x, y)].symbol());
+        }
+        if let Some(offset) = row.find(needle) {
+            let x = starts
+                .iter()
+                .rev()
+                .find(|(start, _)| *start <= offset)
+                .map_or(area.x, |(_, x)| *x);
+            return Position { x, y };
+        }
+    }
+    panic!("{needle:?} is not on the screen");
+}
+
+/// The first cell from `from` on, stepping by `step`, that holds `symbol`.
+fn scan(buffer: &Buffer, from: Position, step: (i32, i32), symbol: &str) -> Position {
+    let mut at = from;
+    while buffer[(at.x, at.y)].symbol() != symbol {
+        at = Position {
+            x: u16::try_from(i32::from(at.x) + step.0).expect("on the screen"),
+            y: u16::try_from(i32::from(at.y) + step.1).expect("on the screen"),
+        };
+        assert!(buffer.area.contains(at), "no {symbol:?} from {from:?}");
+    }
+    at
+}
+
+/// The column after the last drawn character of row `y` within `area`.
+fn last_column(buffer: &Buffer, area: Rect, y: u16) -> u16 {
+    (area.left()..area.right())
+        .rev()
+        .find(|&x| !buffer[(x, y)].symbol().trim().is_empty())
+        .map_or(area.x, |x| x + 1)
+}
+
+/// The popup titled `title`: its frame, a list hanging out of it, the shadow
+/// it casts to the right and below, and a margin of the dashboard around
+/// them.
+fn popup_area(buffer: &Buffer, title: &str) -> Rect {
+    let title = find(buffer, title, buffer.area);
+    let top_left = scan(buffer, title, (-1, 0), "╭");
+    let top_right = scan(buffer, title, (1, 0), "╮");
+    // The lowest bottom corner between the frame's sides, which is a list's
+    // when one hangs below the frame.
+    let bottom = (title.y..buffer.area.bottom())
+        .filter(|&y| (top_left.x..=top_right.x).any(|x| buffer[(x, y)].symbol() == "╰"))
+        .max()
+        .unwrap_or(title.y);
+    let (margin_x, margin_y) = (3, 1);
+    let left = top_left.x.saturating_sub(margin_x);
+    let top = top_left.y.saturating_sub(margin_y);
+    let right = (top_right.x + 1 + margin_x).min(buffer.area.right());
+    let bottom = (bottom + 1 + margin_y).min(buffer.area.bottom());
+    Rect::new(left, top, right - left, bottom - top)
 }
 
 // ---------------------------------------------------------------------------
@@ -441,13 +636,68 @@ fn new_agent_form() -> App {
     app
 }
 
+/// The new-agent form with its Project list open, listing a project from
+/// each place Corgi finds them.
+fn project_picker() -> App {
+    let mut app = new_agent_form();
+    let project = |name: &str, source| Project {
+        root: format!("{HOME}/repos/{name}"),
+        name: name.into(),
+        source,
+    };
+    let projects = [
+        project("webshop", ProjectSource::Agents(4)),
+        project("weather", ProjectSource::Agents(2)),
+        project("notes-app", ProjectSource::Agents(1)),
+        project("recipes", ProjectSource::Open),
+        project("dotfiles", ProjectSource::Nearby),
+        project("blog", ProjectSource::Remembered),
+    ];
+    if let Overlay::NewAgent(form) = &mut app.overlay {
+        form.field = NewField::Project;
+        form.list = Some(ChoiceList::new(
+            project_choices(&projects),
+            &form.project,
+            FreeText::Directory,
+        ));
+    }
+    app
+}
+
+/// The merge popup for the finished order-history worker, at `phase`.
+fn merge(phase: MergePhase) -> App {
+    let mut app = dashboard();
+    app.selected = 3;
+    app.overlay = Overlay::merge(MergeWorktreeForm {
+        label: "webshop/order-pages-2d5a".into(),
+        workspace_id: "w3".into(),
+        project_root: PathBuf::from(format!("{HOME}/repos/webshop")),
+        worktree_checkout: PathBuf::from(format!(
+            "{HOME}/.herdr/worktrees/webshop/worktree-order-pages-2d5a"
+        )),
+        source_branch: "worktree/order-pages-2d5a".into(),
+        target_branch: "main".into(),
+        task: "Paginate the order history".into(),
+        commits: vec![
+            "3f2a9c1 Test the first and last page of the order history".into(),
+            "b71e04d Paginate the order history with a stable cursor".into(),
+        ],
+        phase,
+    });
+    app
+}
+
 // ---------------------------------------------------------------------------
 // Cells to SVG.
 
-/// The `area` of the terminal's screen as an SVG image: a window with a
-/// title bar around it when `title` is given, else the cells alone on a
-/// transparent background.
-fn svg(terminal: &mut Terminal<TestBackend>, area: Rect, title: Option<&str>) -> String {
+/// The `area` of the terminal's screen as an SVG image, framed by `chrome`,
+/// with `callouts` labelling its parts.
+fn svg(
+    terminal: &mut Terminal<TestBackend>,
+    area: Rect,
+    chrome: Chrome,
+    callouts: &[Callout],
+) -> String {
     let cursor = terminal
         .backend()
         .cursor_visible()
@@ -458,28 +708,41 @@ fn svg(terminal: &mut Terminal<TestBackend>, area: Rect, title: Option<&str>) ->
         u32::from(area.width) * CELL_WIDTH,
         u32::from(area.height) * CELL_HEIGHT,
     );
-    let (left, top, outer_width, outer_height) = if title.is_some() {
-        (
-            PADDING,
-            TITLE_BAR + PADDING / 2,
-            width + 2 * PADDING,
-            height + TITLE_BAR + PADDING / 2 + PADDING,
-        )
+    // Room above the cells for the rows of labels placed there.
+    let label_rows = callouts
+        .iter()
+        .filter_map(|callout| match callout.place {
+            Place::Above(tier) => Some(tier + 1),
+            Place::Right(_) => None,
+        })
+        .max()
+        .unwrap_or(0);
+    let labels = if label_rows == 0 {
+        0
     } else {
-        (0, 0, width, height)
+        CALLOUT_GAP + (label_rows - 1) * CALLOUT_TIER + CALLOUT_FONT_SIZE + PADDING / 2
     };
+    let (left, top, right, bottom) = match chrome {
+        Chrome::Window => (PADDING, TITLE_BAR + PADDING / 2, PADDING, PADDING),
+        Chrome::Panel => (PADDING, PADDING, PADDING, PADDING),
+        Chrome::Bare => (0, 0, 0, 0),
+    };
+    let top = top + labels;
+    let (outer_width, outer_height) = (left + width + right, top + height + bottom);
     let mut out = String::new();
     let _ = writeln!(
         out,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{outer_width}" height="{outer_height}" viewBox="0 0 {outer_width} {outer_height}">"#
     );
-    if let Some(title) = title {
+    if chrome != Chrome::Bare {
         let _ = writeln!(
             out,
             r#"<rect x="0.5" y="0.5" width="{}" height="{}" rx="{WINDOW_RADIUS}" fill="{BACKGROUND}" stroke="{WINDOW_EDGE}"/>"#,
             outer_width - 1,
             outer_height - 1
         );
+    }
+    if chrome == Chrome::Window {
         for (index, color) in ["#ff5f57", "#febc2e", "#28c840"].iter().enumerate() {
             let _ = writeln!(
                 out,
@@ -493,7 +756,7 @@ fn svg(terminal: &mut Terminal<TestBackend>, area: Rect, title: Option<&str>) ->
             r#"<text x="{}" y="{}" fill="{TITLE_TEXT}" font-family="{FONT_FAMILY}" font-size="13" text-anchor="middle">{}</text>"#,
             outer_width / 2,
             TITLE_BAR / 2 + 5,
-            escape(title)
+            escape(WINDOW_TITLE)
         );
     }
     let _ = writeln!(
@@ -513,8 +776,54 @@ fn svg(terminal: &mut Terminal<TestBackend>, area: Rect, title: Option<&str>) ->
             u32::from(y - area.y) * CELL_HEIGHT
         );
     }
+    for callout in callouts {
+        callout_svg(&mut out, callout);
+    }
     out.push_str("</g>\n</svg>\n");
     out
+}
+
+/// One callout: its label, and a dashed line from the label to its cell
+/// that ends in a dot on the cell.
+fn callout_svg(out: &mut String, callout: &Callout) {
+    let line = |out: &mut String, (x1, y1): (u32, u32), (x2, y2): (u32, u32)| {
+        let _ = writeln!(
+            out,
+            r#"<path d="M{x1} {y1}L{x2} {y2}" stroke="{CALLOUT}" stroke-width="1" stroke-dasharray="3 2"/><circle cx="{x2}" cy="{y2}" r="2" fill="{CALLOUT}"/>"#
+        );
+    };
+    let label = |out: &mut String, x: u32, y: u32| {
+        let _ = writeln!(
+            out,
+            r#"<text x="{x}" y="{y}" fill="{CALLOUT}" font-family="{CALLOUT_FONT}" font-size="{CALLOUT_FONT_SIZE}">{}</text>"#,
+            escape(callout.label)
+        );
+    };
+    let cell_x = u32::from(callout.x) * CELL_WIDTH;
+    let cell_top = u32::from(callout.y) * CELL_HEIGHT;
+    match callout.place {
+        Place::Above(tier) => {
+            let baseline = CALLOUT_GAP + tier * CALLOUT_TIER;
+            // Labels sit above the cells, at negative y in their group.
+            let _ = writeln!(out, r#"<g transform="translate(0 -{baseline})">"#);
+            label(out, cell_x, 0);
+            out.push_str("</g>\n");
+            let x = cell_x + CELL_WIDTH / 2;
+            let _ = writeln!(
+                out,
+                r#"<path d="M{x} -{}V{}" stroke="{CALLOUT}" stroke-width="1" stroke-dasharray="3 2"/><circle cx="{x}" cy="{}" r="2" fill="{CALLOUT}"/>"#,
+                baseline - 4,
+                cell_top + 2,
+                cell_top + 2
+            );
+        }
+        Place::Right(column) => {
+            let y = cell_top + CELL_HEIGHT / 2;
+            let x = u32::from(column) * CELL_WIDTH;
+            line(out, (x - 6, y), (cell_x + CELL_WIDTH / 2, y));
+            label(out, x, cell_top + BASELINE);
+        }
+    }
 }
 
 /// How one cell is drawn, once its colors are resolved.
@@ -562,7 +871,7 @@ fn row_svg(out: &mut String, buffer: &Buffer, area: Rect, y: u16) {
         if bg != BACKGROUND {
             let _ = writeln!(
                 out,
-                r#"<rect x="{}" y="{row_top}" width="{}" height="{CELL_HEIGHT}" fill="{bg}"/>"#,
+                r#"<rect x="{}" y="{row_top}" width="{}" height="{CELL_HEIGHT}" fill="{bg}" shape-rendering="crispEdges"/>"#,
                 x as u32 * CELL_WIDTH,
                 run as u32 * CELL_WIDTH
             );
@@ -627,8 +936,12 @@ fn row_svg(out: &mut String, buffer: &Buffer, area: Rect, y: u16) {
 /// the cell at `left`, `top`. `None` for any other character, which is text.
 fn shape(symbol: &str, left: u32, top: u32, fill: &str) -> Option<String> {
     let (w, h) = (CELL_WIDTH, CELL_HEIGHT);
+    // Filled cells have crisp edges, so neighbours still meet without a
+    // hairline seam when GitHub scales the image down to its column.
     let rect = |x: u32, y: u32, width: u32, height: u32| {
-        format!(r#"<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="{fill}"/>"#)
+        format!(
+            r#"<rect x="{x}" y="{y}" width="{width}" height="{height}" fill="{fill}" shape-rendering="crispEdges"/>"#
+        )
     };
     // Box lines run through the middle of the cell, one pixel wide.
     let (mid_x, mid_y) = (left as f32 + w as f32 / 2.0, top as f32 + h as f32 / 2.0);
