@@ -14,17 +14,12 @@
 
 ## Install as a Herdr plugin
 
-You need Herdr 0.8.2 or newer on Linux or macOS, and a Rust toolchain for
-the build step.
-
 ```bash
 herdr plugin install zyrre/corgi
 ```
 
-Herdr clones the repository, shows what it will run, and after you confirm,
-builds Corgi (`cargo build --release`) and registers the plugin. Run the same
-command again to update, and `herdr plugin uninstall io.github.zyrre.corgi`
-to remove it.
+Run the same command again to update, and
+`herdr plugin uninstall io.github.zyrre.corgi` to remove it.
 
 To open the dashboard with one key, or focus it when it is already open,
 bind the plugin's `open` action in `~/.config/herdr/config.toml`, then run
@@ -498,6 +493,21 @@ controls.
 
 ### Build from source
 
+`herdr plugin install` runs `scripts/install.sh` as the plugin's build step.
+It downloads the prebuilt binary of the release matching `version` in
+`herdr-plugin.toml` for this machine (macOS or Linux, arm64 or x86_64),
+checks it against the release's `SHA256SUMS` and its `--version`, and puts
+it at `target/release/corgi`. It builds with `cargo build --release --locked`
+instead, which needs a Rust toolchain, when:
+
+- the checkout has uncommitted changes to tracked files;
+- there is no prebuilt binary for this platform;
+- the download fails, or the binary does not match its checksum or version.
+
+Set `CORGI_BUILD=source` to always build from source, or
+`CORGI_DOWNLOAD_URL=<url>` to download from `<url>/v<version>/` instead of
+the GitHub release.
+
 To work on Corgi, link a checkout instead of installing it. Both use the
 same plugin id, so run `herdr plugin uninstall io.github.zyrre.corgi` before
 you link. Herdr refuses to install over a linked plugin, so to go back,
@@ -507,9 +517,19 @@ you link. Herdr refuses to install over a linked plugin, so to go back,
 git clone https://github.com/zyrre/corgi && cd corgi
 cargo build --release
 herdr plugin link "$PWD"
+herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint dashboard
 ```
 
-[AGENTS.md](AGENTS.md) has the checks to run before handing off a change.
+[AGENTS.md](AGENTS.md) has the checks to run before handing off a change;
+`bash scripts/test-install` tests the install script.
+
+### Releasing
+
+Bump `version` in both `Cargo.toml` and `herdr-plugin.toml` (and run
+`cargo build` so `Cargo.lock` follows), commit, and push a `vX.Y.Z` tag
+matching it. `.github/workflows/release.yml` then builds the four binaries
+and publishes the GitHub release with them and their `SHA256SUMS`; it
+refuses a tag that does not match both versions.
 
 ### Screenshots
 

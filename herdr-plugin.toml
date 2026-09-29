@@ -5,8 +5,10 @@ min_herdr_version = "0.8.2"
 description = "A small, quick dashboard for Herdr coding agents."
 platforms = ["linux", "macos"]
 
+# Downloads the prebuilt binary of this version's release, or builds from
+# source with cargo when there is none (see the script for overrides).
 [[build]]
-command = ["cargo", "build", "--release"]
+command = ["sh", "scripts/install.sh"]
 
 # Bind this to a key in ~/.config/herdr/config.toml:
 #   [[keys.command]]

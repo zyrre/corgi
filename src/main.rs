@@ -8,6 +8,8 @@ fn main() -> Result<()> {
         Ok(())
     };
     match args.get(1).map(String::as_str) {
+        // scripts/install.sh runs this to check a downloaded release binary.
+        Some("--version" | "-V") => usage(concat!("corgi ", env!("CARGO_PKG_VERSION"))),
         Some("spawn") if help() => usage(corgi::app::SPAWN_USAGE),
         Some("spawn") => corgi::app::spawn(&args[2..]),
         Some("steward") if help() => usage(corgi::app::STEWARD_USAGE),
