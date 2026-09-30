@@ -143,11 +143,28 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         items.push(ListItem::new(lines));
     }
 
+    // The expanded session already arranged its items to fit the box, so it
+    // is drawn from the top. The collapsed list starts where it was last
+    // drawn from, and the list only scrolls it when the selection passes an
+    // edge of the view.
+    let offset = if expanded.is_some() {
+        0
+    } else {
+        app.agent_list_offset.min(max_offset(
+            &items,
+            usize::from(area.height.saturating_sub(2)),
+        ))
+    };
     // Agent rows render their own selection bar so section rules can begin
     // flush with the box edge instead of reserving a list gutter.
     let list = unhighlighted_list(items).block(rounded_block(" Agents ", None));
-    let mut state = ListState::default().with_selected(Some(selected_item));
+    let mut state = ListState::default()
+        .with_offset(offset)
+        .with_selected(Some(selected_item));
     frame.render_stateful_widget(list, area, &mut state);
+    if expanded.is_none() {
+        app.agent_list_offset = state.offset();
+    }
 
     // The list has been handed over, so the viewport it was drawn in can go
     // back to the app for the next page key.
@@ -155,6 +172,20 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         app.transcript_page = u16::try_from(page).unwrap_or(u16::MAX).max(1);
         app.transcript_scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
     }
+}
+
+/// The furthest down the list can start and still fill `height` rows, so a
+/// list that shrank, or a box that grew, shows no blank rows below its end
+/// while there are items above the view to fill them with.
+fn max_offset(items: &[ListItem<'_>], height: usize) -> usize {
+    let mut rows = 0;
+    for (index, item) in items.iter().enumerate().rev() {
+        rows += item.height();
+        if rows > height {
+            return index + 1;
+        }
+    }
+    0
 }
 
 /// Columns a turn's text is wrapped to: the box, less its borders, the
@@ -619,6 +650,125 @@ mod tests {
         assert!(!screen.iter().any(|row| row.contains("Second task")));
         assert!(usize::from(app.transcript_page) >= MIN_TRANSCRIPT_ROWS);
         assert!(screen.iter().any(|row| row.contains("$ cargo test turn-0")));
+    }
+
+    fn numbered_sessions(count: usize) -> Vec<DashboardAgent> {
+        (0..count)
+            .map(|index| DashboardAgent {
+                project_group: "corgi".into(),
+                task: format!("Task number {index}"),
+                ..DashboardAgent::default()
+            })
+            .collect()
+    }
+
+    /// The session drawn highest in the list, and the row the selection bar
+    /// starts on.
+    fn top_task_and_bar(screen: &[String]) -> (String, usize) {
+        let top = screen
+            .iter()
+            .find_map(|row| {
+                let start = row.find("Task number ")?;
+                Some(
+                    row[start..]
+                        .split_whitespace()
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            })
+            .expect("a session row");
+        let bar = screen
+            .iter()
+            .position(|row| row.contains(SELECTION_BAR) && row.contains("Task number "))
+            .expect("selection bar");
+        (top, bar)
+    }
+
+    #[test]
+    fn moving_up_inside_a_scrolled_list_moves_the_bar_and_not_the_view() {
+        let (width, height) = (100, 24);
+        let mut app = test_app();
+        app.agents = numbered_sessions(10);
+
+        // Move down until the view has to scroll to follow the selection.
+        let (first_top, _) = top_task_and_bar(&rendered_screen(&mut app, width, height));
+        let mut screen;
+        loop {
+            app.selected += 1;
+            screen = rendered_screen(&mut app, width, height);
+            if top_task_and_bar(&screen).0 != first_top {
+                break;
+            }
+            assert!(app.selected < 9, "the view never scrolled");
+        }
+        let (top, bar) = top_task_and_bar(&screen);
+        assert!(app.agent_list_offset > 0);
+
+        // One up and the same session is still on top; the bar moved instead.
+        app.selected -= 1;
+        let screen = rendered_screen(&mut app, width, height);
+        assert_eq!(top_task_and_bar(&screen), (top.clone(), bar - AGENT_ROWS));
+
+        // The view only follows once the selection passes its top edge.
+        let top_index: usize = top["Task number ".len()..].parse().expect("index");
+        while app.selected > top_index {
+            app.selected -= 1;
+            let screen = rendered_screen(&mut app, width, height);
+            assert_eq!(top_task_and_bar(&screen).0, top);
+        }
+        app.selected -= 1;
+        let screen = rendered_screen(&mut app, width, height);
+        let (new_top, _) = top_task_and_bar(&screen);
+        assert_eq!(new_top, format!("Task number {}", app.selected));
+    }
+
+    #[test]
+    fn a_shrinking_list_or_growing_box_pulls_the_view_back_over_blank_rows() {
+        let mut app = test_app();
+        app.agents = numbered_sessions(10);
+        app.selected = 9;
+        rendered_screen(&mut app, 100, 24);
+        let scrolled = app.agent_list_offset;
+        assert!(scrolled > 0);
+
+        // A taller box has room for more of the sessions above the view.
+        rendered_screen(&mut app, 100, 40);
+        assert!(app.agent_list_offset < scrolled);
+        let screen = rendered_screen(&mut app, 100, 40);
+        assert!(screen.iter().any(|row| row.contains("Task number 9")));
+
+        // Sessions closing below the view leave nothing to scroll past.
+        app.agents.truncate(2);
+        app.selected = 1;
+        let screen = rendered_screen(&mut app, 100, 24);
+        assert_eq!(app.agent_list_offset, 0);
+        assert!(screen.iter().any(|row| row.contains(" corgi ")));
+        assert_eq!(top_task_and_bar(&screen).0, "Task number 0");
+
+        // A shorter box still shows the selection, whatever the saved offset.
+        app.agents = numbered_sessions(10);
+        app.selected = 0;
+        app.agent_list_offset = usize::MAX;
+        let screen = rendered_screen(&mut app, 100, 16);
+        let (top, _) = top_task_and_bar(&screen);
+        assert_eq!(top, "Task number 0");
+    }
+
+    #[test]
+    fn collapsing_an_expanded_session_keeps_the_list_where_it_was() {
+        let mut app = test_app();
+        app.agents = numbered_sessions(10);
+        app.selected = 7;
+        let before = rendered_screen(&mut app, 100, 24);
+        let offset = app.agent_list_offset;
+
+        app.expanded = true;
+        rendered_screen(&mut app, 100, 24);
+        assert_eq!(app.agent_list_offset, offset);
+
+        app.expanded = false;
+        assert_eq!(rendered_screen(&mut app, 100, 24), before);
     }
 
     #[test]

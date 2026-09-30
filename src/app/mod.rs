@@ -148,6 +148,10 @@ pub(crate) struct App {
     /// Rows the expanded transcript last drew in, so a page key moves by a
     /// screenful of the size the reader is actually looking at.
     pub(crate) transcript_page: u16,
+    /// The first item the collapsed agent list was last drawn from, so the
+    /// view stays put while the selection moves inside it and scrolls only
+    /// when the selection passes one of its edges. The renderer clamps it.
+    pub(crate) agent_list_offset: usize,
     /// When each kind of refresh last started; `None` makes it due now.
     last_refresh: Option<Instant>,
     last_usage_refresh: Option<Instant>,
@@ -224,6 +228,7 @@ impl App {
             transcript: Default::default(),
             transcript_scroll: 0,
             transcript_page: 1,
+            agent_list_offset: 0,
             last_refresh: None,
             last_usage_refresh: None,
             last_codex_task_refresh: None,
