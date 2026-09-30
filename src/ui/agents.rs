@@ -9,7 +9,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
-    app::App,
+    app::{App, is_card, project_runs},
     model::{Activity, ActivityKind, AgentState, DashboardAgent},
     textfield::wrap_rows,
     time::unix_now,
@@ -46,20 +46,43 @@ const TRANSCRIPT_ENTRY_ROWS: usize = 2;
 // the same turn is indented by so a wrapped turn reads as one block.
 const TRANSCRIPT_INDENT: usize = 2;
 const TRANSCRIPT_CONTINUATION: &str = "  ";
-// Rows an agent takes in the list: its identity, its message, its tool, and
-// the blank line that ends it.
-const AGENT_ROWS: usize = 4;
 // Fewer rows than this and the expanded session is not worth reading, so the
 // sessions above it give up their place instead of squeezing it.
 const MIN_TRANSCRIPT_ROWS: usize = 6;
+// A card stands one column in from either side of the Agents box, so its
+// border reads apart from the box's, and its own border takes one more on
+// either side: its rows are those of a box this much narrower.
+const CARD_INSET: u16 = 4;
+const CARD_MARGIN: &str = " ";
+// Rows a Steward's message and its tool each wrap to in its card.
+const CARD_ACTIVITY_ROWS: usize = 2;
+// The keys that expand and collapse a card, where the card shows them.
+const EXPAND_HINT: &str = "→ expand";
+const COLLAPSE_HINT: &str = "← collapse";
+// The states a card sums its workers up by, the most urgent first.
+const SUMMARY_STATES: [AgentState; 5] = [
+    AgentState::Blocked,
+    AgentState::Working,
+    AgentState::Done,
+    AgentState::Idle,
+    AgentState::Unknown,
+];
+const SUMMARY_SEPARATOR: &str = "   ";
+const BLOCKED_SEPARATOR: &str = " — ";
+// What a blocked worker waits on when its screen shows no question.
+const WAITING_FOR_INPUT: &str = "waiting for your input";
 
 /// The agent list, and the one session in it that is expanded.
 ///
-/// Expanding changes nothing above the selected session: its project heading
-/// and every session before it keep their place, and its own identity line
-/// stays where it was. Only its message row grows, down to the bottom of the
-/// box, into that session's latest turns. The sessions below it have nowhere
-/// left to sit, so they are the ones that give way.
+/// A project led by its Steward is one card: the Steward's rows, then a sum
+/// of its workers, or, once `→` expanded it, every worker's own rows. Other
+/// projects and the scratch sessions are a heading over their rows.
+///
+/// Expanding a session changes nothing above it: its project heading or card
+/// top and every session before it keep their place, and its own identity
+/// line stays where it was. Only its message row grows, down to the bottom of
+/// the box, into that session's latest turns. The sessions below it have
+/// nowhere left to sit, so they are the ones that give way.
 pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     if app.agents.is_empty() {
         frame.render_widget(
@@ -73,72 +96,155 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     }
 
     let mut selected_item = 0;
-    // Rows everything before the expanded session's identity line takes, so
-    // what is left of the box is what its message row can grow into.
-    let mut rows_above = 0;
-    let mut previous_project: Option<&str> = None;
     let mut items: Vec<ListItem<'_>> = Vec::with_capacity(app.agents.len() * 2);
-    let mut expanded = None;
+    let mut zoom: Option<Zoom<'_>> = None;
     let now = unix_now();
-    for (agent_index, agent) in app.agents.iter().enumerate() {
-        if previous_project != Some(agent.project_group.as_str()) {
-            items.push(project_heading(&agent.project_group, area.width));
-            rows_above += 1;
-            previous_project = Some(&agent.project_group);
-        }
-        if agent_index == app.selected {
-            selected_item = items.len();
-            if app.expanded {
-                expanded = Some(agent);
-                break;
+    let card = Rim::card(area.width);
+    let card_width = card.content_area(area.width);
+    'runs: for run in project_runs(&app.agents) {
+        let agents = &app.agents[run.clone()];
+        if is_card(&app.agents, &run) {
+            let open = app.card_expanded(&run);
+            let (steward, workers) = (&agents[0], &agents[1..]);
+            // A worker folded into a collapsed card is selected as the card.
+            let selected = run.contains(&app.selected) && (!open || app.selected == run.start);
+            if selected {
+                selected_item = items.len();
+                if app.expanded {
+                    zoom = Some(Zoom {
+                        agent: steward,
+                        rim: card,
+                        lead: vec![card_top(&steward.project_group, area.width)],
+                    });
+                    break;
+                }
             }
-        }
-        items.push(agent_item(
-            agent,
-            agent_index == app.selected,
-            area.width,
-            now,
-        ));
-        rows_above += AGENT_ROWS;
-        let is_last_in_project = app
-            .agents
-            .get(agent_index + 1)
-            .is_none_or(|next| next.project_group != agent.project_group);
-        if is_last_in_project {
-            // Every agent row already includes one blank line. Add exactly one
-            // more at a project boundary so the next heading is distinct.
-            items.push(project_gap());
-            rows_above += 1;
+            // The gap after a card closes its last item, so a scrolled list
+            // never starts on a blank line above a card.
+            if !open {
+                let mut lines = collapsed_card(steward, workers, selected, area.width, now);
+                lines.push(Line::raw(""));
+                items.push(ListItem::new(lines));
+            } else {
+                let mut lines = vec![card_top(&steward.project_group, area.width)];
+                lines.extend(
+                    steward_lines(steward, selected, card_width, now)
+                        .into_iter()
+                        .map(|line| card.frame(line)),
+                );
+                if workers.is_empty() {
+                    lines.push(card_bottom(area.width, Some(COLLAPSE_HINT)));
+                    lines.push(Line::raw(""));
+                } else {
+                    lines.push(card.frame(Line::from(gutter(false))));
+                }
+                items.push(ListItem::new(lines));
+                for (offset, worker) in workers.iter().enumerate() {
+                    let selected = run.start + 1 + offset == app.selected;
+                    if selected {
+                        selected_item = items.len();
+                        if app.expanded {
+                            zoom = Some(Zoom {
+                                agent: worker,
+                                rim: card,
+                                lead: Vec::new(),
+                            });
+                            break 'runs;
+                        }
+                    }
+                    let mut lines: Vec<Line<'_>> = agent_lines(worker, selected, card_width, now)
+                        .into_iter()
+                        .map(|line| card.frame(line))
+                        .collect();
+                    if offset + 1 == workers.len() {
+                        lines.push(card_bottom(area.width, Some(COLLAPSE_HINT)));
+                        lines.push(Line::raw(""));
+                    }
+                    items.push(ListItem::new(lines));
+                }
+            }
+        } else {
+            for (offset, agent) in agents.iter().enumerate() {
+                // The heading leads the item of the project's first session,
+                // so no scroll ever shows that session with its heading cut
+                // off above it.
+                let heading: Vec<Line<'_>> = (offset == 0)
+                    .then(|| project_heading(&agent.project_group, area.width))
+                    .into_iter()
+                    .collect();
+                let selected = run.start + offset == app.selected;
+                if selected {
+                    selected_item = items.len();
+                    if app.expanded {
+                        zoom = Some(Zoom {
+                            agent,
+                            rim: Rim::Open,
+                            lead: heading,
+                        });
+                        break 'runs;
+                    }
+                }
+                let mut lines = heading;
+                lines.extend(agent_lines(agent, selected, area.width, now));
+                // Every agent row already ends in a blank line. Add exactly
+                // one more at a project boundary so the next heading is
+                // distinct; like a card's, it closes the last item.
+                if offset + 1 == agents.len() {
+                    lines.push(Line::raw(""));
+                }
+                items.push(ListItem::new(lines));
+            }
         }
     }
 
     let mut page = 0;
     let mut scroll = 0;
-    if let Some(agent) = expanded {
+    let zoomed = zoom.is_some();
+    if let Some(Zoom { agent, rim, lead }) = zoom {
         let inner_height = usize::from(area.height.saturating_sub(2));
+        // Rows everything before the expanded session's identity line takes,
+        // so what is left of the box is what its message row can grow into.
+        let mut rows_above = lead.len() + items.iter().map(ListItem::height).sum::<usize>();
+        // A session in a card closes the card under its turns.
+        let closing = usize::from(rim.is_card());
         // A session pushed far down the list would have nothing left to grow
         // into. Let the sessions above it scroll off rather than open into a
         // two-row sliver, which is what the collapsed row already showed.
-        while inner_height.saturating_sub(rows_above + 1) < MIN_TRANSCRIPT_ROWS && !items.is_empty()
+        while inner_height.saturating_sub(rows_above + 1 + closing) < MIN_TRANSCRIPT_ROWS
+            && !items.is_empty()
         {
             rows_above -= items.remove(0).height();
             selected_item -= 1;
         }
-        let budget = inner_height.saturating_sub(rows_above + 1).max(1);
-        let mut lines = Vec::with_capacity(budget + 1);
-        lines.push(agent_status_line(agent, true, area.width, now));
+        let budget = inner_height.saturating_sub(rows_above + 1 + closing).max(1);
+        let content_area = rim.content_area(area.width);
+        let mut lines = lead;
+        lines.push(rim.frame(agent_status_line(agent, true, content_area, now)));
         if app.transcript.is_empty() {
-            lines.extend(unread_transcript_rows(agent));
+            lines.extend(
+                unread_transcript_rows(agent)
+                    .into_iter()
+                    .map(|line| rim.frame(line)),
+            );
         } else {
             // Only the rows up to the bottom of the scrolled view are built;
             // a scroll past the end is clamped against however many there
             // turn out to be.
             let wanted = usize::from(app.transcript_scroll) + budget;
             let turns =
-                transcript_lines(&app.transcript, transcript_text_width(area.width), wanted);
+                transcript_lines(&app.transcript, transcript_text_width(content_area), wanted);
             page = budget;
             scroll = usize::from(app.transcript_scroll).min(turns.len().saturating_sub(budget));
-            lines.extend(turns.into_iter().skip(scroll).take(budget));
+            lines.extend(
+                turns
+                    .into_iter()
+                    .skip(scroll)
+                    .take(budget)
+                    .map(|line| rim.frame(line)),
+            );
+        }
+        if rim.is_card() {
+            lines.push(card_bottom(area.width, None));
         }
         items.push(ListItem::new(lines));
     }
@@ -147,7 +253,7 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     // is drawn from the top. The collapsed list starts where it was last
     // drawn from, and the list only scrolls it when the selection passes an
     // edge of the view.
-    let offset = if expanded.is_some() {
+    let offset = if zoomed {
         0
     } else {
         app.agent_list_offset.min(max_offset(
@@ -162,15 +268,291 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         .with_offset(offset)
         .with_selected(Some(selected_item));
     frame.render_stateful_widget(list, area, &mut state);
-    if expanded.is_none() {
+    if !zoomed {
         app.agent_list_offset = state.offset();
     }
 
     // The list has been handed over, so the viewport it was drawn in can go
     // back to the app for the next page key.
-    if expanded.is_some() {
+    if zoomed {
         app.transcript_page = u16::try_from(page).unwrap_or(u16::MAX).max(1);
         app.transcript_scroll = u16::try_from(scroll).unwrap_or(u16::MAX);
+    }
+}
+
+/// The session expanded with `space`: the agent, where its rows are drawn,
+/// and the lines of its item above its identity line, such as the top of the
+/// card it leads.
+struct Zoom<'a> {
+    agent: &'a DashboardAgent,
+    rim: Rim,
+    lead: Vec<Line<'static>>,
+}
+
+/// Where a row is drawn: straight in the Agents box, or inside a card, whose
+/// border it then carries on either side.
+#[derive(Debug, Clone, Copy)]
+enum Rim {
+    Open,
+    /// Inside a card `inner` columns wide between its borders.
+    Card {
+        inner: usize,
+    },
+}
+
+impl Rim {
+    fn card(area_width: u16) -> Self {
+        Self::Card {
+            inner: card_inner_width(area_width),
+        }
+    }
+
+    fn is_card(self) -> bool {
+        matches!(self, Self::Card { .. })
+    }
+
+    /// The width of the box a row inside this rim is laid out for. A card
+    /// takes `CARD_INSET` columns of the Agents box, so its rows are those of
+    /// a box that much narrower, and keep the same margin to its border.
+    fn content_area(self, area_width: u16) -> u16 {
+        match self {
+            Self::Open => area_width,
+            Self::Card { .. } => area_width.saturating_sub(CARD_INSET),
+        }
+    }
+
+    /// `line` inside this rim: as it is, or between the card's borders,
+    /// clipped and padded to the card's width.
+    fn frame(self, line: Line<'_>) -> Line<'_> {
+        let Self::Card { inner } = self else {
+            return line;
+        };
+        let mut spans = vec![
+            Span::raw(CARD_MARGIN),
+            Span::styled("│", Style::default().fg(MUTED)),
+        ];
+        spans.extend(fitted_spans(line, inner));
+        spans.push(Span::styled("│", Style::default().fg(MUTED)));
+        Line::from(spans)
+    }
+}
+
+/// Columns between a card's borders in an Agents box `area_width` wide.
+fn card_inner_width(area_width: u16) -> usize {
+    usize::from(area_width.saturating_sub(CARD_INSET + 2))
+}
+
+/// The spans of `line` clipped to `width` columns and padded to exactly that
+/// width, so a border drawn after them lines up on every row.
+fn fitted_spans(line: Line<'_>, width: usize) -> Vec<Span<'_>> {
+    let mut left = width;
+    let mut spans = Vec::with_capacity(line.spans.len() + 1);
+    for span in line.spans {
+        if left == 0 {
+            break;
+        }
+        let span_width = span.width();
+        if span_width <= left {
+            left -= span_width;
+            spans.push(span);
+            continue;
+        }
+        let kept = super::leading_columns(&span.content, left).to_string();
+        left -= kept.width();
+        spans.push(Span::styled(kept, span.style));
+        break;
+    }
+    if left > 0 {
+        spans.push(Span::raw(" ".repeat(left)));
+    }
+    spans
+}
+
+/// The top of a card: its corner, the project's name as its title, and the
+/// rule on to the other corner.
+fn card_top(project: &str, area_width: u16) -> Line<'static> {
+    let inner = card_inner_width(area_width);
+    let title = clip(&format!(" {project} "), inner);
+    let rule = inner.saturating_sub(title.width());
+    Line::from(vec![
+        Span::raw(CARD_MARGIN),
+        Span::styled("╭", Style::default().fg(MUTED)),
+        Span::styled(title, bold(SUCCESS)),
+        Span::styled(format!("{}╮", "─".repeat(rule)), Style::default().fg(MUTED)),
+    ])
+}
+
+/// The rule between a card's Steward and the sum of its workers, joined to
+/// the card's sides.
+fn card_divider(area_width: u16) -> Line<'static> {
+    let inner = card_inner_width(area_width);
+    Line::from(vec![
+        Span::raw(CARD_MARGIN),
+        Span::styled(
+            format!("├{}┤", "─".repeat(inner)),
+            Style::default().fg(MUTED),
+        ),
+    ])
+}
+
+/// The bottom of a card, with `hint` set into its rule near the right corner.
+fn card_bottom(area_width: u16, hint: Option<&'static str>) -> Line<'static> {
+    let inner = card_inner_width(area_width);
+    let mut spans = vec![
+        Span::raw(CARD_MARGIN),
+        Span::styled("╰", Style::default().fg(MUTED)),
+    ];
+    let hint = hint
+        .map(|hint| format!(" {hint} "))
+        .filter(|hint| hint.width() + 2 <= inner);
+    match hint {
+        Some(hint) => {
+            let left = inner - hint.width() - 1;
+            spans.push(Span::styled("─".repeat(left), Style::default().fg(MUTED)));
+            spans.push(Span::styled(hint, bold(MUTED)));
+            spans.push(Span::styled("─╯", Style::default().fg(MUTED)));
+        }
+        None => spans.push(Span::styled(
+            format!("{}╯", "─".repeat(inner)),
+            Style::default().fg(MUTED),
+        )),
+    }
+    Line::from(spans)
+}
+
+/// A collapsed card, which is one item of the list: the Steward's rows, a
+/// divider, and the sum of its workers with each blocked one named.
+fn collapsed_card(
+    steward: &DashboardAgent,
+    workers: &[DashboardAgent],
+    selected: bool,
+    area_width: u16,
+    now: u64,
+) -> Vec<Line<'static>> {
+    let rim = Rim::card(area_width);
+    let content_area = rim.content_area(area_width);
+    let mut lines = vec![card_top(&steward.project_group, area_width)];
+    lines.extend(
+        steward_lines(steward, selected, content_area, now)
+            .into_iter()
+            .map(|line| rim.frame(line)),
+    );
+    lines.push(card_divider(area_width));
+    // The same column to spare at the right as every other row.
+    let width = card_inner_width(area_width).saturating_sub(1);
+    lines.extend(
+        worker_summary(workers, width)
+            .into_iter()
+            .map(|line| rim.frame(line)),
+    );
+    lines.push(card_bottom(area_width, None));
+    lines
+}
+
+/// A Steward's rows in its card: its identity row, then its message and its
+/// tool, each wrapped to at most two rows.
+fn steward_lines(
+    steward: &DashboardAgent,
+    selected: bool,
+    area_width: u16,
+    now: u64,
+) -> Vec<Line<'static>> {
+    let text_width = transcript_text_width(area_width);
+    let mut lines = vec![agent_status_line(steward, selected, area_width, now)];
+    for activity in [&steward.message, &steward.tool] {
+        lines.extend(entry_lines(
+            activity,
+            text_width,
+            Some(CARD_ACTIVITY_ROWS),
+            selected,
+        ));
+    }
+    lines
+}
+
+/// The foot of a collapsed card, `width` columns wide: how many workers the
+/// project has and in which states, the key that expands it at the right,
+/// and a line naming each blocked worker and what it waits on.
+fn worker_summary(workers: &[DashboardAgent], width: usize) -> Vec<Line<'static>> {
+    let mut left = vec![Span::raw(BLANK_GUTTER)];
+    match workers.len() {
+        0 => left.push(Span::styled("no workers", Style::default().fg(MUTED))),
+        1 => left.push(Span::styled("1 worker", bold(TEXT))),
+        count => left.push(Span::styled(format!("{count} workers"), bold(TEXT))),
+    }
+    for state in SUMMARY_STATES {
+        let count = workers
+            .iter()
+            .filter(|worker| worker.info.state == state)
+            .count();
+        if count == 0 {
+            continue;
+        }
+        left.push(Span::raw(SUMMARY_SEPARATOR));
+        left.push(Span::styled(state_mark(state), bold(state_color(state))));
+        left.push(Span::styled(
+            format!(" {count} {}", state_word(state)),
+            Style::default().fg(TEXT),
+        ));
+    }
+    let used: usize = left.iter().map(Span::width).sum();
+    let hint = format!("{EXPAND_HINT} ");
+    if used + SUMMARY_SEPARATOR.width() + hint.width() <= width {
+        left.push(Span::raw(" ".repeat(width - used - hint.width())));
+        left.push(Span::styled(hint, bold(MUTED)));
+    }
+
+    let mut lines = vec![Line::from(left)];
+    for worker in workers
+        .iter()
+        .filter(|worker| worker.info.state == AgentState::Blocked)
+    {
+        let label = format!("{} blocked: ", state_mark(AgentState::Blocked));
+        let waits_on = match worker.message.kind {
+            ActivityKind::Question => worker.message.text.as_str(),
+            _ => WAITING_FOR_INPUT,
+        };
+        let room = width.saturating_sub(GUTTER_WIDTH + label.width());
+        let task = clip(&worker.task, room);
+        let room = room.saturating_sub(task.width() + BLOCKED_SEPARATOR.width());
+        let mut spans = vec![
+            Span::raw(BLANK_GUTTER),
+            Span::styled(label, bold(WARNING)),
+            Span::styled(task, bold(TEXT)),
+        ];
+        if room > 0 {
+            spans.push(Span::styled(
+                BLOCKED_SEPARATOR,
+                Style::default().fg(WARNING),
+            ));
+            spans.push(Span::styled(
+                clip(waits_on, room),
+                Style::default().fg(WARNING),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
+/// The mark in front of a state's count in a card's sum, in its color.
+fn state_mark(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Blocked => "▲",
+        AgentState::Working => "●",
+        AgentState::Done => "✓",
+        AgentState::Idle => "○",
+        AgentState::Unknown => "?",
+    }
+}
+
+fn state_word(state: AgentState) -> &'static str {
+    match state {
+        AgentState::Blocked => "blocked",
+        AgentState::Working => "working",
+        AgentState::Done => "done",
+        AgentState::Idle => "idle",
+        AgentState::Unknown => "unknown",
     }
 }
 
@@ -234,7 +616,7 @@ fn transcript_lines(entries: &[Activity], text_width: usize, wanted: usize) -> V
         } else {
             Some(TRANSCRIPT_ENTRY_ROWS)
         };
-        lines.extend(entry_lines(entry, text_width, cap));
+        lines.extend(entry_lines(entry, text_width, cap, true));
         if index == 0 {
             lines.push(Line::from(gutter(true)));
         }
@@ -244,7 +626,12 @@ fn transcript_lines(entries: &[Activity], text_width: usize, wanted: usize) -> V
 
 /// The rows one turn draws: its marker on the first row, its text wrapped and
 /// indented under it, and an ellipsis on the last row when `max_rows` cut it.
-fn entry_lines(entry: &Activity, text_width: usize, max_rows: Option<usize>) -> Vec<Line<'static>> {
+fn entry_lines(
+    entry: &Activity,
+    text_width: usize,
+    max_rows: Option<usize>,
+    selected: bool,
+) -> Vec<Line<'static>> {
     let mut rows: Vec<String> = Vec::new();
     for paragraph in entry.text.split('\n') {
         let mut wrapped: Vec<String> = wrap_rows(paragraph, text_width)
@@ -281,7 +668,7 @@ fn entry_lines(entry: &Activity, text_width: usize, max_rows: Option<usize>) -> 
                 Span::raw(TRANSCRIPT_CONTINUATION)
             };
             Line::from(vec![
-                gutter(true),
+                gutter(selected),
                 prefix,
                 Span::styled(text, Style::default().fg(color)),
             ])
@@ -289,7 +676,7 @@ fn entry_lines(entry: &Activity, text_width: usize, max_rows: Option<usize>) -> 
         .collect()
 }
 
-fn project_heading(project: &str, area_width: u16) -> ListItem<'static> {
+fn project_heading(project: &str, area_width: u16) -> Line<'static> {
     // The block consumes one column on either side. Start the label above the
     // agent-state word, then extend the trailing rule to the far edge.
     let label = format!(" {project} ");
@@ -298,27 +685,23 @@ fn project_heading(project: &str, area_width: u16) -> ListItem<'static> {
         .saturating_sub(1)
         .min(inner_width.saturating_sub(label.width()));
     let right_rule_width = inner_width.saturating_sub(left_rule_width + label.width());
-    ListItem::new(Line::from(vec![
+    Line::from(vec![
         Span::styled("─".repeat(left_rule_width), Style::default().fg(MUTED)),
         Span::styled(label, bold(SUCCESS)),
         Span::styled("─".repeat(right_rule_width), Style::default().fg(MUTED)),
-    ]))
-}
-
-fn project_gap() -> ListItem<'static> {
-    ListItem::new(Line::raw(""))
+    ])
 }
 
 /// One agent: its identity line, the newest thing said in the session, the
 /// tool call it is running or last ran, and a blank line before the next. The
 /// blank line carries no selection bar, so the cursor ends with the text.
-fn agent_item(agent: &DashboardAgent, selected: bool, area_width: u16, now: u64) -> ListItem<'_> {
-    ListItem::new(vec![
+fn agent_lines(agent: &DashboardAgent, selected: bool, area_width: u16, now: u64) -> Vec<Line<'_>> {
+    vec![
         agent_status_line(agent, selected, area_width, now),
         activity_line(&agent.message, selected),
         activity_line(&agent.tool, selected),
         Line::from(gutter(false)),
-    ])
+    ]
 }
 
 /// A message or tool row: a marker saying who or what it is, then the text.
@@ -446,6 +829,7 @@ fn activity_color(kind: ActivityKind) -> Color {
 mod tests {
     use super::*;
     use crate::{
+        model::AgentInfo,
         test_support::{buffer_rows, line_text, lines_text, test_app, test_terminal},
         ui::{
             draw,
@@ -453,13 +837,22 @@ mod tests {
         },
     };
 
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     /// The bar a selected row's gutter starts with.
     const SELECTION_BAR: &str = "██";
+    /// Rows an agent takes in the list: its identity, its message, its tool,
+    /// and the blank line that ends it.
+    const AGENT_ROWS: usize = 4;
 
     /// A row with nothing on it but the box edge and the selection gutter.
     fn is_blank_row(row: &str) -> bool {
         row.trim_matches(|character| matches!(character, '│' | '█' | ' '))
             .is_empty()
+    }
+
+    fn press_key(app: &mut App, code: KeyCode) {
+        app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
     }
 
     fn rendered_screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
@@ -548,7 +941,7 @@ mod tests {
             text: "Done.\n\n- Added the retry\n- Added the test".into(),
         };
 
-        let rows = lines_text(&entry_lines(&entry, 40, None));
+        let rows = lines_text(&entry_lines(&entry, 40, None, true));
 
         assert_eq!(rows[0], "██  › Done.");
         assert!(is_blank_row(&rows[1]));
@@ -769,6 +1162,354 @@ mod tests {
 
         app.expanded = false;
         assert_eq!(rendered_screen(&mut app, 100, 24), before);
+    }
+
+    fn member(group: &str, task: &str, state: AgentState, steward: bool) -> DashboardAgent {
+        DashboardAgent {
+            info: AgentInfo {
+                state,
+                ..AgentInfo::default()
+            },
+            project_group: group.into(),
+            task: task.into(),
+            steward,
+            ..DashboardAgent::default()
+        }
+    }
+
+    /// A Steward project whose Steward talks at length, with a blocked, a
+    /// working and a finished worker; a project without a Steward; and a
+    /// scratch session.
+    fn carded_herd() -> Vec<DashboardAgent> {
+        let mut steward = member("webshop", "Steward", AgentState::Idle, true);
+        steward.message = Activity {
+            kind: ActivityKind::Message,
+            text: "word ".repeat(60),
+        };
+        steward.tool = Activity {
+            kind: ActivityKind::Command,
+            text: "git log --oneline main..HEAD".into(),
+        };
+        let mut blocked = member("webshop", "Retry card payments", AgentState::Blocked, false);
+        blocked.message = Activity {
+            kind: ActivityKind::Question,
+            text: "Allow Bash: npm test?".into(),
+        };
+        vec![
+            steward,
+            blocked,
+            member("webshop", "Cart badge count", AgentState::Working, false),
+            member("webshop", "Paginate orders", AgentState::Done, false),
+            member("notes", "Export as Markdown", AgentState::Idle, false),
+            DashboardAgent {
+                scratch: true,
+                ..member("Scratch", "Look something up", AgentState::Idle, false)
+            },
+        ]
+    }
+
+    fn row_with<'a>(screen: &'a [String], needle: &str) -> &'a str {
+        screen
+            .iter()
+            .find(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle:?} in {screen:#?}"))
+    }
+
+    #[test]
+    fn a_steward_project_opens_as_a_collapsed_card_of_its_steward_and_its_workers_sum() {
+        let mut app = test_app();
+        app.agents = carded_herd();
+        let screen = rendered_screen(&mut app, 100, 40);
+
+        // The card's title is the project, inside the Agents box.
+        let top = screen
+            .iter()
+            .position(|row| row.starts_with("│ ╭ webshop ─"))
+            .expect("card top");
+        assert!(screen[top].ends_with("╮ │"), "{}", screen[top]);
+        // The Steward's identity row, then its message wrapped to two rows
+        // and cut, then its tool.
+        assert!(screen[top + 1].contains("IDLE  · Steward"), "{screen:#?}");
+        assert!(screen[top + 1].contains(SELECTION_BAR));
+        assert!(screen[top + 2].contains("› word word"));
+        assert!(screen[top + 3].trim_end_matches([' ', '│']).ends_with('…'));
+        assert!(screen[top + 4].contains("$ git log --oneline main..HEAD"));
+        // A divider joined to the card's sides, then the sum, in state order,
+        // with the key that expands it at the right.
+        assert!(screen[top + 5].starts_with("│ ├─") && screen[top + 5].contains("┤"));
+        let sum = &screen[top + 6];
+        assert!(
+            sum.contains("3 workers   ▲ 1 blocked   ● 1 working   ✓ 1 done"),
+            "{sum}"
+        );
+        assert!(!sum.contains("idle"), "{sum}");
+        assert!(
+            sum.trim_end_matches([' ', '│']).ends_with(EXPAND_HINT),
+            "{sum}"
+        );
+        // The blocked worker is named, with what it waits on.
+        assert!(
+            screen[top + 7].contains("▲ blocked: Retry card payments — Allow Bash: npm test?"),
+            "{}",
+            screen[top + 7]
+        );
+        assert!(screen[top + 8].starts_with("│ ╰─"));
+        // The other workers have no rows of their own.
+        assert!(!screen.iter().any(|row| row.contains("Cart badge count")));
+        assert!(!screen.iter().any(|row| row.contains("Paginate orders")));
+
+        // A project without a Steward and the scratch sessions are a heading
+        // over their rows, as before.
+        assert!(row_with(&screen, " notes ").starts_with("│────"));
+        assert!(row_with(&screen, "Export as Markdown").contains("IDLE"));
+        assert!(row_with(&screen, " Scratch ").starts_with("│────"));
+        assert!(row_with(&screen, "Look something up").contains("IDLE"));
+        assert_eq!(
+            screen.iter().filter(|row| row.starts_with("│ ╭")).count(),
+            1,
+            "only the one card: {screen:#?}"
+        );
+    }
+
+    #[test]
+    fn a_blocked_worker_without_a_question_on_screen_waits_for_input() {
+        let workers = vec![member("webshop", "Retry", AgentState::Blocked, false)];
+        let lines = lines_text(&worker_summary(&workers, 80));
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("1 worker   ▲ 1 blocked"), "{lines:?}");
+        assert!(lines[1].ends_with("▲ blocked: Retry — waiting for your input"));
+        // A narrow card clips what it waits on before the task.
+        let narrow = lines_text(&worker_summary(&workers, 30));
+        assert!(narrow[1].contains("Retry"), "{narrow:?}");
+        assert!(narrow.iter().all(|row| row.width() <= 30), "{narrow:?}");
+        // Nothing to sum up is said so.
+        assert!(lines_text(&worker_summary(&[], 80))[0].contains("no workers"));
+    }
+
+    #[test]
+    fn an_expanded_card_lists_its_workers_rows_and_drops_the_sum() {
+        let mut app = test_app();
+        app.agents = carded_herd();
+        app.cards.set_expanded("webshop", true);
+        app.selected = 2;
+        let screen = rendered_screen(&mut app, 100, 40);
+
+        let steward = screen
+            .iter()
+            .position(|row| row.contains("IDLE  · Steward"))
+            .expect("steward");
+        // Each worker's three rows, in the list's order, inside the card.
+        // The Steward's message wraps to two rows, then its tool and a gap.
+        let blocked = steward + 5;
+        assert!(screen[blocked].contains("BLOCKED  · Retry card payments"));
+        assert!(screen[blocked + 1].contains("? Allow Bash: npm test?"));
+        let working = blocked + AGENT_ROWS;
+        assert!(screen[working].contains("WORKING  · Cart badge count"));
+        assert!(screen[working].contains(SELECTION_BAR));
+        assert!(screen[working + AGENT_ROWS].contains("DONE  · Paginate orders"));
+        for row in &screen[steward..working + 2 * AGENT_ROWS] {
+            assert!(row.starts_with("│ │") && row.ends_with("│ │"), "{row}");
+        }
+        // No sum and no divider, and the card closes with its collapse key.
+        assert!(!screen.iter().any(|row| row.contains("workers")));
+        assert!(!screen.iter().any(|row| row.contains("├")));
+        assert!(row_with(&screen, COLLAPSE_HINT).starts_with("│ ╰─"));
+    }
+
+    #[test]
+    fn a_session_opened_in_a_card_grows_inside_it() {
+        let mut app = test_app();
+        app.agents = carded_herd();
+        let collapsed = rendered_screen(&mut app, 100, 30);
+        app.expanded = true;
+        app.transcript = vec![
+            Activity {
+                kind: ActivityKind::Message,
+                text: "Both workers are reviewed.".into(),
+            },
+            Activity {
+                kind: ActivityKind::Command,
+                text: "corgi fleet webshop".into(),
+            },
+        ]
+        .into();
+        let expanded = rendered_screen(&mut app, 100, 30);
+
+        // The card's top and the Steward's identity row stay where they were.
+        let identity = expanded
+            .iter()
+            .position(|row| row.contains("Steward"))
+            .expect("identity");
+        assert_eq!(collapsed[..=identity], expanded[..=identity]);
+        // Its turns follow inside the card, and the card closes under them.
+        assert!(expanded[identity + 1].contains("› Both workers are reviewed."));
+        assert!(expanded[identity + 1].starts_with("│ │██"));
+        assert!(expanded[identity + 3].contains("$ corgi fleet webshop"));
+        assert!(expanded[identity + 4].starts_with("│ ╰─"), "{expanded:#?}");
+        assert!(!expanded.iter().any(|row| row.contains("3 workers")));
+    }
+
+    fn numbered_cards(count: usize) -> Vec<DashboardAgent> {
+        (0..count)
+            .flat_map(|index| {
+                let project = format!("project-{index:02}");
+                [
+                    member(&project, "Steward", AgentState::Idle, true),
+                    member(&project, "A worker", AgentState::Working, false),
+                ]
+            })
+            .collect()
+    }
+
+    /// The card drawn highest in the list, whole or cut off at the top, and
+    /// the row the selection bar starts on.
+    fn top_card_and_bar(screen: &[String]) -> (String, usize) {
+        let box_top = screen
+            .iter()
+            .position(|row| row.contains(" Agents "))
+            .expect("Agents box");
+        let top = screen[box_top + 1]
+            .split_whitespace()
+            .find(|word| word.starts_with("project-"))
+            .map(str::to_string)
+            .unwrap_or_default();
+        let bar = screen
+            .iter()
+            .position(|row| row.starts_with("│ │██"))
+            .expect("selection bar");
+        (top, bar)
+    }
+
+    #[test]
+    fn a_list_of_cards_scrolls_only_when_the_selection_passes_an_edge() {
+        let (width, height) = (100, 40);
+        let mut app = test_app();
+        app.agents = numbered_cards(8);
+
+        // Down card by card until the view has to scroll to follow.
+        let (first_top, _) = top_card_and_bar(&rendered_screen(&mut app, width, height));
+        assert_eq!(first_top, "project-00");
+        let mut screen;
+        loop {
+            press_key(&mut app, KeyCode::Char('j'));
+            screen = rendered_screen(&mut app, width, height);
+            if top_card_and_bar(&screen).0 != first_top {
+                break;
+            }
+            assert!(app.selected < 14, "the view never scrolled");
+        }
+        let (top, bar) = top_card_and_bar(&screen);
+        assert!(app.agent_list_offset > 0);
+
+        // One card up and the same card is still on top; the bar moved by a
+        // card and its gap instead.
+        press_key(&mut app, KeyCode::Char('k'));
+        let screen = rendered_screen(&mut app, width, height);
+        let (same_top, higher_bar) = top_card_and_bar(&screen);
+        assert_eq!(same_top, top);
+        assert!(higher_bar < bar, "{higher_bar} {bar} {screen:#?}");
+
+        // Expanding a card in view, and collapsing it again, keeps the view.
+        let offset = app.agent_list_offset;
+        press_key(&mut app, KeyCode::Right);
+        let screen = rendered_screen(&mut app, width, height);
+        assert_eq!(top_card_and_bar(&screen).0, top);
+        press_key(&mut app, KeyCode::Char('j'));
+        press_key(&mut app, KeyCode::Left);
+        let screen = rendered_screen(&mut app, width, height);
+        assert_eq!(top_card_and_bar(&screen), (same_top, higher_bar));
+        assert_eq!(app.agent_list_offset, offset);
+
+        // Back up past the top card, and the view follows.
+        let top_card = app.agents[app.selected].project_group.clone();
+        while app.agents[app.selected].project_group != top {
+            press_key(&mut app, KeyCode::Char('k'));
+            rendered_screen(&mut app, width, height);
+        }
+        assert_ne!(top_card, "");
+        press_key(&mut app, KeyCode::Char('k'));
+        let screen = rendered_screen(&mut app, width, height);
+        assert_eq!(
+            top_card_and_bar(&screen).0,
+            app.agents[app.selected].project_group
+        );
+    }
+
+    #[test]
+    fn a_projects_first_session_never_shows_without_its_heading() {
+        let (width, height) = (100, 30);
+        let mut app = test_app();
+        let mut agents = Vec::new();
+        for project in ["alpha", "bravo", "charlie"] {
+            for index in 0..3 {
+                agents.push(member(
+                    project,
+                    &format!("{project} task {index}"),
+                    AgentState::Idle,
+                    false,
+                ));
+            }
+        }
+        agents.push(member("delta", "Steward", AgentState::Idle, true));
+        agents.push(member("delta", "delta task 1", AgentState::Idle, false));
+        agents.push(member("delta", "delta task 2", AgentState::Idle, false));
+        for index in 0..3 {
+            agents.push(DashboardAgent {
+                scratch: true,
+                ..member(
+                    "Scratch",
+                    &format!("Scratch task {index}"),
+                    AgentState::Idle,
+                    false,
+                )
+            });
+        }
+        app.agents = agents;
+        app.cards.set_expanded("delta", true);
+
+        // Every first session on screen sits right under its heading, or
+        // its card's top, whichever way the list scrolled to it.
+        let check = |screen: &[String]| {
+            for (project, first) in [
+                ("alpha", "alpha task 0"),
+                ("bravo", "bravo task 0"),
+                ("charlie", "charlie task 0"),
+                ("delta", "Steward"),
+                ("Scratch", "Scratch task 0"),
+            ] {
+                if let Some(row) = screen.iter().position(|row| row.contains(first)) {
+                    let heading = &screen[row - 1];
+                    assert!(
+                        heading.contains(&format!(" {project} "))
+                            && (heading.starts_with("│─") || heading.starts_with("│ ╭")),
+                        "{first} without its heading: {screen:#?}"
+                    );
+                }
+            }
+        };
+        let last = app.agents.len() - 1;
+        while app.selected < last {
+            press_key(&mut app, KeyCode::Char('j'));
+            check(&rendered_screen(&mut app, width, height));
+        }
+        assert!(app.agent_list_offset > 0);
+        let mut seen_at_top = Vec::new();
+        while app.selected > 0 {
+            press_key(&mut app, KeyCode::Char('k'));
+            let screen = rendered_screen(&mut app, width, height);
+            check(&screen);
+            seen_at_top.push(screen[usize::from(crate::ui::header::HEADER_HEIGHT) + 1].clone());
+        }
+        // Scrolling up did stop on projects' first sessions, with their
+        // headings as the view's top row.
+        for project in ["alpha", "bravo", "charlie"] {
+            assert!(
+                seen_at_top
+                    .iter()
+                    .any(|row| row.starts_with("│─") && row.contains(&format!(" {project} "))),
+                "{project}: {seen_at_top:#?}"
+            );
+        }
     }
 
     #[test]

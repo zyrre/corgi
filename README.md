@@ -10,7 +10,7 @@
   directly from the same place.
 </p>
 
-![The Corgi dashboard: the header's herd and plan-usage cards over the webshop project, with its Steward and a blocked, a working and a finished agent](docs/images/dashboard.svg)
+![The Corgi dashboard: the header's herd and plan-usage cards over the webshop and weather projects, each a card of its Steward's latest message and command over a count of its workers by state, with webshop's blocked worker named](docs/images/dashboard.svg)
 
 ## Install
 
@@ -30,7 +30,8 @@ description = "Corgi (open or focus)"
 
 ## What you get
 
-- **One row per agent** of any kind Herdr can start, such as Codex and Claude Code, grouped by project.
+- **One card per project with a Steward**: the Steward's latest message and command, and its workers summed up by state, with every blocked worker named. `→` expands a card into each worker's own rows, and Corgi remembers the choice per project.
+- **One row per agent** of any kind Herdr can start, such as Codex and Claude Code, for expanded cards, projects without a Steward, and scratch sessions.
 - **What needs you first**: the Steward, then blocked, working, done and idle; within a state, the agent that arrived there last comes first.
 - **What each agent is doing**: the newest thing said in its session and the command or tool it runs.
 - **What it costs**: its model and effort, how full its context is, how long its prompt cache stays warm, and in the header, each CLI's 5-hour and weekly plan usage.
@@ -41,7 +42,8 @@ description = "Corgi (open or focus)"
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | Select an agent |
+| `j` / `k`, `↑` / `↓` | Select an agent, or a collapsed project card as its Steward |
+| `→` / `←` | Expand the selected project's card into its workers' rows, or collapse it again |
 | `space`, then `u` / `d`, `PgUp` / `PgDn` | Expand the selected session into its transcript and scroll it; `space` collapses it |
 | `p` | Prompt the selected agent |
 | `n` | Start a new agent in its own worktree |
@@ -56,6 +58,8 @@ description = "Corgi (open or focus)"
 For a compact popup instead of a tab, open the `quick` pane: `herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint quick`.
 
 ## Reading a row
+
+In an expanded card, a project without a Steward, and the scratch sessions, each agent has three rows:
 
 ![One agent row, labelled: selection bar, state, task, model, effort, context used, prompt cache left, worktree, the newest thing said, and the command it runs](docs/images/row-anatomy.svg)
 

@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1018" height="298" viewBox="0 0 1018 298">
-<rect x="0.5" y="0.5" width="1017" height="297" rx="10" fill="#1a1b26" stroke="#2a2e42"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="982" height="298" viewBox="0 0 982 298">
+<rect x="0.5" y="0.5" width="981" height="297" rx="10" fill="#1a1b26" stroke="#2a2e42"/>
 <g transform="translate(14 14)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="15">
 <rect x="36" y="0" width="54" height="18" fill="#9ece6a" shape-rendering="crispEdges"/>
 <rect x="0" y="0" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="0" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="45 54 63 72" y="13" fill="#15161e" font-weight="bold">DONE</text>
@@ -42,16 +42,16 @@
 <text x="765 774 783 792 801 810 819 828 837 846 855 864" y="31" fill="#c0caf5">(created_at,</text>
 <text x="882 891 900 909" y="31" fill="#c0caf5">id),</text>
 <text x="927 936" y="31" fill="#c0caf5">so</text>
-<text x="954" y="31" fill="#c0caf5">a</text>
-<rect x="0" y="36" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="36" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54 63 72" y="49" fill="#c0caf5">new</text>
-<text x="90 99 108 117 126" y="49" fill="#c0caf5">order</text>
-<text x="144 153 162 171 180" y="49" fill="#c0caf5">never</text>
-<text x="198 207 216 225 234 243" y="49" fill="#c0caf5">shifts</text>
-<text x="261" y="49" fill="#c0caf5">a</text>
-<text x="279 288 297 306" y="49" fill="#c0caf5">page</text>
-<text x="324 333 342 351 360" y="49" fill="#c0caf5">under</text>
-<text x="378 387 396" y="49" fill="#c0caf5">the</text>
-<text x="414 423 432 441 450 459 468" y="49" fill="#c0caf5">reader.</text>
+<rect x="0" y="36" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="36" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54" y="49" fill="#c0caf5">a</text>
+<text x="72 81 90" y="49" fill="#c0caf5">new</text>
+<text x="108 117 126 135 144" y="49" fill="#c0caf5">order</text>
+<text x="162 171 180 189 198" y="49" fill="#c0caf5">never</text>
+<text x="216 225 234 243 252 261" y="49" fill="#c0caf5">shifts</text>
+<text x="279" y="49" fill="#c0caf5">a</text>
+<text x="297 306 315 324" y="49" fill="#c0caf5">page</text>
+<text x="342 351 360 369 378" y="49" fill="#c0caf5">under</text>
+<text x="396 405 414" y="49" fill="#c0caf5">the</text>
+<text x="432 441 450 459 468 477 486" y="49" fill="#c0caf5">reader.</text>
 <rect x="0" y="54" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="54" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="0" y="72" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="72" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54" y="85" fill="#c0caf5">-</text>
 <text x="72 81 90" y="85" fill="#c0caf5">GET</text>
 <text x="108 117 126 135 144 153 162 171 180 189 198 207 216 225 234 243 252 261 270 279 288 297" y="85" fill="#c0caf5">/orders?after=&lt;cursor&gt;</text>
@@ -118,14 +118,14 @@
 <text x="765 774 783 792 801" y="211" fill="#7aa2f7">pages</text>
 <text x="819 828 837 846 855 864" y="211" fill="#7aa2f7">stable</text>
 <text x="882 891 900 909 918" y="211" fill="#7aa2f7">while</text>
-<text x="936 945 954" y="211" fill="#7aa2f7">new</text>
-<rect x="0" y="216" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="216" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54 63 72 81 90 99" y="229" fill="#7aa2f7">orders</text>
-<text x="117 126 135 144 153 162 171" y="229" fill="#7aa2f7">arrive,</text>
-<text x="189 198 207 216 225" y="229" fill="#7aa2f7">which</text>
-<text x="243 252" y="229" fill="#7aa2f7">an</text>
-<text x="270 279 288 297 306 315" y="229" fill="#7aa2f7">offset</text>
-<text x="333 342 351 360 369" y="229" fill="#7aa2f7">would</text>
-<text x="387 396 405 414" y="229" fill="#7aa2f7">not.</text>
+<rect x="0" y="216" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="216" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54 63 72" y="229" fill="#7aa2f7">new</text>
+<text x="90 99 108 117 126 135" y="229" fill="#7aa2f7">orders</text>
+<text x="153 162 171 180 189 198 207" y="229" fill="#7aa2f7">arrive,</text>
+<text x="225 234 243 252 261" y="229" fill="#7aa2f7">which</text>
+<text x="279 288" y="229" fill="#7aa2f7">an</text>
+<text x="306 315 324 333 342 351" y="229" fill="#7aa2f7">offset</text>
+<text x="369 378 387 396 405" y="229" fill="#7aa2f7">would</text>
+<text x="423 432 441 450" y="229" fill="#7aa2f7">not.</text>
 <rect x="0" y="234" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="234" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="247" fill="#7dcfff" font-weight="bold">$</text>
 <text x="54 63" y="247" fill="#7dcfff">rg</text>
 <text x="81 90" y="247" fill="#7dcfff">-n</text>

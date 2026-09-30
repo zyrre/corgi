@@ -54,11 +54,14 @@ pub(crate) use merge::{MergePhase, MergeWorktreeForm};
 pub(crate) use overlay::Overlay;
 pub(crate) use prompt::PromptForm;
 
-// Row derivation, the command-line tools, and the Omarchy bar endpoints.
+// Row derivation, the project cards, the command-line tools, and the
+// Omarchy bar endpoints.
 mod bar;
+mod cards;
 mod cli;
 mod rows;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_stream, bar_transcript};
+pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub use cli::{
     FLEET_USAGE, REPORT_USAGE, SPAWN_USAGE, STEWARD_USAGE, fleet, report, spawn, steward_command,
 };
@@ -135,6 +138,8 @@ pub(crate) struct App {
     workspaces: Vec<WorkspaceInfo>,
     /// The projects Corgi has written down for the project selector.
     projects: ProjectMemory,
+    /// The projects whose cards are expanded into their workers' rows.
+    pub(crate) cards: CardMemory,
     /// Whether the selected session is expanded over the whole agent list to
     /// show its transcript. This is a zoom of the list rather than a mode of
     /// its own, so prompting, merging, and closing keep working over it.
@@ -188,6 +193,8 @@ pub(crate) struct AppInputs {
     providers: Vec<Provider>,
     /// The projects Corgi has written down.
     projects: ProjectMemory,
+    /// The projects whose cards were left expanded.
+    cards: CardMemory,
 }
 
 impl App {
@@ -196,6 +203,7 @@ impl App {
             dashboard_pane_id: env::var("HERDR_PANE_ID").ok().filter(|id| !id.is_empty()),
             providers: installed_providers(),
             projects: ProjectMemory::load(),
+            cards: CardMemory::load(),
         };
         Self::with_inputs(client, compact, inputs)
     }
@@ -224,6 +232,7 @@ impl App {
                 .collect(),
             workspaces: Vec::new(),
             projects: inputs.projects,
+            cards: inputs.cards,
             expanded: false,
             transcript: Default::default(),
             transcript_scroll: 0,
@@ -253,6 +262,7 @@ impl App {
             dashboard_pane_id: None,
             providers: installed_providers(),
             projects: ProjectMemory::load(),
+            cards: CardMemory::default(),
         };
         let mut app = Self::with_inputs(client, true, inputs);
         app.restore_focus_after_launch = false;
@@ -337,7 +347,11 @@ impl App {
             })
             .collect();
         sort_agents(&mut agents);
+        // The selection stays on its row of the list, which is a whole card
+        // for a collapsed project, rather than on its index into the agents.
+        let row = self.selected_stop();
         self.agents = agents;
+        self.select_stop(row);
         self.forget_gone_sessions();
         self.refresh_codex_task_titles();
         self.note_open_projects(&snapshot.workspaces);
@@ -523,14 +537,6 @@ impl App {
         self.agents.get(self.selected)
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        if self.agents.is_empty() {
-            return;
-        }
-        let len = self.agents.len() as isize;
-        self.select((self.selected as isize + delta).rem_euclid(len) as usize);
-    }
-
     /// Moves the cursor to row `index`.
     fn select(&mut self, index: usize) {
         self.selected = index;
@@ -699,7 +705,7 @@ impl App {
         }
     }
 
-    fn handle_key(&mut self, key: KeyEvent) -> bool {
+    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> bool {
         if key.kind != KeyEventKind::Press {
             return false;
         }
@@ -723,6 +729,8 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => return true,
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
+            KeyCode::Right => self.expand_card(),
+            KeyCode::Left => self.collapse_card(),
             KeyCode::PageUp if self.expanded => self.scroll_transcript(-1),
             KeyCode::PageDown if self.expanded => self.scroll_transcript(1),
             // Page keys need a modifier on a laptop keyboard, so the plain
