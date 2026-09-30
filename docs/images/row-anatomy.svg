@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1018" height="132" viewBox="0 0 1018 132">
-<rect x="0.5" y="0.5" width="1017" height="131" rx="10" fill="#1a1b26" stroke="#2a2e42"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="982" height="132" viewBox="0 0 982 132">
+<rect x="0.5" y="0.5" width="981" height="131" rx="10" fill="#1a1b26" stroke="#2a2e42"/>
 <g transform="translate(14 64)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="15">
 <rect x="36" y="0" width="81" height="18" fill="#e0af68" shape-rendering="crispEdges"/>
 <rect x="0" y="0" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="0" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="45 54 63 72 81 90 99" y="13" fill="#15161e" font-weight="bold">BLOCKED</text>
@@ -7,21 +7,21 @@
 <text x="144 153 162 171 180" y="13" fill="#c0caf5" font-weight="bold">Retry</text>
 <text x="198 207 216 225 234 243" y="13" fill="#c0caf5" font-weight="bold">failed</text>
 <text x="261 270 279 288" y="13" fill="#c0caf5" font-weight="bold">card</text>
-<text x="306 315 324 333 342 351 360 369" y="13" fill="#c0caf5" font-weight="bold">payments</text>
-<text x="387" y="13" fill="#414868">·</text>
-<text x="405 414 423 432 441 450" y="13" fill="#ff8700">Sonnet</text>
-<text x="468" y="13" fill="#ff8700">5</text>
-<text x="486 495 504 513 522 531" y="13" fill="#7dcfff">medium</text>
-<text x="549" y="13" fill="#414868">·</text>
-<text x="567 576 585" y="13" fill="#afd75f">41%</text>
-<text x="603 612 621" y="13" fill="#afd75f">ctx</text>
-<text x="639" y="13" fill="#414868">·</text>
-<text x="657" y="13" fill="#e0af68">⏱</text>
-<text x="675 684" y="13" fill="#e0af68">3m</text>
-<text x="702 711 720 729 738" y="13" fill="#e0af68">cache</text>
-<text x="756" y="13" fill="#414868">·</text>
-<text x="774" y="13" fill="#7dcfff">⑂</text>
-<text x="792 801 810 819 828 837 846 855 864 873 882 891 900 909 918 927 936 945 954" y="13" fill="#414868">checkout-retry-4b1e</text>
+<text x="306 315 324 333 342 351" y="13" fill="#c0caf5" font-weight="bold">payme…</text>
+<text x="369" y="13" fill="#414868">·</text>
+<text x="387 396 405 414 423 432" y="13" fill="#ff8700">Sonnet</text>
+<text x="450" y="13" fill="#ff8700">5</text>
+<text x="468 477 486 495 504 513" y="13" fill="#7dcfff">medium</text>
+<text x="531" y="13" fill="#414868">·</text>
+<text x="549 558 567" y="13" fill="#afd75f">41%</text>
+<text x="585 594 603" y="13" fill="#afd75f">ctx</text>
+<text x="621" y="13" fill="#414868">·</text>
+<text x="639" y="13" fill="#e0af68">⏱</text>
+<text x="657 666" y="13" fill="#e0af68">3m</text>
+<text x="684 693 702 711 720" y="13" fill="#e0af68">cache</text>
+<text x="738" y="13" fill="#414868">·</text>
+<text x="756" y="13" fill="#7dcfff">⑂</text>
+<text x="774 783 792 801 810 819 828 837 846 855 864 873 882 891 900 909 918 927 936" y="13" fill="#414868">checkout-retry-4b1e</text>
 <rect x="0" y="18" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="18" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="31" fill="#e0af68" font-weight="bold">?</text>
 <text x="54 63 72 81 90" y="31" fill="#e0af68">Allow</text>
 <text x="108 117 126 135 144" y="31" fill="#e0af68">Bash:</text>
@@ -49,25 +49,25 @@
 </g>
 <path d="M148 -8V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="148" cy="2" r="2" fill="#ff9e64"/>
 <g transform="translate(0 -30)">
-<text x="405" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">model</text>
+<text x="387" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">model</text>
 </g>
-<path d="M409 -26V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="409" cy="2" r="2" fill="#ff9e64"/>
+<path d="M391 -26V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="391" cy="2" r="2" fill="#ff9e64"/>
 <g transform="translate(0 -12)">
-<text x="486" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">effort</text>
+<text x="468" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">effort</text>
 </g>
-<path d="M490 -8V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="490" cy="2" r="2" fill="#ff9e64"/>
+<path d="M472 -8V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="472" cy="2" r="2" fill="#ff9e64"/>
 <g transform="translate(0 -30)">
-<text x="567" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">context used</text>
+<text x="549" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">context used</text>
 </g>
-<path d="M571 -26V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="571" cy="2" r="2" fill="#ff9e64"/>
+<path d="M553 -26V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="553" cy="2" r="2" fill="#ff9e64"/>
 <g transform="translate(0 -12)">
-<text x="657" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">prompt cache left</text>
+<text x="639" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">prompt cache left</text>
 </g>
-<path d="M661 -8V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="661" cy="2" r="2" fill="#ff9e64"/>
+<path d="M643 -8V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="643" cy="2" r="2" fill="#ff9e64"/>
 <g transform="translate(0 -30)">
-<text x="774" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">worktree</text>
+<text x="756" y="0" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">worktree</text>
 </g>
-<path d="M778 -26V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="778" cy="2" r="2" fill="#ff9e64"/>
+<path d="M760 -26V2" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="760" cy="2" r="2" fill="#ff9e64"/>
 <path d="M453 27L427 27" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="427" cy="27" r="2" fill="#ff9e64"/>
 <text x="459" y="31" fill="#ff9e64" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">newest thing said: your prompt, its reply or thinking, or a question</text>
 <path d="M453 45L310 45" stroke="#ff9e64" stroke-width="1" stroke-dasharray="3 2"/><circle cx="310" cy="45" r="2" fill="#ff9e64"/>

@@ -31,6 +31,8 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ projects ─────────── one absolute path per line, newest first; read at start,
   │                        written when a project is used or seen open
   ├─ created-projects ─── the projects Corgi created, whose folder trust it answers
+  ├─ expanded-projects ── the projects whose dashboard card is expanded, one
+  │                        heading per line; missing or unreadable is all collapsed
   ├─ wake/<socket>.lock ─ held by the one dashboard that wakes Stewards
   ├─ markers/<socket>.json ─ every metadata token Corgi set in that Herdr session,
   │                        by pane and workspace, with the agent or checkout it
@@ -197,6 +199,12 @@ submodules are split by flow, each adding methods to the one `App`.
   Steward, then state, then the most recent `state_change_seq` first. That
   counter is one sequence for the whole Herdr session, not per agent, so it
   compares across panes and the dashboard keeps no ordering state of its own.
+- `cards.rs` is the project cards: which runs of the sorted list are a card
+  (led by a Steward, not scratch), `CardMemory`, the expanded projects saved
+  in `expanded-projects`, and the selection stops, which skip the workers
+  folded into a collapsed card. `→` and `←` expand and collapse the selected
+  card; `←` from a worker row selects its Steward. A refresh keeps the
+  selection on its stop, its row of the list, rather than on an agent index.
 - `rows.rs` derives what a row shows from Herdr's metadata and the session
   facts: the project and its heading (`repo/checkout` for a linked worktree),
   the task summary, and the status-line bridge fallbacks.
@@ -501,8 +509,15 @@ role. So Corgi keeps its own record and puts the tokens back.
 
 ### Drawing and shared pieces
 
-- `src/ui/` renders the Ratatui dashboard. Each agent takes an identity
-  line, a message line, and a tool line. `space` grows the selected agent's
+- `src/ui/` renders the Ratatui dashboard. A project led by its Steward is
+  a card, drawn as list items whose lines carry the card's border: collapsed,
+  one item of the Steward's rows, a divider, and the sum of its workers;
+  expanded, the Steward's item with the card top, then one item per worker,
+  the last closing the card. Other projects' headings lead the item of their
+  first session, and each project's gap closes its last item, so the list,
+  which scrolls by whole items, never shows a first session with its heading
+  or card top cut off, nor starts on a blank line. Each agent row takes an
+  identity line, a message line, and a tool line. `space` grows the selected agent's
   message line, in the place it already occupies, into that session's latest
   turns down to the bottom of the box: every turn held to two rows except the
   newest, which an agent usually ends a task with and which is therefore drawn
@@ -636,10 +651,28 @@ linked worktrees are named `repo/checkout` (`webshop/order-pages-2d5a`);
 other agents in the project's workspace, such as shared-checkout tabs, are
 named after the repository.
 
+### Project cards
+
+A project whose Steward runs is a card with the project as its title. The
+dashboard opens every card collapsed: the Steward's identity row, its message
+and tool rows wrapped to two rows each and then cut with `…`, a divider, and
+a footer such as `3 workers   ▲ 1 blocked   ● 1 working   ✓ 1 done` (only the
+states present, in the list's state order) with `→ expand` at the right.
+Each blocked worker gets a footer line of its own, `▲ blocked: <task> —
+<what it waits on>`: the question on its screen, or `waiting for your
+input`. A collapsed card is one stop for the selection and acts as its
+Steward for every key. `→` expands it: the footer goes, and each worker's
+three rows follow the Steward inside the card, which closes with
+`← collapse`. `←` collapses it again from any of its rows. The choice is
+kept per project heading in `expanded-projects` in the state directory.
+Projects without a Steward and scratch sessions keep plain rows under a
+heading.
+
 ### The expanded session
 
 The newest turn, usually the closing summary, is shown in full and older
-turns two rows each; the heading and the sessions above keep their place.
+turns two rows each; the heading and the sessions above keep their place. A
+session in a card grows inside it, and the card closes under its turns.
 While expanded, `j` / `k` move to the next session and show it from its
 newest turn, and every other key keeps working, so an agent can be prompted,
 merged or closed without collapsing first. A session too far down for its

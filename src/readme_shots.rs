@@ -74,8 +74,13 @@ const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 /// header's whole band of cards, and tall enough for three projects.
 const WIDTH: u16 = 112;
 const HEIGHT: u16 = 44;
-/// The hero's height: the header and one project of four agents.
-const HERO_HEIGHT: u16 = 28;
+/// The hero's height: the header and two collapsed project cards.
+const HERO_HEIGHT: u16 = 31;
+/// The first column and the width of what a row inside a card shows, so a
+/// crop of its rows leaves the Agents box's and the card's borders out: the
+/// box's border, the card's margin and its border on either side.
+const CARD_CONTENT: u16 = 3;
+const CARD_CONTENT_WIDTH: u16 = WIDTH - 2 * CARD_CONTENT;
 
 /// The title of the terminal window a whole screen is shown in.
 const WINDOW_TITLE: &str = "corgi — herdr";
@@ -172,12 +177,16 @@ fn screen(app: &mut App) -> Terminal<TestBackend> {
     terminal
 }
 
-/// The hero: the header over the webshop project, its Steward and a
-/// blocked, a working and a finished worker, in a terminal window just tall
-/// enough for them.
+/// The hero: the header over the webshop and weather projects as the
+/// dashboard opens them, each a collapsed card of its Steward and a sum of
+/// its workers, the blocked one named, in a terminal window just tall enough
+/// for them.
 fn hero() -> String {
     let mut app = dashboard();
-    app.agents.retain(|agent| agent.project == "webshop");
+    app.cards.set_expanded("webshop", false);
+    app.agents
+        .retain(|agent| agent.project == "webshop" || agent.project == "weather");
+    app.selected = 0;
     app.status = format!("{} agents", app.agents.len());
     let mut terminal = test_terminal(WIDTH, HERO_HEIGHT);
     settle(&mut terminal, &mut app);
@@ -224,14 +233,13 @@ fn logo() -> String {
     )
 }
 
-/// The blocked agent's three rows from the hero dashboard, with a label on
-/// every part of them.
+/// The blocked agent's three rows from the expanded webshop card, with a
+/// label on every part of them.
 fn row_anatomy() -> String {
     let mut terminal = screen(&mut dashboard());
     let buffer = terminal.backend().buffer();
-    let task = find(buffer, "Retry failed card payments", buffer.area);
-    // Inside the Agents box, so its borders stay out of the crop.
-    let area = Rect::new(1, task.y, WIDTH - 2, 3);
+    let task = find(buffer, "Retry failed card", buffer.area);
+    let area = Rect::new(CARD_CONTENT, task.y, CARD_CONTENT_WIDTH, 3);
     let identity = Rect::new(area.x, task.y, area.width, 1);
     let above = |needle: &str, label: &'static str, tier: u32| {
         let at = find(buffer, needle, identity);
@@ -415,9 +423,15 @@ fn herd() -> Vec<Agent> {
             worktree: None,
             message: (
                 Message,
-                "Two workers are on it: checkout-retry and cart-badge. I'll review each as it reports.",
+                "cart-badge is still debouncing the store subscription, and order-pages reported done \
+                 with tests for the first and last page, so I have reviewed its diff and it is ready \
+                 to merge. checkout-retry is waiting on you.",
             ),
-            tool: (Command, "corgi fleet webshop"),
+            tool: (
+                Command,
+                "git -C ~/.herdr/worktrees/webshop/worktree-order-pages-2d5a log --oneline main..HEAD \
+                 && pnpm --dir ~/.herdr/worktrees/webshop/worktree-order-pages-2d5a test -- orders",
+            ),
             steward: true,
         },
         Agent {
@@ -467,6 +481,27 @@ fn herd() -> Vec<Agent> {
             ),
             tool: (Command, "pnpm test -- orders"),
             steward: false,
+        },
+        Agent {
+            project: "weather",
+            kind: "claude",
+            state: AgentState::Working,
+            task: "",
+            model: "Opus 5",
+            effort: Some("high"),
+            context: 51,
+            cache: Some((44 * 60 + 30, Exact, 104_000)),
+            worktree: None,
+            message: (
+                Thinking,
+                "api-cache is done and only touches the client, so it can merge first; the hourly \
+                 chart reuses the daily view's colours and still needs its smoke test.",
+            ),
+            tool: (
+                Command,
+                "git -C ~/.herdr/worktrees/weather/worktree-api-cache-e3b8 diff --stat main",
+            ),
+            steward: true,
         },
         Agent {
             project: "weather",
@@ -542,7 +577,8 @@ fn usage_slot(provider: Provider, plan: &str, windows: [(u8, u64); 2], now: u64)
     }
 }
 
-/// The dashboard over the whole herd, the blocked agent selected.
+/// The dashboard over the whole herd, the webshop card expanded into its
+/// workers' rows and the blocked one selected.
 fn dashboard() -> App {
     let now = unix_now();
     let mut app = test_app();
@@ -551,6 +587,7 @@ fn dashboard() -> App {
         .iter()
         .map(|agent| agent.dashboard_agent(now))
         .collect();
+    app.cards.set_expanded("webshop", true);
     app.selected = 1;
     app.status = format!("{} agents", app.agents.len());
     let minutes = |minutes: u64| minutes * 60 + 30;
@@ -581,8 +618,7 @@ fn expanded_session() -> String {
     let buffer = terminal.backend().buffer();
     let top = find(buffer, "Paginate the order history", buffer.area).y;
     let bottom = find(buffer, "Keep the URL shareable", buffer.area).y;
-    // Inside the Agents box, so its borders stay out of the crop.
-    let area = Rect::new(1, top, WIDTH - 2, bottom + 1 - top);
+    let area = Rect::new(CARD_CONTENT, top, CARD_CONTENT_WIDTH, bottom + 1 - top);
     svg(&mut terminal, area, Chrome::Panel, &[])
 }
 

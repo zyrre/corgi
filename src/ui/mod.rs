@@ -92,10 +92,10 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "j/k select · space collapse · u/d scroll · p prompt · m merge · enter/f focus · x close agent · q close"
         }
         (false, true) => {
-            "j/k select · space expand · p prompt · n new · t scratch · s steward · m merge · enter focus · x close · q close"
+            "j/k select · →/← project · space session · p prompt · n new · t scratch · s steward · m merge · enter focus · x close · q close"
         }
         (false, false) => {
-            "j/k select · space expand · p prompt · n new agent · t scratch · s steward · m merge · enter/f focus · x close agent · r refresh · q close"
+            "j/k select · →/← expand/collapse project · space session · p prompt · n new agent · t scratch · s steward · m merge · enter/f focus · x close agent · r refresh · q close"
         }
     };
     let line = Line::from(vec![
@@ -366,7 +366,7 @@ fn ellipsized(row: &str, width: usize) -> String {
 }
 
 /// The longest start of `text` that fits in `width` columns.
-fn leading_columns(text: &str, width: usize) -> &str {
+pub(super) fn leading_columns(text: &str, width: usize) -> &str {
     let mut used = 0;
     for (index, character) in text.char_indices() {
         used += character.width().unwrap_or(0);
