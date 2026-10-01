@@ -1,4 +1,4 @@
-//! The command-line tools: `corgi spawn`, `corgi steward`, `corgi fleet` and
+//! The command-line tools: `corgi spawn`, `corgi handler`, `corgi fleet` and
 //! `corgi report`.
 
 use std::{env, fs, io, path::PathBuf};
@@ -18,8 +18,8 @@ use super::{
     catalog::{EFFORT_LEVELS, default_harness},
     form::Checkout,
     launch::{
-        LaunchPlan, Role, STEWARD_HOME_REFUSAL, calling_steward_harness, launch_agent,
-        sanitize_agent_name, steward_harness_error, steward_plan, unique_agent_name,
+        HANDLER_HOME_REFUSAL, LaunchPlan, Role, calling_handler_harness, handler_harness_error,
+        handler_plan, launch_agent, sanitize_agent_name, unique_agent_name,
     },
     progress::Stderr,
     project_main::project_root_of,
@@ -34,7 +34,7 @@ JSON. The task is read from stdin, or from --task-file, never from arguments.
 Options:
   --project PATH     Project directory (default: the current directory)
   --harness KIND     Agent CLI, as Herdr names it (default: the calling
-                     Steward's own, else as in the form)
+                     Project handler's own, else as in the form)
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max (Codex and Claude Code)
   --checkout MODE    worktree (default), directory, or root: the project
@@ -104,7 +104,7 @@ fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
 }
 
 /// `corgi spawn`: starts one agent through the same launch as the new-agent
-/// form, for a caller without a dashboard, such as a Steward agent. It runs
+/// form, for a caller without a dashboard, such as a handler agent. It runs
 /// inside Herdr and uses the injected socket. Progress goes to stderr and the
 /// started agent to stdout as one JSON object.
 pub fn spawn(args: &[String]) -> Result<()> {
@@ -114,8 +114,8 @@ pub fn spawn(args: &[String]) -> Result<()> {
     let project = existing_project_dir(options.project.as_deref())?;
 
     let (client, app) = connected_app()?;
-    let steward_harness = calling_steward_harness(&app, env::var("HERDR_PANE_ID").ok().as_deref());
-    let harness = spawn_harness(options.harness, steward_harness, default_harness);
+    let handler_harness = calling_handler_harness(&app, env::var("HERDR_PANE_ID").ok().as_deref());
+    let harness = spawn_harness(options.harness, handler_harness, default_harness);
     anyhow::ensure!(
         options.effort.is_empty() || harness.supports_effort(),
         "{harness} has no effort control; only codex and claude take --effort"
@@ -140,35 +140,35 @@ pub fn spawn(args: &[String]) -> Result<()> {
 }
 
 /// The harness `corgi spawn` starts: the one asked for, else the calling
-/// Steward's own, else the default the new-agent form would preset.
+/// handler's own, else the default the new-agent form would preset.
 fn spawn_harness(
     requested: Option<Harness>,
-    steward: Option<Harness>,
+    handler: Option<Harness>,
     default: impl FnOnce() -> Harness,
 ) -> Harness {
-    requested.or(steward).unwrap_or_else(default)
+    requested.or(handler).unwrap_or_else(default)
 }
 
-pub const STEWARD_USAGE: &str = "\
-Usage: corgi steward [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
+pub const HANDLER_USAGE: &str = "\
+Usage: corgi handler [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
 
-Starts PROJECT's Steward (default: the project containing the current
-directory) in the root tab of its Corgi workspace, and prints it as JSON.
-A task on stdin or in --task-file becomes its first request; without one the
-Steward greets you with the state of the project.
+Starts the Project handler of PROJECT (default: the project containing the
+current directory) in the root tab of its Corgi workspace, and prints it as
+JSON. A task on stdin or in --task-file becomes its first request; without
+one the handler greets you with the state of the project.
 
 Options:
   --harness KIND     claude (default) or codex
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max
-  --name NAME        Agent name (default: steward-<project>)
+  --name NAME        Agent name (default: handler-<project>)
   --task-file PATH   Read the first request from PATH
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
-/// `corgi steward`: launches a project's Steward, the way the new-agent form
+/// `corgi handler`: launches a project's handler, the way the new-agent form
 /// does for a project with no agent sessions.
-pub fn steward_command(args: &[String]) -> Result<()> {
+pub fn handler_command(args: &[String]) -> Result<()> {
     let (positional, args) = match args.first() {
         Some(first) if !first.starts_with('-') => (Some(first.as_str()), &args[1..]),
         _ => (None, args),
@@ -176,15 +176,15 @@ pub fn steward_command(args: &[String]) -> Result<()> {
     let options = parse_spawn_options(args)?;
     let harness = options
         .harness
-        .unwrap_or_else(|| Harness::STEWARDS[0].clone());
-    anyhow::ensure!(harness.supports_steward(), steward_harness_error(&harness));
+        .unwrap_or_else(|| Harness::HANDLERS[0].clone());
+    anyhow::ensure!(harness.supports_handler(), handler_harness_error(&harness));
     let project = existing_project_dir(positional.or(options.project.as_deref()))?;
-    anyhow::ensure!(!is_home(&project), STEWARD_HOME_REFUSAL);
+    anyhow::ensure!(!is_home(&project), HANDLER_HOME_REFUSAL);
     let task = read_task(options.task_file.as_deref(), false)?;
 
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    let mut plan = steward_plan(&app, &root, harness, options.model, options.effort, task)?;
+    let mut plan = handler_plan(&app, &root, harness, options.model, options.effort, task)?;
     if let Some(requested) = options.name.as_deref() {
         plan.name = free_agent_name(&client, requested)?;
     }
@@ -197,10 +197,10 @@ Usage: corgi fleet [PROJECT]
 
 Lists the agents of PROJECT (default: the project containing the current
 directory), one tab-separated row each under a header line:
-NAME, ROLE (steward or worker), STATE, TASK, MODEL, CTX and CWD.";
+NAME, ROLE (handler or worker), STATE, TASK, MODEL, CTX and CWD.";
 
 /// `corgi fleet`: one tab-separated row per agent of a project (default: the
-/// project containing the current directory), for a Steward to read.
+/// project containing the current directory), for a handler to read.
 pub fn fleet(args: &[String]) -> Result<()> {
     anyhow::ensure!(args.len() <= 1, "Usage: corgi fleet [PROJECT]");
     let project = existing_project_dir(args.first().map(String::as_str))?;
@@ -223,7 +223,7 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 field(agent.info.display_name()),
-                if agent.steward { "steward" } else { "worker" },
+                if agent.handler { "handler" } else { "worker" },
                 agent.info.state.label().to_lowercase(),
                 field(&agent.task),
                 field(agent.model.as_deref().unwrap_or("-")),
@@ -353,7 +353,7 @@ fn run_launch(client: HerdrClient, mut app: App, plan: LaunchPlan) -> Result<ser
         "model": plan.model,
         "effort": plan.effort,
         "checkout": plan.checkout.value(),
-        "steward": matches!(plan.role, Role::Steward { .. }),
+        "handler": matches!(plan.role, Role::Handler { .. }),
         "location": launched.location,
     }))
 }
@@ -369,19 +369,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn corgi_steward_refuses_the_home_directory() {
+    fn corgi_handler_refuses_the_home_directory() {
         if !crate::paths::home().is_some_and(|home| home.is_dir()) {
             return;
         }
         // Refused before stdin is read or Herdr is asked anything.
-        let refused = steward_command(&["~".to_string()]).expect_err("no Steward for ~");
+        let refused = handler_command(&["~".to_string()]).expect_err("no Project handler for ~");
         assert!(refused.to_string().contains("not a project"), "{refused}");
     }
 
     #[test]
-    fn a_stewards_workers_default_to_the_stewards_own_harness() {
+    fn a_handlers_workers_default_to_the_handlers_own_harness() {
         let default = || Harness::Claude;
-        // A Codex Steward starts Codex workers, a Claude Steward Claude ones.
+        // A Codex handler starts Codex workers, a Claude handler Claude ones.
         assert_eq!(
             spawn_harness(None, Some(Harness::Codex), default),
             Harness::Codex
@@ -395,7 +395,7 @@ mod tests {
             spawn_harness(Some(Harness::Claude), Some(Harness::Codex), default),
             Harness::Claude
         );
-        // A spawn not made by a Steward, or by one whose harness Herdr has
+        // A spawn not made by a handler, or by one whose harness Herdr has
         // not detected, keeps the form's default.
         assert_eq!(spawn_harness(None, None, || Harness::Codex), Harness::Codex);
     }

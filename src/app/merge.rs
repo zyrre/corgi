@@ -169,7 +169,7 @@ impl App {
             label: form.label,
             project_root: project_main_workspace(
                 &self.workspaces,
-                &self.steward_workspaces(),
+                &self.handler_workspaces(),
                 &project_root,
             )
             .map(|main| main.project_root),

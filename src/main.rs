@@ -12,8 +12,10 @@ fn main() -> Result<()> {
         Some("--version" | "-V") => usage(concat!("corgi ", env!("CARGO_PKG_VERSION"))),
         Some("spawn") if help() => usage(corgi::app::SPAWN_USAGE),
         Some("spawn") => corgi::app::spawn(&args[2..]),
-        Some("steward") if help() => usage(corgi::app::STEWARD_USAGE),
-        Some("steward") => corgi::app::steward_command(&args[2..]),
+        // `steward` is the command's name from before the Steward was
+        // renamed Project handler, kept unlisted so existing scripts still work.
+        Some("handler" | "steward") if help() => usage(corgi::app::HANDLER_USAGE),
+        Some("handler" | "steward") => corgi::app::handler_command(&args[2..]),
         Some("fleet") if help() => usage(corgi::app::FLEET_USAGE),
         Some("fleet") => corgi::app::fleet(&args[2..]),
         Some("report") if help() => usage(corgi::app::REPORT_USAGE),

@@ -54,7 +54,7 @@ impl Progress for Stderr<'_> {
     }
 }
 
-/// Progress nobody watches, such as a Steward's replacement.
+/// Progress nobody watches, such as a handler's replacement.
 pub(super) struct Silent;
 
 impl Progress for Silent {

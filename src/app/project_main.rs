@@ -9,10 +9,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
+    handler,
     herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS, PaneInfo, SessionSnapshot, TabInfo},
     model::{AgentInfo, WorkspaceInfo},
     paths::dir_name,
-    steward,
 };
 
 use super::{
@@ -97,8 +97,8 @@ pub(super) fn ensure_project_main_workspace(
         .snapshot()
         .context("inspect existing project workspaces")?;
     relabel_project_mains(client, &mut snapshot.workspaces);
-    let stewards = steward_workspaces(&snapshot.agents);
-    if let Some(main) = project_main_workspace(&snapshot.workspaces, &stewards, root) {
+    let handlers = handler_workspaces(&snapshot.agents);
+    if let Some(main) = project_main_workspace(&snapshot.workspaces, &handlers, root) {
         progress.report(format!("Using project workspace {}…", main.label));
         return Ok(main);
     }
@@ -132,25 +132,25 @@ fn create_project_main_workspace(
     })
 }
 
-/// The Corgi project-main workspace to start a Steward of `root` in, when the
-/// project already has agent sessions elsewhere (a Steward launch beside
+/// The Corgi project-main workspace to start a handler of `root` in, when the
+/// project already has agent sessions elsewhere (a handler launch beside
 /// running work, as opposed to a new project's or an idle one's, which are
 /// unaffected). Herdr's own root workspace for the repository is adopted —
 /// marked, relabelled, and used as Corgi's project-main — when it is not
-/// already Corgi's and holds no agent, so the Steward lands where Herdr's own
+/// already Corgi's and holds no agent, so the handler lands where Herdr's own
 /// tree shows the project's root instead of nested under it. Otherwise this
 /// behaves exactly like [`ensure_project_main_workspace`].
 ///
 /// Once adopted, both it and any older Corgi project-main of the same
 /// repository can satisfy [`project_main_workspace`]'s lookup; that lookup
-/// prefers the one the Steward runs in, which is the adopted root once the
-/// Steward starts there, and otherwise takes the first match in the session
+/// prefers the one the handler runs in, which is the adopted root once the
+/// handler starts there, and otherwise takes the first match in the session
 /// snapshot's own workspace order, which Herdr returns in sidebar order, so
 /// the adopted root — Herdr's own, earlier in that order than a
 /// later-created duplicate — is still what later lookups find. An older,
 /// now-idle duplicate is closed so at most one remains; one still running an
 /// agent is left alone.
-pub(super) fn steward_project_main(
+pub(super) fn handler_project_main(
     client: &HerdrClient,
     root: &str,
     progress: &mut dyn Progress,
@@ -176,8 +176,8 @@ pub(super) fn steward_project_main(
         return Ok(adopted);
     }
 
-    let stewards = steward_workspaces(&snapshot.agents);
-    if let Some(main) = project_main_workspace(&snapshot.workspaces, &stewards, root) {
+    let handlers = handler_workspaces(&snapshot.agents);
+    if let Some(main) = project_main_workspace(&snapshot.workspaces, &handlers, root) {
         progress.report(format!("Using project workspace {}…", main.label));
         return Ok(main);
     }
@@ -204,7 +204,7 @@ fn herdr_root_workspace_id(client: &HerdrClient, root: &str) -> Result<Option<St
 }
 
 /// Whether `project_root` already has a real agent session in some workspace
-/// of its own, the condition under which a new Steward launch may adopt
+/// of its own, the condition under which a new handler launch may adopt
 /// Herdr's root workspace instead of always using Corgi's own.
 fn project_has_other_agent_sessions(snapshot: &SessionSnapshot, project_root: &str) -> bool {
     let workspaces: HashMap<&str, &WorkspaceInfo> = snapshot
@@ -328,23 +328,26 @@ pub(super) fn project_root_digest(root: &str) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
-/// The label of a project's Corgi workspace: `<project> steward`, since that
-/// workspace's root tab is where the project's Steward lives. It sets the
+/// The label of a project's Corgi workspace: `<project> handler`, since that
+/// workspace's root tab is where the project's handler lives. It sets the
 /// workspace apart from worker workspaces and from plain workspaces that
 /// share the project's name.
 fn project_workspace_label(project_root: &str) -> String {
     format!(
-        "{} steward",
-        dir_name(project_root).unwrap_or(steward::UNNAMED_PROJECT)
+        "{} handler",
+        dir_name(project_root).unwrap_or(handler::UNNAMED_PROJECT)
     )
 }
 
-/// The label a project workspace should change to, if it still carries the
-/// bare project name Corgi used to give it. Any other label was chosen by the
-/// user and is kept.
+/// The label a project workspace should change to, if it still carries a
+/// label Corgi used to give it: the bare project name, or `<project>
+/// steward` from before the Steward was renamed Project handler. Any other
+/// label was chosen by the user and is kept.
 fn project_main_relabel(workspace: &WorkspaceInfo) -> Option<String> {
     let root = project_main_root(workspace)?;
-    (workspace.label.trim() == dir_name(root).unwrap_or(steward::UNNAMED_PROJECT))
+    let project = dir_name(root).unwrap_or(handler::UNNAMED_PROJECT);
+    let label = workspace.label.trim();
+    (label == project || label == format!("{project} steward"))
         .then(|| project_workspace_label(root))
 }
 
@@ -365,12 +368,12 @@ pub(super) fn relabel_project_mains(client: &HerdrClient, workspaces: &mut [Work
 
 /// The Corgi project workspace of `project_root`. A project can have two,
 /// when Herdr lost Corgi's marks in a restart and a launch created another
-/// before they were put back; the one a Steward runs in, among the
-/// workspaces in `stewards`, is the project's, and otherwise the first in
+/// before they were put back; the one a handler runs in, among the
+/// workspaces in `handlers`, is the project's, and otherwise the first in
 /// snapshot order.
 pub(super) fn project_main_workspace(
     workspaces: &[WorkspaceInfo],
-    stewards: &[&str],
+    handlers: &[&str],
     project_root: &str,
 ) -> Option<ProjectMain> {
     let mut mains = workspaces
@@ -378,7 +381,7 @@ pub(super) fn project_main_workspace(
         .filter(|workspace| is_corgi_project_main(workspace, project_root));
     let workspace = mains
         .clone()
-        .find(|workspace| stewards.contains(&workspace.workspace_id.as_str()))
+        .find(|workspace| handlers.contains(&workspace.workspace_id.as_str()))
         .or_else(|| mains.next())?;
     Some(ProjectMain {
         workspace_id: workspace.workspace_id.clone(),
@@ -392,12 +395,12 @@ pub(super) fn project_main_workspace(
     })
 }
 
-/// The workspaces the Stewards among `agents` run in, for
+/// The workspaces the handlers among `agents` run in, for
 /// [`project_main_workspace`].
-pub(super) fn steward_workspaces(agents: &[AgentInfo]) -> Vec<&str> {
+pub(super) fn handler_workspaces(agents: &[AgentInfo]) -> Vec<&str> {
     agents
         .iter()
-        .filter(|agent| steward::is_steward(agent))
+        .filter(|agent| handler::is_handler(agent))
         .map(|agent| agent.workspace_id.as_str())
         .collect()
 }
@@ -516,12 +519,12 @@ impl App {
             .collect()
     }
 
-    /// The workspaces the dashboard's Stewards run in, for
+    /// The workspaces the dashboard's handlers run in, for
     /// [`project_main_workspace`].
-    pub(super) fn steward_workspaces(&self) -> Vec<&str> {
+    pub(super) fn handler_workspaces(&self) -> Vec<&str> {
         self.agents
             .iter()
-            .filter(|agent| agent.steward)
+            .filter(|agent| agent.handler)
             .map(|agent| agent.info.workspace_id.as_str())
             .collect()
     }
@@ -537,8 +540,8 @@ impl App {
         let Ok(snapshot) = self.client.snapshot() else {
             return Vec::new();
         };
-        let stewards = steward_workspaces(&snapshot.agents);
-        let Some(main) = project_main_workspace(&snapshot.workspaces, &stewards, project_root)
+        let handlers = handler_workspaces(&snapshot.agents);
+        let Some(main) = project_main_workspace(&snapshot.workspaces, &handlers, project_root)
         else {
             return Vec::new();
         };
@@ -564,8 +567,8 @@ impl App {
             .client
             .snapshot()
             .context("refresh project workspace before cleanup")?;
-        let stewards = steward_workspaces(&snapshot.agents);
-        let Some(main) = project_main_workspace(&snapshot.workspaces, &stewards, project_root)
+        let handlers = handler_workspaces(&snapshot.agents);
+        let Some(main) = project_main_workspace(&snapshot.workspaces, &handlers, project_root)
         else {
             return Ok(None);
         };
@@ -649,7 +652,7 @@ mod tests {
     fn marked(tokens: &[(&str, &str)]) -> WorkspaceInfo {
         WorkspaceInfo {
             workspace_id: "w9".into(),
-            label: "long-project steward".into(),
+            label: "long-project handler".into(),
             tokens: tokens
                 .iter()
                 .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
@@ -839,10 +842,10 @@ mod tests {
             .expect("Corgi main workspace");
         assert_eq!(discovered.workspace_id, "w-main");
         assert_eq!(discovered.root_tab_id, "w-main:t1");
-        assert_eq!(project_workspace_label(project_root), "corgi steward");
+        assert_eq!(project_workspace_label(project_root), "corgi handler");
     }
     #[test]
-    fn a_project_main_with_the_old_bare_name_is_relabelled_and_no_other() {
+    fn a_project_main_with_an_old_label_is_relabelled_and_no_other() {
         let main = |label: &str, role: &str, linked: bool| WorkspaceInfo {
             workspace_id: "w-main".into(),
             label: label.into(),
@@ -857,11 +860,16 @@ mod tests {
 
         assert_eq!(
             project_main_relabel(&main("corgi", CORGI_PROJECT_MAIN_ROLE, false)).as_deref(),
-            Some("corgi steward")
+            Some("corgi handler")
+        );
+        // The label an older Corgi gave it, before the Steward was renamed.
+        assert_eq!(
+            project_main_relabel(&main("corgi steward", CORGI_PROJECT_MAIN_ROLE, false)).as_deref(),
+            Some("corgi handler")
         );
         // Already current, renamed by the user, or not Corgi's project main.
         for workspace in [
-            main("corgi steward", CORGI_PROJECT_MAIN_ROLE, false),
+            main("corgi handler", CORGI_PROJECT_MAIN_ROLE, false),
             main("my corgi", CORGI_PROJECT_MAIN_ROLE, false),
             main("corgi", CORGI_AGENT_WORKSPACE_ROLE, true),
             main("corgi", "", false),
@@ -1088,7 +1096,7 @@ mod tests {
         fs::remove_file(socket_path).expect("remove fake socket");
     }
 
-    /// A snapshot with one agent session elsewhere in `root` (so a Steward
+    /// A snapshot with one agent session elsewhere in `root` (so a handler
     /// launch may adopt), a root workspace `wR` at sidebar position 1 (Herdr's
     /// root), and the `workspace.list` order backing it.
     fn adoption_snapshot(root: &str, root_tokens: Value, root_tabs: Value) -> Value {
@@ -1147,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn a_steward_launch_adopts_a_free_herdr_root_workspace() {
+    fn a_handler_launch_adopts_a_free_herdr_root_workspace() {
         let root = "/repos/webshop-backend";
         let (socket_path, server) = fake_herdr("adopt-free-root", move |listener| {
             for method in [
@@ -1181,7 +1189,7 @@ mod tests {
                         }
                         "workspace.rename" => {
                             assert_eq!(request["params"]["workspace_id"], "wR");
-                            assert_eq!(request["params"]["label"], "webshop-backend steward");
+                            assert_eq!(request["params"]["label"], "webshop-backend handler");
                             json!({ "type": "workspace_renamed" })
                         }
                         _ => unreachable!(),
@@ -1192,17 +1200,17 @@ mod tests {
         });
 
         let client = HerdrClient::from_socket_path(&socket_path);
-        let main = steward_project_main(&client, root, &mut Silent).expect("adopt the free root");
+        let main = handler_project_main(&client, root, &mut Silent).expect("adopt the free root");
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
 
         assert_eq!(main.workspace_id, "wR");
         assert_eq!(main.root_tab_id, "wR:t1");
-        assert_eq!(main.label, "webshop-backend steward");
+        assert_eq!(main.label, "webshop-backend handler");
     }
 
     #[test]
-    fn a_steward_launch_falls_back_when_herdr_s_root_runs_an_agent() {
+    fn a_handler_launch_falls_back_when_herdr_s_root_runs_an_agent() {
         let root = "/repos/webshop-backend";
         let (socket_path, server) = fake_herdr("adopt-busy-root", move |listener| {
             for method in [
@@ -1242,7 +1250,7 @@ mod tests {
                             assert_eq!(request["params"]["cwd"], root);
                             json!({
                                 "type": "workspace_created",
-                                "workspace": { "workspace_id": "wNew", "label": "webshop-backend steward" },
+                                "workspace": { "workspace_id": "wNew", "label": "webshop-backend handler" },
                                 "tab": { "tab_id": "wNew:t1" },
                                 "root_pane": { "pane_id": "wNew:p1" }
                             })
@@ -1259,7 +1267,7 @@ mod tests {
         });
 
         let client = HerdrClient::from_socket_path(&socket_path);
-        let main = steward_project_main(&client, root, &mut Silent)
+        let main = handler_project_main(&client, root, &mut Silent)
             .expect("fall back to Corgi's own project workspace");
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
@@ -1271,7 +1279,7 @@ mod tests {
     }
 
     #[test]
-    fn a_steward_launch_is_unaffected_when_herdr_s_root_is_already_corgi_s() {
+    fn a_handler_launch_is_unaffected_when_herdr_s_root_is_already_corgi_s() {
         let root = "/repos/webshop-backend";
         let (socket_path, server) = fake_herdr("adopt-corgis", move |listener| {
             for method in ["session.snapshot", "workspace.rename", "workspace.list"] {
@@ -1293,7 +1301,7 @@ mod tests {
                         }
                         "workspace.rename" => {
                             assert_eq!(request["params"]["workspace_id"], "wR");
-                            assert_eq!(request["params"]["label"], "webshop-backend steward");
+                            assert_eq!(request["params"]["label"], "webshop-backend handler");
                             json!({ "type": "workspace_renamed" })
                         }
                         "workspace.list" => json!({
@@ -1308,14 +1316,14 @@ mod tests {
         });
 
         let client = HerdrClient::from_socket_path(&socket_path);
-        let main = steward_project_main(&client, root, &mut Silent)
+        let main = handler_project_main(&client, root, &mut Silent)
             .expect("an already-marked root is used as it is today");
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
 
         // No new mark, and no adoption: the fake answers nothing else.
         assert_eq!(main.workspace_id, "wR");
-        assert_eq!(main.label, "webshop-backend steward");
+        assert_eq!(main.label, "webshop-backend handler");
     }
 
     #[test]
@@ -1342,7 +1350,7 @@ mod tests {
                             // repository, the kind adoption should retire.
                             snapshot["workspaces"].as_array_mut().unwrap().push(json!({
                                 "workspace_id": "wOld",
-                                "label": "webshop-backend steward",
+                                "label": "webshop-backend handler",
                                 "tokens": {
                                     CORGI_WORKSPACE_ROLE_TOKEN: CORGI_PROJECT_MAIN_ROLE,
                                     CORGI_PROJECT_MAIN_TAB_TOKEN: "wOld:t1"
@@ -1365,7 +1373,7 @@ mod tests {
                             assert_eq!(request["params"]["workspace_id"], "wOld");
                             json!({
                                 "type": "workspace_closed",
-                                "workspace": { "workspace_id": "wOld", "label": "webshop-backend steward" }
+                                "workspace": { "workspace_id": "wOld", "label": "webshop-backend handler" }
                             })
                         }
                         _ => unreachable!(),
@@ -1376,7 +1384,7 @@ mod tests {
         });
 
         let client = HerdrClient::from_socket_path(&socket_path);
-        let main = steward_project_main(&client, root, &mut Silent).expect("adopt the free root");
+        let main = handler_project_main(&client, root, &mut Silent).expect("adopt the free root");
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
 
@@ -1399,7 +1407,7 @@ mod duplicate_tests {
     fn main_json(id: &str) -> Value {
         json!({
             "workspace_id": id,
-            "label": "corgi steward",
+            "label": "corgi handler",
             "tokens": {
                 CORGI_WORKSPACE_ROLE_TOKEN: CORGI_PROJECT_MAIN_ROLE,
                 CORGI_PROJECT_MAIN_TAB_TOKEN: format!("{id}:t1"),
@@ -1414,15 +1422,15 @@ mod duplicate_tests {
     }
 
     #[test]
-    fn of_two_project_workspaces_the_one_the_steward_runs_in_is_the_projects() {
+    fn of_two_project_workspaces_the_one_the_handler_runs_in_is_the_projects() {
         // The empty duplicate a spawn created while the marks were gone comes
-        // first in snapshot order; the Steward's workspace wins all the same.
+        // first in snapshot order; the handler's workspace wins all the same.
         let workspaces = [main_workspace("w8Y"), main_workspace("w70")];
-        let steward = AgentInfo {
+        let handler = AgentInfo {
             pane_id: "w70:p2".into(),
             workspace_id: "w70".into(),
-            name: Some("steward-corgi".into()),
-            tokens: [(steward::CORGI_STEWARD_TOKEN.into(), "steward-corgi".into())].into(),
+            name: Some("handler-corgi".into()),
+            tokens: [(handler::CORGI_HANDLER_TOKEN.into(), "handler-corgi".into())].into(),
             ..AgentInfo::default()
         };
         let worker = AgentInfo {
@@ -1430,15 +1438,15 @@ mod duplicate_tests {
             name: Some("w-worker".into()),
             ..AgentInfo::default()
         };
-        let agents = [worker, steward];
-        let stewards = steward_workspaces(&agents);
-        assert_eq!(stewards, ["w70"]);
-        let main = project_main_workspace(&workspaces, &stewards, ROOT).expect("main");
+        let agents = [worker, handler];
+        let handlers = handler_workspaces(&agents);
+        assert_eq!(handlers, ["w70"]);
+        let main = project_main_workspace(&workspaces, &handlers, ROOT).expect("main");
         assert_eq!(
             (main.workspace_id.as_str(), main.root_tab_id.as_str()),
             ("w70", "w70:t1")
         );
-        // Without a Steward, snapshot order decides, as before.
+        // Without a handler, snapshot order decides, as before.
         let main = project_main_workspace(&workspaces, &[], ROOT).expect("main");
         assert_eq!(main.workspace_id, "w8Y");
     }
@@ -1463,9 +1471,9 @@ mod duplicate_tests {
                     "agents": [
                         {
                             "pane_id": "w70:p1", "workspace_id": "w70", "tab_id": "w70:t1",
-                            "agent": "claude", "name": "steward-corgi",
+                            "agent": "claude", "name": "handler-corgi",
                             "agent_session": { "value": "s1" },
-                            "tokens": { "corgi_steward": "steward-corgi" }
+                            "tokens": { "corgi_handler": "handler-corgi" }
                         },
                         {
                             "pane_id": "w90:p1", "workspace_id": "w90", "tab_id": "w90:t1",
@@ -1484,7 +1492,7 @@ mod duplicate_tests {
 
         let mut app = test_app();
         app.client = HerdrClient::from_socket_path(&socket_path);
-        assert_eq!(app.retire_duplicate_project_mains(ROOT), ["corgi steward"]);
+        assert_eq!(app.retire_duplicate_project_mains(ROOT), ["corgi handler"]);
 
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");

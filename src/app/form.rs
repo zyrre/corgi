@@ -26,7 +26,7 @@ use super::{
         model_choices, supported_model,
     },
     launch::{
-        LaunchPlan, Role, starts_steward, steward_harness_error, steward_plan, unique_agent_name,
+        LaunchPlan, Role, handler_harness_error, handler_plan, starts_handler, unique_agent_name,
     },
     overlay::Overlay,
 };
@@ -75,7 +75,7 @@ pub(crate) enum Checkout {
     /// The project directory as it is, shared with whatever already runs there.
     Directory,
     /// The root tab of the project's Corgi workspace itself, in the primary
-    /// checkout. That tab is where a coordinating agent such as Steward lives,
+    /// checkout. That tab is where a coordinating agent such as the Project handler lives,
     /// so only `corgi spawn` offers it; the form's list does not.
     ProjectRoot,
 }
@@ -184,15 +184,15 @@ impl NewAgentForm {
         self.new_project && project.is_absolute() && !project.exists()
     }
 
-    /// Whether the form starts its project's Steward rather than a worker,
+    /// Whether the form starts its project's handler rather than a worker,
     /// given whether the project is new, as
-    /// [`App::new_agent_starts_steward`] decides it.
-    pub(crate) fn starts_steward_among(
+    /// [`App::new_agent_starts_handler`] decides it.
+    pub(crate) fn starts_handler_among(
         &self,
         new_project: bool,
         agents: &[DashboardAgent],
     ) -> bool {
-        starts_steward(new_project, self.project.trim(), agents)
+        starts_handler(new_project, self.project.trim(), agents)
     }
 
     /// Whether the project is the home directory, which is never a project:
@@ -357,12 +357,12 @@ impl NewAgentForm {
 }
 
 impl App {
-    /// Whether the new-agent form starts its project's Steward rather than a
+    /// Whether the new-agent form starts its project's handler rather than a
     /// worker: for a new project, and for a project with no agent session in
     /// any of its workspaces.
-    fn new_agent_starts_steward(&self) -> bool {
+    fn new_agent_starts_handler(&self) -> bool {
         self.overlay.new_agent_form().is_some_and(|form| {
-            starts_steward(form.is_new_project(), form.project.trim(), &self.agents)
+            starts_handler(form.is_new_project(), form.project.trim(), &self.agents)
         })
     }
 
@@ -575,7 +575,7 @@ impl App {
         }
     }
 
-    /// What the filled-in form launches: a worker, or the project's Steward.
+    /// What the filled-in form launches: a worker, or the project's handler.
     /// A value still missing or invalid is pointed out in the form instead.
     fn new_agent_plan(&mut self) -> Option<LaunchPlan> {
         let form = self.overlay.new_agent_form_mut()?;
@@ -614,7 +614,7 @@ impl App {
         let effort = form.effort.trim().to_string();
         let prompt = form.prompt.trim().to_string();
         let checkout = form.checkout;
-        if !self.new_agent_starts_steward() {
+        if !self.new_agent_starts_handler() {
             return Some(LaunchPlan {
                 name: unique_agent_name(&self.agents, &project),
                 harness,
@@ -628,14 +628,14 @@ impl App {
                 role: Role::Worker,
             });
         }
-        // The Steward takes the harness, model, and effort chosen in the
+        // The handler takes the harness, model, and effort chosen in the
         // form, like a worker, on a harness it can run on.
-        let plan = if harness.supports_steward() {
+        let plan = if harness.supports_handler() {
             let root = project.to_string_lossy().into_owned();
-            steward_plan(self, &root, harness, model, effort, prompt)
+            handler_plan(self, &root, harness, model, effort, prompt)
                 .map_err(|error| (None, format!("{error:#}")))
         } else {
-            Err((Some(NewField::Harness), steward_harness_error(&harness)))
+            Err((Some(NewField::Harness), handler_harness_error(&harness)))
         };
         match plan {
             Ok(plan) => Some(LaunchPlan {
@@ -1068,8 +1068,8 @@ mod tests {
         assert_eq!((form.model.as_str(), form.effort.as_str()), ("", ""));
         assert!(form.list.is_none());
         assert!(form.is_scratch());
-        // Even with only a scratch agent there, it starts no Steward.
-        assert!(!app.new_agent_starts_steward());
+        // Even with only a scratch agent there, it starts no handler.
+        assert!(!app.new_agent_starts_handler());
 
         // An empty task is no slip: the agent starts as a session to type in.
         let plan = app.new_agent_plan().expect("an empty task is allowed");
@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn the_form_starts_a_steward_on_the_chosen_harness_model_and_effort() {
+    fn the_form_starts_a_handler_on_the_chosen_harness_model_and_effort() {
         let mut app = test_app();
         let project = std::env::temp_dir().to_string_lossy().into_owned();
         let form = |kind: &str, model: &str, effort: &str| NewAgentForm {
@@ -1181,8 +1181,8 @@ mod tests {
         };
 
         app.overlay = Overlay::NewAgent(form("codex", "gpt-5-codex", "high"));
-        let plan = app.new_agent_plan().expect("a Codex Steward");
-        assert!(matches!(plan.role, Role::Steward { .. }));
+        let plan = app.new_agent_plan().expect("a Codex Project handler");
+        assert!(matches!(plan.role, Role::Handler { .. }));
         assert_eq!(plan.checkout, Checkout::ProjectRoot);
         assert_eq!(
             (
@@ -1194,8 +1194,8 @@ mod tests {
         );
 
         app.overlay = Overlay::NewAgent(form("claude", "", ""));
-        let plan = app.new_agent_plan().expect("a Claude Steward");
-        assert!(matches!(plan.role, Role::Steward { .. }));
+        let plan = app.new_agent_plan().expect("a Claude Project handler");
+        assert!(matches!(plan.role, Role::Handler { .. }));
         assert_eq!(
             (
                 plan.harness.kind(),
@@ -1205,14 +1205,14 @@ mod tests {
             ("claude", "", "")
         );
 
-        // A harness no Steward runs on is pointed out, and the form stays.
+        // A harness no handler runs on is pointed out, and the form stays.
         app.overlay = Overlay::NewAgent(form("gemini", "gemini-2.5-pro", ""));
         assert!(app.new_agent_plan().is_none());
         let form = app.overlay.new_agent_form().expect("the form stays open");
         assert_eq!(form.field, NewField::Harness);
         assert_eq!(
             form.error.as_deref(),
-            Some("A Steward runs on claude or codex, not gemini")
+            Some("A Project handler runs on claude or codex, not gemini")
         );
     }
 

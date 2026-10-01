@@ -1,5 +1,5 @@
 //! The launch sequence every new agent goes through: the plan, its checkout
-//! or tab, starting the CLI, and the Steward's launch plan; and the
+//! or tab, starting the CLI, and the handler's launch plan; and the
 //! dashboard's background job that runs it, with the panel that follows it.
 
 use std::{
@@ -14,13 +14,13 @@ use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
     git::trust_root,
+    handler::{self, CORGI_HANDLER_TOKEN},
     harness::Harness,
     herdr::{CreatedWorkspace, HerdrClient, HerdrError, StartedAgent, WorktreeSource},
     job::{Job, Update},
     model::{AgentInfo, DashboardAgent},
     paths::{dir_name, is_home},
     projects::{is_created_project, record_created_project},
-    steward::{self, CORGI_STEWARD_TOKEN},
     time::unix_now,
 };
 
@@ -34,14 +34,14 @@ use super::{
     progress::{JobReport, Progress},
     project_main::{
         CORGI_AGENT_WORKSPACE_ROLE, CORGI_WORKSPACE_ROLE_TOKEN, ensure_project_main_workspace,
-        project_root_of, steward_project_main,
+        handler_project_main, project_root_of,
     },
 };
 
 /// The label of a scratch agent's workspace, numbered from the second on.
 const SCRATCH_LABEL: &str = "scratch";
-/// Why the home directory gets no Steward.
-pub(super) const STEWARD_HOME_REFUSAL: &str = "The home directory is not a project, so it has no Steward; t in the dashboard starts a scratch agent there";
+/// Why the home directory gets no handler.
+pub(super) const HANDLER_HOME_REFUSAL: &str = "The home directory is not a project, so it has no Project handler; t in the dashboard starts a scratch agent there";
 const AGENT_START_ATTEMPTS: usize = 40;
 const AGENT_START_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// How long the panel of a started agent stays up to say so, over its check
@@ -72,10 +72,10 @@ pub(super) struct LaunchPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Role {
     Worker,
-    /// The project's Steward: its pane is marked so the dashboard recognizes
+    /// The project's handler: its pane is marked so the dashboard recognizes
     /// it wherever it goes.
-    Steward {
-        /// The pane of a Steward that handed over and exited, where its
+    Handler {
+        /// The pane of a handler that handed over and exited, where its
         /// successor starts instead of in a new or found pane.
         handover_pane: Option<String>,
     },
@@ -131,11 +131,11 @@ pub(super) fn launch_steps(plan: &LaunchPlan) -> Vec<String> {
         "Create a scratch workspace"
     } else if matches!(
         plan.role,
-        Role::Steward {
+        Role::Handler {
             handover_pane: Some(_)
         }
     ) {
-        "Take over the Steward's pane"
+        "Take over the Project handler's pane"
     } else {
         match plan.checkout {
             Checkout::Worktree => "Create a worktree",
@@ -147,23 +147,23 @@ pub(super) fn launch_steps(plan: &LaunchPlan) -> Vec<String> {
         checkout.to_string(),
         format!("Start {}{}", plan.harness, model_suffix(&plan.model)),
     ];
-    if !plan.prompt.trim().is_empty() || matches!(plan.role, Role::Steward { .. }) {
+    if !plan.prompt.trim().is_empty() || matches!(plan.role, Role::Handler { .. }) {
         steps.push("Send the first prompt".into());
     }
     steps
 }
 
 impl App {
-    /// The Steward key: starts the Steward of the selected agent's project,
+    /// The handler key: starts the handler of the selected agent's project,
     /// its repository's primary checkout, or focuses it when it already runs.
-    pub(super) fn begin_steward(&mut self) {
+    pub(super) fn begin_handler(&mut self) {
         let Some(root) = self
             .selected_agent()
             .map(|agent| agent.project_root.clone())
             .filter(|root| !root.is_empty())
         else {
             self.set_status(
-                "Select an agent to start its project's Steward",
+                "Select an agent to start the Project handler of its project",
                 Some(Duration::from_secs(5)),
             );
             return;
@@ -171,21 +171,21 @@ impl App {
         if let Some(index) = self
             .agents
             .iter()
-            .position(|agent| agent.steward && agent.project_root == root)
+            .position(|agent| agent.handler && agent.project_root == root)
         {
             let focused = format!(
-                "Focused {}'s Steward, {}",
-                dir_name(&root).unwrap_or(steward::UNNAMED_PROJECT),
+                "Focused {}'s Project handler, {}",
+                dir_name(&root).unwrap_or(handler::UNNAMED_PROJECT),
                 self.agents[index].info.display_name()
             );
             self.select(index);
             self.focus_selected_saying(focused);
             return;
         }
-        let saved = steward::state_dir(&root)
+        let saved = handler::state_dir(&root)
             .ok()
-            .and_then(|dir| steward::saved_launch(&dir));
-        match dashboard_steward_plan(self, &root, saved, default_harness) {
+            .and_then(|dir| handler::saved_launch(&dir));
+        match dashboard_handler_plan(self, &root, saved, default_harness) {
             Ok(plan) => self.start_new_agent(plan),
             Err(error) => self.set_status(format!("{error:#}"), Some(Duration::from_secs(8))),
         }
@@ -318,7 +318,7 @@ impl App {
     }
 }
 
-/// The agent CLI's arguments for `plan`, before a Steward's own.
+/// The agent CLI's arguments for `plan`, before a handler's own.
 pub(super) fn launch_args(plan: &LaunchPlan) -> Vec<String> {
     let mut args = plan.harness.launch_args(&plan.model, &plan.effort);
     args.extend(plan.extra_args.iter().cloned());
@@ -392,22 +392,22 @@ pub(super) fn launch_agent(
     } = plan;
     let scratch = is_home(project);
     anyhow::ensure!(
-        !(scratch && matches!(role, Role::Steward { .. })),
-        "{STEWARD_HOME_REFUSAL}"
+        !(scratch && matches!(role, Role::Handler { .. })),
+        "{HANDLER_HOME_REFUSAL}"
     );
     if *new_project && !scratch {
         create_project(project, progress)?;
     }
-    let mut steward_root = None;
+    let mut handler_root = None;
     let (pane_id, location) = if scratch {
         // The home directory is never a project: every checkout is the
         // directory itself, in a workspace of the agent's own.
         create_scratch_workspace(client, project, name, progress)?
-    } else if let Role::Steward {
+    } else if let Role::Handler {
         handover_pane: Some(pane_id),
     } = role
     {
-        steward_root = Some(project.to_string_lossy().into_owned());
+        handler_root = Some(project.to_string_lossy().into_owned());
         (pane_id.clone(), "in the pane it took over".to_string())
     } else {
         match checkout {
@@ -418,12 +418,12 @@ pub(super) fn launch_agent(
             }
             Checkout::Directory => create_directory_agent_tab(client, project, name, progress)?,
             Checkout::ProjectRoot => {
-                // A Steward is started wherever its project workspace has
+                // A handler is started wherever its project workspace has
                 // room; a worker asked into the root tab gets that or nothing.
-                let steward = matches!(role, Role::Steward { .. });
+                let handler = matches!(role, Role::Handler { .. });
                 let (pane_id, location, root) =
-                    project_root_pane(client, project, name, steward, progress)?;
-                steward_root = Some(root);
+                    project_root_pane(client, project, name, handler, progress)?;
+                handler_root = Some(root);
                 (pane_id, location)
             }
         }
@@ -435,17 +435,17 @@ pub(super) fn launch_agent(
         effort_suffix(harness, effort)
     ));
     let mut args = launch_args(plan);
-    let prompt = if let Role::Steward { handover_pane } = role {
-        let root = steward_root
+    let prompt = if let Role::Handler { handover_pane } = role {
+        let root = handler_root
             .as_deref()
-            .context("a Steward starts in its project's root tab")?;
-        let installed = client.plugin_root(steward::PLUGIN_ID).ok().flatten();
-        let corgi = steward::corgi_bin(installed.as_deref())?;
-        let prepared = steward::prepare(root, &corgi)?;
-        args.extend(harness.steward_args(&prepared.role_file, &prepared.role, &prepared.state_dir));
-        steward::save_launch(
+            .context("a Project handler starts in its project's root tab")?;
+        let installed = client.plugin_root(handler::PLUGIN_ID).ok().flatten();
+        let corgi = handler::corgi_bin(installed.as_deref())?;
+        let prepared = handler::prepare(root, &corgi)?;
+        args.extend(harness.handler_args(&prepared.role_file, &prepared.role, &prepared.state_dir));
+        handler::save_launch(
             &prepared.state_dir,
-            &steward::Launch {
+            &handler::Launch {
                 kind: harness.kind().to_string(),
                 model: model.clone(),
                 effort: effort.clone(),
@@ -453,10 +453,10 @@ pub(super) fn launch_agent(
             },
         )?;
         if handover_pane.is_some() {
-            let archive = steward::handover_archive(&prepared.state_dir, unix_now());
-            steward::takeover_prompt(root, &prepared.state_dir, &archive)
+            let archive = handler::handover_archive(&prepared.state_dir, unix_now());
+            handler::takeover_prompt(root, &prepared.state_dir, &archive)
         } else {
-            steward::first_prompt(root, &prepared.state_dir, prompt)
+            handler::first_prompt(root, &prepared.state_dir, prompt)
         }
     } else {
         prompt.clone()
@@ -475,7 +475,7 @@ pub(super) fn launch_agent(
         &started.agent,
         &prompt,
         name,
-        matches!(role, Role::Steward { .. }),
+        matches!(role, Role::Handler { .. }),
         progress,
     )?;
     Ok(LaunchedAgent {
@@ -484,25 +484,25 @@ pub(super) fn launch_agent(
     })
 }
 
-/// Mark a new or replacement Steward before prompting, then bind any native
+/// Mark a new or replacement handler before prompting, then bind any native
 /// identity first revealed in the prompt acknowledgement.
 fn prompt_launched_agent(
     client: &HerdrClient,
     started: &AgentInfo,
     prompt: &str,
     name: &str,
-    is_steward: bool,
+    is_handler: bool,
     progress: &mut dyn Progress,
 ) -> Result<()> {
-    if is_steward {
+    if is_handler {
         markers::mark_pane(
             client,
             &started.pane_id,
             name,
             markers::session_of(started),
-            &[(CORGI_STEWARD_TOKEN, name)],
+            &[(CORGI_HANDLER_TOKEN, name)],
         )
-        .with_context(|| format!("mark {name} as the project's Steward"))?;
+        .with_context(|| format!("mark {name} as its project's handler"))?;
     }
     progress.step(2);
     progress.report(format!("Sending first prompt to {name}…"));
@@ -516,18 +516,18 @@ fn prompt_launched_agent(
             // Herdr may first expose the session in its prompt acknowledgement,
             // after a naming plugin has already changed the presentation name.
             // The name marker above covers the interval before acceptance.
-            if is_steward && let Some(session) = steward::native_session(accepted) {
+            if is_handler && let Some(session) = handler::native_session(accepted) {
                 anyhow::ensure!(
                     accepted.pane_id == started.pane_id
-                        && steward::native_session(started).is_none_or(|before| before == session),
-                    "Steward session changed while sending its first prompt"
+                        && handler::native_session(started).is_none_or(|before| before == session),
+                    "Project handler session changed while sending its first prompt"
                 );
                 markers::mark_pane(
                     client,
                     &accepted.pane_id,
                     accepted.name.as_deref().unwrap_or(name),
                     Some(session),
-                    &[(CORGI_STEWARD_TOKEN, name)],
+                    &[(CORGI_HANDLER_TOKEN, name)],
                 )?;
             }
             Ok(())
@@ -558,11 +558,11 @@ fn effort_suffix(harness: &Harness, effort: &str) -> String {
 }
 
 /// Creates the directory of a new project and records it as one Corgi made.
-/// It stays a plain directory until the project's Steward makes it a
+/// It stays a plain directory until the project's handler makes it a
 /// repository.
 fn create_project(project: &Path, progress: &mut dyn Progress) -> Result<()> {
     progress.report(format!("Creating project {}…", project.display()));
-    // The directory stays plain: the project's Steward makes it a repository,
+    // The directory stays plain: the project's handler makes it a repository,
     // shaped by the first request, before any worker needs a worktree.
     fs::create_dir_all(project)
         .with_context(|| format!("create project directory {}", project.display()))?;
@@ -744,11 +744,11 @@ fn project_root_pane(
 ) -> Result<(String, String, String)> {
     progress.report(format!("Resolving the project directory for {name}…"));
     // A directory outside Git still gets a project workspace, found again by
-    // its recorded directory once the Steward has made it a repository.
+    // its recorded directory once the handler has made it a repository.
     let root = project_root_of(client, project)?;
     progress.project(&root);
     let main = if open_tab {
-        steward_project_main(client, &root, progress)?
+        handler_project_main(client, &root, progress)?
     } else {
         ensure_project_main_workspace(client, &root, progress)?
     };
@@ -899,23 +899,23 @@ fn restore_dashboard_focus(client: &HerdrClient, pane_id: Option<&str>) -> Resul
     }
 }
 
-/// The harness of the Steward in `pane_id`, the `HERDR_PANE_ID` Herdr gives
+/// The harness of the handler in `pane_id`, the `HERDR_PANE_ID` Herdr gives
 /// every process in a pane, if that pane holds one: the kind Herdr detected
 /// running there.
-pub(super) fn calling_steward_harness(app: &App, pane_id: Option<&str>) -> Option<Harness> {
+pub(super) fn calling_handler_harness(app: &App, pane_id: Option<&str>) -> Option<Harness> {
     let pane_id = pane_id?;
     app.agents
         .iter()
-        .find(|agent| agent.steward && agent.info.pane_id == pane_id)
+        .find(|agent| agent.handler && agent.info.pane_id == pane_id)
         .and_then(|agent| agent.info.agent.as_deref())
         .map(Harness::from_typed)
         .filter(|harness| !harness.kind().is_empty())
 }
 
-/// Whether a new agent in `project` is its Steward: the first agent of a new
+/// Whether a new agent in `project` is its handler: the first agent of a new
 /// project, or of a project none of whose workspaces has an agent session.
 /// The home directory is never a project, so an agent there never is.
-pub(super) fn starts_steward(new_project: bool, project: &str, agents: &[DashboardAgent]) -> bool {
+pub(super) fn starts_handler(new_project: bool, project: &str, agents: &[DashboardAgent]) -> bool {
     let project = project.trim().trim_end_matches('/');
     !project.is_empty()
         && !is_home(project)
@@ -925,26 +925,26 @@ pub(super) fn starts_steward(new_project: bool, project: &str, agents: &[Dashboa
                 .any(|agent| agent.project_root.trim_end_matches('/') == project))
 }
 
-/// Why a Steward cannot start on `harness`.
-pub(super) fn steward_harness_error(harness: &Harness) -> String {
+/// Why a handler cannot start on `harness`.
+pub(super) fn handler_harness_error(harness: &Harness) -> String {
     format!(
-        "A Steward runs on {}, not {harness}",
-        Harness::steward_kinds()
+        "A Project handler runs on {}, not {harness}",
+        Harness::handler_kinds()
     )
 }
 
-/// The launch the dashboard's Steward key starts for `root`: the harness,
-/// model, effort and arguments its Steward was last launched with, `saved`,
-/// else the new-agent form's preset harness (or the first a Steward runs on)
-/// with the harness's own defaults. It has no task, so the Steward greets
+/// The launch the dashboard's handler key starts for `root`: the harness,
+/// model, effort and arguments its handler was last launched with, `saved`,
+/// else the new-agent form's preset harness (or the first a handler runs on)
+/// with the harness's own defaults. It has no task, so the handler greets
 /// with the state of the project.
-pub(super) fn dashboard_steward_plan(
+pub(super) fn dashboard_handler_plan(
     app: &App,
     root: &str,
-    saved: Option<steward::Launch>,
+    saved: Option<handler::Launch>,
     preset: impl FnOnce() -> Harness,
 ) -> Result<LaunchPlan> {
-    let saved = saved.filter(|launch| Harness::from_kind(&launch.kind).supports_steward());
+    let saved = saved.filter(|launch| Harness::from_kind(&launch.kind).supports_handler());
     let (harness, model, effort, extra_args) = match saved {
         Some(launch) => (
             Harness::from_kind(&launch.kind),
@@ -954,19 +954,19 @@ pub(super) fn dashboard_steward_plan(
         ),
         None => {
             let harness = Some(preset())
-                .filter(Harness::supports_steward)
-                .unwrap_or_else(|| Harness::STEWARDS[0].clone());
+                .filter(Harness::supports_handler)
+                .unwrap_or_else(|| Harness::HANDLERS[0].clone());
             (harness, String::new(), String::new(), Vec::new())
         }
     };
-    let mut plan = steward_plan(app, root, harness, model, effort, String::new())?;
+    let mut plan = handler_plan(app, root, harness, model, effort, String::new())?;
     plan.extra_args = extra_args;
     Ok(plan)
 }
 
-/// The launch of `root`'s Steward on `harness`, refused while one is already
+/// The launch of `root`'s handler on `harness`, refused while one is already
 /// running.
-pub(super) fn steward_plan(
+pub(super) fn handler_plan(
     app: &App,
     root: &str,
     harness: Harness,
@@ -974,21 +974,21 @@ pub(super) fn steward_plan(
     effort: String,
     task: String,
 ) -> Result<LaunchPlan> {
-    anyhow::ensure!(!is_home(root), "{STEWARD_HOME_REFUSAL}");
+    anyhow::ensure!(!is_home(root), "{HANDLER_HOME_REFUSAL}");
     if let Some(running) = app
         .agents
         .iter()
-        .find(|agent| agent.steward && agent.project_root == root)
+        .find(|agent| agent.handler && agent.project_root == root)
     {
         bail!(
-            "{}'s Steward is already running as {}",
-            dir_name(root).unwrap_or(steward::UNNAMED_PROJECT),
+            "{}'s Project handler is already running as {}",
+            dir_name(root).unwrap_or(handler::UNNAMED_PROJECT),
             running.info.display_name()
         );
     }
     let name = sanitize_agent_name(&format!(
-        "steward-{}",
-        dir_name(root).unwrap_or(steward::UNNAMED_PROJECT)
+        "handler-{}",
+        dir_name(root).unwrap_or(handler::UNNAMED_PROJECT)
     ));
     anyhow::ensure!(
         !app.agents
@@ -1006,7 +1006,7 @@ pub(super) fn steward_plan(
         new_project: false,
         checkout: Checkout::ProjectRoot,
         extra_args: Vec::new(),
-        role: Role::Steward {
+        role: Role::Handler {
             handover_pane: None,
         },
     })
@@ -1037,37 +1037,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_new_project_or_one_without_sessions_starts_its_steward() {
-        let agent = |root: &str, steward: bool| DashboardAgent {
+    fn only_a_new_project_or_one_without_sessions_starts_its_handler() {
+        let agent = |root: &str, handler: bool| DashboardAgent {
             project_root: root.into(),
-            steward,
+            handler,
             ..DashboardAgent::default()
         };
         let agents = [agent("/repos/corgi", true), agent("/repos/weather", false)];
 
-        // A project with a Steward, or with only workers, gets a worker.
-        assert!(!starts_steward(false, "/repos/corgi", &agents));
-        assert!(!starts_steward(false, "/repos/weather/", &agents));
-        // A project nobody works in, or a new one, starts its Steward.
-        assert!(starts_steward(false, "/repos/copy", &agents));
-        assert!(starts_steward(true, "/repos/brand-new", &agents));
-        assert!(!starts_steward(false, "  ", &agents));
+        // A project with a handler, or with only workers, gets a worker.
+        assert!(!starts_handler(false, "/repos/corgi", &agents));
+        assert!(!starts_handler(false, "/repos/weather/", &agents));
+        // A project nobody works in, or a new one, starts its handler.
+        assert!(starts_handler(false, "/repos/copy", &agents));
+        assert!(starts_handler(true, "/repos/brand-new", &agents));
+        assert!(!starts_handler(false, "  ", &agents));
     }
 
     #[test]
-    fn the_home_directory_never_starts_a_steward() {
+    fn the_home_directory_never_starts_a_handler() {
         let Some(home) = crate::paths::home() else {
             return;
         };
         let home = home.to_string_lossy().into_owned();
-        // No agent works there, and it is not even new: still no Steward.
-        assert!(!starts_steward(false, &home, &[]));
-        assert!(!starts_steward(true, &format!("{home}/"), &[]));
-        assert!(!starts_steward(false, "~", &[]));
+        // No agent works there, and it is not even new: still no handler.
+        assert!(!starts_handler(false, &home, &[]));
+        assert!(!starts_handler(true, &format!("{home}/"), &[]));
+        assert!(!starts_handler(false, "~", &[]));
         // Its subdirectories are projects like any other.
-        assert!(starts_steward(false, &format!("{home}/repos/corgi"), &[]));
+        assert!(starts_handler(false, &format!("{home}/repos/corgi"), &[]));
 
-        let refused = steward_plan(
+        let refused = handler_plan(
             &test_app(),
             &home,
             Harness::Claude,
@@ -1076,13 +1076,13 @@ mod tests {
             "".into(),
         )
         .err()
-        .expect("the home directory has no Steward");
+        .expect("the home directory has no Project handler");
         assert!(refused.to_string().contains("not a project"), "{refused}");
     }
 
     #[test]
     fn scratch_workspaces_are_numbered_from_the_second() {
-        assert_eq!(scratch_label(["corgi steward"].into_iter()), "scratch");
+        assert_eq!(scratch_label(["corgi handler"].into_iter()), "scratch");
         assert_eq!(scratch_label(["scratch"].into_iter()), "scratch 2");
         assert_eq!(
             scratch_label(["scratch", "scratch 3", "scratch 2"].into_iter()),
@@ -1091,9 +1091,9 @@ mod tests {
     }
 
     #[test]
-    fn new_and_replacement_stewards_are_marked_before_the_prompt_and_bound_after_renaming() {
+    fn new_and_replacement_handlers_are_marked_before_the_prompt_and_bound_after_renaming() {
         for session_known in [false, true] {
-            let (socket, server) = fake_herdr("steward-first-prompt", move |listener| {
+            let (socket, server) = fake_herdr("handler-first-prompt", move |listener| {
                 let mut marker = "session:previous-occupant".to_string();
                 for method in [
                     "pane.report_metadata",
@@ -1105,7 +1105,7 @@ mod tests {
                         assert_eq!(request["method"], method);
                         let result = match method {
                             "pane.report_metadata" => {
-                                marker = request["params"]["tokens"][CORGI_STEWARD_TOKEN]
+                                marker = request["params"]["tokens"][CORGI_HANDLER_TOKEN]
                                     .as_str()
                                     .unwrap()
                                     .to_string();
@@ -1117,18 +1117,18 @@ mod tests {
                                     if session_known {
                                         "session:launch-session"
                                     } else {
-                                        "steward-m-ta-sverige"
+                                        "handler-m-ta-sverige"
                                     }
                                 );
                                 json!({"type": "agent_prompted", "agent": {
                                     "pane_id": "w9:p1", "workspace_id": "w9", "tab_id": "w9:t1",
-                                    "name": "start-your-steward-session-for-m",
+                                    "name": "start-your-handler-session-for-m",
                                     "agent_session": {"value": "launch-session"}
                                 }})
                             }
                             _ => {
                                 assert_eq!(marker, "session:launch-session");
-                                json!({"type": "pane_read", "read": {"text": "Start your Steward session"}})
+                                json!({"type": "pane_read", "read": {"text": "Start your Project handler session"}})
                             }
                         };
                         json!({"result": result})
@@ -1138,7 +1138,7 @@ mod tests {
             let client = HerdrClient::from_socket_path(&socket);
             let started = AgentInfo {
                 pane_id: "w9:p1".into(),
-                name: Some("steward-m-ta-sverige".into()),
+                name: Some("handler-m-ta-sverige".into()),
                 agent_session: session_known.then(|| crate::model::AgentSession {
                     value: "launch-session".into(),
                     ..Default::default()
@@ -1148,8 +1148,8 @@ mod tests {
             prompt_launched_agent(
                 &client,
                 &started,
-                "Start your Steward session",
-                "steward-m-ta-sverige",
+                "Start your Project handler session",
+                "handler-m-ta-sverige",
                 true,
                 &mut Silent,
             )
@@ -1244,9 +1244,9 @@ mod tests {
     }
 
     #[test]
-    fn a_steward_launch_is_named_after_its_project_and_refused_while_one_runs() {
+    fn a_handler_launch_is_named_after_its_project_and_refused_while_one_runs() {
         let mut app = test_app();
-        let plan = steward_plan(
+        let plan = handler_plan(
             &app,
             "/repos/weather",
             Harness::Codex,
@@ -1254,24 +1254,24 @@ mod tests {
             "high".into(),
             "Hi".into(),
         )
-        .expect("no Steward runs yet");
-        assert_eq!(plan.name, "steward-weather");
+        .expect("no Project handler runs yet");
+        assert_eq!(plan.name, "handler-weather");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!(plan.model, "gpt-5-codex");
         assert_eq!(plan.effort, "high");
         assert_eq!(plan.checkout, Checkout::ProjectRoot);
-        assert!(matches!(plan.role, Role::Steward { .. }));
+        assert!(matches!(plan.role, Role::Handler { .. }));
 
         app.agents = vec![DashboardAgent {
             info: AgentInfo {
-                name: Some("steward-weather".into()),
+                name: Some("handler-weather".into()),
                 ..AgentInfo::default()
             },
             project_root: "/repos/weather".into(),
-            steward: true,
+            handler: true,
             ..DashboardAgent::default()
         }];
-        let refused = steward_plan(
+        let refused = handler_plan(
             &app,
             "/repos/weather",
             Harness::Claude,
@@ -1280,15 +1280,15 @@ mod tests {
             "".into(),
         )
         .err()
-        .expect("a Steward already runs");
+        .expect("a Project handler already runs");
         assert!(
             refused
                 .to_string()
-                .contains("already running as steward-weather")
+                .contains("already running as handler-weather")
         );
-        // Another project's Steward is no reason to refuse.
+        // Another project's handler is no reason to refuse.
         assert!(
-            steward_plan(
+            handler_plan(
                 &app,
                 "/repos/corgi",
                 Harness::Claude,
@@ -1301,32 +1301,32 @@ mod tests {
     }
 
     #[test]
-    fn a_spawn_is_a_stewards_only_from_that_stewards_pane() {
+    fn a_spawn_is_a_handlers_only_from_that_handlers_pane() {
         let mut app = test_app();
-        let agent = |pane_id: &str, name: &str, kind: &str, steward: bool| DashboardAgent {
+        let agent = |pane_id: &str, name: &str, kind: &str, handler: bool| DashboardAgent {
             info: AgentInfo {
                 pane_id: pane_id.into(),
                 name: Some(name.into()),
                 agent: Some(kind.into()),
                 ..AgentInfo::default()
             },
-            steward,
+            handler,
             ..DashboardAgent::default()
         };
         app.agents = vec![
-            agent("w1:p1", "steward-weather", "codex", true),
+            agent("w1:p1", "handler-weather", "codex", true),
             agent("w2:p1", "w-forecast", "claude", false),
-            // A Steward whose harness Herdr has not detected names none.
-            agent("w3:p1", "steward-corgi", " ", true),
+            // A handler whose harness Herdr has not detected names none.
+            agent("w3:p1", "handler-corgi", " ", true),
         ];
         assert_eq!(
-            calling_steward_harness(&app, Some("w1:p1")),
+            calling_handler_harness(&app, Some("w1:p1")),
             Some(Harness::Codex)
         );
-        assert!(calling_steward_harness(&app, Some("w2:p1")).is_none());
-        assert!(calling_steward_harness(&app, Some("w3:p1")).is_none());
-        assert!(calling_steward_harness(&app, Some("w9:p1")).is_none());
-        assert!(calling_steward_harness(&app, None).is_none());
+        assert!(calling_handler_harness(&app, Some("w2:p1")).is_none());
+        assert!(calling_handler_harness(&app, Some("w3:p1")).is_none());
+        assert!(calling_handler_harness(&app, Some("w9:p1")).is_none());
+        assert!(calling_handler_harness(&app, None).is_none());
     }
 
     #[test]
@@ -1366,10 +1366,10 @@ mod tests {
                         }),
                         "workspace.create" => {
                             assert_eq!(request["params"]["cwd"], "/tmp/corgi-plain-project");
-                            assert_eq!(request["params"]["label"], "corgi-plain-project steward");
+                            assert_eq!(request["params"]["label"], "corgi-plain-project handler");
                             json!({ "result": {
                                 "type": "workspace_created",
-                                "workspace": { "workspace_id": "w9", "label": "corgi-plain-project steward" },
+                                "workspace": { "workspace_id": "w9", "label": "corgi-plain-project handler" },
                                 "tab": { "tab_id": "w9:t1" },
                                 "root_pane": { "pane_id": "w9:p1" }
                             }})
@@ -1395,23 +1395,23 @@ mod tests {
         let (pane_id, location, root) = project_root_pane(
             &client,
             Path::new("/tmp/corgi-plain-project"),
-            "steward-corgi-plain-project",
+            "handler-corgi-plain-project",
             true,
             &mut Silent,
         )
         .expect("start in the plain project's root tab");
         assert_eq!(pane_id, "w9:p1");
         assert_eq!(root, "/tmp/corgi-plain-project");
-        assert!(location.contains("corgi-plain-project steward"));
+        assert!(location.contains("corgi-plain-project handler"));
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
 
-        // Once the Steward has made the directory a repository, Herdr still
+        // Once the handler has made the directory a repository, Herdr still
         // reports no Git details for that workspace; the recorded directory
         // is what finds it for the first worktree.
         let workspace = WorkspaceInfo {
             workspace_id: "w9".into(),
-            label: "corgi-plain-project steward".into(),
+            label: "corgi-plain-project handler".into(),
             tokens: BTreeMap::from([
                 (
                     CORGI_WORKSPACE_ROLE_TOKEN.into(),
@@ -1471,7 +1471,7 @@ mod tests {
                             json!({ "result": { "type": "session_snapshot", "snapshot": {
                                 "workspaces": [{
                                     "workspace_id": "w9",
-                                    "label": "corgi-root-reuse steward",
+                                    "label": "corgi-root-reuse handler",
                                     "tokens": {
                                         "corgi_workspace_role": "project-main",
                                         "corgi_project_main_tab": "w9:t1",
@@ -1490,7 +1490,7 @@ mod tests {
     }
 
     #[test]
-    fn a_steward_reuses_the_agentless_root_tab_of_its_project_workspace() {
+    fn a_handler_reuses_the_agentless_root_tab_of_its_project_workspace() {
         let (socket_path, server) = root_tab_herdr(
             "root-reuse",
             None,
@@ -1500,7 +1500,7 @@ mod tests {
         let (pane_id, location, root) = project_root_pane(
             &client,
             Path::new("/tmp/corgi-root-reuse"),
-            "steward-corgi-root-reuse",
+            "handler-corgi-root-reuse",
             true,
             &mut Silent,
         )
@@ -1510,11 +1510,11 @@ mod tests {
         fs::remove_file(socket_path).expect("remove fake socket");
         assert_eq!(pane_id, "w9:p1");
         assert_eq!(root, "/tmp/corgi-root-reuse");
-        assert_eq!(location, "in the corgi-root-reuse steward project tab");
+        assert_eq!(location, "in the corgi-root-reuse handler project tab");
     }
 
     #[test]
-    fn a_steward_opens_a_new_tab_beside_a_root_tab_that_runs_an_agent() {
+    fn a_handler_opens_a_new_tab_beside_a_root_tab_that_runs_an_agent() {
         let (socket_path, server) = root_tab_herdr(
             "root-busy",
             Some("mine"),
@@ -1529,7 +1529,7 @@ mod tests {
         let (pane_id, location, root) = project_root_pane(
             &client,
             Path::new("/tmp/corgi-root-reuse"),
-            "steward-corgi-root-reuse",
+            "handler-corgi-root-reuse",
             true,
             &mut Silent,
         )
@@ -1542,7 +1542,7 @@ mod tests {
         let tab = &requests[3]["params"];
         assert_eq!(tab["workspace_id"], "w9");
         assert_eq!(tab["cwd"], "/tmp/corgi-root-reuse");
-        assert_eq!(tab["label"], "steward-corgi-root-reuse");
+        assert_eq!(tab["label"], "handler-corgi-root-reuse");
         assert_eq!(tab["focus"], false);
     }
 
@@ -1571,11 +1571,11 @@ mod tests {
     }
 
     #[test]
-    fn the_steward_key_launches_as_last_time_else_on_the_form_presets() {
+    fn the_handler_key_launches_as_last_time_else_on_the_form_presets() {
         let app = test_app();
         let root = "/repos/weather";
         // Nothing saved: the form's preset harness and its own defaults.
-        let plan = dashboard_steward_plan(&app, root, None, || Harness::Codex).expect("plan");
+        let plan = dashboard_handler_plan(&app, root, None, || Harness::Codex).expect("plan");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!((plan.model.as_str(), plan.effort.as_str()), ("", ""));
         assert_eq!(plan.prompt, "");
@@ -1583,22 +1583,22 @@ mod tests {
         assert_eq!(plan.project, Path::new(root));
         assert!(matches!(
             plan.role,
-            Role::Steward {
+            Role::Handler {
                 handover_pane: None
             }
         ));
-        // A preset no Steward runs on falls back to the first that does.
-        let plan = dashboard_steward_plan(&app, root, None, || Harness::OpenCode).expect("plan");
-        assert_eq!(plan.harness, Harness::STEWARDS[0]);
+        // A preset no handler runs on falls back to the first that does.
+        let plan = dashboard_handler_plan(&app, root, None, || Harness::OpenCode).expect("plan");
+        assert_eq!(plan.harness, Harness::HANDLERS[0]);
         // The last launch wins over the preset.
-        let saved = steward::Launch {
+        let saved = handler::Launch {
             kind: "codex".into(),
             model: "gpt-5-codex".into(),
             effort: "high".into(),
             extra_args: vec!["--search".into()],
         };
         let plan =
-            dashboard_steward_plan(&app, root, Some(saved), || Harness::Claude).expect("plan");
+            dashboard_handler_plan(&app, root, Some(saved), || Harness::Claude).expect("plan");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!(plan.model, "gpt-5-codex");
         assert_eq!(plan.effort, "high");
@@ -1606,12 +1606,12 @@ mod tests {
     }
 
     #[test]
-    fn the_steward_key_starts_the_selected_projects_steward_or_focuses_the_running_one() {
-        // A name no developer's own Steward state directory has.
-        let root = "/repos/corgi-s-key-test";
+    fn the_handler_key_starts_the_selected_projects_handler_or_focuses_the_running_one() {
+        // A name no developer's own handler state directory has.
+        let root = "/repos/corgi-h-key-test";
         let worker = DashboardAgent {
             info: AgentInfo {
-                name: Some("corgi-s-key-test".into()),
+                name: Some("corgi-h-key-test".into()),
                 pane_id: "w1:p1".into(),
                 ..AgentInfo::default()
             },
@@ -1620,17 +1620,17 @@ mod tests {
         };
 
         let mut app = test_app();
-        press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         assert!(matches!(app.overlay, Overlay::None));
         assert!(app.status.contains("Select an agent"), "{}", app.status);
 
         // Only a worker runs: the key starts the launch at once, no form.
         app.agents = vec![worker.clone()];
-        press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         assert!(
             app.overlay
                 .new_agent_launch()
-                .is_some_and(|launch| launch.name == "steward-corgi-s-key-test"),
+                .is_some_and(|launch| launch.name == "handler-corgi-h-key-test"),
             "{:?}",
             app.overlay.new_agent_launch()
         );
@@ -1638,9 +1638,9 @@ mod tests {
             !app.launch_job.is_running()
         });
 
-        // With the Steward running, the key selects and focuses it, walking
+        // With the handler running, the key selects and focuses it, walking
         // to its workspace and tab first as Enter does, and starts nothing.
-        let (socket_path, server) = fake_herdr("steward-key-focus", |listener| {
+        let (socket_path, server) = fake_herdr("handler-key-focus", |listener| {
             let mut requests = Vec::new();
             for (method, reply) in [
                 ("workspace.focus", "workspace_info"),
@@ -1665,20 +1665,20 @@ mod tests {
         app.agents = vec![
             DashboardAgent {
                 info: AgentInfo {
-                    name: Some("steward-corgi-s-key-test".into()),
+                    name: Some("handler-corgi-h-key-test".into()),
                     pane_id: "w2:p1".into(),
                     workspace_id: "w2".into(),
                     tab_id: "w2:t3".into(),
                     ..AgentInfo::default()
                 },
                 project_root: root.into(),
-                steward: true,
+                handler: true,
                 ..DashboardAgent::default()
             },
             worker,
         ];
         app.selected = 1;
-        press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         let requests = server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
         assert_eq!(
@@ -1694,7 +1694,7 @@ mod tests {
         assert_eq!(app.selected, 0);
         assert_eq!(
             app.status,
-            "Focused corgi-s-key-test's Steward, steward-corgi-s-key-test"
+            "Focused corgi-h-key-test's Project handler, handler-corgi-h-key-test"
         );
     }
 

@@ -1,4 +1,4 @@
-//! Waking each project's Steward about its agents, and handing a Steward
+//! Waking each project's handler about its agents, and handing a handler
 //! whose context is filling up, or whose prompt cache is about to go cold,
 //! over to a fresh session.
 
@@ -13,12 +13,12 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
+    handler::{self, CORGI_HANDLER_TOKEN},
     harness::Harness,
     herdr::HerdrClient,
     job::Job,
     model::{AgentState, DashboardAgent},
     paths::socket_state_file,
-    steward::{self, CORGI_STEWARD_TOKEN},
     time::unix_now,
 };
 
@@ -30,40 +30,40 @@ use super::{
     progress::Silent,
 };
 
-/// How long a Steward that handed over has to exit, polled this often.
-const STEWARD_EXIT_POLLS: usize = 60;
-const STEWARD_EXIT_POLL_DELAY: Duration = Duration::from_millis(250);
+/// How long a handler that handed over has to exit, polled this often.
+const HANDLER_EXIT_POLLS: usize = 60;
+const HANDLER_EXIT_POLL_DELAY: Duration = Duration::from_millis(250);
 
-/// Wakes each project's Steward when another agent of that project stops:
-/// every agent whose project has a running Steward counts, whoever started
+/// Wakes each project's handler when another agent of that project stops:
+/// every agent whose project has a running handler counts, whoever started
 /// it. Every dashboard observes, so one that takes over waking has a baseline
 /// and never mistakes an old state for news; only the dashboard holding the
-/// lock for its Herdr socket sends, so a Steward hears each stop once. The
-/// same dashboard hands Stewards over to fresh sessions.
+/// lock for its Herdr socket sends, so a handler hears each stop once. The
+/// same dashboard hands handlers over to fresh sessions.
 #[derive(Debug, Default)]
-pub(super) struct StewardWaker {
+pub(super) struct HandlerWaker {
     /// The wake lock, while this dashboard holds it.
     lock: Option<fs::File>,
     /// The Corgi binary the wake messages name.
     corgi: Option<PathBuf>,
     /// Each agent's transitions, by the name its messages use.
-    agents: HashMap<String, steward::Transitions>,
+    agents: HashMap<String, handler::Transitions>,
     /// Messages not sent yet, by project root, keeping each agent's newest.
-    /// They are for whichever Steward the project has when they go out, so
-    /// the ones a handing-over Steward did not get reach its successor.
+    /// They are for whichever handler the project has when they go out, so
+    /// the ones a handing-over handler did not get reach its successor.
     pending: HashMap<String, BTreeMap<String, String>>,
-    /// Each project's Steward handover, by project root.
-    handovers: HashMap<String, steward::Handover>,
+    /// Each project's handler handover, by project root.
+    handovers: HashMap<String, handler::Handover>,
     /// Replacements running in the background, by project root, each ending
     /// with its status line or error.
     replacements: Vec<(String, Job<Result<String>>)>,
 }
 
-/// What a handover at one refresh asks the dashboard to do for one Steward.
+/// What a handover at one refresh asks the dashboard to do for one handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HandoverAction {
     /// `None` when there is only a new baseline to keep on the pane.
-    step: Option<steward::HandoverStep>,
+    step: Option<handler::HandoverStep>,
     /// The session's baseline, once recorded.
     baseline: Option<u64>,
     /// The session's handover request token, kept alongside the baseline.
@@ -76,8 +76,8 @@ struct HandoverAction {
     change: u64,
 }
 
-impl StewardWaker {
-    /// Whether this dashboard wakes Stewards, taking the lock at `path` if
+impl HandlerWaker {
+    /// Whether this dashboard wakes handlers, taking the lock at `path` if
     /// no other dashboard holds it. The lock goes with the process.
     pub(super) fn lead(&mut self, path: &Path) -> bool {
         if self.lock.is_none() {
@@ -89,33 +89,33 @@ impl StewardWaker {
         self.lock.is_some()
     }
 
-    /// Whether this dashboard wakes Stewards of `client`'s Herdr session,
+    /// Whether this dashboard wakes handlers of `client`'s Herdr session,
     /// taking the lock if no other dashboard holds it.
     pub(super) fn leads(&mut self, client: &HerdrClient) -> bool {
         wake_lock_path(client.socket_path()).is_some_and(|lock| self.lead(&lock))
     }
 
-    /// Whether `root`'s Steward is handing over, so wakes for it wait for the
-    /// Steward that takes over.
+    /// Whether `root`'s handler is handing over, so wakes for it wait for the
+    /// handler that takes over.
     fn handing_over(&self, root: &str) -> bool {
         self.handovers
             .get(root)
-            .is_some_and(steward::Handover::in_progress)
+            .is_some_and(handler::Handover::in_progress)
     }
 
     /// Records the agents' states from one refresh, queueing a message for
     /// each one that stopped.
     fn observe(&mut self, agents: &[DashboardAgent], corgi: &Path) {
-        let stewards: HashSet<&str> = agents
+        let handlers: HashSet<&str> = agents
             .iter()
-            .filter(|agent| agent.steward)
+            .filter(|agent| agent.handler)
             .map(|agent| agent.project_root.as_str())
             .collect();
         let mut seen = HashSet::new();
-        // A scratch agent belongs to no project, so no Steward hears of it.
+        // A scratch agent belongs to no project, so no handler hears of it.
         for agent in agents
             .iter()
-            .filter(|agent| !agent.steward && !agent.scratch)
+            .filter(|agent| !agent.handler && !agent.scratch)
         {
             let name = agent.info.name.as_deref().unwrap_or(&agent.info.pane_id);
             seen.insert(name.to_string());
@@ -126,21 +126,21 @@ impl StewardWaker {
                 .observe(agent.info.state, agent.info.state_change_seq);
             let root = agent.project_root.as_str();
             if let Some(state) = woke
-                && (stewards.contains(root) || self.handing_over(root))
+                && (handlers.contains(root) || self.handing_over(root))
             {
                 self.pending
                     .entry(root.to_string())
                     .or_default()
-                    .insert(name.to_string(), steward::wake_message(corgi, name, state));
+                    .insert(name.to_string(), handler::wake_message(corgi, name, state));
             }
         }
         self.agents.retain(|name, _| seen.contains(name));
     }
 
-    /// Advances each Steward's handover by one refresh, with `percent` as
+    /// Advances each handler's handover by one refresh, with `percent` as
     /// the threshold and `idle_secs` giving each harness's idle time, and
     /// returns what to do about it. `note_since(root, at)` says whether
-    /// `root`'s Steward wrote its note since `at`, and `drafting(steward)`
+    /// `root`'s handler wrote its note since `at`, and `drafting(handler)`
     /// whether the user is writing in its input box, which holds a due
     /// request, or the replacement, back for a later refresh.
     fn hand_over(
@@ -155,38 +155,38 @@ impl StewardWaker {
         let busy: HashSet<&str> = agents
             .iter()
             .filter(|agent| {
-                !agent.steward
+                !agent.handler
                     && matches!(agent.info.state, AgentState::Working | AgentState::Blocked)
             })
             .map(|agent| agent.project_root.as_str())
             .collect();
         let mut actions = Vec::new();
         // The home directory is never a project, so nothing there is
-        // handed over as its Steward.
+        // handed over as its handler.
         for agent in agents
             .iter()
-            .filter(|agent| agent.steward && !agent.scratch)
+            .filter(|agent| agent.handler && !agent.scratch)
         {
             let (Some(name), Some(session)) = (
                 agent.info.name.as_deref(),
-                steward::native_session(&agent.info),
+                handler::native_session(&agent.info),
             ) else {
                 continue;
             };
             let root = agent.project_root.as_str();
             let token = |name| agent.info.tokens.get(name).map(String::as_str);
             let harness = agent.info.harness();
-            let sighting = steward::Sighting {
+            let sighting = handler::Sighting {
                 session,
                 state: agent.info.state,
                 change: agent.info.state_change_seq,
                 context_percent: agent.context_percent,
                 context_tokens: agent.context_tokens,
                 workers_busy: busy.contains(root),
-                token: token(steward::HANDOVER_TOKEN),
-                baseline_token: token(steward::BASELINE_TOKEN),
+                token: token(handler::HANDOVER_TOKEN),
+                baseline_token: token(handler::BASELINE_TOKEN),
             };
-            let limits = steward::Thresholds {
+            let limits = handler::Thresholds {
                 percent,
                 idle_secs: idle_secs(&harness),
             };
@@ -216,11 +216,11 @@ impl StewardWaker {
                 });
             }
         }
-        // A project whose Steward is gone keeps its record only while the
+        // A project whose handler is gone keeps its record only while the
         // replacement that removed it runs.
         let live: HashSet<&str> = agents
             .iter()
-            .filter(|agent| agent.steward)
+            .filter(|agent| agent.handler)
             .map(|agent| agent.project_root.as_str())
             .collect();
         self.handovers
@@ -232,19 +232,19 @@ impl StewardWaker {
     fn replaced(&mut self, root: &str, succeeded: bool, agents: &[DashboardAgent]) {
         let change = agents
             .iter()
-            .find(|agent| agent.steward && agent.project_root == root)
+            .find(|agent| agent.handler && agent.project_root == root)
             .map_or(0, |agent| agent.info.state_change_seq);
         if let Some(handover) = self.handovers.get_mut(root) {
             handover.replaced(succeeded, change);
         }
     }
 
-    /// Sends each project's Steward its queued messages, one line each in
-    /// one prompt, once it is between turns. A Steward that is working or
+    /// Sends each project's handler its queued messages, one line each in
+    /// one prompt, once it is between turns. A handler that is working or
     /// blocked keeps them until a later refresh, so they arrive after its
     /// turn, and so does one whose input box holds the user's draft, as
     /// `drafting` says, and one handing over, for its successor; a project
-    /// without a Steward drops them.
+    /// without a handler drops them.
     fn deliver(
         &mut self,
         agents: &[DashboardAgent],
@@ -255,13 +255,13 @@ impl StewardWaker {
         self.pending.retain(|root, messages| {
             if handovers
                 .get(root)
-                .is_some_and(steward::Handover::in_progress)
+                .is_some_and(handler::Handover::in_progress)
             {
                 return true;
             }
-            let Some((agent, steward)) = agents.iter().find_map(|agent| {
+            let Some((agent, handler)) = agents.iter().find_map(|agent| {
                 let name = agent.info.name.as_deref()?;
-                (agent.steward && agent.project_root == *root).then_some((agent, name))
+                (agent.handler && agent.project_root == *root).then_some((agent, name))
             }) else {
                 return false;
             };
@@ -271,19 +271,19 @@ impl StewardWaker {
                 return true;
             }
             let text = messages.values().cloned().collect::<Vec<_>>().join("\n");
-            !prompt(steward, &text)
+            !prompt(handler, &text)
         });
     }
 
-    /// Takes one refresh's agents: tells each project's Steward about its
-    /// agents that stopped since the last one, and hands Stewards whose
+    /// Takes one refresh's agents: tells each project's handler about its
+    /// agents that stopped since the last one, and hands handlers whose
     /// handover is due over to fresh sessions, when this dashboard is
-    /// the one that wakes Stewards. Returns the status line to show, if any.
+    /// the one that wakes handlers. Returns the status line to show, if any.
     fn tick(&mut self, client: &HerdrClient, agents: &[DashboardAgent]) -> Option<String> {
         let leads = self.leads(client);
         let corgi = self.corgi.get_or_insert_with(|| {
-            let installed = client.plugin_root(steward::PLUGIN_ID).ok().flatten();
-            steward::corgi_bin(installed.as_deref()).unwrap_or_else(|_| PathBuf::from("corgi"))
+            let installed = client.plugin_root(handler::PLUGIN_ID).ok().flatten();
+            handler::corgi_bin(installed.as_deref()).unwrap_or_else(|_| PathBuf::from("corgi"))
         });
         let corgi = corgi.clone();
         self.observe(agents, &corgi);
@@ -306,19 +306,21 @@ impl StewardWaker {
         });
         for (root, result) in finished {
             self.replaced(&root, result.is_ok(), agents);
-            status =
-                Some(result.unwrap_or_else(|error| format!("Steward handover failed: {error:#}")));
+            status = Some(
+                result
+                    .unwrap_or_else(|error| format!("Project handler handover failed: {error:#}")),
+            );
         }
-        let percent = steward::handover_percent();
+        let percent = handler::handover_percent();
         let actions = self.hand_over(
             agents,
             percent,
-            steward::handover_idle_secs,
+            handler::handover_idle_secs,
             unix_now(),
             |root, at| {
-                steward::state_dir(root).is_ok_and(|dir| steward::note_written_since(&dir, at))
+                handler::state_dir(root).is_ok_and(|dir| handler::note_written_since(&dir, at))
             },
-            |steward| holds_draft(client, steward),
+            |handler| holds_draft(client, handler),
         );
         for action in actions {
             let name = &action.name;
@@ -327,22 +329,22 @@ impl StewardWaker {
                 continue;
             };
             match step {
-                steward::HandoverStep::Ask(at, trigger) => {
-                    let asked = steward::state_dir(&action.root).and_then(|dir| {
-                        client.prompt_agent(name, &steward::handover_request(&dir, trigger))
+                handler::HandoverStep::Ask(at, trigger) => {
+                    let asked = handler::state_dir(&action.root).and_then(|dir| {
+                        client.prompt_agent(name, &handler::handover_request(&dir, trigger))
                     });
                     status = Some(match asked {
                         Ok(_) => {
                             let asked = format!("{at} {}", action.session);
                             report_tokens(client, &action, Some(&asked));
                             match trigger {
-                                steward::Trigger::Full(percent) => format!(
+                                handler::Trigger::Full(percent) => format!(
                                     "{name}'s context is past {percent}%: asked for its handover note"
                                 ),
-                                steward::Trigger::Idle(minutes) => format!(
+                                handler::Trigger::Idle(minutes) => format!(
                                     "{name} has been idle {minutes} min, its prompt cache about to expire: asked for its handover note"
                                 ),
-                                steward::Trigger::Update => format!(
+                                handler::Trigger::Update => format!(
                                     "{name} worked after writing its handover note: asked to bring it up to date"
                                 ),
                             }
@@ -355,14 +357,14 @@ impl StewardWaker {
                         }
                     });
                 }
-                steward::HandoverStep::Replace => {
+                handler::HandoverStep::Replace => {
                     status = Some(format!("Replacing {name} with a fresh session…"));
                     let client = client.clone();
                     let root = action.root.clone();
-                    let replacement = Job::spawn(move |_| replace_steward(&client, &action));
+                    let replacement = Job::spawn(move |_| replace_handler(&client, &action));
                     self.replacements.push((root, replacement));
                 }
-                steward::HandoverStep::NoNote => {
+                handler::HandoverStep::NoNote => {
                     status = Some(format!(
                         "{name} wrote no handover note: it keeps its session, and is asked again after a later turn"
                     ));
@@ -371,25 +373,25 @@ impl StewardWaker {
         }
         self.deliver(
             agents,
-            |steward| holds_draft(client, steward),
-            |steward, text| client.prompt_agent(steward, text).is_ok(),
+            |handler| holds_draft(client, handler),
+            |handler, text| client.prompt_agent(handler, text).is_ok(),
         );
         status
     }
 }
 
-/// Whether the user is writing in `steward`'s input box, so that nothing is
+/// Whether the user is writing in `handler`'s input box, so that nothing is
 /// typed into their draft. A screen that cannot be read, or a harness whose
 /// box Corgi does not know, counts as no draft: the text goes out as it did
 /// before this check, rather than waiting for good.
-fn holds_draft(client: &HerdrClient, steward: &DashboardAgent) -> bool {
+fn holds_draft(client: &HerdrClient, handler: &DashboardAgent) -> bool {
     let screen = client
-        .read_agent_styled(&steward.info.pane_id)
+        .read_agent_styled(&handler.info.pane_id)
         .map(|read| read.text);
-    screen_holds_draft(screen, &steward.info.harness())
+    screen_holds_draft(screen, &handler.info.harness())
 }
 
-/// Whether `screen`, as read from a `harness` Steward's pane, shows a draft.
+/// Whether `screen`, as read from a `harness` handler's pane, shows a draft.
 fn screen_holds_draft(screen: Result<String>, harness: &Harness) -> bool {
     screen
         .ok()
@@ -397,8 +399,8 @@ fn screen_holds_draft(screen: Result<String>, harness: &Harness) -> bool {
         .unwrap_or(false)
 }
 
-/// Keeps a Steward's handover tokens on its pane: its `handover` request,
-/// if it has one, and its baseline. The marker goes with them, so the Steward
+/// Keeps a handler's handover tokens on its pane: its `handover` request,
+/// if it has one, and its baseline. The marker goes with them, so the handler
 /// keeps it whether Herdr merges tokens or replaces them, and all of them go
 /// into Corgi's record of its marks.
 fn report_tokens(client: &HerdrClient, action: &HandoverAction, handover: Option<&str>) {
@@ -406,11 +408,11 @@ fn report_tokens(client: &HerdrClient, action: &HandoverAction, handover: Option
         .baseline
         .map(|baseline| format!("{baseline} {}", action.session));
     let tokens: Vec<(&str, &str)> = [
-        Some((CORGI_STEWARD_TOKEN, action.name.as_str())),
-        handover.map(|handover| (steward::HANDOVER_TOKEN, handover)),
+        Some((CORGI_HANDLER_TOKEN, action.name.as_str())),
+        handover.map(|handover| (handler::HANDOVER_TOKEN, handover)),
         baseline
             .as_deref()
-            .map(|baseline| (steward::BASELINE_TOKEN, baseline)),
+            .map(|baseline| (handler::BASELINE_TOKEN, baseline)),
     ]
     .into_iter()
     .flatten()
@@ -428,7 +430,7 @@ fn report_tokens(client: &HerdrClient, action: &HandoverAction, handover: Option
 /// process spawned on another thread at that moment briefly holds a copy of
 /// the descriptor, and with it the lock, so the next dashboard would find
 /// it still taken.
-impl Drop for StewardWaker {
+impl Drop for HandlerWaker {
     fn drop(&mut self) {
         if let Some(lock) = &self.lock {
             let _ = lock.unlock();
@@ -436,9 +438,9 @@ impl Drop for StewardWaker {
     }
 }
 
-/// The launch of the Steward that takes over from the one in `action`,
+/// The launch of the handler that takes over from the one in `action`,
 /// started the way `launch` records.
-fn successor_plan(action: &HandoverAction, launch: steward::Launch) -> LaunchPlan {
+fn successor_plan(action: &HandoverAction, launch: handler::Launch) -> LaunchPlan {
     LaunchPlan {
         name: action.name.clone(),
         harness: Harness::from_kind(&launch.kind),
@@ -449,18 +451,18 @@ fn successor_plan(action: &HandoverAction, launch: steward::Launch) -> LaunchPla
         new_project: false,
         checkout: Checkout::ProjectRoot,
         extra_args: launch.extra_args,
-        role: Role::Steward {
+        role: Role::Handler {
             handover_pane: Some(action.pane_id.clone()),
         },
     }
 }
 
-/// Replaces the Steward that handed over in `action` with a fresh session
+/// Replaces the handler that handed over in `action` with a fresh session
 /// in the same pane: the old one exits through its harness's own command,
 /// which leaves its transcript on disk and its pane at the shell, and the new
-/// one starts there under the same name, marked as the Steward, the way it
+/// one starts there under the same name, marked as the handler, the way it
 /// was launched, and with a first prompt that takes up the note.
-fn replace_steward(client: &HerdrClient, action: &HandoverAction) -> Result<String> {
+fn replace_handler(client: &HerdrClient, action: &HandoverAction) -> Result<String> {
     let HandoverAction {
         root,
         name,
@@ -471,8 +473,8 @@ fn replace_steward(client: &HerdrClient, action: &HandoverAction) -> Result<Stri
     client
         .prompt_agent(name, harness.exit_command())
         .with_context(|| format!("ask {name} to exit"))?;
-    let exited = (0..STEWARD_EXIT_POLLS).any(|_| {
-        thread::sleep(STEWARD_EXIT_POLL_DELAY);
+    let exited = (0..HANDLER_EXIT_POLLS).any(|_| {
+        thread::sleep(HANDLER_EXIT_POLL_DELAY);
         client.snapshot().is_ok_and(|snapshot| {
             !snapshot
                 .agents
@@ -486,7 +488,7 @@ fn replace_steward(client: &HerdrClient, action: &HandoverAction) -> Result<Stri
     );
     let plan = successor_plan(
         action,
-        steward::launch_of(&steward::state_dir(root)?, harness),
+        handler::launch_of(&handler::state_dir(root)?, harness),
     );
     launch_agent(client, &plan, &mut Silent)
         .with_context(|| format!("{name} exited, but its successor did not start"))?;
@@ -494,18 +496,18 @@ fn replace_steward(client: &HerdrClient, action: &HandoverAction) -> Result<Stri
 }
 
 /// The lock that makes one dashboard per Herdr socket the one that wakes
-/// Stewards, named after the socket so that dashboards of other Herdr
+/// handlers, named after the socket so that dashboards of other Herdr
 /// sessions wake their own.
 fn wake_lock_path(socket: &Path) -> Option<PathBuf> {
     socket_state_file("wake", socket, "lock")
 }
 
 impl App {
-    /// Tells each project's Steward about its agents that stopped since the
-    /// last refresh, and hands Stewards whose handover is due over to
-    /// fresh sessions, when this dashboard is the one that wakes Stewards.
-    pub(super) fn wake_stewards(&mut self) {
-        let Some(waker) = self.steward_waker.as_mut() else {
+    /// Tells each project's handler about its agents that stopped since the
+    /// last refresh, and hands handlers whose handover is due over to
+    /// fresh sessions, when this dashboard is the one that wakes handlers.
+    pub(super) fn wake_handlers(&mut self) {
+        let Some(waker) = self.handler_waker.as_mut() else {
             return;
         };
         if let Some(status) = waker.tick(&self.client, &self.agents) {
@@ -525,7 +527,7 @@ mod tests {
 
     use super::*;
 
-    fn project_agent(name: &str, root: &str, steward: bool, state: AgentState) -> DashboardAgent {
+    fn project_agent(name: &str, root: &str, handler: bool, state: AgentState) -> DashboardAgent {
         DashboardAgent {
             info: AgentInfo {
                 pane_id: format!("{name}:p1"),
@@ -534,31 +536,31 @@ mod tests {
                 ..AgentInfo::default()
             },
             project_root: root.into(),
-            steward,
+            handler,
             ..DashboardAgent::default()
         }
     }
 
     #[test]
-    fn the_dashboard_wakes_a_steward_once_per_stop_of_its_projects_agents() {
+    fn the_dashboard_wakes_a_handler_once_per_stop_of_its_projects_agents() {
         use AgentState::{Done, Idle, Working};
         let corgi = Path::new("/opt/corgi");
-        let mut waker = StewardWaker::default();
+        let mut waker = HandlerWaker::default();
         let sent = std::cell::RefCell::new(Vec::new());
-        let refresh = |waker: &mut StewardWaker, agents: &[DashboardAgent]| {
+        let refresh = |waker: &mut HandlerWaker, agents: &[DashboardAgent]| {
             waker.observe(agents, corgi);
             waker.deliver(
                 agents,
                 |_| false,
-                |steward, text| {
-                    sent.borrow_mut().push(format!("{steward}: {text}"));
+                |handler, text| {
+                    sent.borrow_mut().push(format!("{handler}: {text}"));
                     true
                 },
             );
         };
-        let agents = |steward: AgentState, worker: AgentState, other: AgentState| {
+        let agents = |handler: AgentState, worker: AgentState, other: AgentState| {
             vec![
-                project_agent("steward-weather", "/repos/weather", true, steward),
+                project_agent("handler-weather", "/repos/weather", true, handler),
                 project_agent("w-forecast", "/repos/weather", false, worker),
                 project_agent("w-elsewhere", "/repos/corgi", false, other),
             ]
@@ -566,26 +568,26 @@ mod tests {
         // The first refresh is a baseline: nothing is news yet.
         refresh(&mut waker, &agents(Idle, Done, Done));
         refresh(&mut waker, &agents(Working, Working, Working));
-        // The worker stops while its Steward is mid-turn: the message waits.
+        // The worker stops while its handler is mid-turn: the message waits.
         refresh(&mut waker, &agents(Working, Done, Done));
         refresh(&mut waker, &agents(Working, Done, Done));
         refresh(&mut waker, &agents(Done, Done, Done));
         refresh(&mut waker, &agents(Idle, Idle, Idle));
         assert_eq!(
             *sent.borrow(),
-            ["steward-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
+            ["handler-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
         );
-        // The Steward's own turns, and another project's agents, wake nobody.
+        // The handler's own turns, and another project's agents, wake nobody.
         refresh(&mut waker, &agents(Working, Idle, Working));
         refresh(&mut waker, &agents(Done, Idle, Done));
         assert_eq!(sent.borrow().len(), 1);
     }
 
     #[test]
-    fn a_renamed_steward_receives_wakes_and_keeps_its_handover_session() {
+    fn a_renamed_handler_receives_wakes_and_keeps_its_handover_session() {
         use AgentState::{Done, Idle, Working};
         let root = "/repos/weather";
-        let mut owner = project_agent("steward-weather", root, false, Idle);
+        let mut owner = project_agent("handler-weather", root, false, Idle);
         owner.info.agent_session = Some(crate::model::AgentSession {
             value: "s1".into(),
             ..Default::default()
@@ -593,15 +595,15 @@ mod tests {
         owner
             .info
             .tokens
-            .insert(CORGI_STEWARD_TOKEN.into(), steward::marker("", Some("s1")));
-        owner.steward = steward::is_steward(&owner.info);
-        let mut waker = StewardWaker::default();
+            .insert(CORGI_HANDLER_TOKEN.into(), handler::marker("", Some("s1")));
+        owner.handler = handler::is_handler(&owner.info);
+        let mut waker = HandlerWaker::default();
         waker.observe(
             &[owner.clone(), project_agent("worker", root, false, Working)],
             Path::new("/opt/corgi"),
         );
         owner.info.name = Some("renamed-task".into());
-        owner.steward = steward::is_steward(&owner.info);
+        owner.handler = handler::is_handler(&owner.info);
         let agents = [owner.clone(), project_agent("worker", root, false, Done)];
         waker.observe(&agents, Path::new("/opt/corgi"));
         let mut recipients = Vec::new();
@@ -623,17 +625,17 @@ mod tests {
         assert_eq!(action.session, "s1");
         assert_eq!(
             action.step,
-            Some(steward::HandoverStep::Ask(100, steward::Trigger::Full(50)))
+            Some(handler::HandoverStep::Ask(100, handler::Trigger::Full(50)))
         );
         let (socket, server) = crate::test_support::fake_herdr("renamed-handover", |listener| {
             crate::test_support::answer(&listener, |request| {
                 assert_eq!(request["method"], "pane.report_metadata");
                 assert_eq!(
-                    request["params"]["tokens"][CORGI_STEWARD_TOKEN],
+                    request["params"]["tokens"][CORGI_HANDLER_TOKEN],
                     "session:s1"
                 );
                 assert_eq!(
-                    request["params"]["tokens"][steward::HANDOVER_TOKEN],
+                    request["params"]["tokens"][handler::HANDOVER_TOKEN],
                     "100 s1"
                 );
                 serde_json::json!({"result": {"type": "ok"}})
@@ -649,26 +651,26 @@ mod tests {
     }
 
     #[test]
-    fn a_scratch_agent_wakes_no_steward_and_none_is_handed_over_in_home() {
+    fn a_scratch_agent_wakes_no_handler_and_none_is_handed_over_in_home() {
         use AgentState::{Done, Working};
-        let scratch = |name: &str, steward: bool, state: AgentState| DashboardAgent {
+        let scratch = |name: &str, handler: bool, state: AgentState| DashboardAgent {
             scratch: true,
             info: AgentInfo {
                 agent_session: Some(crate::model::AgentSession {
                     value: format!("{name}-session"),
                     ..Default::default()
                 }),
-                ..project_agent(name, "/home/me", steward, state).info
+                ..project_agent(name, "/home/me", handler, state).info
             },
             context_percent: Some(99),
-            ..project_agent(name, "/home/me", steward, state)
+            ..project_agent(name, "/home/me", handler, state)
         };
-        let mut waker = StewardWaker::default();
-        // Even beside a Steward someone started in home before it was
+        let mut waker = HandlerWaker::default();
+        // Even beside a handler someone started in home before it was
         // refused there, a scratch agent that stops is nobody's news.
         let agents = |state| {
             [
-                scratch("steward-me", true, Done),
+                scratch("handler-me", true, Done),
                 scratch("scratch", false, state),
             ]
         };
@@ -682,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn a_wake_waits_while_the_user_writes_in_the_stewards_input_box() {
+    fn a_wake_waits_while_the_user_writes_in_the_handlers_input_box() {
         use AgentState::{Done, Working};
         let screen = |name: &str| {
             fs::read_to_string(
@@ -702,22 +704,22 @@ mod tests {
             ),
         ] {
             let corgi = Path::new("/opt/corgi");
-            let mut waker = StewardWaker::default();
+            let mut waker = HandlerWaker::default();
             let mut sent = Vec::new();
             let mut refresh = |worker, shown: Result<String>| {
-                let mut steward = project_agent("steward-weather", "/repos/weather", true, Done);
-                steward.info.agent = Some(harness.into());
+                let mut handler = project_agent("handler-weather", "/repos/weather", true, Done);
+                handler.info.agent = Some(harness.into());
                 let agents = [
-                    steward,
+                    handler,
                     project_agent("w-forecast", "/repos/weather", false, worker),
                 ];
                 waker.observe(&agents, corgi);
                 let mut shown = Some(shown);
                 waker.deliver(
                     &agents,
-                    |steward| {
+                    |handler| {
                         let screen = shown.take().expect("one read per refresh");
-                        screen_holds_draft(screen, &steward.info.harness())
+                        screen_holds_draft(screen, &handler.info.harness())
                     },
                     |_, text| {
                         sent.push(text.to_string());
@@ -751,20 +753,20 @@ mod tests {
     }
 
     #[test]
-    fn a_handover_request_waits_while_the_user_writes_in_the_stewards_input_box() {
-        use crate::steward::{HandoverStep::Ask, Trigger::Full};
-        let mut steward =
-            project_agent("steward-weather", "/repos/weather", true, AgentState::Idle);
-        steward.info.agent_session = Some(crate::model::AgentSession {
+    fn a_handover_request_waits_while_the_user_writes_in_the_handlers_input_box() {
+        use crate::handler::{HandoverStep::Ask, Trigger::Full};
+        let mut handler =
+            project_agent("handler-weather", "/repos/weather", true, AgentState::Idle);
+        handler.info.agent_session = Some(crate::model::AgentSession {
             value: "s1".into(),
             ..Default::default()
         });
-        steward.context_percent = Some(70);
-        let mut waker = StewardWaker::default();
+        handler.context_percent = Some(70);
+        let mut waker = HandlerWaker::default();
         let mut steps = |now, drafting: bool| {
             waker
                 .hand_over(
-                    std::slice::from_ref(&steward),
+                    std::slice::from_ref(&handler),
                     50,
                     |_| None,
                     now,
@@ -781,8 +783,8 @@ mod tests {
     }
 
     #[test]
-    fn the_replacement_waits_while_the_user_writes_in_the_stewards_input_box() {
-        use crate::steward::{HandoverStep::Replace, Trigger::Full};
+    fn the_replacement_waits_while_the_user_writes_in_the_handlers_input_box() {
+        use crate::handler::{HandoverStep::Replace, Trigger::Full};
         use AgentState::{Done, Idle, Working};
         let screen = |name: &str| {
             fs::read_to_string(
@@ -792,8 +794,8 @@ mod tests {
             )
             .map_err(anyhow::Error::from)
         };
-        let steward = |state, change| {
-            let mut agent = project_agent("steward-weather", "/repos/weather", true, state);
+        let handler = |state, change| {
+            let mut agent = project_agent("handler-weather", "/repos/weather", true, state);
             agent.info.agent = Some("claude".into());
             agent.info.state_change_seq = change;
             agent.info.agent_session = Some(crate::model::AgentSession {
@@ -805,10 +807,10 @@ mod tests {
         };
         // The screen each refresh shows; `None` means it is never read.
         let run = |screens: Vec<(AgentState, u64, u64, Option<Result<String>>)>| {
-            let mut waker = StewardWaker::default();
+            let mut waker = HandlerWaker::default();
             let mut steps = Vec::new();
             for (state, change, now, mut shown) in screens {
-                let agents = [steward(state, change)];
+                let agents = [handler(state, change)];
                 steps.push(
                     waker
                         .hand_over(
@@ -817,9 +819,9 @@ mod tests {
                             |_| None,
                             now,
                             |_, _| true,
-                            |steward| {
+                            |handler| {
                                 let screen = shown.take().expect("read only when due");
-                                screen_holds_draft(screen, &steward.info.harness())
+                                screen_holds_draft(screen, &handler.info.harness())
                             },
                         )
                         .into_iter()
@@ -842,7 +844,7 @@ mod tests {
                 (Done, 3, late + 1, Some(screen("claude_suggestion.ansi"))),
             ]),
             [
-                Some(crate::steward::HandoverStep::Ask(10, Full(50))),
+                Some(crate::handler::HandoverStep::Ask(10, Full(50))),
                 None,
                 None,
                 None,
@@ -862,28 +864,28 @@ mod tests {
     }
 
     #[test]
-    fn wakes_a_handing_over_steward_did_not_get_reach_the_steward_that_takes_over() {
-        use crate::steward::{
+    fn wakes_a_handing_over_handler_did_not_get_reach_the_handler_that_takes_over() {
+        use crate::handler::{
             HandoverStep::{Ask, Replace},
             Trigger::Full,
         };
         use AgentState::{Done, Idle, Working};
         let corgi = Path::new("/opt/corgi");
         let root = "/repos/weather";
-        let mut waker = StewardWaker::default();
+        let mut waker = HandlerWaker::default();
         let mut sent = Vec::new();
         let mut steps = Vec::new();
-        let steward = |session: &str, state, change, percent| DashboardAgent {
+        let handler = |session: &str, state, change, percent| DashboardAgent {
             info: AgentInfo {
                 state_change_seq: change,
                 agent_session: Some(crate::model::AgentSession {
                     value: session.into(),
                     ..Default::default()
                 }),
-                ..project_agent("steward-weather", root, true, state).info
+                ..project_agent("handler-weather", root, true, state).info
             },
             context_percent: Some(percent),
-            ..project_agent("steward-weather", root, true, state)
+            ..project_agent("handler-weather", root, true, state)
         };
         let worker = |name: &str, state, change| DashboardAgent {
             info: AgentInfo {
@@ -892,7 +894,7 @@ mod tests {
             },
             ..project_agent(name, root, false, state)
         };
-        let mut refresh = |waker: &mut StewardWaker, agents: &[DashboardAgent], note: bool| {
+        let mut refresh = |waker: &mut HandlerWaker, agents: &[DashboardAgent], note: bool| {
             waker.observe(agents, corgi);
             steps.extend(
                 waker
@@ -903,8 +905,8 @@ mod tests {
             waker.deliver(
                 agents,
                 |_| false,
-                |steward, text| {
-                    sent.push(format!("{steward}: {text}"));
+                |handler, text| {
+                    sent.push(format!("{handler}: {text}"));
                     true
                 },
             );
@@ -912,22 +914,22 @@ mod tests {
         let forecast = |state, change| worker("w-forecast", state, change);
         refresh(
             &mut waker,
-            &[steward("s1", Idle, 1, 70), forecast(Working, 1)],
+            &[handler("s1", Idle, 1, 70), forecast(Working, 1)],
             false,
         );
         // The handover turn runs, and a worker stops meanwhile.
         refresh(
             &mut waker,
-            &[steward("s1", Working, 2, 71), forecast(Done, 2)],
+            &[handler("s1", Working, 2, 71), forecast(Done, 2)],
             false,
         );
-        // The turn ends with a note: the Steward is idle, but the wake waits.
+        // The turn ends with a note: the handler is idle, but the wake waits.
         refresh(
             &mut waker,
-            &[steward("s1", Done, 3, 72), forecast(Done, 2)],
+            &[handler("s1", Done, 3, 72), forecast(Done, 2)],
             true,
         );
-        // The old Steward has exited, and another worker stops in the gap.
+        // The old handler has exited, and another worker stops in the gap.
         refresh(
             &mut waker,
             &[forecast(Done, 2), worker("w-radar", Working, 1)],
@@ -940,7 +942,7 @@ mod tests {
         );
         // The successor is at its first prompt when the replacement reports.
         let successor = [
-            steward("s2", Working, 1, 3),
+            handler("s2", Working, 1, 3),
             forecast(Done, 2),
             worker("w-radar", Done, 2),
         ];
@@ -948,7 +950,7 @@ mod tests {
         waker.replaced(root, true, &successor);
         refresh(&mut waker, &successor, false);
         let rested = [
-            steward("s2", Done, 2, 4),
+            handler("s2", Done, 2, 4),
             forecast(Done, 2),
             worker("w-radar", Done, 2),
         ];
@@ -957,42 +959,42 @@ mod tests {
         assert_eq!(
             steps,
             [
-                ("steward-weather".to_string(), Ask(1_000, Full(50))),
-                ("steward-weather".to_string(), Replace)
+                ("handler-weather".to_string(), Ask(1_000, Full(50))),
+                ("handler-weather".to_string(), Replace)
             ]
         );
         assert_eq!(
             sent,
             [
-                "steward-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast\n\
+                "handler-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast\n\
               [corgi] w-radar is done. Run: /opt/corgi report w-radar"
             ]
         );
     }
 
     #[test]
-    fn a_steward_whose_turn_ends_without_a_note_keeps_its_session_and_gets_its_wakes() {
-        use crate::steward::{
+    fn a_handler_whose_turn_ends_without_a_note_keeps_its_session_and_gets_its_wakes() {
+        use crate::handler::{
             HandoverStep::{Ask, NoNote},
             Trigger::Full,
         };
         use AgentState::{Done, Idle, Working};
         let corgi = Path::new("/opt/corgi");
         let root = "/repos/weather";
-        let mut waker = StewardWaker::default();
+        let mut waker = HandlerWaker::default();
         let mut sent = Vec::new();
         let mut steps = Vec::new();
         let agents = |state, change, worker| {
-            let mut steward = project_agent("steward-weather", root, true, state);
-            steward.info.state_change_seq = change;
-            steward.info.agent_session = Some(crate::model::AgentSession {
+            let mut handler = project_agent("handler-weather", root, true, state);
+            handler.info.state_change_seq = change;
+            handler.info.agent_session = Some(crate::model::AgentSession {
                 value: "s1".into(),
                 ..Default::default()
             });
-            steward.context_percent = Some(80);
+            handler.context_percent = Some(80);
             let mut forecast = project_agent("w-forecast", root, false, worker);
             forecast.info.state_change_seq = change;
-            [steward, forecast]
+            [handler, forecast]
         };
         for (state, change, worker) in [(Idle, 1, Working), (Working, 2, Done), (Done, 3, Done)] {
             let agents = agents(state, change, worker);
@@ -1006,8 +1008,8 @@ mod tests {
             waker.deliver(
                 &agents,
                 |_| false,
-                |steward, text| {
-                    sent.push(format!("{steward}: {text}"));
+                |handler, text| {
+                    sent.push(format!("{handler}: {text}"));
                     true
                 },
             );
@@ -1015,17 +1017,17 @@ mod tests {
         assert_eq!(steps, [Ask(1_000, Full(50)), NoNote]);
         assert_eq!(
             sent,
-            ["steward-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
+            ["handler-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
         );
     }
 
     #[test]
-    fn an_idle_steward_is_handed_over_from_the_baseline_its_pane_keeps() {
-        use crate::steward::{HandoverStep::Ask, Trigger::Idle};
+    fn an_idle_handler_is_handed_over_from_the_baseline_its_pane_keeps() {
+        use crate::handler::{HandoverStep::Ask, Trigger::Idle};
         use AgentState::{Done, Idle as Resting, Working};
         let root = "/repos/weather";
-        let steward = |state, change, tokens, baseline: Option<&str>| {
-            let mut agent = project_agent("steward-weather", root, true, state);
+        let handler = |state, change, tokens, baseline: Option<&str>| {
+            let mut agent = project_agent("handler-weather", root, true, state);
             agent.info.agent = Some("codex".into());
             agent.info.state_change_seq = change;
             agent.info.agent_session = Some(crate::model::AgentSession {
@@ -1036,13 +1038,13 @@ mod tests {
                 agent
                     .info
                     .tokens
-                    .insert(steward::BASELINE_TOKEN.into(), baseline.into());
+                    .insert(handler::BASELINE_TOKEN.into(), baseline.into());
             }
             agent.context_percent = Some(10);
             agent.context_tokens = Some(tokens);
             agent
         };
-        let mut waker = StewardWaker::default();
+        let mut waker = HandlerWaker::default();
         let mut refresh = |agents: &[DashboardAgent], now| {
             waker
                 .hand_over(
@@ -1059,16 +1061,16 @@ mod tests {
         };
         // The first turn ends: its baseline goes on the pane, once.
         assert_eq!(
-            refresh(&[steward(Done, 2, 30_000, None)], 0),
+            refresh(&[handler(Done, 2, 30_000, None)], 0),
             [(None, Some(30_000))]
         );
         assert_eq!(
-            refresh(&[steward(Done, 2, 30_000, Some("30000 s1"))], 1),
+            refresh(&[handler(Done, 2, 30_000, Some("30000 s1"))], 1),
             []
         );
         // A later turn doubles it; a worker of this project, then only one
         // of another project's, is at work while it rests.
-        let grown = |state| steward(state, 4, 60_000, Some("30000 s1"));
+        let grown = |state| handler(state, 4, 60_000, Some("30000 s1"));
         let worker = |root| project_agent("w-forecast", root, false, Working);
         assert_eq!(refresh(&[grown(Done), worker(root)], 10), []);
         assert_eq!(refresh(&[grown(Done), worker(root)], 70), []);
@@ -1079,13 +1081,13 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_steward_is_succeeded_in_its_pane_on_the_model_and_effort_it_was_launched_with() {
+    fn a_codex_handler_is_succeeded_in_its_pane_on_the_model_and_effort_it_was_launched_with() {
         let action = HandoverAction {
-            step: Some(crate::steward::HandoverStep::Replace),
+            step: Some(crate::handler::HandoverStep::Replace),
             baseline: None,
             token: None,
             root: "/repos/weather".into(),
-            name: "steward-weather".into(),
+            name: "handler-weather".into(),
             pane_id: "w9:p1".into(),
             session: "019a-thread".into(),
             harness: Harness::Codex,
@@ -1093,17 +1095,17 @@ mod tests {
         };
         let plan = successor_plan(
             &action,
-            crate::steward::Launch {
+            crate::handler::Launch {
                 kind: "codex".into(),
                 model: "gpt-6-astra".into(),
                 effort: "high".into(),
                 extra_args: vec!["--search".into()],
             },
         );
-        assert_eq!(plan.name, "steward-weather");
+        assert_eq!(plan.name, "handler-weather");
         assert_eq!(
             plan.role,
-            Role::Steward {
+            Role::Handler {
                 handover_pane: Some("w9:p1".into())
             }
         );
@@ -1124,27 +1126,27 @@ mod tests {
             ]
         );
         assert_eq!(action.harness.exit_command(), "/quit");
-        // A Claude Steward launched on its harness's defaults stays on them.
+        // A Claude handler launched on its harness's defaults stays on them.
         let claude = successor_plan(
             &HandoverAction {
                 harness: Harness::Claude,
                 ..action
             },
-            crate::steward::Launch {
+            crate::handler::Launch {
                 kind: "claude".into(),
-                ..crate::steward::Launch::default()
+                ..crate::handler::Launch::default()
             },
         );
         assert!(launch_args(&claude).is_empty());
     }
 
     #[test]
-    fn one_dashboard_per_herdr_socket_wakes_stewards() {
+    fn one_dashboard_per_herdr_socket_wakes_handlers() {
         let lock = std::env::temp_dir()
             .join(format!("corgi-wake-test-{}", std::process::id()))
             .join("herdr.lock");
-        let mut first = StewardWaker::default();
-        let mut second = StewardWaker::default();
+        let mut first = HandlerWaker::default();
+        let mut second = HandlerWaker::default();
         assert!(first.lead(&lock));
         assert!(!second.lead(&lock));
         assert!(first.lead(&lock));
