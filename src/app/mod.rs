@@ -22,7 +22,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
     activity::{command_from_screen, message_from_screen, message_from_state},
-    handler::is_handler,
+    handler::{self, is_handler},
     herdr::{HerdrClient, ReadSource, SessionSnapshot},
     job::Job,
     model::{Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, WorkspaceInfo},
@@ -180,6 +180,9 @@ pub(crate) struct App {
     /// Wakes handlers about their projects' agents; only the interactive
     /// dashboard has one.
     handler_waker: Option<HandlerWaker>,
+    /// The project roots whose state directories this dashboard has checked
+    /// for pre-rename state left beside them, so each is warned about once.
+    state_dirs_checked: HashSet<String>,
     status_hold_until: Option<Instant>,
 }
 
@@ -250,6 +253,7 @@ impl App {
             merge_job: Job::default(),
             model_catalogs: ModelCatalogs::default(),
             handler_waker: None,
+            state_dirs_checked: HashSet::new(),
             status_hold_until: None,
         }
     }
@@ -275,6 +279,31 @@ impl App {
     fn set_status(&mut self, message: impl Into<String>, hold: Option<Duration>) {
         self.status = message.into();
         self.status_hold_until = hold.map(|hold| Instant::now() + hold);
+    }
+
+    /// Tells the user, once per project, when the state a project's handler
+    /// had before the rename sits beside its current state directory instead
+    /// of having been moved into it, so that history is not overlooked. Only
+    /// the interactive dashboard, the one with a waker, checks.
+    fn warn_about_old_state_dirs(&mut self) {
+        if self.handler_waker.is_none() {
+            return;
+        }
+        let roots: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|agent| agent.handler)
+            .map(|agent| agent.project_root.clone())
+            .filter(|root| !self.state_dirs_checked.contains(root))
+            .collect();
+        let mut warnings = Vec::new();
+        for root in roots {
+            warnings.extend(handler::state_dir_conflict(&root));
+            self.state_dirs_checked.insert(root);
+        }
+        if !warnings.is_empty() {
+            self.set_status(warnings.join("  "), Some(Duration::from_secs(60)));
+        }
     }
 
     /// Makes the next pass of the dashboard loop take a fresh snapshot.
@@ -303,6 +332,7 @@ impl App {
                 }
                 relabel_project_mains(&self.client, &mut snapshot.workspaces);
                 self.install_snapshot(snapshot);
+                self.warn_about_old_state_dirs();
                 self.wake_handlers();
                 let status_held = self
                     .status_hold_until

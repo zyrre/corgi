@@ -442,6 +442,9 @@ pub(super) fn launch_agent(
         let installed = client.plugin_root(handler::PLUGIN_ID).ok().flatten();
         let corgi = handler::corgi_bin(installed.as_deref())?;
         let prepared = handler::prepare(root, &corgi)?;
+        if let Some(warning) = &prepared.warning {
+            progress.report(warning.clone());
+        }
         args.extend(harness.handler_args(&prepared.role_file, &prepared.role, &prepared.state_dir));
         handler::save_launch(
             &prepared.state_dir,

@@ -114,7 +114,11 @@ pub fn spawn(args: &[String]) -> Result<()> {
     let project = existing_project_dir(options.project.as_deref())?;
 
     let (client, app) = connected_app()?;
-    let handler_harness = calling_handler_harness(&app, env::var("HERDR_PANE_ID").ok().as_deref());
+    let pane_id = env::var("HERDR_PANE_ID").ok();
+    if let Some(warning) = calling_handler_state_conflict(&app, pane_id.as_deref()) {
+        eprintln!("warning: {warning}");
+    }
+    let handler_harness = calling_handler_harness(&app, pane_id.as_deref());
     let harness = spawn_harness(options.harness, handler_harness, default_harness);
     anyhow::ensure!(
         options.effort.is_empty() || harness.supports_effort(),
@@ -147,6 +151,17 @@ fn spawn_harness(
     default: impl FnOnce() -> Harness,
 ) -> Harness {
     requested.or(handler).unwrap_or_else(default)
+}
+
+/// The warning about pre-rename state beside the state directory of the
+/// handler in `pane_id`, when a handler is the one spawning, so that it sees
+/// it and can tell the user.
+fn calling_handler_state_conflict(app: &App, pane_id: Option<&str>) -> Option<String> {
+    let pane_id = pane_id?;
+    app.agents
+        .iter()
+        .find(|agent| agent.handler && agent.info.pane_id == pane_id)
+        .and_then(|agent| crate::handler::state_dir_conflict(&agent.project_root))
 }
 
 pub const HANDLER_USAGE: &str = "\

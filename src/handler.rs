@@ -43,16 +43,26 @@ pub fn state_dir(project_root: &str) -> Result<PathBuf> {
 /// A project's state directory, and the one Corgi kept it in before the
 /// Steward was renamed Project handler.
 fn state_dirs(project_root: &str) -> Result<(PathBuf, PathBuf)> {
-    let base = corgi_state_dir().context("neither XDG_STATE_HOME nor HOME is set")?;
-    let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
-    // The old name is kept only to find state written before the rename.
-    Ok((
-        base.join("handler").join(project),
-        base.join("steward").join(project),
-    ))
+    Ok(state_dirs_in(&state_base()?, project_root))
 }
 
-/// `dir`, unless only the pre-rename `old` exists so far.
+fn state_base() -> Result<PathBuf> {
+    corgi_state_dir().context("neither XDG_STATE_HOME nor HOME is set")
+}
+
+/// [`state_dirs`] under the Corgi state directory `base`.
+fn state_dirs_in(base: &Path, project_root: &str) -> (PathBuf, PathBuf) {
+    let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
+    // The old name is kept only to find state written before the rename.
+    (
+        base.join("handler").join(project),
+        base.join("steward").join(project),
+    )
+}
+
+/// `dir`, unless only the pre-rename `old` holds a directory so far, real
+/// or linked. The link [`migrate_state_dir`] leaves at `old` points at
+/// `dir`, so once `dir` exists it is `dir` either way.
 fn current_state_dir(dir: PathBuf, old: PathBuf) -> PathBuf {
     if fs::symlink_metadata(&dir).is_err() && old.is_dir() {
         old
@@ -61,19 +71,82 @@ fn current_state_dir(dir: PathBuf, old: PathBuf) -> PathBuf {
     }
 }
 
-/// Moves the pre-rename state directory `old` to `dir` when only `old`
-/// exists, and returns `dir`. An existing `dir` wins and `old` is left as
-/// it is, so nothing is overwritten.
-fn migrate_state_dir(dir: PathBuf, old: &Path) -> Result<PathBuf> {
-    if fs::symlink_metadata(&dir).is_ok() || !old.is_dir() {
-        return Ok(dir);
+/// Whether `a` and `b` are the same directory once links are followed.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// The warning that `old` holds a directory of its own beside `dir`, which
+/// Corgi does not use, so its history would otherwise go unnoticed.
+fn conflict(dir: &Path, old: &Path) -> Option<String> {
+    (dir.is_dir() && old.is_dir() && !same_dir(dir, old)).then(|| {
+        format!(
+            "Both {} and {} exist. Corgi uses {} and leaves {} as it is; move \
+             anything you still need from it, then remove it.",
+            dir.display(),
+            old.display(),
+            dir.display(),
+            old.display()
+        )
+    })
+}
+
+/// The warning that the project's state from before the rename sits beside
+/// its current state directory instead of having been moved into it.
+pub fn state_dir_conflict(project_root: &str) -> Option<String> {
+    let (dir, old) = state_dirs(project_root).ok()?;
+    conflict(&dir, &old)
+}
+
+/// Brings the pre-rename state directory `old` to `dir`, and returns `dir`
+/// with anything the user should be told. Nothing is ever overwritten,
+/// merged, or deleted:
+///
+/// - a real directory at `old`, with nothing at `dir`, is moved to `dir`
+///   and replaced by a link to it, so a session an older Corgi started and
+///   an older Corgi binary still read and write the same files;
+/// - a link at `old` is left alone; one to a directory elsewhere, with
+///   nothing at `dir` yet, gets a link to that directory at `dir` too;
+/// - an existing `dir` wins, and a directory of its own at `old` beside it
+///   is only warned about.
+fn migrate_state_dir(dir: PathBuf, old: &Path) -> Result<(PathBuf, Option<String>)> {
+    if fs::symlink_metadata(&dir).is_ok() {
+        let warning = conflict(&dir, old);
+        return Ok((dir, warning));
     }
+    let Ok(meta) = fs::symlink_metadata(old) else {
+        return Ok((dir, None));
+    };
+    let target = if meta.file_type().is_symlink() {
+        match old.canonicalize() {
+            Ok(target) if target.is_dir() => Some(target),
+            // A link to nothing has nothing to bring along.
+            _ => return Ok((dir, None)),
+        }
+    } else if meta.is_dir() {
+        None
+    } else {
+        return Ok((dir, None));
+    };
     if let Some(parent) = dir.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
+    if let Some(target) = target {
+        std::os::unix::fs::symlink(&target, &dir)
+            .with_context(|| format!("link {} to {}", dir.display(), target.display()))?;
+        return Ok((dir, None));
+    }
     fs::rename(old, &dir)
         .with_context(|| format!("move {} to {}", old.display(), dir.display()))?;
-    Ok(dir)
+    let warning = std::os::unix::fs::symlink(&dir, old).err().map(|error| {
+        format!(
+            "Moved {} to {}, but could not leave a link at the old path ({error}); a \
+             session or Corgi from before the rename will not find its files there.",
+            old.display(),
+            dir.display()
+        )
+    });
+    Ok((dir, warning))
 }
 
 /// What a project is called, in its state directory, its workspace label and
@@ -88,6 +161,9 @@ pub struct Prepared {
     pub role_file: PathBuf,
     /// The role as written to `role_file`, for a harness that takes it inline.
     pub role: String,
+    /// What the user should know about the state directory's move from its
+    /// pre-rename path, if anything.
+    pub warning: Option<String>,
 }
 
 /// Corgi's Herdr plugin ID, under which its installed build is found.
@@ -124,12 +200,22 @@ pub fn corgi_bin(installed_plugin_root: Option<&Path>) -> Result<PathBuf> {
 /// Creates the state directory and its files where missing, and writes the
 /// role for this launch, naming `corgi` as the binary its commands call.
 /// Existing decisions, briefs, and ledger are kept, and moved from where
-/// Corgi kept them before the rename. That happens only here, as a session
-/// starts, so a session an older Corgi started never loses its files: a
-/// handover asks it to exit before its successor is prepared.
+/// Corgi kept them before the rename (see [`migrate_state_dir`]). That
+/// happens only here, as a session starts: by then a session started there
+/// has exited, as a handover asks it to before its successor is prepared,
+/// so no running session, whose harness may have resolved the old path for
+/// its sandbox, has its files moved away from under it.
 pub fn prepare(project_root: &str, corgi: &Path) -> Result<Prepared> {
-    let (dir, old) = state_dirs(project_root)?;
-    prepare_in(migrate_state_dir(dir, &old)?, project_root, corgi)
+    prepare_at(&state_base()?, project_root, corgi)
+}
+
+/// [`prepare`] under the Corgi state directory `base`.
+fn prepare_at(base: &Path, project_root: &str, corgi: &Path) -> Result<Prepared> {
+    let (dir, old) = state_dirs_in(base, project_root);
+    let (state_dir, warning) = migrate_state_dir(dir, &old)?;
+    let mut prepared = prepare_in(state_dir, project_root, corgi)?;
+    prepared.warning = warning;
+    Ok(prepared)
 }
 
 fn prepare_in(state_dir: PathBuf, project_root: &str, corgi: &Path) -> Result<Prepared> {
@@ -159,6 +245,7 @@ fn prepare_in(state_dir: PathBuf, project_root: &str, corgi: &Path) -> Result<Pr
         state_dir,
         role_file,
         role,
+        warning: None,
     })
 }
 
@@ -864,51 +951,163 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_state_directory_from_before_the_rename_moves_once_and_never_overwrites() {
-        let base = env::temp_dir().join(format!("corgi-state-rename-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let dirs = |project: &str| {
-            (
-                base.join("handler").join(project),
-                base.join("steward").join(project),
-            )
+    /// A scratch Corgi state directory, removed when dropped.
+    struct StateBase(PathBuf);
+
+    impl StateBase {
+        fn new(label: &str) -> Self {
+            let base = env::temp_dir().join(format!("corgi-{label}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            fs::create_dir_all(&base).unwrap();
+            Self(base.canonicalize().unwrap())
+        }
+    }
+
+    impl Drop for StateBase {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Every file under `dir`, links followed, by its path relative to `dir`.
+    fn files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else {
+                    let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                    out.insert(relative, fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    /// The memory of a Steward an older Corgi ran, in its pre-rename place.
+    fn populated_old_dir(old: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        for dir in ["briefs", "handovers"] {
+            fs::create_dir_all(old.join(dir)).unwrap();
+        }
+        let launch = Launch {
+            kind: "claude".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+            extra_args: vec!["--verbose".into()],
         };
+        save_launch(old, &launch).unwrap();
+        for (file, text) in [
+            (
+                "decisions.md",
+                "# weather decisions\n\n## 2026-09-30: Use Rust\nKept.\n",
+            ),
+            (
+                "ledger.jsonl",
+                "{\"at\":1,\"agent\":\"w-a\"}\n{\"at\":2,\"agent\":\"w-b\"}\n",
+            ),
+            ("briefs/x.md", "# Build x\n"),
+            ("handovers/y.md", "# An earlier handover\n"),
+            ("handover.md", "# Open threads\nnone\n"),
+            ("notes-of-its-own.txt", "anything else in the directory\n"),
+        ] {
+            fs::write(old.join(file), text).unwrap();
+        }
+        files(old)
+    }
+
+    #[test]
+    fn a_steward_s_memory_arrives_whole_at_a_fresh_start_and_at_a_handover() {
+        for handover in [false, true] {
+            let base = StateBase::new(&format!("state-e2e-{handover}"));
+            let (dir, old) = state_dirs_in(&base.0, "/repos/weather");
+            let before = populated_old_dir(&old);
+
+            // Until a session starts, the dashboard reads the old directory
+            // where it is: the handover note and launch of the session that
+            // is handing over.
+            assert_eq!(current_state_dir(dir.clone(), old.clone()), old);
+            assert!(note_written_since(&old, 0));
+            assert_eq!(launch_of(&old, &Harness::Claude).model, "opus");
+
+            let prepared = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+            assert_eq!(prepared.state_dir, dir);
+            assert_eq!(prepared.warning, None);
+            assert!(!fs::symlink_metadata(&dir).unwrap().file_type().is_symlink());
+
+            // Every file arrives unchanged; the launch only adds its role.
+            let mut after = files(&dir);
+            assert!(after.remove(Path::new("ROLE.md")).is_some());
+            assert_eq!(after, before);
+
+            // The old path is a link that resolves to the new directory, and
+            // what is written through it lands there.
+            assert!(fs::symlink_metadata(&old).unwrap().file_type().is_symlink());
+            assert_eq!(old.canonicalize().unwrap(), dir);
+            let ledger = old.join("ledger.jsonl");
+            let mut lines = fs::read_to_string(&ledger).unwrap();
+            lines.push_str("{\"at\":3,\"agent\":\"w-c\"}\n");
+            fs::write(&ledger, &lines).unwrap();
+            fs::write(old.join("briefs").join("z.md"), "# Build z\n").unwrap();
+            assert_eq!(fs::read_to_string(dir.join("ledger.jsonl")).unwrap(), lines);
+            assert_eq!(
+                fs::read_to_string(dir.join("briefs").join("z.md")).unwrap(),
+                "# Build z\n"
+            );
+            assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
+            assert_eq!(launch_of(&dir, &Harness::Claude).extra_args, ["--verbose"]);
+
+            // The session that starts is told the new paths only, as launch
+            // builds its first prompt.
+            let prompt = if handover {
+                let archive = handover_archive(&prepared.state_dir, 1_790_262_245);
+                assert!(archive.starts_with(&dir));
+                assert!(archive.starts_with(base.0.join("handler")));
+                takeover_prompt("/repos/weather", &prepared.state_dir, &archive)
+            } else {
+                first_prompt("/repos/weather", &prepared.state_dir, "")
+            };
+            assert!(prompt.contains(&format!("State directory: {}.", dir.display())));
+            assert!(!prompt.contains("/steward/"), "{prompt}");
+            assert!(prepared.role.contains(&dir.display().to_string()));
+            assert!(!prepared.role.contains("/steward/"));
+
+            // Starting again finds it migrated and leaves the link alone.
+            let again = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+            assert_eq!((again.state_dir, again.warning), (dir.clone(), None));
+            assert_eq!(old.canonicalize().unwrap(), dir);
+        }
+    }
+
+    #[test]
+    fn the_state_directory_s_move_never_overwrites_merges_or_deletes() {
+        let base = StateBase::new("state-cases");
         let corgi = Path::new("/opt/corgi");
+        let link = |path: &Path| fs::symlink_metadata(path).unwrap().file_type().is_symlink();
 
-        // Only the old directory: it is used where it is until a session
-        // starts, which moves it with everything in it.
-        let (dir, old) = dirs("weather");
-        fs::create_dir_all(old.join("briefs")).unwrap();
-        fs::write(old.join("decisions.md"), "# kept\n").unwrap();
-        fs::write(old.join("briefs").join("w-x.md"), "brief").unwrap();
-        assert_eq!(current_state_dir(dir.clone(), old.clone()), old);
-        let prepared = prepare_in(
-            migrate_state_dir(dir.clone(), &old).unwrap(),
-            "/repos/weather",
-            corgi,
-        )
-        .unwrap();
-        assert_eq!(prepared.state_dir, dir);
-        assert!(!old.exists());
-        assert_eq!(
-            fs::read_to_string(dir.join("decisions.md")).unwrap(),
-            "# kept\n"
-        );
-        assert_eq!(
-            fs::read_to_string(dir.join("briefs").join("w-x.md")).unwrap(),
-            "brief"
-        );
-        assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
+        // Neither: a session starts in a new directory, with no link left.
+        let (dir, old) = state_dirs_in(&base.0, "/repos/fresh");
+        let prepared = prepare_at(&base.0, "/repos/fresh", corgi).unwrap();
+        assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
+        assert!(dir.join("decisions.md").is_file() && dir.join("briefs").is_dir());
+        assert!(fs::symlink_metadata(&old).is_err());
 
-        // Both: the new one wins and the old one is left untouched.
-        let (dir, old) = dirs("webshop");
+        // Both, each a directory of its own: the new one wins, the old one
+        // is untouched, and the warning names both.
+        let (dir, old) = state_dirs_in(&base.0, "/repos/webshop");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("decisions.md"), "# new\n").unwrap();
         fs::create_dir_all(&old).unwrap();
         fs::write(old.join("decisions.md"), "# old\n").unwrap();
         assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
-        assert_eq!(migrate_state_dir(dir.clone(), &old).unwrap(), dir);
+        let prepared = prepare_at(&base.0, "/repos/webshop", corgi).unwrap();
+        assert_eq!(prepared.state_dir, dir);
+        let warning = prepared.warning.expect("a warning");
+        assert!(warning.contains(&dir.display().to_string()), "{warning}");
+        assert!(warning.contains(&old.display().to_string()), "{warning}");
+        assert_eq!(conflict(&dir, &old), Some(warning));
         assert_eq!(
             fs::read_to_string(dir.join("decisions.md")).unwrap(),
             "# new\n"
@@ -917,21 +1116,43 @@ mod tests {
             fs::read_to_string(old.join("decisions.md")).unwrap(),
             "# old\n"
         );
+        assert!(!link(&old));
 
-        // Neither: a session starts in a new directory.
-        let (dir, old) = dirs("fresh");
+        // A link at the old path to the new directory: migrated already, so
+        // it is followed, kept, and not warned about.
+        let (dir, old) = state_dirs_in(&base.0, "/repos/linked");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&dir, &old).unwrap();
         assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
-        let prepared = prepare_in(
-            migrate_state_dir(dir.clone(), &old).unwrap(),
-            "/repos/fresh",
-            corgi,
-        )
-        .unwrap();
-        assert_eq!(prepared.state_dir, dir);
-        assert!(dir.join("decisions.md").is_file() && dir.join("briefs").is_dir());
-        assert!(!old.exists());
+        let prepared = prepare_at(&base.0, "/repos/linked", corgi).unwrap();
+        assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
+        assert!(link(&old) && old.canonicalize().unwrap() == dir);
 
-        fs::remove_dir_all(&base).ok();
+        // The same link once the new directory is gone points at nothing:
+        // a fresh start, and the link, kept, resolves again.
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
+        let prepared = prepare_at(&base.0, "/repos/linked", corgi).unwrap();
+        assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
+        assert!(link(&old) && old.canonicalize().unwrap() == dir);
+
+        // A link at the old path to a directory elsewhere, as a user may
+        // keep it: it stays, and the new path links to the same directory.
+        let (dir, old) = state_dirs_in(&base.0, "/repos/elsewhere");
+        let elsewhere = base.0.join("synced").join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("decisions.md"), "# synced\n").unwrap();
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &old).unwrap();
+        assert_eq!(current_state_dir(dir.clone(), old.clone()), old);
+        let prepared = prepare_at(&base.0, "/repos/elsewhere", corgi).unwrap();
+        assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
+        assert!(link(&old) && link(&dir));
+        assert_eq!(dir.canonicalize().unwrap(), elsewhere);
+        assert_eq!(
+            fs::read_to_string(dir.join("decisions.md")).unwrap(),
+            "# synced\n"
+        );
     }
 
     #[test]

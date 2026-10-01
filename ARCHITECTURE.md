@@ -401,11 +401,27 @@ role. So Corgi keeps its own record and puts the tokens back.
   what an older Corgi left behind keeps working. A pane marked with the old
   `corgi_steward` token is the handler's, and the next write of its marks
   moves the marker to `corgi_handler`, in Herdr and in Corgi's record. A
-  state directory still under `steward/<project>` is used where it is until
-  the next handler session starts, which moves it to `handler/<project>`
-  unless that already exists. A project workspace still labelled
-  `<project> steward` is relabelled, and `corgi steward` and
-  `CORGI_STEWARD_BIN` are still accepted.
+  project workspace still labelled `<project> steward` is relabelled, and
+  `corgi steward` and `CORGI_STEWARD_BIN` are still accepted.
+- The handler's memory moves with it, and nothing in it is overwritten,
+  merged or deleted. Until the next handler session starts, a project whose
+  state is still in `steward/<project>` is read there. The launch of that
+  session (`handler::prepare`, at a fresh start and at a handover alike)
+  moves the directory to `handler/<project>` with a single rename and
+  leaves a link to it at the old path, so a session an older Corgi started
+  and an older Corgi binary keep reading and writing the same files. The
+  move waits for a launch, rather than the dashboard's first look, because
+  a handover asks the old session to exit before its successor is
+  prepared: no running session, whose harness may have resolved the old
+  path for its sandbox or its allowed directories, has its files moved
+  from under it. A link at the old path is never moved or removed: one to
+  the new directory means the move is done, and one to a directory
+  elsewhere gets a second link to the same directory at the new path.
+  When both paths hold directories of their own, Corgi uses
+  `handler/<project>` and warns, naming both, so the older history is not
+  overlooked: in the launch's progress (stderr for `corgi handler`), on
+  stderr for a handler's `corgi spawn`, and once per project in the
+  dashboard's status line.
 - `corgi spawn` recognizes a handler caller by its pane: `HERDR_PANE_ID`
   must be the pane of an agent carrying the handler marker. Without
   `--harness`, such a spawn starts the worker on the kind Herdr detected in
