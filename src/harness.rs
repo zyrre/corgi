@@ -161,7 +161,7 @@ impl Harness {
     pub fn fallback_models(&self) -> &'static [&'static str] {
         match self {
             Self::Claude => &["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku", "fable"],
-            Self::Codex => &["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"],
+            Self::Codex => &["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra"],
             Self::Gemini => &["gemini-2.5-pro", "gemini-2.5-flash"],
             Self::Copilot => &["claude-sonnet-4.5", "gpt-5"],
             Self::OpenCode | Self::Other(_) => &[],
