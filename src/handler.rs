@@ -1,4 +1,6 @@
-//! The Steward: a project's long-lived coordinating agent.
+//! The Project handler: a project's long-lived coordinating agent. It keeps
+//! the project's knowledge and high-level context, writes briefs, and
+//! dispatches and follows the workers that carry them out.
 //!
 //! Corgi launches it as Claude Code or Codex in the root tab of the project's
 //! workspace, with the role below in its instructions rather than its
@@ -9,6 +11,7 @@
 //! sat idle nearly as long as its prompt cache lives.
 
 use std::{
+    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -26,21 +29,131 @@ use crate::{
 
 /// The role, with `{{corgi}}` and `{{state}}` standing for the Corgi binary
 /// and the project's state directory.
-const ROLE: &str = include_str!("../steward/ROLE.md");
+const ROLE: &str = include_str!("../handler/ROLE.md");
 
-/// Where one project's Steward keeps its decisions, briefs, and ledger.
+/// Where one project's handler keeps its decisions, briefs, and ledger:
+/// `handler/<project>` in Corgi's state directory. Until [`prepare`] moves
+/// it there, a directory left from before the rename is used where it is,
+/// since a session started by an older Corgi may still be working in it.
 pub fn state_dir(project_root: &str) -> Result<PathBuf> {
-    Ok(corgi_state_dir()
-        .context("neither XDG_STATE_HOME nor HOME is set")?
-        .join("steward")
-        .join(dir_name(project_root).unwrap_or(UNNAMED_PROJECT)))
+    let (dir, old) = state_dirs(project_root)?;
+    Ok(current_state_dir(dir, old))
+}
+
+/// A project's state directory, and the one Corgi kept it in before the
+/// Steward was renamed Project handler.
+fn state_dirs(project_root: &str) -> Result<(PathBuf, PathBuf)> {
+    Ok(state_dirs_in(&state_base()?, project_root))
+}
+
+fn state_base() -> Result<PathBuf> {
+    corgi_state_dir().context("neither XDG_STATE_HOME nor HOME is set")
+}
+
+/// [`state_dirs`] under the Corgi state directory `base`.
+fn state_dirs_in(base: &Path, project_root: &str) -> (PathBuf, PathBuf) {
+    let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
+    // The old name is kept only to find state written before the rename.
+    (
+        base.join("handler").join(project),
+        base.join("steward").join(project),
+    )
+}
+
+/// `dir`, unless only the pre-rename `old` holds a directory so far, real
+/// or linked. The link [`migrate_state_dir`] leaves at `old` points at
+/// `dir`, so once `dir` exists it is `dir` either way.
+fn current_state_dir(dir: PathBuf, old: PathBuf) -> PathBuf {
+    if fs::symlink_metadata(&dir).is_err() && old.is_dir() {
+        old
+    } else {
+        dir
+    }
+}
+
+/// Whether `a` and `b` are the same directory once links are followed.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// The warning that `old` holds a directory of its own beside `dir`, which
+/// Corgi does not use, so its history would otherwise go unnoticed.
+fn conflict(dir: &Path, old: &Path) -> Option<String> {
+    (dir.is_dir() && old.is_dir() && !same_dir(dir, old)).then(|| {
+        format!(
+            "Both {} and {} exist. Corgi uses {} and leaves {} as it is; move \
+             anything you still need from it, then remove it.",
+            dir.display(),
+            old.display(),
+            dir.display(),
+            old.display()
+        )
+    })
+}
+
+/// The warning that the project's state from before the rename sits beside
+/// its current state directory instead of having been moved into it.
+pub fn state_dir_conflict(project_root: &str) -> Option<String> {
+    let (dir, old) = state_dirs(project_root).ok()?;
+    conflict(&dir, &old)
+}
+
+/// Brings the pre-rename state directory `old` to `dir`, and returns `dir`
+/// with anything the user should be told. Nothing is ever overwritten,
+/// merged, or deleted:
+///
+/// - a real directory at `old`, with nothing at `dir`, is moved to `dir`
+///   and replaced by a link to it, so a session an older Corgi started and
+///   an older Corgi binary still read and write the same files;
+/// - a link at `old` is left alone; one to a directory elsewhere, with
+///   nothing at `dir` yet, gets a link to that directory at `dir` too;
+/// - an existing `dir` wins, and a directory of its own at `old` beside it
+///   is only warned about.
+fn migrate_state_dir(dir: PathBuf, old: &Path) -> Result<(PathBuf, Option<String>)> {
+    if fs::symlink_metadata(&dir).is_ok() {
+        let warning = conflict(&dir, old);
+        return Ok((dir, warning));
+    }
+    let Ok(meta) = fs::symlink_metadata(old) else {
+        return Ok((dir, None));
+    };
+    let target = if meta.file_type().is_symlink() {
+        match old.canonicalize() {
+            Ok(target) if target.is_dir() => Some(target),
+            // A link to nothing has nothing to bring along.
+            _ => return Ok((dir, None)),
+        }
+    } else if meta.is_dir() {
+        None
+    } else {
+        return Ok((dir, None));
+    };
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    if let Some(target) = target {
+        std::os::unix::fs::symlink(&target, &dir)
+            .with_context(|| format!("link {} to {}", dir.display(), target.display()))?;
+        return Ok((dir, None));
+    }
+    fs::rename(old, &dir)
+        .with_context(|| format!("move {} to {}", old.display(), dir.display()))?;
+    let warning = std::os::unix::fs::symlink(&dir, old).err().map(|error| {
+        format!(
+            "Moved {} to {}, but could not leave a link at the old path ({error}); a \
+             session or Corgi from before the rename will not find its files there.",
+            old.display(),
+            dir.display()
+        )
+    });
+    Ok((dir, warning))
 }
 
 /// What a project is called, in its state directory, its workspace label and
-/// the Steward's name, when its root has no directory name of its own.
+/// the handler's name, when its root has no directory name of its own.
 pub const UNNAMED_PROJECT: &str = "project";
 
-/// A project's state directory, ready for a Steward to start in: the files
+/// A project's state directory, ready for a handler to start in: the files
 /// it reads exist, and its role names the commands of the Corgi binary that
 /// launches it.
 pub struct Prepared {
@@ -48,21 +161,31 @@ pub struct Prepared {
     pub role_file: PathBuf,
     /// The role as written to `role_file`, for a harness that takes it inline.
     pub role: String,
+    /// What the user should know about the state directory's move from its
+    /// pre-rename path, if anything.
+    pub warning: Option<String>,
 }
 
 /// Corgi's Herdr plugin ID, under which its installed build is found.
 pub const PLUGIN_ID: &str = "io.github.zyrre.corgi";
 
-/// Chooses a development build for Stewards' commands on purpose, instead of
+/// Chooses a development build for handlers' commands on purpose, instead of
 /// the installed plugin.
-const BIN_OVERRIDE_ENV: &str = "CORGI_STEWARD_BIN";
+const BIN_OVERRIDE_ENV: &str = "CORGI_HANDLER_BIN";
 
-/// The Corgi binary a Steward's commands call: `CORGI_STEWARD_BIN` when it is
+/// What `CORGI_HANDLER_BIN` was called before the Steward was renamed
+/// Project handler, still read so an existing setup keeps its build.
+const OLD_BIN_OVERRIDE_ENV: &str = "CORGI_STEWARD_BIN";
+
+/// The Corgi binary a handler's commands call: `CORGI_HANDLER_BIN` when it is
 /// set, else the release build of the installed plugin (what the dashboard
 /// runs), else the running binary. A worktree build therefore launches
-/// Stewards that still use the installed Corgi unless told otherwise.
+/// handlers that still use the installed Corgi unless told otherwise.
 pub fn corgi_bin(installed_plugin_root: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = env::var_os(BIN_OVERRIDE_ENV).filter(|path| !path.is_empty()) {
+    if let Some(path) = [BIN_OVERRIDE_ENV, OLD_BIN_OVERRIDE_ENV]
+        .into_iter()
+        .find_map(|name| env::var_os(name).filter(|path| !path.is_empty()))
+    {
         return Ok(PathBuf::from(path));
     }
     if let Some(bin) = installed_plugin_root
@@ -76,9 +199,26 @@ pub fn corgi_bin(installed_plugin_root: Option<&Path>) -> Result<PathBuf> {
 
 /// Creates the state directory and its files where missing, and writes the
 /// role for this launch, naming `corgi` as the binary its commands call.
-/// Existing decisions, briefs, and ledger are kept.
+/// Existing decisions, briefs, and ledger are kept, and moved from where
+/// Corgi kept them before the rename (see [`migrate_state_dir`]). That
+/// happens only here, as a session starts: by then a session started there
+/// has exited, as a handover asks it to before its successor is prepared,
+/// so no running session, whose harness may have resolved the old path for
+/// its sandbox, has its files moved away from under it.
 pub fn prepare(project_root: &str, corgi: &Path) -> Result<Prepared> {
-    let state_dir = state_dir(project_root)?;
+    prepare_at(&state_base()?, project_root, corgi)
+}
+
+/// [`prepare`] under the Corgi state directory `base`.
+fn prepare_at(base: &Path, project_root: &str, corgi: &Path) -> Result<Prepared> {
+    let (dir, old) = state_dirs_in(base, project_root);
+    let (state_dir, warning) = migrate_state_dir(dir, &old)?;
+    let mut prepared = prepare_in(state_dir, project_root, corgi)?;
+    prepared.warning = warning;
+    Ok(prepared)
+}
+
+fn prepare_in(state_dir: PathBuf, project_root: &str, corgi: &Path) -> Result<Prepared> {
     for dir in ["briefs", HANDOVERS_DIR] {
         fs::create_dir_all(state_dir.join(dir))
             .with_context(|| format!("create {}", state_dir.display()))?;
@@ -105,10 +245,11 @@ pub fn prepare(project_root: &str, corgi: &Path) -> Result<Prepared> {
         state_dir,
         role_file,
         role,
+        warning: None,
     })
 }
 
-/// How a Steward was launched, kept in its state directory so the Steward
+/// How a handler was launched, kept in its state directory so the handler
 /// that takes over from it starts the same way.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Launch {
@@ -123,22 +264,22 @@ pub struct Launch {
 
 const LAUNCH_FILE: &str = "launch.json";
 
-/// Records how the Steward in `state_dir` was launched.
+/// Records how the handler in `state_dir` was launched.
 pub fn save_launch(state_dir: &Path, launch: &Launch) -> Result<()> {
     let file = state_dir.join(LAUNCH_FILE);
     fs::write(&file, serde_json::to_vec_pretty(launch)?)
         .with_context(|| format!("write {}", file.display()))
 }
 
-/// How the Steward in `state_dir` was last launched, if Corgi recorded it.
+/// How the handler in `state_dir` was last launched, if Corgi recorded it.
 pub fn saved_launch(state_dir: &Path) -> Option<Launch> {
     fs::read(state_dir.join(LAUNCH_FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Launch>(&bytes).ok())
 }
 
-/// How the Steward in `state_dir` was launched, if it was on `harness`. A
-/// Steward launched before Corgi recorded this, or since moved to another
+/// How the handler in `state_dir` was launched, if it was on `harness`. A
+/// handler launched before Corgi recorded this, or since moved to another
 /// harness, starts on `harness` with its defaults.
 pub fn launch_of(state_dir: &Path, harness: &Harness) -> Launch {
     saved_launch(state_dir)
@@ -154,7 +295,7 @@ fn role(corgi: &Path, state_dir: &Path) -> String {
         .replace("{{state}}", &state_dir.to_string_lossy())
 }
 
-/// The Steward's first prompt. With a task from the user, the Steward skips
+/// The handler's first prompt. With a task from the user, the handler skips
 /// its greeting and takes that task up; without one it greets with the state
 /// of the project.
 pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String {
@@ -163,12 +304,12 @@ pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String 
     let task = task.trim();
     if task.is_empty() {
         format!(
-            "Start your Steward session for {project}. Project directory: {project_root}. \
+            "Start your Project handler session for {project}. Project directory: {project_root}. \
              State directory: {state}. Follow the start-of-session steps in your role."
         )
     } else {
         format!(
-            "Start your Steward session for {project}. Project directory: {project_root}. \
+            "Start your Project handler session for {project}. Project directory: {project_root}. \
              State directory: {state}. Do the start-of-session reading, but skip the \
              greeting: the user started this project's session with the request below, \
              so take it up with them.\n\n{task}"
@@ -176,15 +317,15 @@ pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String 
     }
 }
 
-/// The first prompt of a Steward that takes over from a previous session:
+/// The first prompt of a handler that takes over from a previous session:
 /// the usual start-of-session reading, then the note that session left, which
 /// it archives as `archive`. A short word to the user replaces the greeting.
 pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> String {
     let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
     let state = state_dir.display();
     format!(
-        "Start your Steward session for {project}. Project directory: {project_root}. \
-         State directory: {state}. You take over from the previous Steward session. \
+        "Start your Project handler session for {project}. Project directory: {project_root}. \
+         State directory: {state}. You take over from the previous Project handler session. \
          Do the start-of-session reading, then read \
          {} and move it to {}, as your role's section on handing over says. Skip the \
          greeting: tell the user in at most three lines that you took over, and what \
@@ -194,11 +335,11 @@ pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> 
     )
 }
 
-/// How a wake message starts, so the Steward and the user can tell it from
+/// How a wake message starts, so the handler and the user can tell it from
 /// a message the user typed.
 const WAKE_PREFIX: &str = "[corgi]";
 
-/// Context usage, in percent of the window, from which a Steward is handed
+/// Context usage, in percent of the window, from which a handler is handed
 /// over to a fresh session.
 const HANDOVER_PERCENT: u8 = 50;
 
@@ -219,7 +360,7 @@ fn percent_or_default(value: Option<&str>) -> u8 {
         .unwrap_or(HANDOVER_PERCENT)
 }
 
-/// How long a Claude Code Steward rests before it is handed over: ten
+/// How long a Claude Code handler rests before it is handed over: ten
 /// minutes short of its one-hour prompt cache, so the request still finds
 /// the cache warm.
 const CLAUDE_IDLE_SECS: u64 = 50 * 60;
@@ -231,7 +372,7 @@ const CODEX_IDLE_SECS: u64 = 25 * 60;
 /// not a setting.
 const HANDOVER_IDLE_ENV: &str = "CORGI_DEBUG_HANDOVER_IDLE_SECS";
 
-/// How long a Steward on `harness` rests before it is handed over:
+/// How long a handler on `harness` rests before it is handed over:
 /// `CORGI_DEBUG_HANDOVER_IDLE_SECS` when it holds a positive number of
 /// seconds, else the harness's own. `None` for a harness whose context Corgi
 /// cannot read.
@@ -253,23 +394,23 @@ fn idle_secs_or_default(harness: &Harness, value: Option<&str>) -> Option<u64> {
     )
 }
 
-/// How many times its baseline a resting Steward's context must be before
+/// How many times its baseline a resting handler's context must be before
 /// idleness hands it over. Below that a fresh session saves too little.
 const IDLE_BASELINE_FACTOR: u64 = 2;
 
-/// The note a Steward writes for the session that takes over from it, in
+/// The note a handler writes for the session that takes over from it, in
 /// its state directory.
 const HANDOVER_NOTE: &str = "handover.md";
 
-/// Where the Steward that took over keeps the notes it read.
+/// Where the handler that took over keeps the notes it read.
 const HANDOVERS_DIR: &str = "handovers";
 
-/// The pane token recording that a Steward session was asked for its
+/// The pane token recording that a handler session was asked for its
 /// handover note, as `<unix seconds> <session>`, so a dashboard that takes
 /// over waking does not ask the same session again.
 pub const HANDOVER_TOKEN: &str = "corgi_handover";
 
-/// The pane token recording a Steward session's baseline, the context it
+/// The pane token recording a handler session's baseline, the context it
 /// had when its first turn ended, as `<tokens> <session>`, so a dashboard
 /// that restarts or takes over waking measures growth from the same point.
 pub const BASELINE_TOKEN: &str = "corgi_baseline";
@@ -282,13 +423,36 @@ fn session_token<T: std::str::FromStr>(token: Option<&str>, session: &str) -> Op
         .and_then(|(value, _)| value.parse().ok())
 }
 
-/// The pane token that marks a project's Steward: `session:<native session>`
+/// The pane token that marks a project's handler: `session:<native session>`
 /// once known, otherwise the launch name. Name values from older Corgi
 /// versions remain valid until they can be upgraded to a session marker.
-pub const CORGI_STEWARD_TOKEN: &str = "corgi_steward";
+pub const CORGI_HANDLER_TOKEN: &str = "corgi_handler";
+
+/// What [`CORGI_HANDLER_TOKEN`] was called before the Steward was renamed
+/// Project handler. A session an older Corgi launched still carries it, so
+/// it counts as the handler's marker, and Corgi moves it to the new key the
+/// next time it writes the pane's marks.
+pub const OLD_HANDLER_TOKEN: &str = "corgi_steward";
+
+/// The handler marker among a pane's `tokens`, under either key.
+pub fn handler_marker(tokens: &BTreeMap<String, String>) -> Option<&String> {
+    tokens
+        .get(CORGI_HANDLER_TOKEN)
+        .or_else(|| tokens.get(OLD_HANDLER_TOKEN))
+}
+
+/// Moves a marker under [`OLD_HANDLER_TOKEN`] to [`CORGI_HANDLER_TOKEN`],
+/// unless that is set already.
+pub fn upgrade_marker(tokens: &mut BTreeMap<String, String>) {
+    if let Some(marker) = tokens.remove(OLD_HANDLER_TOKEN) {
+        tokens
+            .entry(CORGI_HANDLER_TOKEN.to_string())
+            .or_insert(marker);
+    }
+}
 
 /// Native identity belongs to the live agent. A status-line `session` token
-/// can survive pane reuse, so it must never establish Steward ownership.
+/// can survive pane reuse, so it must never establish handler ownership.
 pub fn native_session(info: &AgentInfo) -> Option<&str> {
     info.agent_session
         .as_ref()
@@ -303,11 +467,11 @@ pub fn marker(name: &str, session: Option<&str>) -> String {
     }
 }
 
-/// Whether `info` is a project's Steward: the agent Corgi launched as one and
+/// Whether `info` is a project's handler: the agent Corgi launched as one and
 /// marked, wherever its pane has since moved. Sitting in the project's root
-/// tab does not make an agent the Steward.
-pub fn is_steward(info: &AgentInfo) -> bool {
-    let Some(marker) = info.tokens.get(CORGI_STEWARD_TOKEN) else {
+/// tab does not make an agent the handler.
+pub fn is_handler(info: &AgentInfo) -> bool {
+    let Some(marker) = handler_marker(&info.tokens) else {
         return false;
     };
     if let Some(session) = marker.strip_prefix("session:") {
@@ -318,7 +482,7 @@ pub fn is_steward(info: &AgentInfo) -> bool {
         .is_some_and(|name| !name.is_empty() && marker == name)
 }
 
-/// The line that asks a Steward for its handover note, saying why.
+/// The line that asks a handler for its handover note, saying why.
 pub fn handover_request(state_dir: &Path, trigger: Trigger) -> String {
     let note = state_dir.join(HANDOVER_NOTE);
     let why = match trigger {
@@ -336,7 +500,7 @@ pub fn handover_request(state_dir: &Path, trigger: Trigger) -> String {
         ),
     };
     format!(
-        "{WAKE_PREFIX} {why}, so a fresh Steward session takes over from you. Write {} \
+        "{WAKE_PREFIX} {why}, so a fresh Project handler session takes over from you. Write {} \
          as your role's section on handing over says, then end your turn.",
         note.display()
     )
@@ -355,14 +519,14 @@ pub fn note_written_since(state_dir: &Path, since: u64) -> bool {
     })
 }
 
-/// Where the Steward taking over at `now` (Unix seconds) archives the note.
+/// Where the handler taking over at `now` (Unix seconds) archives the note.
 pub fn handover_archive(state_dir: &Path, now: u64) -> PathBuf {
     state_dir
         .join(HANDOVERS_DIR)
         .join(format!("{}.md", utc_stamp(now)))
 }
 
-/// The line that tells a Steward where `worker` is and what to run next.
+/// The line that tells a handler where `worker` is and what to run next.
 pub fn wake_message(corgi: &Path, worker: &str, state: AgentState) -> String {
     let next = if state == AgentState::Blocked {
         format!("herdr agent read {worker} --source recent --lines 120")
@@ -384,7 +548,7 @@ enum Rest {
 }
 
 /// One agent's states, as the dashboard sees them refresh by refresh,
-/// reduced to the ones worth waking its Steward for. Nothing wakes until the
+/// reduced to the ones worth waking its handler for. Nothing wakes until the
 /// agent has been seen working, so neither the state it had when the
 /// dashboard started nor a question on its way up (such as folder trust)
 /// counts. After that: each time it rests after working, and each change
@@ -400,7 +564,7 @@ pub struct Transitions {
 }
 
 impl Transitions {
-    /// The state to wake the Steward with, if `state` is news.
+    /// The state to wake the handler with, if `state` is news.
     pub fn observe(&mut self, state: AgentState, change: u64) -> Option<AgentState> {
         let previous = self.seen.replace((state, change));
         if previous == Some((state, change)) {
@@ -430,7 +594,7 @@ impl Transitions {
     }
 }
 
-/// What the dashboard sees of a Steward at one refresh, for its handover.
+/// What the dashboard sees of a handler at one refresh, for its handover.
 #[derive(Debug, Clone, Copy)]
 pub struct Sighting<'a> {
     /// The harness's session identity: a handover is once per session.
@@ -441,7 +605,7 @@ pub struct Sighting<'a> {
     /// The tokens of its context, when its session file records them.
     pub context_tokens: Option<u64>,
     /// Whether another agent of its project is working or blocked. The
-    /// dashboard cannot tell which of them the Steward dispatched, so any
+    /// dashboard cannot tell which of them the handler dispatched, so any
     /// of them counts as one of its workers.
     pub workers_busy: bool,
     /// The session's [`HANDOVER_TOKEN`], if its pane carries one.
@@ -450,7 +614,7 @@ pub struct Sighting<'a> {
     pub baseline_token: Option<&'a str>,
 }
 
-/// When the dashboard hands a Steward over, for one refresh.
+/// When the dashboard hands a handler over, for one refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thresholds {
     /// Context usage, in percent of the window.
@@ -459,7 +623,7 @@ pub struct Thresholds {
     pub idle_secs: Option<u64>,
 }
 
-/// Why a Steward is asked for its handover note.
+/// Why a handler is asked for its handover note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     /// Its context is past this percentage.
@@ -471,7 +635,7 @@ pub enum Trigger {
     Update,
 }
 
-/// What to do about a Steward's handover at this refresh.
+/// What to do about a handler's handover at this refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandoverStep {
     /// Ask it for its note, recording the request at the given time.
@@ -483,7 +647,7 @@ pub enum HandoverStep {
     NoNote,
 }
 
-/// Where one project's Steward is in handing over, refresh by refresh.
+/// Where one project's handler is in handing over, refresh by refresh.
 ///
 /// A session is asked once it is idle or done (never working, and never
 /// blocked on a question) with its context at the threshold, or once it has
@@ -496,9 +660,9 @@ pub enum HandoverStep {
 /// that restarts or takes over waking starts that clock again. Its answer is
 /// the turn that follows: when that turn ends, a note written since the
 /// request means the session is replaced, and no note means it stays. It is
-/// asked again only after a later turn of its own, so a Steward that keeps
+/// asked again only after a later turn of its own, so a handler that keeps
 /// failing to write the note is not asked at every refresh. A request the
-/// Steward never takes up (its state does not change within
+/// handler never takes up (its state does not change within
 /// [`HANDOVER_ANSWER_SECS`]) counts as no note.
 #[derive(Debug, Default)]
 pub struct Handover {
@@ -511,7 +675,7 @@ pub struct Handover {
     resting: Option<(u64, u64)>,
 }
 
-/// How long a Steward has to start the turn a handover request asks for.
+/// How long a handler has to start the turn a handover request asks for.
 const HANDOVER_ANSWER_SECS: u64 = 120;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -537,11 +701,11 @@ enum Phase {
 }
 
 impl Handover {
-    /// The next step for the Steward as `seen` at `now` (Unix seconds), with
+    /// The next step for the handler as `seen` at `now` (Unix seconds), with
     /// `limits` as the thresholds. `note_since(at)` says whether the note was
     /// written since the request made at `at`, and `may_type()`, asked only
     /// when a request or the replacement is due, whether Corgi may type into
-    /// the Steward's pane now: one that cannot stays due for a later refresh.
+    /// the handler's pane now: one that cannot stays due for a later refresh.
     pub fn observe(
         &mut self,
         seen: Sighting,
@@ -556,7 +720,7 @@ impl Handover {
         if self.session != seen.session {
             self.session = seen.session.to_string();
             // A request this session already had, from a dashboard that woke
-            // Stewards before this one, is still the one being answered.
+            // handlers before this one, is still the one being answered.
             self.phase = session_token(seen.token, seen.session).map_or(Phase::Watching, |at| {
                 Phase::Asked {
                     at,
@@ -628,7 +792,7 @@ impl Handover {
         }
     }
 
-    /// Why the Steward as `seen` at `now` is due for a handover, if it is:
+    /// Why the handler as `seen` at `now` is due for a handover, if it is:
     /// only ever while it rests.
     fn trigger(&self, seen: Sighting, limits: Thresholds, now: u64) -> Option<Trigger> {
         let (since, _) = self.resting?;
@@ -647,7 +811,7 @@ impl Handover {
             .then_some(Trigger::Idle(rested / 60))
     }
 
-    /// Starts the replacement of a Steward whose note was found, unless
+    /// Starts the replacement of a handler whose note was found, unless
     /// `may_type()` says its input box holds a draft.
     fn replace_unless_drafting(&mut self, may_type: impl FnOnce() -> bool) -> Option<HandoverStep> {
         may_type().then(|| {
@@ -678,7 +842,7 @@ impl Handover {
         };
     }
 
-    /// The request could not be sent: the Steward is asked again after a
+    /// The request could not be sent: the handler is asked again after a
     /// later turn.
     pub fn unsent(&mut self, change: u64) {
         self.fail(change);
@@ -694,8 +858,8 @@ impl Handover {
         }
     }
 
-    /// Whether the Steward is between its request and its successor's first
-    /// prompt, when wakes wait for the Steward that takes over.
+    /// Whether the handler is between its request and its successor's first
+    /// prompt, when wakes wait for the handler that takes over.
     pub fn in_progress(&self) -> bool {
         matches!(
             self.phase,
@@ -710,58 +874,304 @@ mod tests {
     use AgentState::{Blocked, Done, Idle, Working};
 
     #[test]
-    fn steward_identity_survives_renaming_but_not_pane_reuse() {
+    fn handler_identity_survives_renaming_but_not_pane_reuse() {
         let mut agent = AgentInfo {
-            name: Some("steward-m-ta-sverige".into()),
+            name: Some("handler-m-ta-sverige".into()),
             agent_session: Some(crate::model::AgentSession {
                 value: "original-session".into(),
                 ..Default::default()
             }),
             tokens: [(
-                CORGI_STEWARD_TOKEN.into(),
+                CORGI_HANDLER_TOKEN.into(),
                 marker("", Some("original-session")),
             )]
             .into(),
             ..Default::default()
         };
-        assert!(is_steward(&agent));
-        agent.name = Some("start-your-steward-session-for-m".into());
-        assert!(is_steward(&agent));
+        assert!(is_handler(&agent));
+        agent.name = Some("start-your-handler-session-for-m".into());
+        assert!(is_handler(&agent));
         // Neither an old bridge token nor the old name can override native identity.
         agent
             .tokens
             .insert("session".into(), "original-session".into());
         agent.agent_session.as_mut().unwrap().value = "replacement-session".into();
-        assert!(!is_steward(&agent));
-        agent.name = Some("steward-m-ta-sverige".into());
-        assert!(!is_steward(&agent));
+        assert!(!is_handler(&agent));
+        agent.name = Some("handler-m-ta-sverige".into());
+        assert!(!is_handler(&agent));
         agent.agent_session = None;
-        assert!(!is_steward(&agent));
+        assert!(!is_handler(&agent));
         agent.agent_session = Some(Default::default());
-        assert!(!is_steward(&agent));
+        assert!(!is_handler(&agent));
         agent
             .tokens
-            .insert(CORGI_STEWARD_TOKEN.into(), "session:".into());
-        assert!(!is_steward(&agent));
+            .insert(CORGI_HANDLER_TOKEN.into(), "session:".into());
+        assert!(!is_handler(&agent));
+    }
+
+    /// A session an older Corgi started as the project's Steward carries its
+    /// marker under the old key, and is still the project's handler.
+    #[test]
+    fn a_session_marked_as_a_steward_by_an_older_corgi_is_the_handler() {
+        let mut agent = AgentInfo {
+            name: Some("steward-corgi".into()),
+            agent_session: Some(crate::model::AgentSession {
+                value: "old-session".into(),
+                ..Default::default()
+            }),
+            tokens: [(OLD_HANDLER_TOKEN.into(), "session:old-session".into())].into(),
+            ..Default::default()
+        };
+        assert!(is_handler(&agent));
+        agent.agent_session.as_mut().unwrap().value = "another-session".into();
+        assert!(!is_handler(&agent));
+        agent.tokens = [(OLD_HANDLER_TOKEN.into(), "steward-corgi".into())].into();
+        assert!(is_handler(&agent), "an old name marker");
+
+        let mut tokens = agent.tokens.clone();
+        upgrade_marker(&mut tokens);
+        assert_eq!(
+            tokens,
+            [(CORGI_HANDLER_TOKEN.into(), "steward-corgi".into())].into()
+        );
+        // A current marker beside an old one wins.
+        let mut tokens: BTreeMap<String, String> = [
+            (CORGI_HANDLER_TOKEN.into(), "session:new".into()),
+            (OLD_HANDLER_TOKEN.into(), "session:old".into()),
+        ]
+        .into();
+        assert_eq!(
+            handler_marker(&tokens).map(String::as_str),
+            Some("session:new")
+        );
+        upgrade_marker(&mut tokens);
+        assert_eq!(
+            tokens,
+            [(CORGI_HANDLER_TOKEN.into(), "session:new".into())].into()
+        );
+    }
+
+    /// A scratch Corgi state directory, removed when dropped.
+    struct StateBase(PathBuf);
+
+    impl StateBase {
+        fn new(label: &str) -> Self {
+            let base = env::temp_dir().join(format!("corgi-{label}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            fs::create_dir_all(&base).unwrap();
+            Self(base.canonicalize().unwrap())
+        }
+    }
+
+    impl Drop for StateBase {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Every file under `dir`, links followed, by its path relative to `dir`.
+    fn files(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else {
+                    let relative = path.strip_prefix(root).unwrap().to_path_buf();
+                    out.insert(relative, fs::read(&path).unwrap());
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    /// The memory of a Steward an older Corgi ran, in its pre-rename place.
+    fn populated_old_dir(old: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        for dir in ["briefs", "handovers"] {
+            fs::create_dir_all(old.join(dir)).unwrap();
+        }
+        let launch = Launch {
+            kind: "claude".into(),
+            model: "opus".into(),
+            effort: "high".into(),
+            extra_args: vec!["--verbose".into()],
+        };
+        save_launch(old, &launch).unwrap();
+        for (file, text) in [
+            (
+                "decisions.md",
+                "# weather decisions\n\n## 2026-09-30: Use Rust\nKept.\n",
+            ),
+            (
+                "ledger.jsonl",
+                "{\"at\":1,\"agent\":\"w-a\"}\n{\"at\":2,\"agent\":\"w-b\"}\n",
+            ),
+            ("briefs/x.md", "# Build x\n"),
+            ("handovers/y.md", "# An earlier handover\n"),
+            ("handover.md", "# Open threads\nnone\n"),
+            ("notes-of-its-own.txt", "anything else in the directory\n"),
+        ] {
+            fs::write(old.join(file), text).unwrap();
+        }
+        files(old)
+    }
+
+    #[test]
+    fn a_steward_s_memory_arrives_whole_at_a_fresh_start_and_at_a_handover() {
+        for handover in [false, true] {
+            let base = StateBase::new(&format!("state-e2e-{handover}"));
+            let (dir, old) = state_dirs_in(&base.0, "/repos/weather");
+            let before = populated_old_dir(&old);
+
+            // Until a session starts, the dashboard reads the old directory
+            // where it is: the handover note and launch of the session that
+            // is handing over.
+            assert_eq!(current_state_dir(dir.clone(), old.clone()), old);
+            assert!(note_written_since(&old, 0));
+            assert_eq!(launch_of(&old, &Harness::Claude).model, "opus");
+
+            let prepared = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+            assert_eq!(prepared.state_dir, dir);
+            assert_eq!(prepared.warning, None);
+            assert!(!fs::symlink_metadata(&dir).unwrap().file_type().is_symlink());
+
+            // Every file arrives unchanged; the launch only adds its role.
+            let mut after = files(&dir);
+            assert!(after.remove(Path::new("ROLE.md")).is_some());
+            assert_eq!(after, before);
+
+            // The old path is a link that resolves to the new directory, and
+            // what is written through it lands there.
+            assert!(fs::symlink_metadata(&old).unwrap().file_type().is_symlink());
+            assert_eq!(old.canonicalize().unwrap(), dir);
+            let ledger = old.join("ledger.jsonl");
+            let mut lines = fs::read_to_string(&ledger).unwrap();
+            lines.push_str("{\"at\":3,\"agent\":\"w-c\"}\n");
+            fs::write(&ledger, &lines).unwrap();
+            fs::write(old.join("briefs").join("z.md"), "# Build z\n").unwrap();
+            assert_eq!(fs::read_to_string(dir.join("ledger.jsonl")).unwrap(), lines);
+            assert_eq!(
+                fs::read_to_string(dir.join("briefs").join("z.md")).unwrap(),
+                "# Build z\n"
+            );
+            assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
+            assert_eq!(launch_of(&dir, &Harness::Claude).extra_args, ["--verbose"]);
+
+            // The session that starts is told the new paths only, as launch
+            // builds its first prompt.
+            let prompt = if handover {
+                let archive = handover_archive(&prepared.state_dir, 1_790_262_245);
+                assert!(archive.starts_with(&dir));
+                assert!(archive.starts_with(base.0.join("handler")));
+                takeover_prompt("/repos/weather", &prepared.state_dir, &archive)
+            } else {
+                first_prompt("/repos/weather", &prepared.state_dir, "")
+            };
+            assert!(prompt.contains(&format!("State directory: {}.", dir.display())));
+            assert!(!prompt.contains("/steward/"), "{prompt}");
+            assert!(prepared.role.contains(&dir.display().to_string()));
+            assert!(!prepared.role.contains("/steward/"));
+
+            // Starting again finds it migrated and leaves the link alone.
+            let again = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+            assert_eq!((again.state_dir, again.warning), (dir.clone(), None));
+            assert_eq!(old.canonicalize().unwrap(), dir);
+        }
+    }
+
+    #[test]
+    fn the_state_directory_s_move_never_overwrites_merges_or_deletes() {
+        let base = StateBase::new("state-cases");
+        let corgi = Path::new("/opt/corgi");
+        let link = |path: &Path| fs::symlink_metadata(path).unwrap().file_type().is_symlink();
+
+        // Neither: a session starts in a new directory, with no link left.
+        let (dir, old) = state_dirs_in(&base.0, "/repos/fresh");
+        let prepared = prepare_at(&base.0, "/repos/fresh", corgi).unwrap();
+        assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
+        assert!(dir.join("decisions.md").is_file() && dir.join("briefs").is_dir());
+        assert!(fs::symlink_metadata(&old).is_err());
+
+        // Both, each a directory of its own: the new one wins, the old one
+        // is untouched, and the warning names both.
+        let (dir, old) = state_dirs_in(&base.0, "/repos/webshop");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("decisions.md"), "# new\n").unwrap();
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("decisions.md"), "# old\n").unwrap();
+        assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
+        let prepared = prepare_at(&base.0, "/repos/webshop", corgi).unwrap();
+        assert_eq!(prepared.state_dir, dir);
+        let warning = prepared.warning.expect("a warning");
+        assert!(warning.contains(&dir.display().to_string()), "{warning}");
+        assert!(warning.contains(&old.display().to_string()), "{warning}");
+        assert_eq!(conflict(&dir, &old), Some(warning));
+        assert_eq!(
+            fs::read_to_string(dir.join("decisions.md")).unwrap(),
+            "# new\n"
+        );
+        assert_eq!(
+            fs::read_to_string(old.join("decisions.md")).unwrap(),
+            "# old\n"
+        );
+        assert!(!link(&old));
+
+        // A link at the old path to the new directory: migrated already, so
+        // it is followed, kept, and not warned about.
+        let (dir, old) = state_dirs_in(&base.0, "/repos/linked");
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(&dir, &old).unwrap();
+        assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
+        let prepared = prepare_at(&base.0, "/repos/linked", corgi).unwrap();
+        assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
+        assert!(link(&old) && old.canonicalize().unwrap() == dir);
+
+        // The same link once the new directory is gone points at nothing:
+        // a fresh start, and the link, kept, resolves again.
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(current_state_dir(dir.clone(), old.clone()), dir);
+        let prepared = prepare_at(&base.0, "/repos/linked", corgi).unwrap();
+        assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
+        assert!(link(&old) && old.canonicalize().unwrap() == dir);
+
+        // A link at the old path to a directory elsewhere, as a user may
+        // keep it: it stays, and the new path links to the same directory.
+        let (dir, old) = state_dirs_in(&base.0, "/repos/elsewhere");
+        let elsewhere = base.0.join("synced").join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("decisions.md"), "# synced\n").unwrap();
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &old).unwrap();
+        assert_eq!(current_state_dir(dir.clone(), old.clone()), old);
+        let prepared = prepare_at(&base.0, "/repos/elsewhere", corgi).unwrap();
+        assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
+        assert!(link(&old) && link(&dir));
+        assert_eq!(dir.canonicalize().unwrap(), elsewhere);
+        assert_eq!(
+            fs::read_to_string(dir.join("decisions.md")).unwrap(),
+            "# synced\n"
+        );
     }
 
     #[test]
     fn legacy_and_pre_prompt_markers_require_the_launch_name() {
         let mut agent = AgentInfo {
-            name: Some("steward-corgi".into()),
-            tokens: [(CORGI_STEWARD_TOKEN.into(), marker("steward-corgi", None))].into(),
+            name: Some("handler-corgi".into()),
+            tokens: [(CORGI_HANDLER_TOKEN.into(), marker("handler-corgi", None))].into(),
             ..Default::default()
         };
-        assert!(is_steward(&agent));
+        assert!(is_handler(&agent));
         agent.agent_session = Some(crate::model::AgentSession {
             value: "s1".into(),
             ..Default::default()
         });
-        assert!(is_steward(&agent));
+        assert!(is_handler(&agent));
         agent.name = Some("worker".into());
-        assert!(!is_steward(&agent));
+        assert!(!is_handler(&agent));
         agent.name = None;
-        assert!(!is_steward(&agent));
+        assert!(!is_handler(&agent));
     }
 
     fn wakes(steps: &[(AgentState, u64)]) -> Vec<Option<AgentState>> {
@@ -773,7 +1183,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_wakes_its_steward_each_time_it_stops_after_working() {
+    fn an_agent_wakes_its_handler_each_time_it_stops_after_working() {
         assert_eq!(
             wakes(&[
                 (Idle, 1),
@@ -847,11 +1257,11 @@ mod tests {
     fn the_role_names_this_binary_and_this_projects_state() {
         let role = role(
             Path::new("/opt/corgi/corgi"),
-            Path::new("/state/steward/corgi"),
+            Path::new("/state/handler/corgi"),
         );
         assert!(role.contains("`/opt/corgi/corgi spawn"));
         assert!(role.contains("`/opt/corgi/corgi fleet`"));
-        assert!(role.contains("`/state/steward/corgi`"));
+        assert!(role.contains("`/state/handler/corgi`"));
         assert!(!role.contains("{{"));
     }
 
@@ -869,8 +1279,8 @@ mod tests {
     }
 
     #[test]
-    fn stewards_call_the_installed_plugin_build_when_there_is_one() {
-        if env::var_os(BIN_OVERRIDE_ENV).is_some() {
+    fn handlers_call_the_installed_plugin_build_when_there_is_one() {
+        if env::var_os(BIN_OVERRIDE_ENV).is_some() || env::var_os(OLD_BIN_OVERRIDE_ENV).is_some() {
             return;
         }
         let root = env::temp_dir().join(format!("corgi-plugin-root-{}", std::process::id()));
@@ -892,7 +1302,7 @@ mod tests {
 
     #[test]
     fn a_first_task_replaces_the_greeting() {
-        let state = Path::new("/state/steward/weather");
+        let state = Path::new("/state/handler/weather");
         let greeting = first_prompt("/repos/weather", state, "  ");
         assert!(greeting.contains("Follow the start-of-session steps"));
         let task = first_prompt("/repos/weather", state, "Build a forecast CLI\nin Rust");
@@ -920,7 +1330,7 @@ mod tests {
         }
     }
 
-    /// The steps of one Steward session's handover, refresh by refresh, a
+    /// The steps of one handler session's handover, refresh by refresh, a
     /// second apart, with the note written when `note` says so.
     fn handover_steps(steps: &[(AgentState, u64, u8)], note: bool) -> Vec<Option<HandoverStep>> {
         let mut handover = Handover::default();
@@ -965,7 +1375,7 @@ mod tests {
     }
 
     #[test]
-    fn a_steward_is_asked_once_and_replaced_when_its_turn_ends_with_a_note() {
+    fn a_handler_is_asked_once_and_replaced_when_its_turn_ends_with_a_note() {
         assert_eq!(
             handover_steps(
                 &[
@@ -1002,7 +1412,7 @@ mod tests {
     }
 
     #[test]
-    fn a_steward_blocked_on_a_question_or_at_work_is_not_asked() {
+    fn a_handler_blocked_on_a_question_or_at_work_is_not_asked() {
         assert_eq!(
             handover_steps(
                 &[(Blocked, 1, 80), (Working, 2, 80), (Blocked, 3, 80)],
@@ -1031,7 +1441,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_note_the_steward_stays_and_is_asked_again_only_after_a_later_turn() {
+    fn without_a_note_the_handler_stays_and_is_asked_again_only_after_a_later_turn() {
         assert_eq!(
             handover_steps(
                 &[
@@ -1156,7 +1566,7 @@ mod tests {
     }
 
     #[test]
-    fn a_note_not_brought_up_to_date_leaves_the_steward_in_place() {
+    fn a_note_not_brought_up_to_date_leaves_the_handler_in_place() {
         let mut handover = Handover::default();
         // The note is written at 12 and never again.
         let mut step = |seen, now, drafting: bool| {
@@ -1189,7 +1599,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_the_steward_never_takes_up_counts_as_no_note() {
+    fn a_request_the_handler_never_takes_up_counts_as_no_note() {
         let mut handover = Handover::default();
         let idle = seen(Idle, 1, 60);
         assert_eq!(
@@ -1287,7 +1697,7 @@ mod tests {
         idle_secs: Some(CLAUDE_IDLE_SECS),
     };
 
-    /// A Steward whose first turn ended at 30,000 tokens, at 10% of its
+    /// A handler whose first turn ended at 30,000 tokens, at 10% of its
     /// window, now at `tokens`.
     fn idle(state: AgentState, change: u64, tokens: u64) -> Sighting<'static> {
         Sighting {
@@ -1311,7 +1721,7 @@ mod tests {
         Some(HandoverStep::Ask(CLAUDE_IDLE_SECS, Trigger::Idle(50)));
 
     #[test]
-    fn a_grown_steward_resting_past_its_idle_time_with_no_busy_worker_is_asked_once() {
+    fn a_grown_handler_resting_past_its_idle_time_with_no_busy_worker_is_asked_once() {
         let last = CLAUDE_IDLE_SECS;
         assert_eq!(
             idle_steps(&[
@@ -1327,7 +1737,7 @@ mod tests {
         let request = handover_request(Path::new("/state"), Trigger::Idle(50));
         assert!(request.starts_with(
             "[corgi] You have been idle for 50 minutes and your prompt cache is about to \
-             expire, so a fresh Steward session takes over from you. Write /state/handover.md"
+             expire, so a fresh Project handler session takes over from you. Write /state/handover.md"
         ));
     }
 
@@ -1362,7 +1772,7 @@ mod tests {
     }
 
     #[test]
-    fn idleness_waits_for_busy_workers_and_for_the_steward_itself() {
+    fn idleness_waits_for_busy_workers_and_for_the_handler_itself() {
         let last = CLAUDE_IDLE_SECS;
         let waiting = Sighting {
             workers_busy: true,
@@ -1423,7 +1833,7 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_steward_rests_half_as_long_and_a_debug_run_shortens_both() {
+    fn a_codex_handler_rests_half_as_long_and_a_debug_run_shortens_both() {
         assert_eq!(CLAUDE_IDLE_SECS, 50 * 60);
         assert_eq!(idle_secs_or_default(&Harness::Claude, None), Some(3_000));
         assert_eq!(idle_secs_or_default(&Harness::Codex, None), Some(1_500));
@@ -1522,26 +1932,26 @@ mod tests {
         assert_eq!(utc_stamp(0), "19700101-000000");
         assert_eq!(utc_stamp(1_790_262_245), "20260924-150405");
         assert_eq!(utc_stamp(951_782_400), "20000229-000000");
-        let state = Path::new("/state/steward/weather");
+        let state = Path::new("/state/handler/weather");
         let archive = handover_archive(state, 1_790_262_245);
         assert_eq!(
             archive,
-            Path::new("/state/steward/weather/handovers/20260924-150405.md")
+            Path::new("/state/handler/weather/handovers/20260924-150405.md")
         );
         let prompt = takeover_prompt("/repos/weather", state, &archive);
-        assert!(prompt.contains("State directory: /state/steward/weather."));
+        assert!(prompt.contains("State directory: /state/handler/weather."));
         assert!(prompt.contains(
-            "read /state/steward/weather/handover.md and move it to \
-             /state/steward/weather/handovers/20260924-150405.md"
+            "read /state/handler/weather/handover.md and move it to \
+             /state/handler/weather/handovers/20260924-150405.md"
         ));
         assert!(prompt.contains("Skip the greeting"));
         let request = handover_request(state, Trigger::Full(50));
         assert!(request.starts_with("[corgi] Your context is past 50%"));
-        assert!(request.contains("Write /state/steward/weather/handover.md"));
+        assert!(request.contains("Write /state/handler/weather/handover.md"));
         assert_eq!(
             handover_request(state, Trigger::Update),
             "[corgi] You worked after writing your handover note; bring \
-             /state/steward/weather/handover.md up to date with what happened since you \
+             /state/handler/weather/handover.md up to date with what happened since you \
              wrote it, then end your turn."
         );
     }
@@ -1563,7 +1973,7 @@ mod tests {
         for section in [
             "Open threads with the user",
             "Proposed plans not yet approved",
-            "`[steward]` prompts since each worker's last wake",
+            "`[handler]` prompts since each worker's last wake",
             "Promises to the user",
         ] {
             assert!(role.contains(section), "{section}");
@@ -1572,7 +1982,7 @@ mod tests {
 
     #[test]
     fn a_launch_is_recorded_for_the_successor_on_the_same_harness() {
-        let dir = env::temp_dir().join(format!("corgi-steward-launch-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("corgi-handler-launch-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("create state dir");
         assert_eq!(launch_of(&dir, &Harness::Codex).kind, "codex");
         let launch = Launch {
@@ -1583,7 +1993,7 @@ mod tests {
         };
         save_launch(&dir, &launch).expect("save launch");
         assert_eq!(launch_of(&dir, &Harness::Claude), launch);
-        // A Steward now on another harness starts on its defaults.
+        // A handler now on another harness starts on its defaults.
         assert_eq!(
             launch_of(&dir, &Harness::Codex),
             Launch {

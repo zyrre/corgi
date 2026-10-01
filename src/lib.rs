@@ -3,6 +3,7 @@ pub mod app;
 pub mod choices;
 pub mod defaults;
 pub mod git;
+pub mod handler;
 pub mod harness;
 pub mod herdr;
 pub mod job;
@@ -13,7 +14,6 @@ pub mod projects;
 #[cfg(test)]
 mod readme_shots;
 pub mod session;
-pub mod steward;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod textfield;

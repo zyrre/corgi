@@ -1,6 +1,6 @@
 //! Everything Corgi knows about one agent harness: its Herdr kind and title,
 //! where its CLI is, the flags it starts on, its offline models, what it
-//! supports, how a Steward runs on it, and which session file it writes.
+//! supports, how a handler runs on it, and which session file it writes.
 //!
 //! Herdr reports an agent's kind as a string and the new-agent form takes a
 //! harness typed by hand, so a kind Corgi knows nothing about stays
@@ -60,8 +60,8 @@ impl Harness {
         Harness::OpenCode,
     ];
 
-    /// The harnesses a Steward runs on, the first being the default.
-    pub const STEWARDS: &'static [Harness] = &[Harness::Claude, Harness::Codex];
+    /// The harnesses a handler runs on, the first being the default.
+    pub const HANDLERS: &'static [Harness] = &[Harness::Claude, Harness::Codex];
 
     /// The harness Herdr reports as `kind`. The match is exact, so every kind
     /// comes back from [`Harness::kind`] as it went in.
@@ -180,18 +180,18 @@ impl Harness {
         matches!(self, Self::Codex | Self::OpenCode)
     }
 
-    /// The harnesses a Steward runs on, as one phrase: `claude or codex`.
-    pub fn steward_kinds() -> String {
-        Self::STEWARDS
+    /// The harnesses a handler runs on, as one phrase: `claude or codex`.
+    pub fn handler_kinds() -> String {
+        Self::HANDLERS
             .iter()
             .map(Harness::kind)
             .collect::<Vec<_>>()
             .join(" or ")
     }
 
-    /// Whether a Steward can run on this harness.
-    pub fn supports_steward(&self) -> bool {
-        Self::STEWARDS.contains(self)
+    /// Whether a handler can run on this harness.
+    pub fn supports_handler(&self) -> bool {
+        Self::HANDLERS.contains(self)
     }
 
     /// The models the harness's CLI currently offers. Codex asks its
@@ -258,16 +258,16 @@ impl Harness {
         }
     }
 
-    /// The arguments that make a session a project's Steward: its `role`
+    /// The arguments that make a session a project's handler: its `role`
     /// (also written to `role_file`) on top of the harness's own
     /// instructions, and its `state_dir` writable next to the project.
-    pub fn steward_args(&self, role_file: &Path, role: &str, state_dir: &Path) -> Vec<String> {
+    pub fn handler_args(&self, role_file: &Path, role: &str, state_dir: &Path) -> Vec<String> {
         let state_dir = state_dir.to_string_lossy().into_owned();
         match self {
             // Codex has no flag that appends to its system prompt. Developer
             // instructions add to Codex's own, where `model_instructions_file`
             // would replace them. Commands run in the workspace-write sandbox,
-            // which keeps the Steward's writes to the project and its state
+            // which keeps the handler's writes to the project and its state
             // directory; network access is what lets them reach Herdr's socket,
             // which `herdr` and `corgi` need. Anything else the sandbox refuses,
             // such as the bootstrap's `git init`, Codex asks the user to approve.
@@ -512,13 +512,13 @@ mod tests {
     }
 
     #[test]
-    fn the_form_offers_codex_first_and_a_steward_defaults_to_claude() {
+    fn the_form_offers_codex_first_and_a_handler_defaults_to_claude() {
         let kinds: Vec<&str> = Harness::KNOWN.iter().map(Harness::kind).collect();
         assert_eq!(kinds, ["codex", "claude", "gemini", "copilot", "opencode"]);
-        assert_eq!(Harness::STEWARDS[0], Harness::Claude);
-        assert!(Harness::Claude.supports_steward() && Harness::Codex.supports_steward());
-        assert!(!Harness::Gemini.supports_steward());
-        assert!(!Harness::from_kind("").supports_steward());
+        assert_eq!(Harness::HANDLERS[0], Harness::Claude);
+        assert!(Harness::Claude.supports_handler() && Harness::Codex.supports_handler());
+        assert!(!Harness::Gemini.supports_handler());
+        assert!(!Harness::from_kind("").supports_handler());
     }
 
     #[test]
@@ -594,31 +594,31 @@ mod tests {
         assert_eq!(Harness::Codex.exit_command(), "/quit");
     }
 
-    fn steward_args(harness: &Harness) -> Vec<String> {
-        harness.steward_args(
-            Path::new("/state/steward/weather/ROLE.md"),
-            "# You are Steward\nRun `corgi \"fleet\"`.\n",
-            Path::new("/state/steward/weather"),
+    fn handler_args(harness: &Harness) -> Vec<String> {
+        harness.handler_args(
+            Path::new("/state/handler/weather/ROLE.md"),
+            "# You are the Project handler\nRun `corgi \"fleet\"`.\n",
+            Path::new("/state/handler/weather"),
         )
     }
 
     #[test]
-    fn a_claude_steward_appends_its_role_file_to_the_system_prompt() {
+    fn a_claude_handler_appends_its_role_file_to_the_system_prompt() {
         assert_eq!(
-            steward_args(&Harness::Claude),
+            handler_args(&Harness::Claude),
             [
                 "--append-system-prompt-file",
-                "/state/steward/weather/ROLE.md",
+                "/state/handler/weather/ROLE.md",
                 "--add-dir",
-                "/state/steward/weather",
+                "/state/handler/weather",
             ]
         );
     }
 
     #[test]
-    fn a_codex_steward_gets_its_role_as_developer_instructions_in_a_sandbox_that_reaches_herdr() {
+    fn a_codex_handler_gets_its_role_as_developer_instructions_in_a_sandbox_that_reaches_herdr() {
         assert_eq!(
-            steward_args(&Harness::Codex),
+            handler_args(&Harness::Codex),
             [
                 "--sandbox",
                 "workspace-write",
@@ -627,9 +627,9 @@ mod tests {
                 "-c",
                 "sandbox_workspace_write.network_access=true",
                 "--add-dir",
-                "/state/steward/weather",
+                "/state/handler/weather",
                 "-c",
-                r##"developer_instructions="# You are Steward\nRun `corgi \"fleet\"`.\n""##,
+                r##"developer_instructions="# You are the Project handler\nRun `corgi \"fleet\"`.\n""##,
             ]
         );
     }

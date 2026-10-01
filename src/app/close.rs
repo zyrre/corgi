@@ -56,7 +56,7 @@ impl App {
         };
         let project_main = project_main_workspace(
             &self.workspaces,
-            &self.steward_workspaces(),
+            &self.handler_workspaces(),
             &agent.project_root,
         );
         let target = if let Some(checkout) = &agent.worktree_checkout {
