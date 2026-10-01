@@ -435,6 +435,19 @@ mod tests {
     }
 
     #[test]
+    fn codex_fallback_offers_the_locally_configured_sol_6_1_model() {
+        let app = test_app();
+
+        let options = app.model_options(&Harness::Codex);
+        assert!(options.iter().any(|model| model == "gpt-6.1-sol"));
+        assert!(
+            model_choices(&options, "", None)
+                .iter()
+                .any(|choice| choice.value == "gpt-6.1-sol")
+        );
+    }
+
+    #[test]
     fn a_fresh_catalog_is_not_refetched() {
         let mut app = test_app();
         app.model_catalogs
