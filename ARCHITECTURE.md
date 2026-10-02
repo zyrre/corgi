@@ -314,9 +314,11 @@ submodules are split by flow, each adding methods to the one `App`.
 - `merge.rs` is the only Git command Corgi runs that writes: a confirmed
   merge of an agent's clean worktree branch into the branch already checked
   out in the repository's primary checkout, then a push through that branch's
-  configured upstream. The agent never performs the merge, and Corgi never changes the
-  user's checked-out branch.
-- `waker.rs` is `HandlerWaker`, which wakes handlers and hands them over, as
+  configured upstream, or, when the user hands a conflicted merge to the
+  Project handler, the `git merge --abort` of that merge. The agent never
+  performs the merge, and Corgi never changes the user's checked-out branch.
+- `waker.rs` is `HandlerWaker`, which wakes handlers, queues the merge-conflict
+  handoff for them, and hands them over, as
   described below; `draft.rs` tells it whether a handler's input box holds
   the user's draft.
 - `cli.rs` is `corgi spawn`, `corgi handler`, `corgi fleet`,
@@ -799,8 +801,22 @@ checkouts are checked clean before it asks and again after `Enter`, and then
 `git merge --no-ff --no-edit` and `git push` run while the popup shows a
 spinner and each step. An error leaves the popup open with `Enter` to retry.
 Corgi never switches branches and never removes the worktree by itself: the
-finished popup offers `x` to close it, or keeps it open. Conflicts are
-resolved in the primary checkout.
+finished popup offers `x` to close it, or keeps it open.
+
+A merge that stops on conflicts leaves the primary checkout mid-merge, and
+the popup lists the conflicted files (`git diff --name-only
+--diff-filter=U`; the job's `MergeError::Conflicts`). Esc leaves them there
+to resolve by hand. When the project has a running handler and this
+dashboard is the one that wakes handlers, `h` instead runs `git merge
+--abort`, checks the checkout clean again (a failure stays in the popup as
+an error), and queues one `[corgi]` line for the handler on `HandlerWaker`
+(`handler::merge_conflict_message`) naming the worker, its task, branch and
+worktree, the base branch and the files. It goes out with the wakes, between
+the handler's turns, and the handler has the worker merge the base branch
+into its own branch and resolve the conflict there; the user then merges
+again. Without a handler the popup says so; a dashboard that does not wake
+handlers, and the Omarchy popup, do not offer the key, since only the waker
+can hold the message for a handler mid-turn.
 
 ### `corgi spawn` and `corgi handler`
 

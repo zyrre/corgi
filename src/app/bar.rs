@@ -278,7 +278,7 @@ fn bar_action_with(
                     MergePhase::Confirm => "confirm",
                     MergePhase::Running(_) => "running",
                     MergePhase::Succeeded => "succeeded",
-                    MergePhase::Failed(_) => "failed",
+                    MergePhase::Failed(_) | MergePhase::Conflicted { .. } => "failed",
                 };
                 state = popup_dialog_state(phase, content);
                 state["confirm"] = serde_json::json!("Merge + push");

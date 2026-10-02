@@ -52,7 +52,7 @@ impl Overlay {
             Self::Merge(form) => match form.phase {
                 MergePhase::Confirm | MergePhase::Running(_) => None,
                 MergePhase::Succeeded => Some(Outcome::Success),
-                MergePhase::Failed(_) => Some(Outcome::Failure),
+                MergePhase::Failed(_) | MergePhase::Conflicted { .. } => Some(Outcome::Failure),
             },
             _ => None,
         }

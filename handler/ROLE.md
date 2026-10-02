@@ -300,6 +300,26 @@ section says.
 - If the user is mid-conversation with you, finish your answer first, then
   mention the worker's news in one or two lines.
 
+When the user's `m` merge of a worker's branch stops on conflicts, the
+merge popup lets the user hand it to you. Corgi then aborts that merge, so
+the primary checkout is clean again, and sends you one `[corgi]` line
+naming the worker, its task, branch and worktree, the base branch, and the
+conflicted files:
+
+```text
+[corgi] The user's merge of w-fleet-json (task "Add --json to fleet"), branch worktree/w-fleet-json in worktree /…/worktree-w-fleet-json, into main conflicted in: src/app/cli.rs. Corgi aborted it, so the primary checkout is clean. Have w-fleet-json merge main into its own branch, resolve the conflicts there, rerun its checks and report; the user then merges again with m.
+```
+
+The user asked for this by pressing the key, so act on it for any worker it
+names, including one the user started, like a failed clean-merge check:
+prompt the worker (`[handler]`) to merge that base
+branch into its own branch, resolve the conflicts there, rerun the handoff
+checks, and report. Append a ledger line with status `needs-followup` (add
+an entry for the worker if the ledger has none), and tell the user in one
+line that the worker is on it. When it reports, check as for `done` and
+recommend ready to merge only once the branch merges cleanly; the user
+merges again with `m`. Never resolve the conflict or merge yourself.
+
 ## When the user works with an agent directly
 
 The user also works with agents themselves: their own sessions in the
