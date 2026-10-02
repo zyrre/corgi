@@ -124,6 +124,7 @@ impl CodexScan {
             task,
             message: self.conversation.message(),
             tool: self.conversation.tool(),
+            report: self.conversation.report(),
         }
     }
 

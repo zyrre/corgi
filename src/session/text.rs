@@ -76,12 +76,24 @@ impl<'a> Event<'a> {
 pub(super) struct Conversation {
     said: Option<(ActivityKind, String)>,
     called: Option<(ActivityKind, String)>,
+    /// The newest assistant reply or question, kept separately and whole:
+    /// `corgi report`'s source. `said` already holds this text when it is the
+    /// newest thing in the session, but a user prompt or thinking sent since
+    /// replaces `said` without being a report.
+    reply: Option<(ActivityKind, String)>,
 }
 
 impl Conversation {
     /// Takes in the next event of a record, which is newer than the last.
     pub(super) fn see(&mut self, event: &Event) {
-        if !event.in_row || event.text.trim().is_empty() {
+        if event.text.trim().is_empty() {
+            return;
+        }
+        if !event.call && matches!(event.kind, ActivityKind::Message | ActivityKind::Question) {
+            self.reply
+                .get_or_insert_with(|| (event.kind, event.text.clone().into_owned()));
+        }
+        if !event.in_row {
             return;
         }
         let slot = if event.call {
@@ -96,6 +108,7 @@ impl Conversation {
         Self {
             said: self.said.or(older.said),
             called: self.called.or(older.called),
+            reply: self.reply.or(older.reply),
         }
     }
 
@@ -111,6 +124,15 @@ impl Conversation {
     pub(super) fn tool(&self) -> Option<Activity> {
         let (kind, text) = self.called.as_ref()?;
         Some(describe(*kind, text, MAX_TOOL_CHARS))
+    }
+
+    /// The newest assistant reply or question, whole: `corgi report`'s
+    /// source. Unlike [`Self::message`], the text keeps its paragraphs and is
+    /// not cut to a dashboard row's length, because a worker's closing report
+    /// is meant to be read in full rather than skimmed.
+    pub(super) fn report(&self) -> Option<Activity> {
+        let (kind, text) = self.reply.as_ref()?;
+        Some(describe_block(*kind, text, usize::MAX))
     }
 }
 
