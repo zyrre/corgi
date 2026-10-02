@@ -137,6 +137,25 @@ impl HandlerWaker {
         self.agents.retain(|name, _| seen.contains(name));
     }
 
+    /// Queues `message` for `root`'s handler under `key`, to go out with the
+    /// wakes at a refresh once the handler is between turns. Only the
+    /// dashboard that wakes handlers delivers; any other drops its queue.
+    pub(super) fn queue(&mut self, root: &str, key: String, message: String) {
+        self.pending
+            .entry(root.to_string())
+            .or_default()
+            .insert(key, message);
+    }
+
+    /// The messages waiting for `root`'s handler.
+    #[cfg(test)]
+    pub(super) fn pending_for(&self, root: &str) -> Vec<String> {
+        self.pending
+            .get(root)
+            .map(|messages| messages.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Advances each handler's handover by one refresh, with `percent` as
     /// the threshold and `idle_secs` giving each harness's idle time, and
     /// returns what to do about it. `note_since(root, at)` says whether

@@ -688,6 +688,7 @@ mod tests {
         let merge = Overlay::merge(MergeWorktreeForm {
             label: "corgi/reviewed-agent".into(),
             workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
             project_root: PathBuf::from("/repos/corgi"),
             worktree_checkout: PathBuf::from("/worktrees/corgi/worktree-reviewed-agent"),
             source_branch: "worktree/reviewed-agent".into(),
@@ -822,6 +823,7 @@ mod tests {
         let form = MergeWorktreeForm {
             label: "corgi/reviewed-agent".into(),
             workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
             project_root: PathBuf::from("/repos/corgi"),
             worktree_checkout: PathBuf::from("/worktrees/corgi/worktree-reviewed-agent"),
             source_branch: "worktree/reviewed-agent".into(),
@@ -887,6 +889,7 @@ mod tests {
         app.overlay = Overlay::merge(MergeWorktreeForm {
             label: "corgi/reviewed-agent".into(),
             workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
             project_root: PathBuf::from("/repos/corgi"),
             worktree_checkout: PathBuf::from("/worktrees/corgi/worktree-reviewed-agent"),
             source_branch: "worktree/reviewed-agent".into(),

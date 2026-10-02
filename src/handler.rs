@@ -539,6 +539,59 @@ pub fn wake_message(corgi: &Path, worker: &str, state: AgentState) -> String {
     )
 }
 
+/// Conflicted files a merge-conflict message names before summing up the
+/// rest, so a sweeping conflict stays one readable line.
+const CONFLICT_FILES_NAMED: usize = 20;
+
+/// What the user's merge of a worker's branch ran into, for its handler.
+pub struct MergeConflict<'a> {
+    /// The worker's agent name, as the handler's ledger has it.
+    pub worker: &'a str,
+    /// What the worker was asked to do; empty when unknown.
+    pub task: &'a str,
+    pub branch: &'a str,
+    pub worktree: &'a Path,
+    /// The branch checked out in the primary checkout, merged into.
+    pub base: &'a str,
+    pub files: &'a [String],
+}
+
+/// The line that tells a handler that the user's merge of a worker's branch
+/// stopped on conflicts, which Corgi aborted, and that the worker is to merge
+/// the base branch into its own branch and resolve them there.
+pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
+    let MergeConflict {
+        worker,
+        task,
+        branch,
+        worktree,
+        base,
+        files,
+    } = conflict;
+    let task = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    let task = if task.is_empty() {
+        String::new()
+    } else {
+        format!(" (task \"{task}\")")
+    };
+    let mut named = files
+        .iter()
+        .take(CONFLICT_FILES_NAMED)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if files.len() > CONFLICT_FILES_NAMED {
+        named.push_str(&format!(" and {} more", files.len() - CONFLICT_FILES_NAMED));
+    }
+    format!(
+        "{WAKE_PREFIX} The user's merge of {worker}{task}, branch {branch} in worktree {}, \
+         into {base} conflicted in: {named}. Corgi aborted it, so the primary checkout is \
+         clean. Have {worker} merge {base} into its own branch, resolve the conflicts \
+         there, rerun its checks and report; the user then merges again with m.",
+        worktree.display()
+    )
+}
+
 /// What a wake is about. Done and idle are one: the agent has stopped, and
 /// a done agent becomes idle once someone looks at it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

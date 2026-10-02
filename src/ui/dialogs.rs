@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::{
-    app::{CloseTarget, CloseWorkspaceForm, MergePhase, MergeWorktreeForm},
+    app::{CloseTarget, CloseWorkspaceForm, ConflictHelp, MergePhase, MergeWorktreeForm},
     paths::dir_name,
 };
 
@@ -188,6 +188,50 @@ pub(crate) fn merge_dialog_lines<'a>(
                 vec![("Enter", "retry", SUCCESS), ("Esc", "close", WARNING)],
             )
         }
+        MergePhase::Conflicted { files, help } => {
+            lines.push(outcome_line(false, "Merge stopped on conflicts.".into()));
+            lines.push(Line::raw(""));
+            lines.extend(conflict_file_lines(files));
+            lines.push(Line::raw(""));
+            let by_hand = format!(
+                "Resolve them in {} and run git merge --continue, or git merge --abort.",
+                form.project_root.display()
+            );
+            let legend = match help {
+                ConflictHelp::Handler(_) => {
+                    lines.push(Line::styled(
+                        format!(
+                            "Its Project handler can have the agent merge {} into its own branch.",
+                            form.target_branch
+                        ),
+                        Style::default().fg(TEXT),
+                    ));
+                    lines.push(Line::styled(
+                        "The worktree stays open; merge again once it reports.",
+                        Style::default().fg(MUTED),
+                    ));
+                    lines.push(Line::styled(
+                        "Esc leaves the primary checkout mid-merge to resolve by hand.",
+                        Style::default().fg(MUTED),
+                    ));
+                    vec![
+                        ("h", "abort merge and ask Project handler to fix", SUCCESS),
+                        ("Esc", "resolve by hand", WARNING),
+                    ]
+                }
+                ConflictHelp::NoHandler | ConflictHelp::Unavailable => {
+                    if *help == ConflictHelp::NoHandler {
+                        lines.push(Line::styled(
+                            "No Project handler is running for this project.",
+                            Style::default().fg(WARNING),
+                        ));
+                    }
+                    lines.push(Line::styled(by_hand, Style::default().fg(MUTED)));
+                    vec![("Enter", "retry", SUCCESS), ("Esc", "close", WARNING)]
+                }
+            };
+            (FAILURE_MARK, "Merge conflict", DANGER, legend)
+        }
     };
     DialogContent {
         mark,
@@ -247,6 +291,39 @@ fn merge_commit_lines(commits: &[String], target_branch: &str) -> Vec<Line<'stat
     lines
 }
 
+/// The files a merge left conflicted, left-aligned under their count and cut
+/// off like the commit list.
+fn conflict_file_lines(files: &[String]) -> Vec<Line<'static>> {
+    let count = files.len();
+    let mut lines = vec![Line::styled(
+        if count == 1 {
+            "1 conflicted file".to_string()
+        } else {
+            format!("{count} conflicted files")
+        },
+        Style::default().fg(MUTED),
+    )];
+    for file in files.iter().take(MERGE_COMMIT_ROWS) {
+        lines.push(
+            Line::styled(
+                clip(file, MERGE_SUBJECT_WIDTH),
+                Style::default().fg(WARNING),
+            )
+            .alignment(Alignment::Left),
+        );
+    }
+    if count > MERGE_COMMIT_ROWS {
+        lines.push(
+            Line::styled(
+                format!("… and {} more", count - MERGE_COMMIT_ROWS),
+                Style::default().fg(MUTED),
+            )
+            .alignment(Alignment::Left),
+        );
+    }
+    lines
+}
+
 /// A `<hash> <subject>` log line split in two.
 fn split_commit(commit: &str) -> (&str, &str) {
     commit.split_once(' ').unwrap_or((commit, ""))
@@ -269,6 +346,7 @@ mod tests {
         app.overlay = Overlay::merge(MergeWorktreeForm {
             label: "corgi/reviewed-agent".into(),
             workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
             project_root: PathBuf::from("/repos/corgi"),
             worktree_checkout: PathBuf::from("/worktrees/corgi/worktree-reviewed-agent"),
             source_branch: "worktree/reviewed-agent".into(),
@@ -294,6 +372,59 @@ mod tests {
     }
 
     #[test]
+    fn a_conflicted_merge_lists_its_files_and_offers_the_handler_only_if_running() {
+        let mut app = test_app();
+        app.overlay = Overlay::merge(MergeWorktreeForm {
+            label: "corgi/reviewed-agent".into(),
+            workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
+            project_root: PathBuf::from("/repos/corgi"),
+            worktree_checkout: PathBuf::from("/worktrees/corgi/worktree-reviewed-agent"),
+            source_branch: "worktree/reviewed-agent".into(),
+            target_branch: "main".into(),
+            task: "Popup windows styling review".into(),
+            commits: Vec::new(),
+            phase: MergePhase::Conflicted {
+                files: vec!["src/ui/dialogs.rs".into(), "README.md".into()],
+                help: ConflictHelp::Handler("handler-corgi".into()),
+            },
+        });
+        let mut terminal = test_terminal(120, 40);
+        terminal
+            .draw(|frame| draw_overlay(frame, frame.area(), &mut app))
+            .expect("draw conflicted merge dialog");
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("2 conflicted files"), "{rendered}");
+        assert!(rendered.contains("src/ui/dialogs.rs"), "{rendered}");
+        assert!(rendered.contains("README.md"), "{rendered}");
+        assert!(
+            rendered.contains("merge main into its own branch"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(" h  abort merge and ask Project handler to fix"),
+            "{rendered}"
+        );
+
+        let form = app.overlay.merge_worktree_form_mut().expect("form");
+        form.phase = MergePhase::Conflicted {
+            files: vec!["README.md".into()],
+            help: ConflictHelp::NoHandler,
+        };
+        terminal
+            .draw(|frame| draw_overlay(frame, frame.area(), &mut app))
+            .expect("draw conflicted merge dialog");
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("1 conflicted file"), "{rendered}");
+        assert!(
+            rendered.contains("No Project handler is running"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("git merge --continue"), "{rendered}");
+        assert!(!rendered.contains("Project handler to fix"), "{rendered}");
+    }
+
+    #[test]
     fn the_merge_confirmation_names_the_task_and_lists_its_commits() {
         let mut app = test_app();
         let commits: Vec<String> = (0..12)
@@ -302,6 +433,7 @@ mod tests {
         app.overlay = Overlay::merge(MergeWorktreeForm {
             label: "corgi/reviewed-agent".into(),
             workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
             project_root: PathBuf::from("/repos/corgi"),
             worktree_checkout: PathBuf::from("/worktrees/corgi/worktree-reviewed-agent"),
             source_branch: "worktree/reviewed-agent".into(),

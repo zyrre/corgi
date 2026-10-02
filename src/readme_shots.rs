@@ -765,6 +765,7 @@ fn merge(phase: MergePhase) -> App {
     app.overlay = Overlay::merge(MergeWorktreeForm {
         label: "webshop/order-pages-2d5a".into(),
         workspace_id: "w3".into(),
+        agent: "w-reviewed-agent".into(),
         project_root: PathBuf::from(format!("{HOME}/repos/webshop")),
         worktree_checkout: PathBuf::from(format!(
             "{HOME}/.herdr/worktrees/webshop/worktree-order-pages-2d5a"

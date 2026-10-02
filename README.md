@@ -77,7 +77,7 @@ In an expanded card, a project without a Project handler, and the scratch sessio
 
 ## Merging
 
-`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout.
+`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout. If the merge stops on conflicts, the popup lists the files; with a Project handler running, `h` aborts the merge and asks the handler to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
 
 <img src="docs/images/merge-outcomes.gif" width="757" alt="A merge refused because the agent's worktree has uncommitted changes, the popup pulsing red and shaking; then retried, its steps running, and stamped with a big green check">
 

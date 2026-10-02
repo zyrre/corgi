@@ -50,7 +50,7 @@ pub(crate) use close::{CloseTarget, CloseWorkspaceForm};
 #[cfg(test)]
 pub(crate) use form::Checkout;
 pub(crate) use form::{NewAgentForm, NewField};
-pub(crate) use merge::{MergePhase, MergeWorktreeForm};
+pub(crate) use merge::{ConflictHelp, MergePhase, MergeWorktreeForm};
 pub(crate) use overlay::Overlay;
 pub(crate) use prompt::PromptForm;
 
@@ -174,7 +174,7 @@ pub(crate) struct App {
     launch_job: Job<Result<String>, JobReport>,
     usage_job: Job<Vec<UsageResult>>,
     codex_task_job: Job<Result<HashMap<String, String>, String>>,
-    merge_job: Job<Result<(), String>, JobReport>,
+    merge_job: Job<Result<(), merge::MergeError>, JobReport>,
     /// The model catalogs and harness configurations behind the new-agent
     /// form's selectors.
     model_catalogs: ModelCatalogs,
@@ -1623,6 +1623,7 @@ mod tests {
         app.overlay = Overlay::merge(MergeWorktreeForm {
             label: "corgi".into(),
             workspace_id: "w-worker".into(),
+            agent: "w-reviewed-agent".into(),
             project_root: "/repos/corgi".into(),
             worktree_checkout: "/worktrees/corgi/quiet-owl".into(),
             source_branch: "worktree/quiet-owl".into(),
