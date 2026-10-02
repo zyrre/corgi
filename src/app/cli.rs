@@ -10,7 +10,6 @@ use crate::{
     git::{git_current_branch, git_output},
     harness::Harness,
     herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS, ReadSource},
-    model::ActivityKind,
     paths::{expand_home, is_home},
     session::SessionReader,
 };
@@ -439,13 +438,13 @@ pub fn digest(args: &[String]) -> Result<()> {
 pub const REPORT_USAGE: &str = "\
 Usage: corgi report NAME
 
-Prints the newest thing the agent NAME (a Herdr agent name or pane ID) said,
-which for a worker that followed its brief is its report. Shows the agent's
-screen instead when its harness writes no readable transcript.";
+Prints, in full, the newest thing the agent NAME (a Herdr agent name or pane
+ID) said, which for a worker that followed its brief is its report. Shows the
+agent's screen instead when its harness writes no readable transcript.";
 
-/// `corgi report NAME`: the newest thing an agent said, which for a worker
-/// that followed its brief is its report. Falls back to the agent's screen
-/// when its harness writes no readable transcript.
+/// `corgi report NAME`: the newest thing an agent said, in full, which for a
+/// worker that followed its brief is its report. Falls back to the agent's
+/// screen when its harness writes no readable transcript.
 pub fn report(args: &[String]) -> Result<()> {
     let [target] = args else {
         bail!("Usage: corgi report NAME");
@@ -457,11 +456,8 @@ pub fn report(args: &[String]) -> Result<()> {
         .iter()
         .find(|agent| agent.name.as_deref() == Some(target.as_str()) || agent.pane_id == *target)
         .with_context(|| format!("no running agent named {target}"))?;
-    let transcript = SessionReader::default().transcript(agent);
-    let said = transcript
-        .iter()
-        .find(|entry| matches!(entry.kind, ActivityKind::Message | ActivityKind::Question));
-    if let Some(entry) = said {
+    let report = SessionReader::default().facts(agent).report;
+    if let Some(entry) = report {
         println!("{}", entry.text);
         return Ok(());
     }

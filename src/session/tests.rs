@@ -1,5 +1,6 @@
 use super::{claude::*, codex::*, locate::*, tail::*, text::*, *};
 use crate::{
+    activity::MAX_MESSAGE_CHARS,
     model::{ActivityKind, AgentSession, PromptCacheKind},
     time::parse_rfc3339,
 };
@@ -416,6 +417,47 @@ fn a_claude_transcript_reports_what_was_said_last_and_the_newest_tool_call_in_fu
 }
 
 #[test]
+fn a_claude_transcript_reports_the_newest_reply_whole_even_past_the_row_cap() {
+    let directory = TempDir::new("claude-report");
+    let path = directory.join("session.jsonl");
+    let paragraph = "This paragraph explains one part of the change. "
+        .repeat(100)
+        .trim_end()
+        .to_string();
+    let long_reply = format!("{paragraph}\n\n{paragraph}\n\n{paragraph}");
+    assert!(long_reply.chars().count() > 10_000);
+    let record = serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "model": "claude-opus-5",
+            "content": [{"type": "text", "text": long_reply}],
+            "usage": {"input_tokens": 2}
+        }
+    });
+    write(
+        &path,
+        &[
+            r#"{"type":"user","message":{"role":"user","content":"Summarize the change"}}"#,
+            &record.to_string(),
+            // A user prompt sent after the reply does not replace the
+            // report, even though it becomes the newest thing said in the
+            // row.
+            r#"{"type":"user","message":{"role":"user","content":"Thanks"}}"#,
+        ],
+    );
+
+    let facts = claude_facts(&path, None);
+    // The row shows the newest thing said, folded to its usual cap...
+    assert_eq!(facts.message, activity(ActivityKind::Prompt, "Thanks"));
+    // ...but the report is the assistant's reply whole, paragraphs and all.
+    let report = facts.report.expect("report");
+    assert_eq!(report.kind, ActivityKind::Message);
+    assert_eq!(report.text, long_reply);
+    assert_eq!(report.text.chars().count(), long_reply.chars().count());
+    assert!(report.text.chars().count() > MAX_MESSAGE_CHARS);
+}
+
+#[test]
 fn a_codex_rollout_reports_the_conversation_and_the_shell_command_it_runs() {
     let directory = TempDir::new("codex-conversation");
     let path = directory.join("rollout-2026-09-10T09-00-00-thread.jsonl");
@@ -475,6 +517,47 @@ fn a_codex_rollout_reports_the_conversation_and_the_shell_command_it_runs() {
         facts.tool,
         activity(ActivityKind::Command, "cargo clippy -- -D warnings")
     );
+}
+
+#[test]
+fn a_codex_rollout_reports_the_newest_reply_whole_even_past_the_row_cap() {
+    let directory = TempDir::new("codex-report");
+    let path = directory.join("rollout-2026-09-10T09-00-00-thread.jsonl");
+    let paragraph = "This paragraph explains one part of the change. "
+        .repeat(100)
+        .trim_end()
+        .to_string();
+    let long_reply = format!("{paragraph}\n\n{paragraph}\n\n{paragraph}");
+    assert!(long_reply.chars().count() > 10_000);
+    let record = serde_json::json!({
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": long_reply}]
+        }
+    });
+    write(
+        &path,
+        &[
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Summarize the change"}]}}"#,
+            &record.to_string(),
+            // A user prompt sent after the reply does not replace the
+            // report, even though it becomes the newest thing said in the
+            // row.
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Thanks"}]}}"#,
+        ],
+    );
+
+    let facts = codex_facts(&path);
+    // The row shows the newest thing said, folded to its usual cap...
+    assert_eq!(facts.message, activity(ActivityKind::Prompt, "Thanks"));
+    // ...but the report is the assistant's reply whole, paragraphs and all.
+    let report = facts.report.expect("report");
+    assert_eq!(report.kind, ActivityKind::Message);
+    assert_eq!(report.text, long_reply);
+    assert_eq!(report.text.chars().count(), long_reply.chars().count());
+    assert!(report.text.chars().count() > MAX_MESSAGE_CHARS);
 }
 
 #[test]

@@ -111,6 +111,9 @@ pub struct SessionFacts {
     pub message: Option<Activity>,
     /// The newest tool call, with its whole argument.
     pub tool: Option<Activity>,
+    /// The same newest thing said as `message`, but whole rather than cut to
+    /// a dashboard row: the source of `corgi report`.
+    pub report: Option<Activity>,
 }
 
 /// Resolves the session file of every agent pane and follows what it says.

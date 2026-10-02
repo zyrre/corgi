@@ -123,6 +123,7 @@ impl ClaudeScan {
             task,
             message: self.conversation.message(),
             tool: self.conversation.tool(),
+            report: self.conversation.report(),
             ..SessionFacts::default()
         };
         let Some(request) = &self.request else {
