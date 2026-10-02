@@ -48,6 +48,11 @@ const AGENT_START_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// stamp, before it closes by itself.
 const STARTED_HOLD: Duration = Duration::from_millis(900);
 
+/// The pane token that tags a worker `corgi spawn --request-id` started
+/// with that id, so a retried spawn finds the worker instead of starting a
+/// second one.
+pub(super) const CORGI_REQUEST_TOKEN: &str = "corgi_request";
+
 /// Everything one new agent is started with. The dashboard form, the Omarchy
 /// popup, and `corgi spawn` all fill one in, so every launch takes the same
 /// checkout, start, and first-prompt sequence.
@@ -66,6 +71,8 @@ pub(super) struct LaunchPlan {
     /// Arguments for the agent CLI itself, after the model and effort.
     pub(super) extra_args: Vec<String>,
     pub(super) role: Role,
+    /// The `corgi spawn --request-id` the worker's pane is tagged with.
+    pub(super) request_id: Option<String>,
 }
 
 /// Whom a launch starts.
@@ -389,6 +396,7 @@ pub(super) fn launch_agent(
         checkout,
         extra_args,
         role,
+        request_id,
     } = plan;
     let scratch = is_home(project);
     anyhow::ensure!(
@@ -428,6 +436,18 @@ pub(super) fn launch_agent(
             }
         }
     };
+    if let Some(id) = request_id {
+        // Tagged before the agent starts, so that a retry finds this worker
+        // from the moment it has a pane. Untagged, it still starts; only a
+        // retry would then miss it.
+        if let Err(error) =
+            markers::mark_pane(client, &pane_id, name, None, &[(CORGI_REQUEST_TOKEN, id)])
+        {
+            progress.report(format!(
+                "Could not tag {name} with request id {id}: {error:#}"
+            ));
+        }
+    }
     progress.step(1);
     progress.report(format!(
         "Starting {harness}{}{} as {name}…",
@@ -1012,6 +1032,7 @@ pub(super) fn handler_plan(
         role: Role::Handler {
             handover_pane: None,
         },
+        request_id: None,
     })
 }
 
@@ -1021,7 +1042,7 @@ mod tests {
 
     use anyhow::anyhow;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use crate::{
         app::{
@@ -1162,24 +1183,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_scratch_launch_makes_a_plain_agent_workspace_and_sends_no_first_prompt() {
-        let Some(home) = crate::paths::home().filter(|home| home.is_dir()) else {
-            return;
-        };
-        let cwd = home.to_string_lossy().into_owned();
-        let expected_cwd = cwd.clone();
-        // Any request but these, such as worktree.list, project-main
-        // metadata or agent.prompt, fails the test: the fake answers only
-        // these, in order.
+    /// Launches a scratch agent with `request_id` against a fake Herdr that
+    /// answers only the requests such a launch makes, in order, and returns
+    /// the launch and the parameters of each request. Any other request,
+    /// such as worktree.list, project-main metadata or agent.prompt, fails
+    /// the test.
+    fn scratch_launch(home: &Path, request_id: Option<&str>) -> (LaunchedAgent, Vec<Value>) {
+        let expected_cwd = home.to_string_lossy().into_owned();
+        let mut methods = vec![
+            "session.snapshot",
+            "workspace.create",
+            "workspace.report_metadata",
+        ];
+        if request_id.is_some() {
+            methods.push("pane.report_metadata");
+        }
+        methods.push("agent.start");
         let (socket_path, server) = fake_herdr("scratch-launch", move |listener| {
             let mut requests = Vec::new();
-            for method in [
-                "session.snapshot",
-                "workspace.create",
-                "workspace.report_metadata",
-                "agent.start",
-            ] {
+            for method in methods {
                 answer(&listener, |request| {
                     assert_eq!(request["method"], method);
                     requests.push(request["params"].clone());
@@ -1198,6 +1220,9 @@ mod tests {
                         }}),
                         "workspace.report_metadata" => json!({ "result": {
                             "type": "workspace_metadata_updated"
+                        }}),
+                        "pane.report_metadata" => json!({ "result": {
+                            "type": "pane_metadata_updated"
                         }}),
                         _ => json!({ "result": {
                             "type": "agent_started",
@@ -1220,23 +1245,33 @@ mod tests {
             model: String::new(),
             effort: String::new(),
             prompt: String::new(),
-            project: home.clone(),
+            project: home.to_path_buf(),
             new_project: false,
             // The form's default, which the home directory overrides.
             checkout: Checkout::Worktree,
             extra_args: Vec::new(),
             role: Role::Worker,
+            request_id: request_id.map(str::to_string),
         };
         let launched = launch_agent(&client, &plan, &mut Silent).expect("scratch launch");
         let requests = server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
+        (launched, requests)
+    }
+
+    #[test]
+    fn a_scratch_launch_makes_a_plain_agent_workspace_and_sends_no_first_prompt() {
+        let Some(home) = crate::paths::home().filter(|home| home.is_dir()) else {
+            return;
+        };
+        let (launched, requests) = scratch_launch(&home, None);
         assert_eq!(launched.agent.pane_id, "w9:p1");
         assert!(
             launched.location.contains("scratch 2"),
             "{}",
             launched.location
         );
-        assert_eq!(requests[1]["cwd"], cwd);
+        assert_eq!(requests[1]["cwd"], home.to_string_lossy().as_ref());
         assert_eq!(requests[1]["label"], "scratch 2");
         assert_eq!(requests[2]["workspace_id"], "w9");
         assert_eq!(
@@ -1244,6 +1279,23 @@ mod tests {
             json!({ "corgi_workspace_role": "agent-workspace" })
         );
         assert_eq!(requests[3]["pane_id"], "w9:p1");
+    }
+
+    #[test]
+    fn a_spawn_with_a_request_id_tags_its_pane_before_the_agent_starts() {
+        let Some(home) = crate::paths::home().filter(|home| home.is_dir()) else {
+            return;
+        };
+        let (launched, requests) = scratch_launch(&home, Some("20261002-w-retry"));
+        assert_eq!(launched.agent.pane_id, "w9:p1");
+        assert_eq!(requests[3]["pane_id"], "w9:p1");
+        // Corgi's other pane tokens are cleared, as every pane mark does.
+        assert_eq!(
+            requests[3]["tokens"][CORGI_REQUEST_TOKEN],
+            "20261002-w-retry"
+        );
+        assert_eq!(requests[3]["tokens"][CORGI_HANDLER_TOKEN], Value::Null);
+        assert_eq!(requests[4]["pane_id"], "w9:p1", "then agent.start");
     }
 
     #[test]

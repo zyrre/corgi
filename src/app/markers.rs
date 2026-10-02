@@ -32,20 +32,23 @@ use crate::{
 
 use super::{
     App,
+    launch::CORGI_REQUEST_TOKEN,
     project_main::{
         CORGI_METADATA_SOURCE, CORGI_PROJECT_MAIN_TAB_TOKEN, CORGI_PROJECT_ROOT_HASH_TOKEN,
-        CORGI_PROJECT_ROOT_TOKEN, CORGI_WORKSPACE_ROLE_TOKEN,
+        CORGI_PROJECT_ROOT_TOKEN, CORGI_WORKSPACE_ROLE_TOKEN, project_root_digest,
     },
 };
 
-/// The pane tokens Corgi sets, all on the handler's pane. The marker an
-/// older Corgi set under its pre-rename key counts among them, so that it is
-/// read, recorded under the new key, and cleared whenever Corgi writes.
-const PANE_TOKENS: [&str; 4] = [
+/// The pane tokens Corgi sets: the handler's marks on the handler's pane,
+/// and a spawned worker's request id on that worker's. The marker an older
+/// Corgi set under its pre-rename key counts among them, so that it is read,
+/// recorded under the new key, and cleared whenever Corgi writes.
+const PANE_TOKENS: [&str; 5] = [
     CORGI_HANDLER_TOKEN,
     OLD_HANDLER_TOKEN,
     HANDOVER_TOKEN,
     BASELINE_TOKEN,
+    CORGI_REQUEST_TOKEN,
 ];
 
 /// The workspace tokens Corgi sets, on its project and agent workspaces.
@@ -151,6 +154,37 @@ pub(super) fn mark_workspace(
         );
     });
     Ok(())
+}
+
+/// Takes the lock that `corgi spawn --request-id` holds in the project at
+/// `root` from its check for a running worker with the id to the end of its
+/// launch, so that a retry made while the first spawn still runs waits for
+/// it and then finds its worker. It sits beside the client's record; without
+/// one there is nothing to lock. `waiting` is called once if another spawn
+/// holds it.
+pub(super) fn spawn_lock(
+    client: &HerdrClient,
+    root: &str,
+    waiting: impl FnOnce(),
+) -> Result<Option<fs::File>> {
+    let Some(record) = client.marker_record() else {
+        return Ok(None);
+    };
+    let dir = record
+        .parent()
+        .context("the marker record has no directory")?;
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let stem = record.file_stem().unwrap_or_default().to_string_lossy();
+    let digest = project_root_digest(root);
+    let digest = digest.trim_start_matches("fnv1a64:");
+    let path = dir.join(format!("{stem}.spawn-{digest}.lock"));
+    let lock = fs::File::create(&path).with_context(|| format!("create {}", path.display()))?;
+    if lock.try_lock().is_err() {
+        waiting();
+        lock.lock()
+            .with_context(|| format!("lock {}", path.display()))?;
+    }
+    Ok(Some(lock))
 }
 
 /// Only Herdr's live session can establish pane ownership.
@@ -296,7 +330,11 @@ fn reconcile(record: &mut Record, snapshot: &SessionSnapshot) -> Vec<Restore> {
         let recorded_session = previous.and_then(|marks| marks.session.as_deref());
         let same_session = session.is_some() && session == recorded_session;
         let stale = matches!((session, recorded_session), (Some(now), Some(then)) if now != then);
-        if stale || !(handler::is_handler(agent) || same_session) {
+        // A worker's request id carries no identity of its own: while Herdr
+        // has it and no recorded session says otherwise, the agent in the
+        // pane is the one it was set for, and its session is bound to it.
+        let unbound_worker = live_marker.is_none() && recorded_session.is_none();
+        if stale || !(handler::is_handler(agent) || same_session || unbound_worker) {
             // A missing native identity is inconclusive, not permission to
             // fall back to the name on a session-bound marker.
             if session.is_none()
@@ -317,7 +355,7 @@ fn reconcile(record: &mut Record, snapshot: &SessionSnapshot) -> Vec<Restore> {
         }
         let name = agent.name.as_deref().unwrap_or_default();
         let mut promoted = tokens.clone();
-        if session.is_some() {
+        if session.is_some() && live_marker.is_some() {
             promoted.insert(CORGI_HANDLER_TOKEN.into(), handler::marker(name, session));
         }
         let session = session
@@ -351,10 +389,12 @@ fn reconcile(record: &mut Record, snapshot: &SessionSnapshot) -> Vec<Restore> {
                 // Persisted name markers are safe to migrate even after a
                 // rename, because their recorded native session still matches.
                 marks.agent = agent.name.clone().unwrap_or_default();
-                marks.tokens.insert(
-                    CORGI_HANDLER_TOKEN.into(),
-                    handler::marker(&marks.agent, Some(now)),
-                );
+                if marks.tokens.contains_key(CORGI_HANDLER_TOKEN) {
+                    marks.tokens.insert(
+                        CORGI_HANDLER_TOKEN.into(),
+                        handler::marker(&marks.agent, Some(now)),
+                    );
+                }
                 restores.push(Restore::Pane(pane.clone(), marks.tokens.clone()));
                 true
             }
@@ -502,7 +542,11 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::{
-        app::{cli::fleet_rows, project_main::project_root_digest, waker::HandlerWaker},
+        app::{
+            cli::{fleet_rows, requested_agent},
+            project_main::project_root_digest,
+            waker::HandlerWaker,
+        },
         model::{AgentSession, WorkspaceWorktreeInfo},
         test_support::{ScratchDir, fake_herdr, test_app},
     };
@@ -1121,7 +1165,8 @@ mod tests {
                 // The pre-rename marker key is cleared too.
                 json!({
                     "corgi_handler": null, "corgi_steward": null,
-                    "corgi_handover": null, "corgi_baseline": null
+                    "corgi_handover": null, "corgi_baseline": null,
+                    "corgi_request": null
                 })
             );
             for list in ["agents", "panes"] {
@@ -1163,7 +1208,8 @@ mod tests {
                     // The pre-rename marker key is cleared too.
                     json!({
                         "corgi_handler": null, "corgi_steward": null,
-                        "corgi_handover": null, "corgi_baseline": null
+                        "corgi_handover": null, "corgi_baseline": null,
+                        "corgi_request": null
                     })
                 );
                 json!({"error": {"code": "unavailable", "message": "try later"}})
@@ -1355,7 +1401,8 @@ mod tests {
             // The pre-rename marker key is cleared too.
             json!({
                 "corgi_handler": "handler-corgi", "corgi_steward": null,
-                "corgi_handover": null, "corgi_baseline": null
+                "corgi_handover": null, "corgi_baseline": null,
+                "corgi_request": null
             })
         );
         for list in ["agents", "panes"] {
@@ -1376,5 +1423,118 @@ mod tests {
             panes: BTreeMap::from([(pane.into(), handler_marks(Some(SESSION)))]),
             ..Record::default()
         }
+    }
+
+    /// A worker `corgi spawn --request-id` started keeps its id while it
+    /// runs, gets it back after a Herdr restart, and never becomes the
+    /// handler on the way; a retry of the spawn finds it by that id.
+    #[test]
+    fn a_spawned_workers_request_id_survives_a_herdr_restart() {
+        const ID: &str = "20261002-w-brave";
+        let scratch = ScratchDir::new("markers-request");
+        let record = scratch.join("markers").join("herdr.json");
+        let herdr = StatefulHerdr::new("markers-request", marked_session());
+        let client = herdr.client(&record);
+        // As the launch tags it: before the agent starts, with no session.
+        mark_pane(
+            &client,
+            "w8Z:p1",
+            "w-brave",
+            None,
+            &[(CORGI_REQUEST_TOKEN, ID)],
+        )
+        .expect("tag the worker");
+        let mut dashboard = leading_dashboard(client.clone(), &scratch);
+        let mut fleet = test_app();
+        fleet.client = client;
+        let worker_tokens = || herdr.tokens("agents", "pane_id", "w8Z:p1");
+
+        dashboard.refresh();
+        assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], ID);
+        assert!(worker_tokens().get(CORGI_HANDLER_TOKEN).is_none());
+        let marks = &read(&record).panes["w8Z:p1"];
+        assert_eq!(marks.session.as_deref(), Some("5e55-worker"));
+        assert_eq!(marks.tokens, owned(&[(CORGI_REQUEST_TOKEN, ID)]));
+
+        fleet.refresh();
+        let found = requested_agent(&fleet, ROOT, ID).expect("the retry finds the worker");
+        assert_eq!(found["name"], "w-brave");
+        assert_eq!(found["pane_id"], "w8Z:p1");
+        assert_eq!(found["checkout"], "worktree");
+        assert_eq!(found["existing"], true);
+        assert!(requested_agent(&fleet, ROOT, "20261002-w-other").is_none());
+        assert!(
+            requested_agent(&fleet, "/repos/elsewhere", ID).is_none(),
+            "only the same project's agents count"
+        );
+
+        herdr.restart();
+        fleet.refresh();
+        assert!(requested_agent(&fleet, ROOT, ID).is_none());
+        dashboard.refresh();
+        assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], ID);
+        assert!(worker_tokens().get(CORGI_HANDLER_TOKEN).is_none());
+        fleet.refresh();
+        assert!(requested_agent(&fleet, ROOT, ID).is_some());
+        assert_eq!(roles(&fleet), ["handler-corgi handler", "w-brave worker"]);
+    }
+
+    /// Another session in a tagged pane, as when the worker exited and
+    /// someone started an agent in its shell, does not inherit the id.
+    #[test]
+    fn a_request_id_is_not_inherited_by_a_later_session_in_its_pane() {
+        let tagged = [(CORGI_REQUEST_TOKEN, "20261002-w-brave")];
+        let mut record = Record {
+            panes: BTreeMap::from([(
+                "w8Z:p1".into(),
+                PaneMarks {
+                    agent: "w-brave".into(),
+                    session: Some("5e55-worker".into()),
+                    tokens: owned(&tagged),
+                },
+            )]),
+            ..Record::default()
+        };
+        let snapshot = SessionSnapshot {
+            agents: vec![handler_agent("w8Z:p1", "w-next", Some("later"), &tagged)],
+            ..SessionSnapshot::default()
+        };
+        assert_eq!(
+            reconcile(&mut record, &snapshot),
+            [Restore::Pane("w8Z:p1".into(), Tokens::new())]
+        );
+    }
+
+    /// A retry made while the first spawn of the project still runs waits
+    /// for it; a spawn in another project does not.
+    #[test]
+    fn a_spawn_with_a_request_id_waits_for_one_still_running_in_its_project() {
+        let scratch = ScratchDir::new("markers-spawn-lock");
+        let record = scratch.join("markers").join("herdr.json");
+        let client =
+            HerdrClient::from_socket_path("/tmp/corgi-unused.sock").with_marker_record(&record);
+        let first = spawn_lock(&client, ROOT, || panic!("nothing holds it yet"))
+            .expect("first lock")
+            .expect("a record has a lock");
+        spawn_lock(&client, "/repos/elsewhere", || {
+            panic!("another project's lock")
+        })
+        .expect("another project's lock");
+
+        let (waiting, waited) = std::sync::mpsc::channel();
+        let retry = thread::spawn(move || {
+            spawn_lock(&client, ROOT, || waiting.send(()).expect("say it waits"))
+                .expect("retry lock")
+                .is_some()
+        });
+        waited
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the retry waits for the first spawn");
+        assert!(!retry.is_finished());
+        drop(first);
+        assert!(retry.join().expect("retry thread"));
+
+        let unrecorded = HerdrClient::from_socket_path("/tmp/corgi-unused.sock");
+        assert!(spawn_lock(&unrecorded, ROOT, || ()).unwrap().is_none());
     }
 }

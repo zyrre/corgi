@@ -38,6 +38,9 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   │                        by pane and workspace, with the agent or checkout it
   │                        was set for; replaced whole through a temporary file
   │                        and a rename, under markers/<socket>.lock
+  ├─ markers/<socket>.spawn-<hash>.lock ─ held by the `corgi spawn --request-id`
+  │                        of one project, from its duplicate check until its
+  │                        worker has started
   ├─ usage/<provider>.json ─ the last plan-usage reading every process shares,
   │                        when it was fetched, and the last fetch's error;
   │                        replaced whole through a temporary file and a rename
@@ -336,8 +339,8 @@ role. So Corgi keeps its own record and puts the tokens back.
 
 - Every token Corgi sets is reported to Herdr and then written to
   `$XDG_STATE_HOME/corgi/markers/<socket>.json`, keyed by the Herdr socket
-  like the wake lock: the handler marker, handover and baseline tokens by
-  pane ID, with the Herdr name of the agent they were set for and its
+  like the wake lock: the handler marker, handover and baseline tokens, and
+  a spawned worker's `corgi_request` id, by pane ID, with the Herdr name of the agent they were set for and its
   native session (Herdr's `agent_session`) once
   known; the project-main and agent-workspace marks by workspace ID, with
   the checkout Herdr reports for the workspace. Each change takes
@@ -366,6 +369,12 @@ role. So Corgi keeps its own record and puts the tokens back.
   is left for a later refresh. What is put back goes into the refresh's own
   snapshot too, so that same refresh already shows the handler and wakes it,
   and a status line says how many marks came back.
+- A worker's `corgi_request` token has no identity in its value, unlike
+  the handler's `session:` marker. While Herdr has it and no session is
+  recorded for the pane, the agent in the pane is taken to be the one it was
+  set for and its session is recorded; from then on the same rules apply as
+  to the handler's marks, so a later session in the pane does not inherit
+  the id. Workers never get a handler marker from reconciliation.
 - A handler launched and lost in a restart before any dashboard saw its
   session is not re-marked: without a recorded session there is nothing to
   confirm the pane still holds it. The dashboard records the session at the
@@ -810,6 +819,25 @@ default harness with its own model and effort, and a fresh worktree
 name not already in use. Progress goes to stderr; on success stdout is one
 JSON object with the agent's `name`, `pane_id`, `workspace_id`, `tab_id`,
 `cwd` and `location`, ready for `herdr agent prompt`, `wait` and `read`.
+
+`--request-id ID` makes a retried spawn safe. A handler passes its brief
+id. The id is 1 to 80 (Herdr's metadata value limit) ASCII letters, digits,
+`.`, `_` or `-`, kept verbatim as the worker pane's `corgi_request` token,
+which the launch sets as soon as the pane exists and before the agent
+starts, through `markers.rs` so that it survives a Herdr restart. Before
+anything is created, a spawn with an id takes the project's spawn lock
+(`markers/<socket>.spawn-<hash>.lock`, keyed by the project root's digest)
+and holds it until its launch ends; then it looks for a running agent of
+the project carrying the id. If there is one, it prints that agent as a
+spawn would, with `"existing": true` and its state in `location`, and
+starts nothing: no worktree, no pane, and `--name` is not checked against
+the running agents. A retry made while the first spawn is still creating
+the checkout or waiting for the first prompt to be accepted thus waits on
+the lock and then finds that worker; one made after the first spawn exited
+(also after it failed or timed out) finds the worker if it is running. An
+agent that was closed does not block a retry, and a pane left behind with
+the token but no agent in it does not count. A spawn without an id takes
+no lock and checks nothing.
 
 `corgi handler <project>` starts the Project handler of the project, which greets
 with the project's state; with a request on stdin it takes that up instead,
