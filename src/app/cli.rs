@@ -9,7 +9,7 @@ use crate::{
     digest,
     git::{git_current_branch, git_output},
     harness::Harness,
-    herdr::{HerdrClient, ReadSource},
+    herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS, ReadSource},
     model::ActivityKind,
     paths::{expand_home, is_home},
     session::SessionReader,
@@ -20,11 +20,12 @@ use super::{
     catalog::{EFFORT_LEVELS, default_harness},
     form::Checkout,
     launch::{
-        HANDLER_HOME_REFUSAL, LaunchPlan, Role, calling_handler_harness, handler_harness_error,
-        handler_plan, launch_agent, sanitize_agent_name, unique_agent_name,
+        CORGI_REQUEST_TOKEN, HANDLER_HOME_REFUSAL, LaunchPlan, Role, calling_handler_harness,
+        handler_harness_error, handler_plan, launch_agent, sanitize_agent_name, unique_agent_name,
     },
+    markers,
     progress::Stderr,
-    project_main::project_root_of,
+    project_main::{CORGI_PROJECT_MAIN_TAB_TOKEN, project_root_of},
 };
 
 pub const SPAWN_USAGE: &str = "\
@@ -43,8 +44,17 @@ Options:
                      workspace's own root tab in the primary checkout
   --name NAME        Agent name (default: taken from the project)
   --task-file PATH   Read the task from PATH instead of stdin
+  --request-id ID    Make a retry safe: when a running agent of the project
+                     was spawned with ID, print it (with \"existing\": true)
+                     and start nothing. ID is 1 to 80 ASCII letters, digits,
+                     '.', '_' or '-', such as a brief id; a retry made while
+                     the first spawn still runs waits for it
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
+
+/// The characters a `--request-id` may have besides ASCII letters and
+/// digits. The id is stored verbatim as a Herdr metadata token value.
+const REQUEST_ID_PUNCTUATION: [char; 3] = ['.', '_', '-'];
 
 /// What `corgi spawn` was asked for, before anything is resolved against
 /// Herdr or the file system.
@@ -57,6 +67,7 @@ struct SpawnOptions {
     checkout: Checkout,
     name: Option<String>,
     task_file: Option<String>,
+    request_id: Option<String>,
     agent_args: Vec<String>,
 }
 
@@ -82,6 +93,7 @@ fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
             }
             "--name" => options.name = Some(value()?),
             "--task-file" => options.task_file = Some(value()?),
+            "--request-id" => options.request_id = Some(valid_request_id(value()?)?),
             "--" => {
                 options.agent_args = args.by_ref().cloned().collect();
                 break;
@@ -105,6 +117,22 @@ fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
     Ok(options)
 }
 
+/// `id` if it can be a `--request-id`: Herdr keeps it whole as a token value
+/// and it needs no quoting anywhere.
+fn valid_request_id(id: String) -> Result<String> {
+    anyhow::ensure!(!id.is_empty(), "--request-id must not be empty");
+    anyhow::ensure!(
+        id.chars().count() <= METADATA_VALUE_MAX_CHARS,
+        "--request-id must be at most {METADATA_VALUE_MAX_CHARS} characters"
+    );
+    anyhow::ensure!(
+        id.chars()
+            .all(|c| c.is_ascii_alphanumeric() || REQUEST_ID_PUNCTUATION.contains(&c)),
+        "--request-id may only have ASCII letters, digits, '.', '_' and '-', not {id:?}"
+    );
+    Ok(id)
+}
+
 /// `corgi spawn`: starts one agent through the same launch as the new-agent
 /// form, for a caller without a dashboard, such as a handler agent. It runs
 /// inside Herdr and uses the injected socket. Progress goes to stderr and the
@@ -115,7 +143,27 @@ pub fn spawn(args: &[String]) -> Result<()> {
     anyhow::ensure!(!prompt.is_empty(), "the task is empty\n\n{SPAWN_USAGE}");
     let project = existing_project_dir(options.project.as_deref())?;
 
-    let (client, app) = connected_app()?;
+    let client = HerdrClient::from_env()?;
+    // With a request id, the project's spawn lock is held until this spawn
+    // has started its worker, so that a retry waits for it and then finds
+    // that worker, before any checkout is made.
+    let request = match options.request_id.as_deref() {
+        Some(id) => {
+            let root = project_root_of(&client, &project)?;
+            let lock = markers::spawn_lock(&client, &root, || {
+                eprintln!("Waiting for another spawn in {root} to finish…");
+            })?;
+            Some((id, root, lock))
+        }
+        None => None,
+    };
+    let app = refreshed_app(client.clone())?;
+    if let Some((id, root, _lock)) = &request
+        && let Some(existing) = requested_agent(&app, root, id)
+    {
+        eprintln!("An agent spawned with request id {id} is already running");
+        return print_launch(&existing);
+    }
     let pane_id = env::var("HERDR_PANE_ID").ok();
     if let Some(warning) = calling_handler_state_conflict(&app, pane_id.as_deref()) {
         eprintln!("warning: {warning}");
@@ -141,8 +189,53 @@ pub fn spawn(args: &[String]) -> Result<()> {
         checkout: options.checkout,
         extra_args: options.agent_args,
         role: Role::Worker,
+        request_id: options.request_id.clone(),
     };
     print_launch(&run_launch(client, app, plan)?)
+}
+
+/// The running agent of the project at `root` that a spawn with request id
+/// `id` started, as the JSON a fresh spawn prints, marked `"existing"`.
+pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_json::Value> {
+    let agent = app.agents.iter().find(|agent| {
+        agent.project_root == root
+            && agent
+                .info
+                .tokens
+                .get(CORGI_REQUEST_TOKEN)
+                .map(String::as_str)
+                == Some(id)
+    })?;
+    let info = &agent.info;
+    let root_tab = app.workspaces.iter().any(|workspace| {
+        workspace.workspace_id == info.workspace_id
+            && workspace.tokens.get(CORGI_PROJECT_MAIN_TAB_TOKEN) == Some(&info.tab_id)
+    });
+    let checkout = if agent.worktree_checkout.is_some() {
+        Checkout::Worktree
+    } else if root_tab {
+        Checkout::ProjectRoot
+    } else {
+        Checkout::Directory
+    };
+    Some(serde_json::json!({
+        "name": info.name.as_deref().unwrap_or_else(|| info.display_name()),
+        "pane_id": info.pane_id,
+        "workspace_id": info.workspace_id,
+        "tab_id": info.tab_id,
+        "cwd": info.cwd,
+        "kind": info.kind(),
+        "model": agent.model.as_deref().unwrap_or_default(),
+        "effort": agent.effort.as_deref().unwrap_or_default(),
+        "checkout": checkout.value(),
+        "handler": agent.handler,
+        "location": format!(
+            "already running in {} ({})",
+            info.cwd(),
+            info.state.label().to_lowercase()
+        ),
+        "existing": true,
+    }))
 }
 
 /// The harness `corgi spawn` starts: the one asked for, else the calling
@@ -191,6 +284,10 @@ pub fn handler_command(args: &[String]) -> Result<()> {
         _ => (None, args),
     };
     let options = parse_spawn_options(args)?;
+    anyhow::ensure!(
+        options.request_id.is_none(),
+        "--request-id is for corgi spawn; a project has one handler anyway"
+    );
     let harness = options
         .harness
         .unwrap_or_else(|| Harness::HANDLERS[0].clone());
@@ -415,10 +512,15 @@ fn existing_project_dir(project: Option<&str>) -> Result<PathBuf> {
 /// is listed like any other and its name counts as taken.
 fn connected_app() -> Result<(HerdrClient, App)> {
     let client = HerdrClient::from_env()?;
-    let mut app = App::headless(client.clone());
+    Ok((client.clone(), refreshed_app(client)?))
+}
+
+/// An app on `client` that has read one snapshot.
+fn refreshed_app(client: HerdrClient) -> Result<App> {
+    let mut app = App::headless(client);
     app.refresh();
     anyhow::ensure!(app.connected, "Herdr is unavailable: {}", app.status);
-    Ok((client, app))
+    Ok(app)
 }
 
 /// `requested` as a Herdr agent name no live agent has.
@@ -515,6 +617,7 @@ mod tests {
         let options = parse_spawn_options(&args(
             "--project ~/repos/corgi --harness Claude --model opus --effort HIGH \
              --checkout directory --name fix-cache --task-file brief.md \
+             --request-id 20261002-fix-cache \
              -- --append-system-prompt-file role.md --name x",
         ))
         .unwrap();
@@ -528,6 +631,7 @@ mod tests {
                 checkout: Checkout::Directory,
                 name: Some("fix-cache".into()),
                 task_file: Some("brief.md".into()),
+                request_id: Some("20261002-fix-cache".into()),
                 agent_args: args("--append-system-prompt-file role.md --name x"),
             }
         );
@@ -544,11 +648,45 @@ mod tests {
             "--effort extreme",
             "--harness gemini --effort high",
             "--task write-it",
+            "--request-id",
         ] {
             assert!(
                 parse_spawn_options(&args(bad)).is_err(),
                 "{bad} was accepted"
             );
         }
+    }
+
+    #[test]
+    fn a_request_id_is_a_short_plain_word_herdr_keeps_whole() {
+        for good in [
+            "20261002-w-spawn-request-id",
+            "a",
+            "v1.2_rc-3",
+            &"x".repeat(80),
+        ] {
+            assert_eq!(valid_request_id(good.to_string()).unwrap(), good);
+        }
+        for bad in [
+            "",
+            " 20261002-w",
+            "brief id",
+            "id/with/slashes",
+            "ünicode",
+            "a\nb",
+        ] {
+            let refused = valid_request_id(bad.to_string()).expect_err(bad);
+            assert!(refused.to_string().contains("--request-id"), "{refused}");
+        }
+        let long = "x".repeat(81);
+        let refused = valid_request_id(long).expect_err("81 characters");
+        assert!(refused.to_string().contains("at most 80"), "{refused}");
+        // The parser applies it, and the handler does not take one, which
+        // is refused before stdin is read or Herdr is asked anything.
+        let args = ["--request-id".to_string(), "a b".to_string()];
+        assert!(parse_spawn_options(&args).is_err());
+        let args = ["--request-id".to_string(), "20261002-handler".to_string()];
+        let refused = handler_command(&args).expect_err("no request id for a handler");
+        assert!(refused.to_string().contains("for corgi spawn"), "{refused}");
     }
 }

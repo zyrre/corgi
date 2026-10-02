@@ -626,6 +626,7 @@ impl App {
                 checkout,
                 extra_args: Vec::new(),
                 role: Role::Worker,
+                request_id: None,
             });
         }
         // The handler takes the harness, model, and effort chosen in the
