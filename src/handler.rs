@@ -318,16 +318,16 @@ pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String 
 }
 
 /// The first prompt of a handler that takes over from a previous session:
-/// the usual start-of-session reading, then the note that session left, which
-/// it archives as `archive`. A short word to the user replaces the greeting.
+/// the usual start-of-session reading, whose digest includes the note that
+/// session left, which it archives as `archive`. A short word to the user replaces the greeting.
 pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> String {
     let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
     let state = state_dir.display();
     format!(
         "Start your Project handler session for {project}. Project directory: {project_root}. \
          State directory: {state}. You take over from the previous Project handler session. \
-         Do the start-of-session reading, then read \
-         {} and move it to {}, as your role's section on handing over says. Skip the \
+         Do the start-of-session reading; the digest shows the note it left, \
+         {}: move it to {}, as your role's section on handing over says. Skip the \
          greeting: tell the user in at most three lines that you took over, and what \
          is open.",
         state_dir.join(HANDOVER_NOTE).display(),
@@ -400,7 +400,7 @@ const IDLE_BASELINE_FACTOR: u64 = 2;
 
 /// The note a handler writes for the session that takes over from it, in
 /// its state directory.
-const HANDOVER_NOTE: &str = "handover.md";
+pub const HANDOVER_NOTE: &str = "handover.md";
 
 /// Where the handler that took over keeps the notes it read.
 const HANDOVERS_DIR: &str = "handovers";
@@ -1261,6 +1261,9 @@ mod tests {
         );
         assert!(role.contains("`/opt/corgi/corgi spawn"));
         assert!(role.contains("`/opt/corgi/corgi fleet`"));
+        assert!(role.contains("Run `/opt/corgi/corgi digest <project dir>`"));
+        assert!(role.contains("`/opt/corgi/corgi digest <project dir> --decision"));
+        assert!(!role.contains("ARCHITECTURE.md"));
         assert!(role.contains("`/state/handler/corgi`"));
         assert!(!role.contains("{{"));
     }
@@ -1941,7 +1944,7 @@ mod tests {
         let prompt = takeover_prompt("/repos/weather", state, &archive);
         assert!(prompt.contains("State directory: /state/handler/weather."));
         assert!(prompt.contains(
-            "read /state/handler/weather/handover.md and move it to \
+            "the note it left, /state/handler/weather/handover.md: move it to \
              /state/handler/weather/handovers/20260924-150405.md"
         ));
         assert!(prompt.contains("Skip the greeting"));
@@ -1969,6 +1972,8 @@ mod tests {
         )));
         assert!(role.contains(&handover_request(Path::new("/state"), Trigger::Update)));
         assert!(role.contains("`/state/handover.md` exists"));
+        assert!(role.contains("under 6 KB"));
+        assert!(role.contains("Supersedes: YYYY-MM-DD: <short title"));
         assert!(role.contains("`/state/handovers/<YYYYMMDD-HHMMSS>.md`"));
         for section in [
             "Open threads with the user",

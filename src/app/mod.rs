@@ -63,7 +63,8 @@ mod rows;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub use cli::{
-    FLEET_USAGE, HANDLER_USAGE, REPORT_USAGE, SPAWN_USAGE, fleet, handler_command, report, spawn,
+    DIGEST_USAGE, FLEET_USAGE, HANDLER_USAGE, REPORT_USAGE, SPAWN_USAGE, digest, fleet,
+    handler_command, report, spawn,
 };
 use rows::{
     NO_TOOL_YET, SCRATCH_GROUP, agent_project, agent_worktree, checkout_label, codex_thread_id,
