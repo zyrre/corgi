@@ -107,6 +107,26 @@ impl HerdrClient {
             .context("Herdr returned an invalid session snapshot")
     }
 
+    /// Confirms the current occupant of an unidentified scratch pane. Unlike
+    /// terminal detection and persistent workspace marks, this evidence is
+    /// queried anew on every refresh so shell/dashboard reuse fails closed.
+    pub(crate) fn has_foreground_codex(&self, pane_id: &str, cwd: &str) -> Result<bool> {
+        let mut result = self.request("pane.process_info", json!({ "pane_id": pane_id }))?;
+        expect_result_type(&result, "pane_process_info")?;
+        let processes: PaneProcessInfo = serde_json::from_value(result["process_info"].take())
+            .context("Herdr returned invalid pane process information")?;
+        Ok(processes.pane_id == pane_id
+            && processes.foreground_processes.iter().any(|process| {
+                process.name == "codex"
+                    && process.cwd == cwd
+                    && process.argv.first().is_some_and(|program| {
+                        Path::new(program)
+                            .file_name()
+                            .is_some_and(|name| name == "codex")
+                    })
+            }))
+    }
+
     /// Every workspace in Herdr's own sidebar order. A session snapshot's
     /// `workspaces` happen to come back in that order too, but nothing
     /// documents that they must, so anything that needs the order itself
@@ -635,6 +655,19 @@ pub struct SessionSnapshot {
     pub focused_pane_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct PaneProcessInfo {
+    pane_id: String,
+    foreground_processes: Vec<ForegroundProcess>,
+}
+
+#[derive(Deserialize)]
+struct ForegroundProcess {
+    name: String,
+    cwd: String,
+    argv: Vec<String>,
+}
+
 /// Location and identity of any pane in the session snapshot.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PaneInfo {
@@ -835,6 +868,45 @@ mod tests {
     use serde_json::json;
 
     use super::{HerdrClient, HerdrError};
+
+    #[test]
+    fn scratch_process_evidence_rejects_stale_mismatched_and_missing_processes() {
+        let cases = [
+            ("p1", "codex", "/home/me", "/opt/bin/codex", true),
+            ("p2", "codex", "/home/me", "/opt/bin/codex", false),
+            ("p1", "bash", "/home/me", "bash", false),
+            ("p1", "corgi", "/home/me", "corgi", false),
+            ("p1", "codex", "/other", "/opt/bin/codex", false),
+            ("p1", "codex", "/home/me", "corgi", false),
+        ];
+        let (socket, server) = fake_herdr("scratch-process", move |listener| {
+            for (pane, name, cwd, program, _) in cases {
+                answer(&listener, |request| {
+                    assert_eq!(request["method"], "pane.process_info");
+                    assert_eq!(request["params"]["pane_id"], "p1");
+                    json!({ "result": { "type": "pane_process_info", "process_info": {
+                        "pane_id": pane,
+                        "foreground_processes": [{ "name": name, "cwd": cwd, "argv": [program] }]
+                    }}})
+                });
+            }
+            answer(&listener, |_| {
+                json!({ "result": { "type": "pane_process_info", "process_info": {
+                    "pane_id": "p1", "foreground_processes": []
+                }}})
+            });
+        });
+        let client = HerdrClient::from_socket_path(&socket);
+        for (_, _, _, _, expected) in cases {
+            assert_eq!(
+                client.has_foreground_codex("p1", "/home/me").unwrap(),
+                expected
+            );
+        }
+        assert!(!client.has_foreground_codex("p1", "/home/me").unwrap());
+        server.join().expect("fake Herdr server");
+        fs::remove_file(socket).ok();
+    }
 
     #[test]
     fn snapshot_uses_newline_json_and_deserializes_agents() {
