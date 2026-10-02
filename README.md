@@ -94,7 +94,7 @@ flowchart LR
     handler -->|"corgi report, git log"| workers
 ```
 
-Press `h` to start it, or run `corgi handler ~/repos/webshop` from a shell. Scripts start workers the way it does, with `corgi spawn` (see `corgi spawn --help`).
+Press `h` to start it, or run `corgi handler ~/repos/webshop` from a shell. Scripts start workers the way it does, with `corgi spawn` (see `corgi spawn --help`). The handler starts each session with `corgi digest`, a bounded summary of its decisions, ledger and handover note joined with the running agents.
 
 ## Data and privacy
 

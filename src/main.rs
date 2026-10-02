@@ -18,6 +18,8 @@ fn main() -> Result<()> {
         Some("handler" | "steward") => corgi::app::handler_command(&args[2..]),
         Some("fleet") if help() => usage(corgi::app::FLEET_USAGE),
         Some("fleet") => corgi::app::fleet(&args[2..]),
+        Some("digest") if help() => usage(corgi::app::DIGEST_USAGE),
+        Some("digest") => corgi::app::digest(&args[2..]),
         Some("report") if help() => usage(corgi::app::REPORT_USAGE),
         Some("report") => corgi::app::report(&args[2..]),
         Some("--bar-stream") => {

@@ -1,11 +1,13 @@
-//! The command-line tools: `corgi spawn`, `corgi handler`, `corgi fleet` and
-//! `corgi report`.
+//! The command-line tools: `corgi spawn`, `corgi handler`, `corgi fleet`,
+//! `corgi digest` and `corgi report`.
 
 use std::{env, fs, io, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 use crate::{
+    digest,
+    git::{git_current_branch, git_output},
     harness::Harness,
     herdr::{HerdrClient, ReadSource},
     model::ActivityKind,
@@ -249,6 +251,92 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
             )
         })
         .collect()
+}
+
+pub const DIGEST_USAGE: &str = "\
+Usage: corgi digest [PROJECT] [--decision WORDS]
+
+Prints a bounded digest of the Project handler's memory of PROJECT (default:
+the project containing the current directory), for the start of a handler
+session: the base branch, the handover note if there is one, open ledger
+work joined with the running agents, recently finished work, the newest
+decisions in full (about 12 KB, at least 3) and the titles of older ones.
+Decisions named by a later entry's `Supersedes:` line are left out. Reads
+only; it never changes the state directory.
+
+Options:
+  --decision WORDS   Print in full every decision, superseded or not, whose
+                     heading contains all of WORDS (ignoring case)";
+
+/// `corgi digest`: a bounded view of a project's handler state, joined with
+/// its running agents, for a handler to read at the start of its session.
+pub fn digest(args: &[String]) -> Result<()> {
+    let mut project = None;
+    let mut words = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--decision" => {
+                words = Some(args.next().context("--decision needs words")?.clone());
+            }
+            other if other.starts_with('-') => bail!("unknown option {other:?}\n\n{DIGEST_USAGE}"),
+            _ if project.is_none() => project = Some(arg.as_str()),
+            _ => bail!("{DIGEST_USAGE}"),
+        }
+    }
+    let project = existing_project_dir(project)?;
+    let (client, app) = connected_app()?;
+    let root = project_root_of(&client, &project)?;
+    let state_dir = crate::handler::state_dir(&root)?;
+    let read = |name: &str| fs::read_to_string(state_dir.join(name)).ok();
+    let decisions = read("decisions.md").unwrap_or_default();
+
+    if let Some(words) = words {
+        let decisions = digest::parse_decisions(&decisions);
+        let found = digest::matching_decisions(&decisions, &words);
+        anyhow::ensure!(!found.is_empty(), "no decision heading contains {words:?}");
+        println!("{}", found.join("\n\n"));
+        return Ok(());
+    }
+
+    let root_path = std::path::Path::new(&root);
+    let branch = git_current_branch(root_path).unwrap_or_else(|_| "(detached)".to_string());
+    let head = git_output(root_path, &["rev-parse", "--short", "HEAD"])
+        .map(|head| head.trim().to_string())
+        .unwrap_or_else(|_| "(no commit)".to_string());
+    let fleet: Vec<_> = app
+        .agents
+        .iter()
+        .filter(|agent| agent.project_root == root)
+        .map(|agent| digest::LiveAgent {
+            name: agent.info.display_name().to_string(),
+            state: agent.info.state.label().to_lowercase(),
+            context_percent: agent.context_percent,
+        })
+        .collect();
+    let corgi = env::current_exe().map_or_else(
+        |_| "corgi".to_string(),
+        |path| path.to_string_lossy().into_owned(),
+    );
+    let decision_command = format!("{corgi} digest {root} --decision \"<words>\"");
+    let state = state_dir.to_string_lossy();
+    let handover = read(crate::handler::HANDOVER_NOTE);
+    let ledger = read("ledger.jsonl").unwrap_or_default();
+    print!(
+        "{}",
+        digest::render(&digest::DigestInput {
+            project: &root,
+            branch: &branch,
+            head: &head,
+            state_dir: &state,
+            handover: handover.as_deref(),
+            decisions: &decisions,
+            ledger: &ledger,
+            fleet: &fleet,
+            decision_command: &decision_command,
+        })
+    );
+    Ok(())
 }
 
 pub const REPORT_USAGE: &str = "\

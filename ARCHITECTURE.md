@@ -64,6 +64,7 @@ Headless launch and the Project handler
   ├─ corgi spawn ──── the new-agent form's launch sequence, task on stdin, result as JSON
   ├─ corgi handler ── the same launch into the project's root tab, as its handler
   ├─ corgi fleet ──── a project's agents as tab-separated rows
+  ├─ corgi digest ─── the handler's memory, bounded, joined with the fleet
   └─ corgi report ─── an agent's newest message, from its transcript
 ```
 
@@ -315,8 +316,9 @@ submodules are split by flow, each adding methods to the one `App`.
 - `waker.rs` is `HandlerWaker`, which wakes handlers and hands them over, as
   described below; `draft.rs` tells it whether a handler's input box holds
   the user's draft.
-- `cli.rs` is `corgi spawn`, `corgi handler`, `corgi fleet`, and
-  `corgi report`.
+- `cli.rs` is `corgi spawn`, `corgi handler`, `corgi fleet`,
+  `corgi digest`, and `corgi report`. The digest's parsing and caps are
+  pure functions in `src/digest.rs`.
 - `bar.rs` is the `--bar-*` endpoints of the Omarchy widget. Their JSON is
   that widget's contract, pinned by snapshot tests, and they drive the same
   forms, key handlers, and launch as the dashboard.
@@ -812,7 +814,22 @@ JSON object with the agent's `name`, `pane_id`, `workspace_id`, `tab_id`,
 `corgi handler <project>` starts the Project handler of the project, which greets
 with the project's state; with a request on stdin it takes that up instead,
 and `--harness codex` starts it on Codex. The handler lists its workers with
-`corgi fleet` and reads each final report with `corgi report`. `corgi
+`corgi fleet` and reads each final report with `corgi report`.
+
+A handler starts its session with `corgi digest <project>` instead of
+reading its state files raw, since `decisions.md` and `ledger.jsonl` only
+grow. The digest only reads, and prints, in order: the project, its base
+branch and short HEAD; `handover.md` whole if it exists; every ledger id whose
+newest line is not `merged` or `abandoned`, joined by agent name with the
+running agents (a missing one shows `**NOT RUNNING**`); the last 10 finished
+ids; the newest decisions in full, whole entries up to 12 KB but at least 3;
+the titles of the rest, at most 500 and a line counting any beyond; and a
+footer with the number of superseded entries hidden, how to read one in full,
+and warnings. A decision entry's `Supersedes: <heading>` line hides the
+earlier entry with exactly that heading (after `## `); one that matches none
+is warned about. `corgi digest --decision "<words>"` prints every entry,
+superseded or not, whose heading contains all the words. Like `fleet`, it
+needs Herdr to resolve the project and its agents. `corgi
 steward`, the command's name before the rename, still works but is not
 listed.
 
