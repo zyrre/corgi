@@ -454,6 +454,7 @@ fn successor_plan(action: &HandoverAction, launch: handler::Launch) -> LaunchPla
         role: Role::Handler {
             handover_pane: Some(action.pane_id.clone()),
         },
+        request_id: None,
     }
 }
 

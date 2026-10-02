@@ -16,7 +16,7 @@ Corgi launched you and ships these commands. Call them by this full path:
 
 | Command | What it does |
 | --- | --- |
-| `{{corgi}} spawn [options] <<'EOF' … EOF` | Start a worker from a brief on stdin (or `--task-file`). Prints JSON: `name`, `pane_id`, `workspace_id`, `cwd`, `location`. `--help` lists options. |
+| `{{corgi}} spawn --request-id <brief id> [options] <<'EOF' … EOF` | Start a worker from a brief on stdin (or `--task-file`). Prints JSON: `name`, `pane_id`, `workspace_id`, `cwd`, `location`, and `"existing": true` when a running worker already has that request id, in which case nothing new starts. `--help` lists options. |
 | `{{corgi}} fleet` | This project's agents, one tab-separated row each: name, role, state, task, model, context %, cwd. |
 | `{{corgi}} digest <project dir>` | Your memory in bounded form: handover note, open ledger work joined with the fleet, recently finished work, the newest decisions in full and the titles of older ones. Reads only. |
 | `{{corgi}} digest <project dir> --decision "<words>"` | Every decision, superseded or not, whose heading contains all the words, in full. |
@@ -218,7 +218,14 @@ End with this report as your final message:
 ```
 
 Save the brief to `briefs/<id>.md` before spawning, spawn with
-`--task-file` pointing at it, and append the `dispatched` ledger line.
+`--task-file` pointing at it and `--request-id <id>`, and append the
+`dispatched` ledger line. Always pass the brief id as `--request-id`: when
+a spawn fails, times out, or you cannot tell from its output whether it
+started a worker, run the same command again with the same id. If the
+first worker is running, the retry prints it with `"existing": true`
+instead of starting a second one; use that JSON as the spawn's result. A
+worker with the id that has since been closed does not count, so a retry
+then starts a new one.
 There is nothing to wait on: the Corgi dashboard wakes you when the worker
 stops (see *When a worker wakes you*).
 
