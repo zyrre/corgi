@@ -779,9 +779,10 @@ A project whose corgi runs is a card with the project as its title. The
 corgi stands apart from its workers in the same color as the pixel CORGI
 wordmark at the top of the dashboard, so it follows the active theme the
 way the wordmark does: the card's title, the corgi's task, which is its
-name, in bold, and a `▌` rail in the last column of the gutter on every
-corgi row, which runs on down the corgi's turns when its session is
-expanded. The selection bar keeps its columns in front of the rail. The
+name, and a `▌` rail in the last column of the gutter on every corgi row,
+which runs on down the corgi's turns when its session is expanded. Selecting
+the corgi's row turns its task bold, the same cue a worker's row gets. The
+selection bar keeps its columns in front of the rail. The
 dashboard opens every card collapsed: the corgi's identity row, its message
 and tool rows wrapped to two rows each and then cut with `…`, a divider, and
 a footer such as `3 workers   ▲ 1 blocked   ● 1 working   ✓ 1 done` (only the
