@@ -793,9 +793,10 @@ pub(super) fn agent_status_line(
         inner_width.saturating_sub(leading_width + trailing_width),
     );
 
-    // A corgi's task is its name, in the wordmark's color and always bold.
+    // A corgi's task is its name, in the wordmark's color; selection turns
+    // it bold, same as a worker's task, so the cue still shows on its row.
     let task_style = if agent.corgi {
-        bold(SUCCESS)
+        Style::default().fg(SUCCESS)
     } else {
         Style::default().fg(TEXT)
     };
@@ -1330,6 +1331,47 @@ mod tests {
             .unwrap_or_else(|| panic!("no {needle:?}"));
         let x = row[..row.find(needle).expect("needle")].width();
         buffer[(x as u16, y as u16)].fg
+    }
+
+    /// The style modifiers of the first cell of `needle` on the screen.
+    fn modifier_of(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        needle: &str,
+    ) -> Modifier {
+        let buffer = terminal.backend().buffer();
+        let rows = buffer_rows(buffer);
+        let (y, row) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?}"));
+        let x = row[..row.find(needle).expect("needle")].width();
+        buffer[(x as u16, y as u16)].modifier
+    }
+
+    #[test]
+    fn selecting_the_corgis_row_turns_its_task_bold_same_as_a_worker() {
+        let mut app = test_app();
+        app.agents = carded_herd();
+        app.selected = 0;
+        let mut terminal = test_terminal(100, 40);
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw dashboard");
+        // Selected: the corgi's task is bold, in the wordmark's color.
+        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
+        assert!(modifier_of(&terminal, "corgi ·").contains(Modifier::BOLD));
+
+        // A worker folded into a collapsed card selects as the card, so the
+        // corgi must be expanded with a worker picked to see it unselected.
+        app.cards.set_expanded("webshop", true);
+        app.selected = 1;
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw dashboard");
+        // Unselected: still the wordmark's color, but no longer bold.
+        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
+        assert!(!modifier_of(&terminal, "corgi ·").contains(Modifier::BOLD));
     }
 
     #[test]
