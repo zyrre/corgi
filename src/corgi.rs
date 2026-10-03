@@ -563,12 +563,11 @@ pub fn wake_message(corgi_bin: &Path, worker: &str, state: AgentState) -> String
     )
 }
 
-/// The line that brings a corgi the report of `worker`, one of its own,
-/// which follows it in the same prompt.
-pub fn wake_report_message(worker: &str, state: AgentState) -> String {
+/// The line that brings a corgi the report of `worker`, one of its own, in
+/// `state` (lowercase), which follows it quoted in the same prompt.
+pub fn wake_report_message(worker: &str, state: &str) -> String {
     format!(
-        "{WAKE_PREFIX} {worker} is {}. Its report follows, so you need not run report for it:",
-        state.label().to_lowercase()
+        "{WAKE_PREFIX} {worker} is {state}. Its report follows, quoted, so you need not run report for it:"
     )
 }
 

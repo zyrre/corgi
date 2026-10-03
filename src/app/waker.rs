@@ -7,7 +7,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     thread,
-    time::{Duration, SystemTime},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -20,7 +20,7 @@ use crate::{
     inbox::{self, Inbox, Item, Kind},
     job::Job,
     model::{AgentState, DashboardAgent},
-    paths::socket_state_file,
+    paths::{dir_name, socket_state_file},
     session::SessionReader,
     time::unix_now,
 };
@@ -39,20 +39,23 @@ const CORGI_EXIT_POLL_DELAY: Duration = Duration::from_millis(250);
 
 /// Wakes each project's corgi when another agent of that project stops:
 /// every agent whose project has a running corgi counts, whoever started
-/// it. Only the dashboard holding the lock for its Herdr socket follows the
-/// agents, puts each stop in the corgi's inbox and types the inbox into the
-/// corgi's box, so a corgi hears each stop once. What it saw of each agent is
-/// kept on disk, so a dashboard that starts later or takes over the lock
-/// picks up where it left off. The same dashboard hands corgis over to fresh
-/// sessions.
+/// it, and one the corgi spawned counts also while the project has none, so
+/// the next corgi hears of it. Only the dashboard holding the lock for its
+/// Herdr socket follows the agents, puts each stop in the corgi's inbox and
+/// types the inbox into the corgi's box, so a corgi hears each stop once.
+/// What it saw of each agent is kept on disk, so a dashboard that starts
+/// later or takes over the lock picks up where it left off. The same
+/// dashboard hands corgis over to fresh sessions.
 #[derive(Debug, Default)]
 pub(super) struct CorgiWaker {
     /// The wake lock, while this dashboard holds it.
     lock: Option<fs::File>,
     /// The Corgi binary the wake messages name.
     corgi_bin: Option<PathBuf>,
-    /// Where the inboxes and the record of the agents followed are.
-    store: Store,
+    /// The directory holding a directory per project, for its inbox, and the
+    /// record of the agents followed, in place of Corgi's state directory,
+    /// so that a test never touches the developer's own state.
+    base: Option<PathBuf>,
     /// The Herdr socket, which names the record of the agents followed.
     socket: Option<PathBuf>,
     /// Each agent followed, by the name its messages use.
@@ -62,55 +65,16 @@ pub(super) struct CorgiWaker {
     resumed: bool,
     /// The record as last written, so an unchanged one is not written again.
     written: Option<String>,
-    /// Each inbox as last read, by state directory, with the length and
-    /// modification time its file had then.
-    inboxes: HashMap<PathBuf, (Option<(u64, SystemTime)>, Inbox)>,
-    /// The items this dashboard typed into a corgi's box, in case their
-    /// delivery could not be recorded.
-    delivered: HashSet<String>,
+    /// By state directory, the items typed into a corgi's box whose
+    /// delivery could not be recorded, so they are not typed in again while
+    /// recording them is retried; dropped once the inbox shows them
+    /// delivered.
+    unrecorded: HashMap<PathBuf, HashSet<String>>,
     /// Each project's corgi handover, by project root.
     handovers: HashMap<String, corgi::Handover>,
     /// Replacements running in the background, by project root, each ending
     /// with its status line or error.
     replacements: Vec<(String, Job<Result<String>>)>,
-}
-
-/// Where a waker keeps what it writes.
-#[derive(Debug, Clone, Default)]
-enum Store {
-    /// Corgi's state directory: each corgi's own state directory for its
-    /// inbox, and `wake/<socket>.seen.json` for the agents followed.
-    #[default]
-    State,
-    /// One directory, holding a directory per project and the record, so a
-    /// test never touches the developer's own state.
-    #[cfg(test)]
-    At(PathBuf),
-}
-
-impl Store {
-    /// The state directory holding the inbox of `root`'s corgi.
-    fn inbox_dir(&self, root: &str) -> Option<PathBuf> {
-        match self {
-            #[cfg(not(test))]
-            Self::State => corgi::state_dir(root).ok(),
-            #[cfg(test)]
-            Self::State => panic!("a test waker must keep its files in a scratch directory"),
-            #[cfg(test)]
-            Self::At(base) => {
-                Some(base.join(crate::paths::dir_name(root).unwrap_or(corgi::UNNAMED_PROJECT)))
-            }
-        }
-    }
-
-    /// The record of the agents followed for the Herdr session at `socket`.
-    fn record_file(&self, socket: Option<&Path>) -> Option<PathBuf> {
-        match self {
-            Self::State => socket.and_then(|socket| socket_state_file("wake", socket, "seen.json")),
-            #[cfg(test)]
-            Self::At(base) => Some(base.join("seen.json")),
-        }
-    }
 }
 
 /// One agent the waker follows, as kept in its record.
@@ -119,7 +83,47 @@ struct Followed {
     /// The agent's pane: an agent of the same name in another pane is
     /// another agent.
     pane: String,
+    /// Which run of the pane's state changes this is: set when the agent is
+    /// first followed, and again when its `state_change_seq` goes back, as
+    /// it does when Herdr restarts, so a wake's id never repeats an earlier
+    /// one's.
+    #[serde(default)]
+    since: u64,
+    /// The `state_change_seq` last seen.
+    #[serde(default)]
+    change: u64,
     transitions: corgi::Transitions,
+}
+
+/// A run of state changes newer than `after`: the clock in nanoseconds.
+fn incarnation(after: u64) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |time| u64::try_from(time.as_nanos()).unwrap_or(u64::MAX));
+    now.max(after + 1)
+}
+
+/// The report of an agent that rests, as captured then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Captured {
+    pub(super) text: String,
+    /// Whether it is the newest thing said in its transcript, rather than
+    /// its screen.
+    pub(super) transcript: bool,
+}
+
+/// A stop to add to a corgi's inbox, found at one refresh.
+struct Stop<'a> {
+    agent: &'a DashboardAgent,
+    name: &'a str,
+    state: AgentState,
+    /// Whether the agent came and finished while no dashboard led.
+    appeared: bool,
+    /// What the waker followed of the agent before this refresh, put back if
+    /// the stop cannot be added, so it is added at the next refresh.
+    before: Option<Followed>,
+    /// The followed agent's run of state changes.
+    since: u64,
 }
 
 /// What a handover at one refresh asks the dashboard to do for one corgi.
@@ -170,20 +174,35 @@ impl CorgiWaker {
     #[cfg(test)]
     pub(super) fn in_dir(base: &Path) -> Self {
         let mut waker = Self::default();
-        waker.store = Store::At(base.to_path_buf());
+        waker.base = Some(base.to_path_buf());
         waker
+    }
+
+    /// The state directory holding the inbox of `root`'s corgi.
+    fn inbox_dir(&self, root: &str) -> Option<PathBuf> {
+        match &self.base {
+            Some(base) => Some(base.join(dir_name(root).unwrap_or(corgi::UNNAMED_PROJECT))),
+            None => corgi::state_dir(root).ok(),
+        }
+    }
+
+    /// The record of the agents followed: `wake/<socket>.seen.json`.
+    fn record_file(&self) -> Option<PathBuf> {
+        match &self.base {
+            Some(base) => Some(base.join("seen.json")),
+            None => socket_state_file("wake", self.socket.as_deref()?, "seen.json"),
+        }
     }
 
     /// The record of the agents followed that the dashboard leading before
     /// left, if there is one.
     fn load_record(&self) -> Option<BTreeMap<String, Followed>> {
-        let path = self.store.record_file(self.socket.as_deref())?;
-        serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+        serde_json::from_str(&fs::read_to_string(self.record_file()?).ok()?).ok()
     }
 
     /// Writes the record of the agents followed, when it changed.
     fn save_record(&mut self) -> Result<()> {
-        let Some(path) = self.store.record_file(self.socket.as_deref()) else {
+        let Some(path) = self.record_file() else {
             return Ok(());
         };
         let text = serde_json::to_string(&self.agents)?;
@@ -202,16 +221,18 @@ impl CorgiWaker {
 
     /// Records the agents' states from one refresh, adding an item to the
     /// corgi's inbox for each one that stopped, with the report `report`
-    /// finds for one that rests. At the first refresh this dashboard leads,
-    /// it takes up the record the one before left, so what changed while
-    /// none led is news, and an agent the corgi spawned that appeared and
-    /// finished meanwhile is reported once, if it has a report. Returns the
-    /// error of an inbox or the record that could not be written.
+    /// captures for one that rests. At the first refresh this dashboard
+    /// leads, it takes up the record the one before left, so what changed
+    /// while none led is news, and an agent the corgi spawned that appeared
+    /// and finished meanwhile is reported once, if it is done or has a
+    /// report from its transcript. A stop that cannot be added is tried
+    /// again at the next refresh. Returns the error of an inbox or the
+    /// record that could not be written.
     fn observe(
         &mut self,
         agents: &[DashboardAgent],
         corgi_bin: &Path,
-        mut report: impl FnMut(&DashboardAgent) -> Option<String>,
+        mut report: impl FnMut(&DashboardAgent) -> Option<Captured>,
     ) -> Option<String> {
         let corgis: HashSet<&str> = agents
             .iter()
@@ -225,7 +246,7 @@ impl CorgiWaker {
             Some(self.load_record())
         };
         let mut seen = HashSet::new();
-        let mut wakes = Vec::new();
+        let mut stops = Vec::new();
         // A scratch agent belongs to no project, so no corgi hears of it.
         for agent in agents.iter().filter(|agent| !agent.corgi && !agent.scratch) {
             let name = agent.info.name.as_deref().unwrap_or(&agent.info.pane_id);
@@ -235,60 +256,77 @@ impl CorgiWaker {
                 agent.info.state_change_seq,
                 &agent.info.pane_id,
             );
-            let mut appeared = false;
-            let woke = match self
+            let followed = self
                 .agents
-                .get_mut(name)
+                .get(name)
+                .or_else(|| record.as_ref()?.as_ref()?.get(name))
                 .filter(|followed| followed.pane == *pane)
-            {
-                Some(followed) => followed.transitions.observe(state, change),
-                None => {
-                    let before = record
-                        .as_ref()
-                        .and_then(|record| record.as_ref()?.get(name))
-                        .filter(|before| before.pane == *pane);
-                    let mut transitions = before
-                        .map(|before| before.transitions.clone())
-                        .unwrap_or_default();
-                    let mut woke = transitions.observe(state, change);
-                    if before.is_none()
-                        && matches!(record, Some(Some(_)))
-                        && own(agent)
-                        && matches!(state, AgentState::Done | AgentState::Idle)
-                    {
-                        appeared = true;
-                        woke = Some(state);
-                    }
-                    self.agents.insert(
-                        name.to_string(),
-                        Followed {
-                            pane: pane.clone(),
-                            transitions,
-                        },
-                    );
-                    woke
-                }
-            };
+                .cloned();
+            // Known to no dashboard, though one led before.
+            let appeared = followed.is_none() && matches!(record, Some(Some(_)));
+            let mut next = followed.clone().unwrap_or_else(|| Followed {
+                pane: pane.clone(),
+                since: incarnation(0),
+                change,
+                transitions: corgi::Transitions::default(),
+            });
+            if change < next.change {
+                next.since = incarnation(next.since);
+            }
+            next.change = change;
+            let mut woke = next.transitions.observe(state, change);
+            let appeared =
+                appeared && own(agent) && matches!(state, AgentState::Done | AgentState::Idle);
+            if appeared {
+                woke = Some(state);
+            }
+            let since = next.since;
+            self.agents.insert(name.to_string(), next);
             let root = agent.project_root.as_str();
             if let Some(state) = woke
-                && (corgis.contains(root) || self.handing_over(root))
+                && (corgis.contains(root) || self.handing_over(root) || own(agent))
             {
-                wakes.push((agent, name, state, appeared));
+                stops.push(Stop {
+                    agent,
+                    name,
+                    state,
+                    appeared,
+                    before: followed,
+                    since,
+                });
             }
         }
         self.agents.retain(|name, _| seen.contains(name));
         let mut error = None;
-        for (agent, name, state, appeared) in wakes {
-            let resting = matches!(state, AgentState::Done | AgentState::Idle);
-            let report = resting.then(|| report(agent)).flatten();
-            if appeared && report.is_none() {
+        for stop in stops {
+            let resting = matches!(stop.state, AgentState::Done | AgentState::Idle);
+            let report = resting.then(|| report(stop.agent)).flatten();
+            // One that only appeared needs something to show for it: its
+            // screen may be one that never started.
+            if stop.appeared
+                && !(stop.state == AgentState::Done
+                    || report.as_ref().is_some_and(|report| report.transcript))
+            {
                 continue;
             }
-            let item = wake_item(agent, name, state, report, corgi_bin);
+            let item = wake_item(&stop, report.map(|report| report.text), corgi_bin);
             if let Err(failed) = self.notify(item) {
+                let name = stop.name;
                 error = Some(format!(
                     "Could not add {name}'s wake to the inbox: {failed:#}"
                 ));
+                match stop.before {
+                    Some(before) => {
+                        self.agents.insert(name.to_string(), before);
+                    }
+                    // Unknown before: left out of the record, and found
+                    // again as having appeared when the record is taken up
+                    // at the next refresh.
+                    None => {
+                        self.agents.remove(name);
+                        self.resumed = false;
+                    }
+                }
             }
         }
         // The items go first: a record saved before them could lose them,
@@ -301,40 +339,22 @@ impl CorgiWaker {
 
     /// Adds `item` to the inbox of the corgi of its project, to go out at a
     /// refresh once the corgi is between turns.
-    pub(super) fn notify(&mut self, item: Item) -> Result<()> {
+    pub(super) fn notify(&self, item: Item) -> Result<()> {
         let dir = self
-            .store
             .inbox_dir(&item.project)
             .context("Corgi has no state directory")?;
         inbox::append(&dir, item)?;
         Ok(())
     }
 
-    /// The inbox in the state directory `dir`, read again only when its
-    /// file changed.
-    fn inbox(&mut self, dir: &Path) -> Inbox {
-        let stamp = fs::metadata(dir.join(inbox::INBOX_FILE))
-            .ok()
-            .and_then(|meta| Some((meta.len(), meta.modified().ok()?)));
-        match self.inboxes.get(dir) {
-            Some((read, inbox)) if *read == stamp && stamp.is_some() => inbox.clone(),
-            _ => {
-                let inbox = Inbox::read(dir);
-                self.inboxes
-                    .insert(dir.to_path_buf(), (stamp, inbox.clone()));
-                inbox
-            }
-        }
-    }
-
-    /// The lines waiting for `root`'s corgi, each as it goes out.
+    /// The lines waiting for `root`'s corgi, each as it goes out alone.
     #[cfg(test)]
     pub(super) fn pending_for(&self, root: &str) -> Vec<String> {
-        let dir = self.store.inbox_dir(root).expect("inbox dir");
+        let dir = self.inbox_dir(root).expect("inbox dir");
         Inbox::read(&dir)
-            .undelivered()
-            .iter()
-            .map(|item| item.prompt())
+            .undelivered_for(root)
+            .into_iter()
+            .map(|item| inbox::prompt_text(&[item]))
             .collect()
     }
 
@@ -443,8 +463,9 @@ impl CorgiWaker {
     /// blocked keeps them until a later refresh, so they arrive after its
     /// turn, and so does one whose input box holds the user's draft, as
     /// `drafting` says, and one handing over, for its successor. Items for
-    /// a project without a corgi wait in its inbox. Returns the error of a
-    /// delivery that could not be recorded.
+    /// a project without a corgi wait in its inbox, and each corgi gets only
+    /// its own project's, though projects of the same directory name share
+    /// an inbox. Returns the error of a delivery that could not be recorded.
     fn deliver(
         &mut self,
         agents: &[DashboardAgent],
@@ -461,27 +482,31 @@ impl CorgiWaker {
             if !roots.insert(root) || self.handing_over(root) {
                 continue;
             }
-            let Some(dir) = self.store.inbox_dir(root) else {
+            let Some(dir) = self.inbox_dir(root) else {
                 continue;
             };
-            let inbox = self.inbox(&dir);
-            let pending: Vec<&Item> = inbox
-                .undelivered()
+            let inbox = Inbox::read(&dir);
+            let undelivered = inbox.undelivered_for(root);
+            let unrecorded = self.unrecorded.entry(dir.clone()).or_default();
+            unrecorded.retain(|id| undelivered.iter().any(|item| item.id == *id));
+            if !unrecorded.is_empty() {
+                let ids: Vec<String> = unrecorded.iter().cloned().collect();
+                let _ = inbox::mark_delivered(&dir, &ids, corgi);
+            }
+            let pending: Vec<&Item> = undelivered
                 .into_iter()
-                .filter(|item| !self.delivered.contains(&item.id))
+                .filter(|item| !unrecorded.contains(&item.id))
                 .collect();
             if pending.is_empty()
                 || matches!(agent.info.state, AgentState::Working | AgentState::Blocked)
                 || drafting(agent)
+                || !prompt(corgi, &inbox::prompt_text(&pending))
             {
                 continue;
             }
-            if !prompt(corgi, &inbox::prompt_text(&pending)) {
-                continue;
-            }
             let ids: Vec<String> = pending.iter().map(|item| item.id.clone()).collect();
-            self.delivered.extend(ids.iter().cloned());
             if let Err(failed) = inbox::mark_delivered(&dir, &ids, corgi) {
+                unrecorded.extend(ids);
                 error = Some(format!(
                     "Could not record the delivery to {corgi}: {failed:#}"
                 ));
@@ -498,7 +523,7 @@ impl CorgiWaker {
         &mut self,
         client: &HerdrClient,
         agents: &[DashboardAgent],
-        report: impl FnMut(&DashboardAgent) -> Option<String>,
+        report: impl FnMut(&DashboardAgent) -> Option<Captured>,
     ) -> Option<String> {
         if !self.leads(client) {
             return None;
@@ -601,41 +626,32 @@ fn own(agent: &DashboardAgent) -> bool {
     agent.info.tokens.contains_key(CORGI_REQUEST_TOKEN)
 }
 
-/// The inbox item for `name` having stopped in `state`, with its `report`.
-/// The report of an agent the corgi spawned goes out with the wake when it
-/// is short enough; any other wake names the command that prints it. Its id
-/// names the state change, so the same change is never added twice.
-fn wake_item(
-    agent: &DashboardAgent,
-    name: &str,
-    state: AgentState,
-    report: Option<String>,
-    corgi_bin: &Path,
-) -> Item {
-    let own = own(agent);
-    let inline = own
-        && report
-            .as_ref()
-            .is_some_and(|report| report.len() <= inbox::INLINE_REPORT_MAX);
-    let text = if inline {
-        corgi::wake_report_message(name, state)
-    } else {
-        corgi::wake_message(corgi_bin, name, state)
-    };
+/// The inbox item for `stop`, with the agent's `report`. Its line names the
+/// command that prints the report; [`inbox::prompt_text`] decides whether
+/// the report goes out with it instead. Its id names the agent's pane, run of
+/// state changes and state change, so the same stop is never added twice and
+/// a later one never taken for it.
+fn wake_item(stop: &Stop<'_>, report: Option<String>, corgi_bin: &Path) -> Item {
+    let Stop {
+        agent, name, state, ..
+    } = stop;
+    let (pane, change) = (&agent.info.pane_id, agent.info.state_change_seq);
     let label = state.label().to_lowercase();
     Item {
         id: inbox::file_safe(&format!(
-            "wake-{name}-{}-{}-{label}",
-            agent.info.pane_id, agent.info.state_change_seq
+            "wake-{name}-{pane}-{}-{change}-{label}",
+            stop.since
         )),
         project: agent.project_root.clone(),
         source: "dashboard".into(),
         kind: Kind::Wake,
         agent: Some(name.to_string()),
         state: Some(label),
+        pane: Some(pane.clone()),
+        change: Some(change),
         key: name.to_string(),
-        text,
-        own,
+        text: corgi::wake_message(corgi_bin, name, *state),
+        own: own(agent),
         report,
         ..Item::default()
     }
@@ -647,18 +663,21 @@ fn captured_report(
     sessions: &mut SessionReader,
     client: &HerdrClient,
     agent: &DashboardAgent,
-) -> Option<String> {
-    sessions
-        .facts(&agent.info)
-        .report
-        .map(|entry| entry.text)
-        .or_else(|| {
-            client
-                .read_agent(&agent.info.pane_id, ReadSource::RecentUnwrapped, Some(120))
-                .ok()
-                .map(|read| read.text.trim_end().to_string())
+) -> Option<Captured> {
+    let said = sessions.facts(&agent.info).report.map(|entry| Captured {
+        text: entry.text,
+        transcript: true,
+    });
+    said.or_else(|| {
+        let read = client
+            .read_agent(&agent.info.pane_id, ReadSource::RecentUnwrapped, Some(120))
+            .ok()?;
+        Some(Captured {
+            text: read.text.trim_end().to_string(),
+            transcript: false,
         })
-        .filter(|report| !report.trim().is_empty())
+    })
+    .filter(|report| !report.text.trim().is_empty())
 }
 
 /// Whether the user is writing in `corgi`'s input box, so that nothing is
@@ -781,6 +800,22 @@ fn wake_lock_path(socket: &Path) -> Option<PathBuf> {
     socket_state_file("wake", socket, "lock")
 }
 
+/// Whether a dashboard holds the wake lock of the Herdr session at
+/// `socket`, so the corgis' inboxes are being delivered. Trying the lock
+/// holds it only for that moment, and a lock nobody ever took is free.
+pub(super) fn wake_lock_held(socket: &Path) -> bool {
+    let Some(file) = wake_lock_path(socket).and_then(|path| fs::File::open(path).ok()) else {
+        return false;
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(_) => true,
+    }
+}
+
 impl App {
     /// Tells each project's corgi about its agents that stopped since the
     /// last refresh, and hands corgis whose handover is due over to
@@ -891,8 +926,7 @@ mod tests {
     ) -> Vec<String> {
         let mut sent = Vec::new();
         assert_eq!(
-            waker.observe(agents, Path::new("/opt/corgi"), |_| report
-                .map(String::from)),
+            waker.observe(agents, Path::new("/opt/corgi"), |_| report.map(said)),
             None
         );
         waker.deliver(
@@ -904,6 +938,14 @@ mod tests {
             },
         );
         sent
+    }
+
+    /// `text` as a report from a transcript.
+    fn said(text: &str) -> Captured {
+        Captured {
+            text: text.into(),
+            transcript: true,
+        }
     }
 
     fn weather_corgi(state: AgentState) -> DashboardAgent {
@@ -931,8 +973,9 @@ mod tests {
         assert_eq!(
             wake_refresh(&mut second, &done, Some(report), false),
             [
-                "corgi-weather: [corgi] w-forecast is done. Its report follows, so you need not \
-              run report for it:\n### Report\n- Result: done\n[corgi] End of w-forecast's report."
+                "corgi-weather: [corgi] w-forecast is done. Its report follows, quoted, so you \
+                 need not run report for it:\n> ### Report\n> - Result: done\n\
+                 [corgi] End of w-forecast's report."
             ]
         );
         assert!(wake_refresh(&mut second, &done, Some(report), false).is_empty());
@@ -1024,10 +1067,18 @@ mod tests {
             weather_worker("w-new", Done, 5, true),
             weather_worker("w-users", Done, 5, false),
             weather_worker("w-silent", Idle, 5, true),
+            weather_worker("w-unstarted", Idle, 5, true),
+            weather_worker("w-screen", Done, 5, true),
         ];
         let mut second = CorgiWaker::in_dir(&scratch);
-        let mut report = |agent: &DashboardAgent| {
-            (agent.info.name.as_deref() != Some("w-silent")).then(|| "short report".to_string())
+        // Only a screen for the last two: one never started, one is done.
+        let mut report = |agent: &DashboardAgent| match agent.info.name.as_deref() {
+            Some("w-silent") => None,
+            Some("w-unstarted" | "w-screen") => Some(Captured {
+                text: "$ claude".into(),
+                transcript: false,
+            }),
+            _ => Some(said("short report")),
         };
         assert_eq!(
             second.observe(&agents, Path::new("/opt/corgi"), &mut report),
@@ -1036,8 +1087,12 @@ mod tests {
         assert_eq!(
             second.pending_for("/repos/weather"),
             [
-                "[corgi] w-new is done. Its report follows, so you need not run report for it:\n\
-              short report\n[corgi] End of w-new's report."
+                "[corgi] w-new is done. Its report follows, quoted, so you need not run report \
+                 for it:\n> short report\n[corgi] End of w-new's report."
+                    .to_string(),
+                "[corgi] w-screen is done. Its report follows, quoted, so you need not run \
+                 report for it:\n> $ claude\n[corgi] End of w-screen's report."
+                    .to_string()
             ]
         );
         // Without any record, as at a first start, nothing found resting is news.
@@ -1048,6 +1103,33 @@ mod tests {
             None
         );
         assert!(third.pending_for("/repos/weather").is_empty());
+    }
+
+    #[test]
+    fn an_own_workers_stop_while_no_corgi_runs_waits_for_the_next_corgi() {
+        use AgentState::{Done, Idle, Working};
+        let scratch = ScratchDir::new("waker-no-corgi");
+        let mut waker = CorgiWaker::in_dir(&scratch);
+        let workers = |state, change| {
+            [
+                weather_worker("w-radar", state, change, true),
+                weather_worker("w-users", state, change, false),
+            ]
+        };
+        wake_refresh(&mut waker, &workers(Working, 1), None, false);
+        assert!(
+            wake_refresh(&mut waker, &workers(Done, 2), Some("radar report"), false).is_empty()
+        );
+        // A corgi starts: it hears of the worker it spawned, not the user's.
+        let mut agents = workers(Done, 2).to_vec();
+        agents.push(weather_corgi(Idle));
+        assert_eq!(
+            wake_refresh(&mut waker, &agents, None, false),
+            [
+                "corgi-weather: [corgi] w-radar is done. Its report follows, quoted, so you need \
+              not run report for it:\n> radar report\n[corgi] End of w-radar's report."
+            ]
+        );
     }
 
     #[test]
@@ -1683,6 +1765,128 @@ mod tests {
             wake_lock_path(Path::new("/tmp/herdr.sock"))
                 .and_then(|path| path.file_name().map(|name| name.to_owned())),
             Some("_tmp_herdr_sock.lock".into())
+        );
+    }
+
+    // ---- Adversarial review tests (throwaway; not for the branch) ----
+
+    /// Herdr persists each pane's id and agent name in session.json and
+    /// restores them after a server restart, but not `state_change_seq`, which
+    /// counts from the start again. The dashboard (a Herdr plugin pane) restarts
+    /// with it. The worker's next stop gets the same wake id as an earlier one
+    /// still in the inbox, so `inbox::append` drops it as already recorded.
+    #[test]
+    fn a_stop_after_herdr_restarts_and_counts_state_changes_again_wakes() {
+        use AgentState::{Done, Idle, Working};
+        let scratch = ScratchDir::new("review-seq-reset");
+        let agents = |state, change| {
+            [
+                weather_corgi(Idle),
+                weather_worker("w-radar", state, change, false),
+            ]
+        };
+        let mut before = CorgiWaker::in_dir(&scratch);
+        wake_refresh(&mut before, &agents(Idle, 1), None, false);
+        wake_refresh(&mut before, &agents(Working, 2), None, false);
+        assert_eq!(
+            wake_refresh(&mut before, &agents(Done, 3), None, false).len(),
+            1
+        );
+        drop(before);
+        // Herdr restarts: same pane id and name, seq counted from 1 again.
+        let mut after = CorgiWaker::in_dir(&scratch);
+        wake_refresh(&mut after, &agents(Idle, 1), None, false);
+        // The corgi steers the worker; it works and stops again.
+        wake_refresh(&mut after, &agents(Working, 2), None, false);
+        assert_eq!(
+            wake_refresh(&mut after, &agents(Done, 3), None, false),
+            ["corgi-weather: [corgi] w-radar is done. Run: /opt/corgi report w-radar"],
+            "the second stop never reaches the corgi"
+        );
+    }
+
+    /// A wake whose append fails still advances the saved record, so the
+    /// stop is never added once the inbox is writable again.
+    #[test]
+    fn a_wake_that_could_not_be_added_is_added_once_the_inbox_is_writable() {
+        use AgentState::{Done, Idle, Working};
+        let scratch = ScratchDir::new("review-append-fails");
+        let agents = |state, change| {
+            [
+                weather_corgi(Idle),
+                weather_worker("w-radar", state, change, false),
+            ]
+        };
+        let mut waker = CorgiWaker::in_dir(&scratch);
+        wake_refresh(&mut waker, &agents(Working, 1), None, false);
+        // The state directory cannot be created (stands in for a full disk,
+        // a permission problem, a failed migration...).
+        fs::write(scratch.join("weather"), "not a directory").unwrap();
+        assert!(
+            waker
+                .observe(&agents(Done, 2), Path::new("/opt/corgi"), |_| None)
+                .is_some()
+        );
+        fs::remove_file(scratch.join("weather")).unwrap();
+        assert_eq!(
+            wake_refresh(&mut waker, &agents(Done, 2), None, false),
+            ["corgi-weather: [corgi] w-radar is done. Run: /opt/corgi report w-radar"],
+            "the stop is lost for good"
+        );
+    }
+
+    /// Two projects with the same directory name share one state directory,
+    /// so one inbox; delivery types every item of that inbox into whichever
+    /// corgi comes first, and records them delivered. On main the queue was
+    /// keyed by the full project root.
+    #[test]
+    fn a_wake_reaches_the_corgi_of_its_own_project_when_two_share_a_name() {
+        use AgentState::{Done, Idle, Working};
+        let scratch = ScratchDir::new("review-same-basename");
+        let agents = |state, change| {
+            let mut worker = project_agent("w-oss", "/oss/web", false, state);
+            worker.info.state_change_seq = change;
+            [
+                project_agent("corgi-work-web", "/work/web", true, Idle),
+                project_agent("corgi-oss-web", "/oss/web", true, Idle),
+                worker,
+            ]
+        };
+        let mut waker = CorgiWaker::in_dir(&scratch);
+        wake_refresh(&mut waker, &agents(Working, 1), None, false);
+        assert_eq!(
+            wake_refresh(&mut waker, &agents(Done, 2), None, false),
+            ["corgi-oss-web: [corgi] w-oss is done. Run: /opt/corgi report w-oss"]
+        );
+    }
+
+    /// Nothing bounds the one prompt typed into the corgi's box: every own
+    /// worker's report up to 4 KB each goes inline. Eight workers stopping
+    /// during one long corgi turn (or one dashboard downtime) make a ~33 KB
+    /// agent.prompt. `corgi inbox` caps itself at 16 KB of reports.
+    #[test]
+    fn the_typed_prompt_stays_within_a_budget() {
+        use AgentState::{Done, Idle, Working};
+        let scratch = ScratchDir::new("review-prompt-size");
+        let report = "r".repeat(inbox::INLINE_REPORT_MAX);
+        let agents = |corgi, state, change| {
+            let mut agents = vec![weather_corgi(corgi)];
+            for n in 0..8 {
+                agents.push(weather_worker(&format!("w-{n}"), state, change, true));
+            }
+            agents
+        };
+        let mut waker = CorgiWaker::in_dir(&scratch);
+        wake_refresh(&mut waker, &agents(Working, Working, 1), None, false);
+        assert!(
+            wake_refresh(&mut waker, &agents(Working, Done, 2), Some(&report), false).is_empty()
+        );
+        let sent = wake_refresh(&mut waker, &agents(Idle, Done, 2), Some(&report), false);
+        assert_eq!(sent.len(), 1);
+        assert!(
+            sent[0].len() <= 16 * 1024,
+            "one agent.prompt of {} bytes",
+            sent[0].len()
         );
     }
 }

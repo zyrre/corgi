@@ -71,8 +71,8 @@ pub(crate) enum ConflictHelp {
     Corgi(String),
     /// The project has no running corgi.
     NoCorgi,
-    /// This dashboard does not wake corgis (another one does, or it is
-    /// the Omarchy popup), so it does not hand conflicts to a corgi.
+    /// This dashboard has no inbox to write to (it is the Omarchy popup),
+    /// so it does not hand conflicts to a corgi.
     Unavailable,
 }
 
@@ -221,18 +221,15 @@ impl App {
     }
 
     /// Who can take over the open merge dialog's conflict: its project's
-    /// corgi, when this dashboard is the one that delivers to corgis.
-    fn conflict_help(&mut self) -> ConflictHelp {
+    /// corgi, when this dashboard can write to its inbox, as every
+    /// interactive one can, whichever of them delivers.
+    fn conflict_help(&self) -> ConflictHelp {
         let Some(form) = self.overlay.merge_worktree_form() else {
             return ConflictHelp::Unavailable;
         };
-        let corgi = project_corgi(&self.agents, &form.project_root);
-        let leads = self
-            .corgi_waker
-            .as_mut()
-            .is_some_and(|waker| waker.leads(&self.client));
-        match corgi {
-            _ if !leads => ConflictHelp::Unavailable,
+        match project_corgi(&self.agents, &form.project_root) {
+            // The inbox keeps the message for whichever dashboard delivers.
+            _ if self.corgi_waker.is_none() => ConflictHelp::Unavailable,
             Some(corgi) => ConflictHelp::Corgi(corgi),
             None => ConflictHelp::NoCorgi,
         }
