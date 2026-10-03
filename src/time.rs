@@ -67,6 +67,19 @@ pub fn utc_stamp(secs: u64) -> String {
     )
 }
 
+/// `secs` (Unix seconds) as an RFC 3339 timestamp in UTC, such as
+/// `2026-10-03T07:08:09Z`, which [`parse_rfc3339`] reads back.
+pub fn rfc3339_utc(secs: u64) -> String {
+    let (days, time) = (secs / 86_400, secs % 86_400);
+    let (year, month, day) = civil_from_days(days as i64);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        time / 3_600,
+        time / 60 % 60,
+        time % 60
+    )
+}
+
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
 /// `days_from_civil`).
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
@@ -96,7 +109,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil_from_days, days_from_civil, parse_rfc3339, utc_stamp};
+    use super::{civil_from_days, days_from_civil, parse_rfc3339, rfc3339_utc, utc_stamp};
 
     #[test]
     fn rfc3339_timestamps_parse_into_unix_seconds() {
@@ -121,6 +134,8 @@ mod tests {
             utc_stamp(parse_rfc3339("2026-09-24T07:08:09Z").expect("timestamp")),
             "20260924-070809"
         );
+        let at = parse_rfc3339("2026-10-03T07:08:09Z").expect("timestamp");
+        assert_eq!(rfc3339_utc(at), "2026-10-03T07:08:09Z");
     }
 
     #[test]

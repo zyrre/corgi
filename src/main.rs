@@ -23,6 +23,10 @@ fn main() -> Result<()> {
         Some("digest") => corgi::app::digest(&args[2..]),
         Some("report") if help() => usage(corgi::app::REPORT_USAGE),
         Some("report") => corgi::app::report(&args[2..]),
+        Some("notify") if help() => usage(corgi::app::NOTIFY_USAGE),
+        Some("notify") => corgi::app::notify(&args[2..]),
+        Some("inbox") if help() => usage(corgi::app::INBOX_USAGE),
+        Some("inbox") => corgi::app::inbox_command(&args[2..]),
         Some("--bar-stream") => {
             let socket = args
                 .get(2)

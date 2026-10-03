@@ -776,7 +776,7 @@ mod tests {
     fn leading_dashboard(client: HerdrClient, scratch: &Path) -> App {
         let mut app = test_app();
         app.client = client;
-        let mut waker = CorgiWaker::default();
+        let mut waker = CorgiWaker::in_dir(scratch);
         assert!(waker.lead(&scratch.join("wake.lock")));
         app.corgi_waker = Some(waker);
         app

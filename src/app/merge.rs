@@ -71,8 +71,8 @@ pub(crate) enum ConflictHelp {
     Corgi(String),
     /// The project has no running corgi.
     NoCorgi,
-    /// This dashboard does not wake corgis (another one does, or it is
-    /// the Omarchy popup), so it has no queue to put the message in.
+    /// This dashboard has no inbox to write to (it is the Omarchy popup),
+    /// so it does not hand conflicts to a corgi.
     Unavailable,
 }
 
@@ -221,25 +221,22 @@ impl App {
     }
 
     /// Who can take over the open merge dialog's conflict: its project's
-    /// corgi, when this dashboard is the one that delivers to corgis.
-    fn conflict_help(&mut self) -> ConflictHelp {
+    /// corgi, when this dashboard can write to its inbox, as every
+    /// interactive one can, whichever of them delivers.
+    fn conflict_help(&self) -> ConflictHelp {
         let Some(form) = self.overlay.merge_worktree_form() else {
             return ConflictHelp::Unavailable;
         };
-        let corgi = project_corgi(&self.agents, &form.project_root);
-        let leads = self
-            .corgi_waker
-            .as_mut()
-            .is_some_and(|waker| waker.leads(&self.client));
-        match corgi {
-            _ if !leads => ConflictHelp::Unavailable,
+        match project_corgi(&self.agents, &form.project_root) {
+            // The inbox keeps the message for whichever dashboard delivers.
+            _ if self.corgi_waker.is_none() => ConflictHelp::Unavailable,
             Some(corgi) => ConflictHelp::Corgi(corgi),
             None => ConflictHelp::NoCorgi,
         }
     }
 
     /// Aborts the conflicted merge Corgi started in the primary checkout,
-    /// and queues a message for the project's corgi to have the worker
+    /// and adds a line to the inbox of the project's corgi to have the worker
     /// merge the base branch into its own branch and resolve it there. The
     /// worktree stays open; the user merges again once the worker reports.
     fn ask_corgi_about_conflict(&mut self) {
@@ -274,14 +271,23 @@ impl App {
             base: &form.target_branch,
             files,
         });
-        let root = form.project_root.to_string_lossy().into_owned();
-        let key = format!("{} merge conflict", form.agent);
-        let status = format!(
+        let item = crate::inbox::Item {
+            project: form.project_root.to_string_lossy().into_owned(),
+            source: "merge".into(),
+            kind: crate::inbox::Kind::Conflict,
+            agent: Some(form.agent.clone()),
+            key: format!("{} merge conflict", form.agent),
+            text: message,
+            ..Default::default()
+        };
+        let mut status = format!(
             "Merge aborted; asked {corgi} to have {} merge {} into its branch",
             form.agent, form.target_branch
         );
-        if let Some(waker) = self.corgi_waker.as_mut() {
-            waker.queue(&root, key, message);
+        if let Some(waker) = self.corgi_waker.as_mut()
+            && let Err(error) = waker.notify(item)
+        {
+            status = format!("Merge aborted, but {corgi} could not be told: {error:#}");
         }
         self.overlay = Overlay::None;
         self.motion.succeeded();
@@ -716,7 +722,7 @@ mod tests {
     /// `form` reported by its merge job, and `agents` in view.
     fn conflicted_dashboard(form: &MergeWorktreeForm, agents: Vec<DashboardAgent>) -> App {
         let mut app = test_app();
-        let mut waker = CorgiWaker::default();
+        let mut waker = CorgiWaker::in_dir(&form.project_root.join(".git").join("corgi-state"));
         assert!(waker.lead(&form.project_root.join(".git").join("corgi-wake.lock")));
         app.corgi_waker = Some(waker);
         app.agents = agents;

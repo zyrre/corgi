@@ -1,5 +1,5 @@
 //! The command-line tools: `corgi spawn`, `corgi start`, `corgi fleet`,
-//! `corgi digest` and `corgi report`.
+//! `corgi digest`, `corgi report`, `corgi notify` and `corgi inbox`.
 
 use std::{env, fs, io, path::PathBuf};
 
@@ -7,10 +7,11 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     digest,
-    git::{git_current_branch, git_output},
+    git::{git_current_branch, git_output, trust_root},
     harness::Harness,
     herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS, ReadSource},
-    paths::{expand_home, is_home},
+    inbox::{self, Inbox, Item, Kind},
+    paths::{corgi_state_dir, expand_home, is_home},
     session::SessionReader,
 };
 
@@ -310,7 +311,8 @@ Usage: corgi fleet [PROJECT]
 
 Lists the agents of PROJECT (default: the project containing the current
 directory), one tab-separated row each under a header line:
-NAME, ROLE (corgi or worker), STATE, TASK, MODEL, CTX and CWD.";
+NAME, ROLE (corgi or worker), STATE, TASK, MODEL, CTX and CWD. When the
+project's corgi has missed inbox items, a line on stderr says so.";
 
 /// `corgi fleet`: one tab-separated row per agent of a project (default: the
 /// project containing the current directory), for a corgi to read.
@@ -323,6 +325,7 @@ pub fn fleet(args: &[String]) -> Result<()> {
     for row in fleet_rows(&app, &root) {
         println!("{row}");
     }
+    print_inbox_footer(&root);
     Ok(())
 }
 
@@ -359,7 +362,8 @@ threads of the newest archived one), open ledger work joined with the
 running agents, recently finished work, the newest decisions in full (about
 12 KB, at least 3) and the titles of older ones. Decisions named by a later
 entry's `Supersedes:` line are left out. Reads only; it never changes the
-state directory.
+state directory. When the corgi has missed inbox items, a line on
+stderr says so.
 
 Options:
   --decision WORDS   Print in full every decision, superseded or not, whose
@@ -449,10 +453,7 @@ pub fn digest(args: &[String]) -> Result<()> {
             context_percent: agent.context_percent,
         })
         .collect();
-    let corgi_bin = env::current_exe().map_or_else(
-        |_| "corgi".to_string(),
-        |path| path.to_string_lossy().into_owned(),
-    );
+    let corgi_bin = corgi_bin_text();
     let decision_command = format!("{corgi_bin} digest {root} --decision \"<words>\"");
     let search_command = format!("{corgi_bin} digest {root} --search \"<words>\"");
     let handover = read(crate::corgi::HANDOVER_NOTE);
@@ -477,6 +478,7 @@ pub fn digest(args: &[String]) -> Result<()> {
             search_command: &search_command,
         })
     );
+    print_inbox_footer(&root);
     Ok(())
 }
 
@@ -502,33 +504,359 @@ fn markdown_files(dir: &std::path::Path) -> Vec<(String, String)> {
 pub const REPORT_USAGE: &str = "\
 Usage: corgi report NAME
 
-Prints, in full, the newest thing the agent NAME (a Herdr agent name or pane
-ID) said, which for a worker that followed its brief is its report. Shows the
-agent's screen instead when its harness writes no readable transcript.";
+Prints, in full, the report the agent NAME (a Herdr agent name or pane ID)
+left. For a running agent: the one the Corgi dashboard kept in its corgi's
+inbox when the agent last stopped, if that is its current state, else the
+newest thing it said, which for a worker that followed its brief is its
+report, or its screen when its harness writes no readable transcript. For
+an agent whose pane is gone: the newest report kept in any corgi's inbox.
+When the corgi of the current directory's project has missed inbox items, a
+line on stderr says so.";
 
-/// `corgi report NAME`: the newest thing an agent said, in full, which for a
-/// worker that followed its brief is its report. Falls back to the agent's
-/// screen when its harness writes no readable transcript.
+/// `corgi report NAME`: the report an agent left, which for a worker that
+/// followed its brief is its report.
 pub fn report(args: &[String]) -> Result<()> {
     let [target] = args else {
         bail!("Usage: corgi report NAME");
     };
-    let client = HerdrClient::from_env()?;
-    let snapshot = client.snapshot()?;
-    let agent = snapshot
-        .agents
-        .iter()
-        .find(|agent| agent.name.as_deref() == Some(target.as_str()) || agent.pane_id == *target)
-        .with_context(|| format!("no running agent named {target}"))?;
-    let report = SessionReader::default().facts(agent).report;
-    if let Some(entry) = report {
-        println!("{}", entry.text);
-        return Ok(());
+    let connected = connected_app().ok();
+    let running = connected.as_ref().and_then(|(_, app)| {
+        app.agents
+            .iter()
+            .find(|agent| {
+                agent.info.name.as_deref() == Some(target.as_str()) || agent.info.pane_id == *target
+            })
+            .cloned()
+    });
+    let printed = match (&connected, running) {
+        (Some((client, _)), Some(agent)) => print_running_report(client, &agent, target),
+        _ => inbox_report(target)
+            .with_context(|| format!("no running agent named {target}, and no report kept for it"))
+            .map(|(dir, item)| print_kept_report(target, &dir, &item)),
+    };
+    if let Ok(root) = project_root(None) {
+        print_inbox_footer(&root);
     }
-    eprintln!("(no readable transcript for {target}; showing its screen)");
-    let read = client.read_agent(&agent.pane_id, ReadSource::RecentUnwrapped, Some(120))?;
-    println!("{}", read.text.trim_end());
+    printed
+}
+
+/// Prints the report of the running `agent`: the one kept in its own
+/// project's inbox when it is for this pane and its current state change,
+/// so it is never another agent's of the same name or one it has since
+/// said more than; else the newest thing it said, or its screen.
+fn print_running_report(
+    client: &HerdrClient,
+    agent: &crate::model::DashboardAgent,
+    target: &str,
+) -> Result<()> {
+    let info = &agent.info;
+    let name = info.name.as_deref().unwrap_or(target);
+    let kept = crate::corgi::state_dir(&agent.project_root)
+        .ok()
+        .and_then(|dir| {
+            let item = current_report(&Inbox::read(&dir), agent, name)?.clone();
+            Some((dir, item))
+        });
+    if let Some((dir, item)) = kept {
+        print_kept_report(name, &dir, &item);
+    } else if let Some(entry) = SessionReader::default().facts(info).report {
+        println!("{}", entry.text);
+    } else {
+        eprintln!("(no readable transcript for {target}; showing its screen)");
+        let read = client.read_agent(&info.pane_id, ReadSource::RecentUnwrapped, Some(120))?;
+        println!("{}", read.text.trim_end());
+    }
     Ok(())
+}
+
+/// The report `inbox` keeps of the running `agent`, named `name`, if it is
+/// of its project and pane and of its current state change.
+fn current_report<'a>(
+    inbox: &'a Inbox,
+    agent: &crate::model::DashboardAgent,
+    name: &str,
+) -> Option<&'a Item> {
+    let info = &agent.info;
+    inbox.newest_report(name).filter(|item| {
+        item.is_for(&agent.project_root)
+            && item.pane.as_deref() == Some(info.pane_id.as_str())
+            && item.change == Some(info.state_change_seq)
+    })
+}
+
+/// Prints the report `item` of the inbox in the state directory `dir` kept
+/// of the agent `name`.
+fn print_kept_report(name: &str, dir: &std::path::Path, item: &Item) {
+    let state = item.state.as_deref().unwrap_or("stopped");
+    eprintln!(
+        "(the report {name} left when it was {state}, at {})",
+        item.ts
+    );
+    let text = item.report_text(dir).unwrap_or_default();
+    println!("{}", text.trim_end());
+}
+
+/// The newest report of the agent `name` kept in any corgi's inbox, with
+/// the state directory it is in, for an agent whose pane is gone.
+fn inbox_report(name: &str) -> Option<(PathBuf, Item)> {
+    let base = corgi_state_dir()?;
+    inbox::all_state_dirs(&base)
+        .into_iter()
+        .filter_map(|dir| {
+            let item = Inbox::read(&dir).newest_report(name)?.clone();
+            Some((dir, item))
+        })
+        .max_by(|(_, a), (_, b)| a.ts.cmp(&b.ts))
+}
+
+pub const NOTIFY_USAGE: &str = "\
+Usage: corgi notify [PROJECT] [OPTIONS] < text
+
+Adds an item to the inbox of the corgi of PROJECT (default: the project
+containing the current directory), the one way anything but the dashboard
+reaches a corgi. The Corgi dashboard that wakes corgis types it into the
+corgi's input box once the corgi is between turns and its box holds no
+draft, together with any other undelivered items, and records it delivered;
+it survives the dashboard closing or restarting meanwhile. The text is read
+from stdin, and gets a leading [corgi] when it has none. Prints the item's
+id and inbox as JSON.
+
+Options:
+  --agent NAME        The agent the item is about
+  --state STATE       That agent's state, such as done or blocked
+  --kind KIND         wake, conflict or note (default: note)
+  --key KEY           Of undelivered items with the same key, only the
+                      newest goes out (default: the item's own id)
+  --source NAME       Who adds it (default: notify)
+  --report-file PATH  The agent's report, kept with the item, which
+                      corgi report NAME then prints";
+
+/// `corgi notify`: adds an item to a corgi's inbox through the same code the
+/// dashboard uses, for scripts and hooks.
+pub fn notify(args: &[String]) -> Result<()> {
+    let mut project = None;
+    let mut item = Item {
+        source: "notify".into(),
+        kind: Kind::Note,
+        ..Item::default()
+    };
+    let mut report_file = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        let mut value = || {
+            args.next()
+                .cloned()
+                .with_context(|| format!("{arg} needs a value"))
+        };
+        match arg.as_str() {
+            "--agent" => item.agent = Some(value()?),
+            "--state" => item.state = Some(value()?.trim().to_lowercase()),
+            "--kind" => {
+                let kind = value()?;
+                item.kind = Kind::from_label(&kind).with_context(|| {
+                    format!("--kind must be wake, conflict or note, not {kind:?}")
+                })?;
+            }
+            "--key" => item.key = value()?,
+            "--source" => item.source = value()?,
+            "--report-file" => report_file = Some(value()?),
+            other if other.starts_with('-') => bail!("unknown option {other:?}\n\n{NOTIFY_USAGE}"),
+            _ if project.is_none() => project = Some(arg.as_str()),
+            _ => bail!("{NOTIFY_USAGE}"),
+        }
+    }
+    let text = read_task(None, true)?;
+    anyhow::ensure!(!text.is_empty(), "the text is empty\n\n{NOTIFY_USAGE}");
+    item.text = notify_text(&text);
+    if let Some(path) = report_file {
+        item.report =
+            Some(fs::read_to_string(&path).with_context(|| format!("read report file {path}"))?);
+    }
+    item.project = project_root(project)?;
+    let dir = crate::corgi::state_dir(&item.project)?;
+    let item = inbox::append(&dir, item)?.context("the inbox already has an item with that id")?;
+    serde_json::to_writer(
+        io::stdout(),
+        &serde_json::json!({"id": item.id, "inbox": dir.join(inbox::INBOX_FILE)}),
+    )?;
+    println!();
+    Ok(())
+}
+
+/// `text` as a line a corgi tells from the user's: it starts with `[corgi]`.
+fn notify_text(text: &str) -> String {
+    if text.starts_with("[corgi]") {
+        text.to_string()
+    } else {
+        format!("[corgi] {text}")
+    }
+}
+
+pub const INBOX_USAGE: &str = "\
+Usage: corgi inbox [PROJECT] [--delivered] [--take]
+
+Prints the undelivered items in the inbox of the corgi of PROJECT (default:
+the project containing the current directory), oldest first: what the Corgi
+dashboard has not typed into the corgi's input box yet, each with its report
+or where to find it. Printing marks nothing delivered, so the dashboard still
+types them in. A corgi handing over leaves them to its successor.
+
+Options:
+  --delivered  Also print the newest delivered items
+  --take       Record the printed undelivered items delivered, so the
+               dashboard does not type them in again: for the corgi, which
+               acts on them now";
+
+/// The most undelivered items `corgi inbox` prints, the newest.
+const INBOX_SHOWN: usize = 20;
+/// The most delivered items `corgi inbox --delivered` prints, the newest.
+const INBOX_DELIVERED_SHOWN: usize = 10;
+/// The report text `corgi inbox` prints in all, in bytes; past it, each
+/// report is only pointed to.
+const INBOX_REPORT_BUDGET: usize = 16 * 1024;
+
+/// `corgi inbox`: a bounded view of a corgi's inbox.
+pub fn inbox_command(args: &[String]) -> Result<()> {
+    let mut project = None;
+    let (mut delivered, mut take) = (false, false);
+    for arg in args {
+        match arg.as_str() {
+            "--delivered" => delivered = true,
+            "--take" => take = true,
+            other if other.starts_with('-') => bail!("unknown option {other:?}\n\n{INBOX_USAGE}"),
+            _ if project.is_none() => project = Some(arg.as_str()),
+            _ => bail!("{INBOX_USAGE}"),
+        }
+    }
+    let root = project_root(project)?;
+    let dir = crate::corgi::state_dir(&root)?;
+    let inbox = Inbox::read(&dir);
+    let (text, shown) = inbox_text(&inbox, &dir, &root, delivered);
+    print!("{text}");
+    if take {
+        let ids: Vec<String> = shown.iter().map(|item| item.id.clone()).collect();
+        inbox::mark_delivered(&dir, &ids, "corgi inbox --take")?;
+        if !ids.is_empty() {
+            println!("Recorded {} item(s) delivered.", ids.len());
+        }
+    }
+    Ok(())
+}
+
+/// What `corgi inbox` prints of `inbox`, in the state directory `dir`, for
+/// the project at `root`, and the undelivered items it shows.
+fn inbox_text<'a>(
+    inbox: &'a Inbox,
+    dir: &std::path::Path,
+    root: &str,
+    delivered: bool,
+) -> (String, Vec<&'a Item>) {
+    let undelivered = inbox.undelivered_for(root);
+    let shown: Vec<&Item> = undelivered
+        .iter()
+        .skip(undelivered.len().saturating_sub(INBOX_SHOWN))
+        .copied()
+        .collect();
+    let mut out = format!(
+        "{} undelivered item(s) in {}\n",
+        undelivered.len(),
+        dir.join(inbox::INBOX_FILE).display()
+    );
+    if undelivered.len() > shown.len() {
+        out.push_str(&format!(
+            "(the {} oldest are not shown)\n",
+            undelivered.len() - shown.len()
+        ));
+    }
+    let mut budget = INBOX_REPORT_BUDGET;
+    let corgi_bin = corgi_bin_text();
+    for item in &shown {
+        out.push_str(&inbox_entry(item, &corgi_bin, Some(&mut budget)));
+    }
+    if delivered {
+        let mut done = inbox.delivered();
+        done.retain(|item| item.is_for(root));
+        out.push_str(&format!("\nNewest delivered ({} in all):\n", done.len()));
+        for item in done
+            .iter()
+            .skip(done.len().saturating_sub(INBOX_DELIVERED_SHOWN))
+        {
+            out.push_str(&inbox_entry(item, &corgi_bin, None));
+        }
+    }
+    (out, shown)
+}
+
+/// One item as `corgi inbox` prints it: a heading, its line, and its report
+/// while `budget` lasts, else where the report is.
+fn inbox_entry(item: &Item, corgi_bin: &str, budget: Option<&mut usize>) -> String {
+    let about = [item.agent.as_deref(), item.state.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out = format!(
+        "\n--- {} {} {about} (from {}, id {})\n{}\n",
+        item.ts,
+        item.kind.label(),
+        item.source,
+        item.id,
+        item.text
+    );
+    let pointer = |out: &mut String| {
+        if let Some(agent) = &item.agent {
+            out.push_str(&format!("(report: run {corgi_bin} report {agent})\n"));
+        }
+    };
+    match (budget, &item.report) {
+        (Some(budget), Some(report)) if report.len() <= *budget => {
+            *budget -= report.len();
+            out.push_str(&format!("{}\n", report.trim_end()));
+        }
+        _ if item.has_report() => pointer(&mut out),
+        _ => {}
+    }
+    out
+}
+
+/// The Corgi binary as the commands it prints name it.
+fn corgi_bin_text() -> String {
+    env::current_exe().map_or_else(
+        |_| "corgi".to_string(),
+        |path| path.to_string_lossy().into_owned(),
+    )
+}
+
+/// Prints, on stderr, that the corgi of the project at `root` has missed
+/// inbox items, if it does: any undelivered while no dashboard delivers,
+/// else those that have waited minutes, not just for the corgi's turn.
+fn print_inbox_footer(root: &str) {
+    let delivering = HerdrClient::from_env()
+        .is_ok_and(|client| super::waker::wake_lock_held(client.socket_path()));
+    if let Some(footer) = crate::corgi::state_dir(root).ok().and_then(|dir| {
+        inbox::footer(
+            &dir,
+            &corgi_bin_text(),
+            root,
+            delivering,
+            crate::time::unix_now(),
+        )
+    }) {
+        eprintln!("{footer}");
+    }
+}
+
+/// The root of `project` (default: the current directory): its
+/// repository's primary checkout, as Herdr reports it, or as Git does when
+/// Herdr cannot be asked.
+fn project_root(project: Option<&str>) -> Result<String> {
+    let project = existing_project_dir(project)?;
+    if let Ok(client) = HerdrClient::from_env()
+        && let Ok(root) = project_root_of(&client, &project)
+    {
+        return Ok(root);
+    }
+    Ok(trust_root(&project).to_string_lossy().into_owned())
 }
 
 /// The task for a command-line launch, from `task_file` or else stdin. A
@@ -715,6 +1043,114 @@ mod tests {
                 "{bad} was accepted"
             );
         }
+    }
+
+    #[test]
+    fn a_notified_line_is_marked_as_corgis() {
+        assert_eq!(notify_text("deploy done"), "[corgi] deploy done");
+        assert_eq!(notify_text("[corgi] deploy done"), "[corgi] deploy done");
+    }
+
+    #[test]
+    fn the_inbox_shows_undelivered_items_with_their_reports_and_marks_nothing() {
+        let dir = crate::test_support::ScratchDir::new("cli-inbox");
+        let wake = |agent: &str, id: &str, report: Option<String>| Item {
+            id: id.into(),
+            source: "dashboard".into(),
+            agent: Some(agent.into()),
+            state: Some("done".into()),
+            key: agent.into(),
+            text: format!("[corgi] {agent} is done."),
+            own: true,
+            report,
+            ..Item::default()
+        };
+        inbox::append(&dir, wake("w-old", "a", Some("old report".into()))).unwrap();
+        inbox::mark_delivered(&dir, &["a".into()], "corgi-weather").unwrap();
+        inbox::append(
+            &dir,
+            wake("w-forecast", "b", Some("forecast report".into())),
+        )
+        .unwrap();
+        let long = "x".repeat(inbox::INLINE_REPORT_MAX + 1);
+        inbox::append(&dir, wake("w-radar", "c", Some(long))).unwrap();
+        let read = Inbox::read(&dir);
+        let (text, shown) = inbox_text(&read, &dir, "", false);
+        assert!(text.starts_with("2 undelivered item(s) in "), "{text}");
+        assert!(
+            text.contains("[corgi] w-forecast is done.\nforecast report\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[corgi] w-radar is done.\n(report: run "),
+            "{text}"
+        );
+        assert!(!text.contains("old report"), "{text}");
+        assert_eq!(shown.len(), 2);
+        let (text, _) = inbox_text(&read, &dir, "", true);
+        assert!(text.contains("Newest delivered (1 in all):"), "{text}");
+        assert!(
+            text.contains("[corgi] w-old is done.\n(report: run "),
+            "{text}"
+        );
+        // Printing marked nothing.
+        assert_eq!(Inbox::read(&dir).undelivered().len(), 2);
+    }
+
+    #[test]
+    fn a_running_agent_gets_its_own_current_report_only() {
+        let kept = |project: &str, pane: &str, change: u64| Item {
+            id: format!("{project}-{pane}-{change}"),
+            project: project.into(),
+            agent: Some("w-docs".into()),
+            pane: Some(pane.into()),
+            change: Some(change),
+            report: Some("the report".into()),
+            ..Item::default()
+        };
+        let agent = crate::model::DashboardAgent {
+            info: crate::model::AgentInfo {
+                name: Some("w-docs".into()),
+                pane_id: "w2:p1".into(),
+                state_change_seq: 7,
+                ..Default::default()
+            },
+            project_root: "/repos/web".into(),
+            ..Default::default()
+        };
+        let found = |item: Item| {
+            let dir = crate::test_support::ScratchDir::new("cli-current-report");
+            inbox::append(&dir, item).unwrap();
+            current_report(&Inbox::read(&dir), &agent, "w-docs").is_some()
+        };
+        assert!(found(kept("/repos/web", "w2:p1", 7)));
+        // Another project's agent of the same name, another pane, or a
+        // stop it has since worked past: its transcript says more.
+        assert!(!found(kept("/oss/web", "w2:p1", 7)));
+        assert!(!found(kept("/repos/web", "w9:p1", 7)));
+        assert!(!found(kept("/repos/web", "w2:p1", 5)));
+    }
+
+    #[test]
+    fn the_inbox_prints_reports_only_within_its_budget() {
+        let dir = crate::test_support::ScratchDir::new("cli-inbox-budget");
+        for n in 0..8 {
+            inbox::append(
+                &dir,
+                Item {
+                    agent: Some(format!("w-{n}")),
+                    text: format!("[corgi] w-{n} is done."),
+                    report: Some("r".repeat(inbox::INLINE_REPORT_MAX)),
+                    ..Item::default()
+                },
+            )
+            .unwrap();
+        }
+        let read = Inbox::read(&dir);
+        let (text, shown) = inbox_text(&read, &dir, "", false);
+        assert_eq!(shown.len(), 8);
+        assert!(text.len() < INBOX_REPORT_BUDGET + 4_096, "{}", text.len());
+        assert_eq!(text.matches("(report: run ").count(), 4);
     }
 
     #[test]

@@ -34,6 +34,9 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ expanded-projects ── the projects whose dashboard card is expanded, one
   │                        heading per line; missing or unreadable is all collapsed
   ├─ wake/<socket>.lock ─ held by the one dashboard that wakes corgis
+  ├─ wake/<socket>.seen.json ─ what that dashboard last saw of each agent it
+  │                        follows (pane, run of state changes, transitions), for the next one;
+  │                        replaced whole through a temporary file and a rename
   ├─ markers/<socket>.json ─ every metadata token Corgi set in that Herdr session,
   │                        by pane and workspace, with the agent or checkout it
   │                        was set for; replaced whole through a temporary file
@@ -47,7 +50,9 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ usage/<provider>.lock ─ held by the one process fetching a new reading
   └─ corgis/<project>/ ─ the corgi's files, written by Corgi at launch and by
                           the corgi: ROLE.md, launch.json, decisions.md, ledger.jsonl,
-                          briefs/, handover.md while one is under way, handovers/
+                          briefs/, handover.md while one is under way, handovers/;
+                          and by Corgi only (`src/inbox.rs`, under inbox.lock):
+                          inbox.jsonl, and inbox-reports/ for long reports
 
 Agent session files (per refresh, only the records appended since are parsed)
   ├─ {$CLAUDE_CONFIG_DIR,~/.claude}/projects/<slug>/<session>.jsonl ── model, token usage, cache lifetime
@@ -68,7 +73,9 @@ Headless launch and the corgi
   ├─ corgi start ──── the same launch into the project's root tab, as its corgi
   ├─ corgi fleet ──── a project's agents as tab-separated rows
   ├─ corgi digest ─── the corgi's memory, bounded, joined with the fleet
-  └─ corgi report ─── an agent's newest message, from its transcript
+  ├─ corgi report ─── an agent's report: kept in an inbox, else its newest message
+  ├─ corgi notify ─── add an item to a corgi's inbox, text on stdin
+  └─ corgi inbox ──── a corgi's undelivered inbox items, bounded
 ```
 
 The dashboard refreshes from Herdr roughly once per second, except while a
@@ -317,13 +324,13 @@ submodules are split by flow, each adding methods to the one `App`.
   configured upstream, or, when the user hands a conflicted merge to the
   corgi, the `git merge --abort` of that merge. The agent never
   performs the merge, and Corgi never changes the user's checked-out branch.
-- `waker.rs` is `CorgiWaker`, which wakes corgis, queues the merge-conflict
-  handoff for them, and hands them over, as
+- `waker.rs` is `CorgiWaker`, which wakes corgis through their inboxes,
+  puts the merge-conflict handoff in them, and hands them over, as
   described below; `draft.rs` tells it whether a corgi's input box holds
   the user's draft.
 - `cli.rs` is `corgi spawn`, `corgi start`, `corgi fleet`,
-  `corgi digest`, and `corgi report`. The digest's parsing and caps are
-  pure functions in `src/digest.rs`.
+  `corgi digest`, `corgi report`, `corgi notify` and `corgi inbox`. The
+  digest's parsing and caps are pure functions in `src/digest.rs`.
 - `bar.rs` is the `--bar-*` endpoints of the Omarchy widget. Their JSON is
   that widget's contract, pinned by snapshot tests, and they drive the same
   forms, key handlers, and launch as the dashboard.
@@ -450,17 +457,79 @@ role. So Corgi keeps its own record and puts the tokens back.
   the corgi's pane, rather than on the form's default.
 - The dashboard wakes corgis from its own refresh (`app/waker.rs`);
   nothing else runs for it. Every agent of a project with a running corgi
-  counts, except the corgi, whoever started it. `corgi::Transitions` reduces each agent's
+  counts, except the corgi, whoever started it, and so does one the corgi
+  spawned (it carries a `corgi_request` token) while the project has no
+  running corgi, so the next corgi hears of it. `corgi::Transitions` reduces each agent's
   state from refresh to refresh to wakes: nothing until the agent has been
-  seen working, so neither the states found at startup nor a question a new
-  agent opens on is news; after that, each time it rests (done or idle,
-  which count as one) after working, and each change between blocked and
-  resting. The same resting state with a newer `state_change_seq` means a
-  turn passed between two refreshes, and wakes too. A wake is one
-  `[corgi]` line naming the agent, its state, and the command to run next;
-  a corgi's lines go out as one `agent.prompt` once it is neither working
-  nor blocked, so they arrive after its turn, and a newer line for the same
-  agent replaces an unsent one. They also wait while the corgi's input box
+  seen working, so neither the states found at a first start nor a question
+  a new agent opens on is news; after that, each time it rests (done or
+  idle, which count as one) after working, and each change between blocked
+  and resting. The same resting state with a newer `state_change_seq` means
+  a turn passed between two refreshes, and wakes too. Only the dashboard
+  holding an exclusive lock on `$XDG_STATE_HOME/corgi/wake/<socket>.lock`
+  follows the agents, adds wakes and delivers; the lock goes with its
+  process, and the next dashboard to refresh takes it over. Every interactive
+  dashboard (the tab, the popup, a preview) tries for the lock; the Omarchy
+  reader and the command-line tools never wake.
+- Every wake goes through the corgi's inbox (`src/inbox.rs`),
+  `inbox.jsonl` in its state directory, so none is lost or sent twice when
+  a dashboard closes, crashes, restarts or hands the lock over. It is
+  append-only JSON lines, written only through that module under
+  `inbox.lock`: items (`id`, `ts`, `project`, `source`, `kind` of `wake`,
+  `conflict` or `note`, `agent`, `state`, for a wake the agent's `pane` and
+  `change` (its `state_change_seq`), a coalescing `key`, the `[corgi]`
+  `text`, `own`, and the agent's report inline or as `report_file`), and
+  records naming the ids delivered. An item no record names is
+  undelivered, and an id is added only once. Readers take no lock and skip
+  a last line still being written; a writer that finds the last line cut
+  short (a killed writer, a full disk) ends it with a newline before its
+  own. The dashboard reads each corgi's inbox at each refresh. Past 256 KB,
+  a write rewrites the file with every undelivered item and the newest 100
+  delivered ones, and removes the dropped items' report files. The
+  dashboard adds wakes and the merge-conflict handoff in process (any
+  interactive dashboard may hand a conflict to the corgi, since the leader
+  delivers it), and `corgi notify` adds anything else (a script's or a
+  hook's line) through the same code. Projects of the same directory name
+  share a state directory, so each item names its project root, and a
+  corgi gets only its own project's items.
+- A wake's id names the agent, its pane, the run of state changes it is
+  in, its `state_change_seq` and the state, and an item whose id the inbox
+  already has is not added again. Herdr restores a pane's id and agent
+  name after it restarts, but counts its state changes from the start
+  again, so the run is part of the id: it is set when the dashboard first
+  follows the agent, and again whenever its `state_change_seq` goes back.
+- What the leading dashboard last saw of each agent (its pane, run, last
+  `state_change_seq` and `Transitions`) is kept in
+  `wake/<socket>.seen.json`, written after that refresh's items, and only
+  when it changed. A dashboard that takes the lock starts from that record
+  rather than from what it sees, so whatever changed while no dashboard led
+  is news: a worker that was working at the last save and is done now wakes
+  its corgi once. An agent of the same name in another pane is another
+  agent. An agent the record does not have, and that rests now, wakes
+  nobody, except one the corgi spawned that is done, or idle with a report
+  from its transcript (a screen alone may be one that never started): it
+  came and finished while no dashboard ran, and is reported once. Without
+  any record, as at the first start, everything found is a baseline. When
+  a wake cannot be added (a full disk, a state directory that cannot be
+  made), what was followed of the agent is put back before the record is
+  saved, so the next refresh finds the same stop and adds it.
+- When an agent rests, its report, what `corgi report` printed then (the
+  newest thing said in its transcript, else its screen), goes into the item:
+  inline up to 4 KB, else in `inbox-reports/<id>.md`. A wake's line names
+  the agent, its state, and the command to run next. When it goes out for
+  one of the corgi's own workers with an inline report, and the prompt's
+  reports stay within 12 KB, the line says the report follows instead,
+  and the report, each line quoted with `> ` so that none passes for a
+  `[corgi]` line of the dashboard's, and a closing `[corgi] End of
+  <agent>'s report.` line go with it.
+- Delivery reads the corgi's undelivered items and sends them as one
+  `agent.prompt` once the corgi is neither working nor blocked, so they
+  arrive after its turn, the newest item of each key only (a newer wake for
+  an agent replaces an unsent one, though one without a report does not
+  replace one with a report), then records all of them delivered. When
+  that record cannot be written, the dashboard does not type those items
+  in again, and tries the record again at each refresh.
+  They also wait while the corgi's input box
   holds a draft, so they are never typed into what the user is writing.
   Just before sending, the dashboard reads the corgi's visible screen with
   its styling and finds the box: for Claude Code, the line starting with `❯`
@@ -471,15 +540,21 @@ role. So Corgi keeps its own record and puts the tokens back.
   suggestions and Codex's placeholder, which look just like typed text once
   the escapes are stripped. Only the box's content counts, not focus or
   recent keystrokes. A screen that cannot be read, a box not on it, or a
-  harness whose box Corgi does not know counts as no draft, so the lines
-  go out as before rather than waiting for good. Every interactive
-  dashboard (the tab, the popup, a preview) observes, but only the one
-  holding an exclusive lock on `$XDG_STATE_HOME/corgi/wake/<socket>.lock`
-  sends; the lock goes with its process, and the next dashboard to refresh
-  takes it over, with a baseline already in hand. The Omarchy reader and
-  the command-line tools never wake. Queued lines are kept per project
-  rather than per corgi, so the ones a corgi that is handing over did
-  not get go to the corgi that takes over from it.
+  harness whose box Corgi does not know counts as no draft, so the items
+  go out as before rather than waiting for good. The inbox belongs to the
+  project rather than to one corgi session, so the items a corgi that is
+  handing over did not get go to the corgi that takes over from it, and
+  those of a project without a running corgi wait for the next one. The
+  delivery uses no harness feature: typing into the box is the one way that
+  starts a turn on every harness.
+- `corgi inbox <project>` prints the project's undelivered items, oldest
+  first, the newest 20 at most, each with its report while about 16 KB of
+  reports last, else the command that prints it; `--delivered` adds the
+  newest 10 delivered ones. Printing marks nothing delivered, since the
+  dashboard's typing is what reaches the corgi; `--take` records the
+  printed items delivered, for a corgi that acts on them itself, so they
+  are not typed in again. The role tells a corgi that is handing over to
+  leave them to its successor.
 - The same dashboard hands a corgi over to a fresh session once its
   context is half full, since compaction would lose what only its
   conversation holds (`corgi::Handover`, once per harness session). A
@@ -873,7 +948,20 @@ no lock and checks nothing.
 `corgi start <project>` starts the corgi of the project, which greets
 with the project's state; with a request on stdin it takes that up instead,
 and `--harness codex` starts it on Codex. The corgi lists its workers with
-`corgi fleet` and reads each final report with `corgi report`.
+`corgi fleet` and reads each final report with `corgi report`. For a
+running agent, that prints the report the dashboard kept in its project's
+inbox when the agent last stopped, if the item is of the agent's pane and
+its current `state_change_seq`; otherwise (another agent of the same name,
+or one that has said more since) the agent's newest message, or its
+screen. For an agent whose pane is gone, it prints the newest report kept
+for that name in any corgi's inbox.
+`corgi fleet`, `corgi digest` and `corgi report` end with one line on
+stderr, `N undelivered inbox items: run corgi inbox <project>`, when the
+corgi of their project (for `report`, the current directory's) has missed
+items: any undelivered while no dashboard holds the wake lock (the command
+tries it for a moment), else only those undelivered for five minutes, so
+a corgi notices a wake that did not reach it at its next command, but is
+not drawn into the wakes that only wait for its turn to end.
 
 A corgi starts its session with `corgi digest <project>` instead of
 reading its state files raw, since `decisions.md` and `ledger.jsonl` only
