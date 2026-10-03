@@ -7,6 +7,7 @@ pub mod digest;
 pub mod git;
 pub mod harness;
 pub mod herdr;
+pub mod inbox;
 pub mod job;
 pub mod model;
 pub(crate) mod motion;

@@ -563,6 +563,15 @@ pub fn wake_message(corgi_bin: &Path, worker: &str, state: AgentState) -> String
     )
 }
 
+/// The line that brings a corgi the report of `worker`, one of its own,
+/// which follows it in the same prompt.
+pub fn wake_report_message(worker: &str, state: AgentState) -> String {
+    format!(
+        "{WAKE_PREFIX} {worker} is {}. Its report follows, so you need not run report for it:",
+        state.label().to_lowercase()
+    )
+}
+
 /// Conflicted files a merge-conflict message names before summing up the
 /// rest, so a sweeping conflict stays one readable line.
 const CONFLICT_FILES_NAMED: usize = 20;
@@ -618,7 +627,8 @@ pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
 
 /// What a wake is about. Done and idle are one: the agent has stopped, and
 /// a done agent becomes idle once someone looks at it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum Rest {
     Stopped,
     Blocked,
@@ -631,8 +641,11 @@ enum Rest {
 /// counts. After that: each time it rests after working, and each change
 /// between blocked and stopped. The same resting state again, with a newer
 /// state change, means it went through another state between two refreshes,
-/// which counts as having worked.
-#[derive(Debug, Default)]
+/// which counts as having worked. It is kept on disk between dashboards, so
+/// one that starts later, or takes over the wake lock, reports what changed
+/// while none ran.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Transitions {
     seen: Option<(AgentState, u64)>,
     armed: bool,
