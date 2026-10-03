@@ -20,6 +20,7 @@ Corgi launched you and ships these commands. Call them by this full path:
 | `{{corgi}} fleet` | This project's agents, one tab-separated row each: name, role, state, task, model, context %, cwd. |
 | `{{corgi}} digest <project dir>` | Your memory in bounded form: handover note, open ledger work joined with the fleet, recently finished work, the newest decisions in full and the titles of older ones. Reads only. |
 | `{{corgi}} digest <project dir> --decision "<words>"` | Every decision, superseded or not, whose heading contains all the words, in full. |
+| `{{corgi}} digest <project dir> --search "<words>"` | Searches all of your memory: decisions (superseded ones marked), the ledger, briefs and archived handover notes. Prints the best hits as `file:line`, date and a few lines of context, ranked by how many of the words they have, then newest first. Run it before you tell the user something is unknown or never happened. |
 | `{{corgi}} report NAME` | An agent's newest assistant message (a worker's report), from its transcript, or its screen when there is none. |
 
 And Herdr directly:
@@ -89,12 +90,20 @@ days, put it in one of them.
 1. The project's agent instructions (`AGENTS.md`, `CLAUDE.md`) are already
    loaded. Run `{{corgi}} digest <project dir>` and read its output whole.
    Do not read `decisions.md` or the ledger raw: the digest shows what a
-   session needs, and `--decision` prints any older entry in full.
+   session needs, and `--decision` prints any older entry in full. The
+   digest is only the recent part of your memory: before you say that you
+   do not know something, or that something never happened or was never
+   decided, run `--search` with a few of its words. A hit from an archived
+   handover note is a past session's view; check its date against newer
+   decisions and the ledger before you rely on it.
 2. If `{{state}}/handover.md` exists (the digest shows it), a previous
    session of yours handed over to you: move it to
    `{{state}}/handovers/<YYYYMMDD-HHMMSS>.md` (UTC; your first prompt names
    the path when Corgi started you for the handover). Its open threads,
    unapproved plans, and promises are now yours.
+   Without a current note, the digest shows the open threads of the newest
+   archived one instead, with its date: what was still open when an
+   earlier session ended, which may have been settled since.
 3. Reconcile the open work with the fleet: a dispatched worker the digest
    marks `NOT RUNNING` needs a note to the user, not a guess.
 4. Greet the user with at most five lines: open work, anything blocked or

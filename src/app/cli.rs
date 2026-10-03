@@ -350,35 +350,53 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
 }
 
 pub const DIGEST_USAGE: &str = "\
-Usage: corgi digest [PROJECT] [--decision WORDS]
+Usage: corgi digest [PROJECT] [--decision WORDS | --search WORDS]
 
 Prints a bounded digest of the memory of PROJECT's corgi (default: the
 project containing the current directory), for the start of a corgi's
-session: the base branch, the handover note if there is one, open ledger
-work joined with the running agents, recently finished work, the newest
-decisions in full (about 12 KB, at least 3) and the titles of older ones.
-Decisions named by a later entry's `Supersedes:` line are left out. Reads
-only; it never changes the state directory.
+session: the base branch, the handover note if there is one (else the open
+threads of the newest archived one), open ledger work joined with the
+running agents, recently finished work, the newest decisions in full (about
+12 KB, at least 3) and the titles of older ones. Decisions named by a later
+entry's `Supersedes:` line are left out. Reads only; it never changes the
+state directory.
 
 Options:
   --decision WORDS   Print in full every decision, superseded or not, whose
-                     heading contains all of WORDS (ignoring case)";
+                     heading contains all of WORDS (ignoring case)
+  --search WORDS     Search all of the memory: decisions (superseded ones
+                     marked), the ledger, briefs and archived handover notes.
+                     A word matches the start of a word, ignoring case. Hits
+                     are ranked by how many of WORDS they have, then newest
+                     first, and shown as file:line, date and a few lines of
+                     context, about 5 KB at most";
 
 /// `corgi digest`: a bounded view of the state of a project's corgi, joined
 /// with its running agents, for a corgi to read at the start of its session.
 pub fn digest(args: &[String]) -> Result<()> {
     let mut project = None;
     let mut words = None;
+    let mut search = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--decision" => {
                 words = Some(args.next().context("--decision needs words")?.clone());
             }
+            "--search" => {
+                search = Some(args.next().context("--search needs words")?.clone());
+            }
             other if other.starts_with('-') => bail!("unknown option {other:?}\n\n{DIGEST_USAGE}"),
             _ if project.is_none() => project = Some(arg.as_str()),
             _ => bail!("{DIGEST_USAGE}"),
         }
+    }
+    anyhow::ensure!(
+        words.is_none() || search.is_none(),
+        "use --decision or --search, not both"
+    );
+    if let Some(search) = &search {
+        anyhow::ensure!(!search.trim().is_empty(), "--search needs words");
     }
     let project = existing_project_dir(project)?;
     let (client, app) = connected_app()?;
@@ -392,6 +410,27 @@ pub fn digest(args: &[String]) -> Result<()> {
         let found = digest::matching_decisions(&decisions, &words);
         anyhow::ensure!(!found.is_empty(), "no decision heading contains {words:?}");
         println!("{}", found.join("\n\n"));
+        return Ok(());
+    }
+
+    let state = state_dir.to_string_lossy();
+    let handovers = markdown_files(&state_dir.join(crate::corgi::HANDOVERS_DIR));
+    if let Some(words) = search {
+        let briefs = markdown_files(&state_dir.join("briefs"));
+        let ledger = read("ledger.jsonl").unwrap_or_default();
+        print!(
+            "{}",
+            digest::search::search(
+                &digest::search::SearchInput {
+                    state_dir: &state,
+                    decisions: &decisions,
+                    ledger: &ledger,
+                    briefs: &briefs,
+                    handovers: &handovers,
+                },
+                &words
+            )
+        );
         return Ok(());
     }
 
@@ -415,8 +454,12 @@ pub fn digest(args: &[String]) -> Result<()> {
         |path| path.to_string_lossy().into_owned(),
     );
     let decision_command = format!("{corgi_bin} digest {root} --decision \"<words>\"");
-    let state = state_dir.to_string_lossy();
+    let search_command = format!("{corgi_bin} digest {root} --search \"<words>\"");
     let handover = read(crate::corgi::HANDOVER_NOTE);
+    // Names are UTC stamps, so the last sorts newest.
+    let previous_handover = handovers
+        .last()
+        .map(|(name, text)| (name.as_str(), text.as_str()));
     let ledger = read("ledger.jsonl").unwrap_or_default();
     print!(
         "{}",
@@ -426,13 +469,34 @@ pub fn digest(args: &[String]) -> Result<()> {
             head: &head,
             state_dir: &state,
             handover: handover.as_deref(),
+            previous_handover,
             decisions: &decisions,
             ledger: &ledger,
             fleet: &fleet,
             decision_command: &decision_command,
+            search_command: &search_command,
         })
     );
     Ok(())
+}
+
+/// `(file name, text)` of each readable `.md` file in `dir`, by name; none
+/// when `dir` does not exist.
+fn markdown_files(dir: &std::path::Path) -> Vec<(String, String)> {
+    let mut files: Vec<_> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let text = name
+                .ends_with(".md")
+                .then(|| fs::read_to_string(entry.path()).ok())??;
+            Some((name, text))
+        })
+        .collect();
+    files.sort();
+    files
 }
 
 pub const REPORT_USAGE: &str = "\
