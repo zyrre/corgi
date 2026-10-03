@@ -9,10 +9,12 @@ use crate::{
     corgi,
     harness::Harness,
     model::{AgentInfo, WorkspaceInfo, WorkspaceWorktreeInfo},
-    paths::dir_name,
+    paths::{dir_name, is_home},
 };
 
-use super::project_main::project_main_root;
+use super::project_main::{
+    CORGI_AGENT_WORKSPACE_ROLE, CORGI_WORKSPACE_ROLE_TOKEN, project_main_root,
+};
 
 /// The heading of the agents running in the home directory, which is never a
 /// project.
@@ -22,12 +24,28 @@ const NO_TASK_SUMMARY: &str = "No task yet";
 /// Shown in the tool row until the agent has run its first command or tool.
 pub(super) const NO_TOOL_YET: &str = "No command yet";
 /// Herdr's detector may identify a pane from its visible terminal content
-/// without there being an agent session attached to it. Only a non-empty
-/// session identity represents an actual agent for the dashboard.
+/// without there being an agent session attached to it. A non-empty identity
+/// admits it directly; unidentified scratch Codex panes need live process
+/// evidence as well as Corgi's workspace provenance.
 pub(super) fn has_real_agent_session(info: &AgentInfo) -> bool {
     info.agent_session
         .as_ref()
         .is_some_and(|session| !session.value.trim().is_empty())
+}
+
+/// Workspace metadata alone survives pane reuse and cannot prove an agent is
+/// still running. This only selects candidates for a fresh process check.
+pub(super) fn is_corgi_scratch_codex(info: &AgentInfo, workspace: Option<&WorkspaceInfo>) -> bool {
+    info.harness() == Harness::Codex
+        && is_home(info.cwd())
+        && workspace.is_some_and(|workspace| {
+            workspace.workspace_id == info.workspace_id
+                && workspace.worktree.is_none()
+                && workspace
+                    .tokens
+                    .get(CORGI_WORKSPACE_ROLE_TOKEN)
+                    .is_some_and(|role| role == CORGI_AGENT_WORKSPACE_ROLE)
+        })
 }
 
 /// The workspace's Git provenance, but only when the agent actually runs inside
@@ -236,6 +254,47 @@ mod tests {
     use crate::model::{AgentInfo, WorkspaceInfo, WorkspaceWorktreeInfo};
 
     use super::*;
+
+    #[test]
+    fn unidentified_scratch_candidates_require_corgi_plain_workspace_and_codex_at_home() {
+        let home = crate::paths::home().expect("home directory");
+        let mut info = AgentInfo {
+            agent: Some("codex".into()),
+            workspace_id: "scratch".into(),
+            cwd: Some(home.to_string_lossy().into_owned()),
+            ..AgentInfo::default()
+        };
+        let mut workspace = WorkspaceInfo {
+            workspace_id: "scratch".into(),
+            // Admission does not depend on a mutable workspace label.
+            label: "renamed scratch".into(),
+            tokens: [(
+                CORGI_WORKSPACE_ROLE_TOKEN.into(),
+                CORGI_AGENT_WORKSPACE_ROLE.into(),
+            )]
+            .into(),
+            ..WorkspaceInfo::default()
+        };
+        assert!(is_corgi_scratch_codex(&info, Some(&workspace)));
+        assert!(!is_corgi_scratch_codex(&info, None));
+        workspace.workspace_id = "other".into();
+        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
+        workspace.workspace_id = "scratch".into();
+        workspace.worktree = Some(WorkspaceWorktreeInfo::default());
+        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
+        workspace.worktree = None;
+        workspace.tokens.clear();
+        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
+        workspace.tokens.insert(
+            CORGI_WORKSPACE_ROLE_TOKEN.into(),
+            CORGI_AGENT_WORKSPACE_ROLE.into(),
+        );
+        info.foreground_cwd = Some(home.join("repo").to_string_lossy().into_owned());
+        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
+        info.foreground_cwd = None;
+        info.agent = Some("claude".into());
+        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
+    }
 
     #[test]
     fn linked_worktrees_show_repo_and_checkout() {
