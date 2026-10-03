@@ -32,11 +32,10 @@ const BLANK_GUTTER: &str = "    ";
 // A corgi's rows carry a rail in the last column of their gutter, so the
 // project's lead stands apart from its workers while the selection bar
 // keeps its place. The rail, the corgi's task and its card's title are in
-// the darker shade of the mascot's coat: fixed like the mascot, so it reads
-// as the corgi's in any theme, and dark enough to read as text on a light
-// background as well as on a dark one, which the bright coat is not.
+// the same color as the pixel wordmark at the top of the dashboard, so the
+// corgi's own lead reads as part of the same brand, and follows the theme
+// the same way the wordmark does.
 const RAIL: &str = "▌";
-const CORGI_ORANGE: Color = Color::Indexed(166);
 // The gutter plus the status badge's leading padding, so a project name sits
 // directly above the status word of the rows below it.
 const PROJECT_LABEL_COLUMN: usize = GUTTER_WIDTH + 1;
@@ -401,7 +400,7 @@ fn card_top(project: &str, area_width: u16) -> Line<'static> {
     Line::from(vec![
         Span::raw(CARD_MARGIN),
         Span::styled("╭", Style::default().fg(MUTED)),
-        Span::styled(title, bold(CORGI_ORANGE)),
+        Span::styled(title, bold(SUCCESS)),
         Span::styled(format!("{}╮", "─".repeat(rule)), Style::default().fg(MUTED)),
     ])
 }
@@ -500,7 +499,7 @@ fn railed(line: Line<'_>) -> Line<'_> {
     if let Some(gutter) = spans.first_mut() {
         let kept = super::leading_columns(&gutter.content, GUTTER_WIDTH - 1).to_string();
         *gutter = Span::styled(kept, gutter.style);
-        spans.insert(1, Span::styled(RAIL, Style::default().fg(CORGI_ORANGE)));
+        spans.insert(1, Span::styled(RAIL, Style::default().fg(SUCCESS)));
     }
     Line::from(spans)
 }
@@ -794,10 +793,9 @@ pub(super) fn agent_status_line(
         inner_width.saturating_sub(leading_width + trailing_width),
     );
 
-    // A corgi's task is its name, in its own color and always bold, which
-    // also keeps the darker orange legible on a light background.
+    // A corgi's task is its name, in the wordmark's color and always bold.
     let task_style = if agent.corgi {
-        bold(CORGI_ORANGE)
+        bold(SUCCESS)
     } else {
         Style::default().fg(TEXT)
     };
@@ -1418,19 +1416,18 @@ mod tests {
     }
 
     #[test]
-    fn a_corgis_card_title_rail_and_task_are_in_its_orange() {
+    fn a_corgis_card_title_rail_and_task_are_in_the_wordmarks_color() {
         let mut app = test_app();
         app.agents = carded_herd();
         let mut terminal = test_terminal(100, 40);
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("draw dashboard");
-        assert_eq!(color_of(&terminal, "webshop"), CORGI_ORANGE);
-        assert_eq!(color_of(&terminal, "▌"), CORGI_ORANGE);
-        assert_eq!(color_of(&terminal, "corgi ·"), CORGI_ORANGE);
-        // Workers' tasks and other projects' headings keep their colors.
+        assert_eq!(color_of(&terminal, "webshop"), SUCCESS);
+        assert_eq!(color_of(&terminal, "▌"), SUCCESS);
+        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
+        // Workers' tasks keep their own color.
         assert_eq!(color_of(&terminal, "Export as Markdown"), TEXT);
-        assert_eq!(color_of(&terminal, "notes "), SUCCESS);
     }
 
     #[test]
