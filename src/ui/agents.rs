@@ -29,6 +29,14 @@ use super::{
 const GUTTER_WIDTH: usize = 4;
 const SELECTED_GUTTER: &str = "██  ";
 const BLANK_GUTTER: &str = "    ";
+// A corgi's rows carry a rail in the last column of their gutter, so the
+// project's lead stands apart from its workers while the selection bar
+// keeps its place. The rail, the corgi's task and its card's title are in
+// the darker shade of the mascot's coat: fixed like the mascot, so it reads
+// as the corgi's in any theme, and dark enough to read as text on a light
+// background as well as on a dark one, which the bright coat is not.
+const RAIL: &str = "▌";
+const CORGI_ORANGE: Color = Color::Indexed(166);
 // The gutter plus the status badge's leading padding, so a project name sits
 // directly above the status word of the rows below it.
 const PROJECT_LABEL_COLUMN: usize = GUTTER_WIDTH + 1;
@@ -115,6 +123,7 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                         agent: corgi,
                         rim: card,
                         lead: vec![card_top(&corgi.project_group, area.width)],
+                        rail: true,
                     });
                     break;
                 }
@@ -148,6 +157,7 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                                 agent: worker,
                                 rim: card,
                                 lead: Vec::new(),
+                                rail: false,
                             });
                             break 'runs;
                         }
@@ -180,6 +190,7 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                             agent,
                             rim: Rim::Open,
                             lead: heading,
+                            rail: false,
                         });
                         break 'runs;
                     }
@@ -200,7 +211,13 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     let mut page = 0;
     let mut scroll = 0;
     let zoomed = zoom.is_some();
-    if let Some(Zoom { agent, rim, lead }) = zoom {
+    if let Some(Zoom {
+        agent,
+        rim,
+        lead,
+        rail,
+    }) = zoom
+    {
         let inner_height = usize::from(area.height.saturating_sub(2));
         // Rows everything before the expanded session's identity line takes,
         // so what is left of the box is what its message row can grow into.
@@ -219,12 +236,12 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         let budget = inner_height.saturating_sub(rows_above + 1 + closing).max(1);
         let content_area = rim.content_area(area.width);
         let mut lines = lead;
-        lines.push(rim.frame(agent_status_line(agent, true, content_area, now)));
+        lines.push(rim.frame_rail(agent_status_line(agent, true, content_area, now), rail));
         if app.transcript.is_empty() {
             lines.extend(
                 unread_transcript_rows(agent)
                     .into_iter()
-                    .map(|line| rim.frame(line)),
+                    .map(|line| rim.frame_rail(line, rail)),
             );
         } else {
             // Only the rows up to the bottom of the scrolled view are built;
@@ -240,7 +257,7 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                     .into_iter()
                     .skip(scroll)
                     .take(budget)
-                    .map(|line| rim.frame(line)),
+                    .map(|line| rim.frame_rail(line, rail)),
             );
         }
         if rim.is_card() {
@@ -281,12 +298,13 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 }
 
 /// The session expanded with `space`: the agent, where its rows are drawn,
-/// and the lines of its item above its identity line, such as the top of the
-/// card it leads.
+/// the lines of its item above its identity line, such as the top of the
+/// card it leads, and whether its rows carry a corgi's rail.
 struct Zoom<'a> {
     agent: &'a DashboardAgent,
     rim: Rim,
     lead: Vec<Line<'static>>,
+    rail: bool,
 }
 
 /// Where a row is drawn: straight in the Agents box, or inside a card, whose
@@ -335,6 +353,12 @@ impl Rim {
         spans.push(Span::styled("│", Style::default().fg(MUTED)));
         Line::from(spans)
     }
+
+    /// `line` inside this rim, with a corgi's rail when `rail` is set, which
+    /// runs on down the turns of a corgi's expanded session.
+    fn frame_rail(self, line: Line<'_>, rail: bool) -> Line<'_> {
+        self.frame(if rail { railed(line) } else { line })
+    }
 }
 
 /// Columns between a card's borders in an Agents box `area_width` wide.
@@ -377,7 +401,7 @@ fn card_top(project: &str, area_width: u16) -> Line<'static> {
     Line::from(vec![
         Span::raw(CARD_MARGIN),
         Span::styled("╭", Style::default().fg(MUTED)),
-        Span::styled(title, bold(SUCCESS)),
+        Span::styled(title, bold(CORGI_ORANGE)),
         Span::styled(format!("{}╮", "─".repeat(rule)), Style::default().fg(MUTED)),
     ])
 }
@@ -450,7 +474,7 @@ fn collapsed_card(
 }
 
 /// A corgi's rows in its card: its identity row, then its message and its
-/// tool, each wrapped to at most two rows.
+/// tool, each wrapped to at most two rows, all with the corgi's rail.
 fn corgi_lines(
     corgi: &DashboardAgent,
     selected: bool,
@@ -467,7 +491,18 @@ fn corgi_lines(
             selected,
         ));
     }
-    lines
+    lines.into_iter().map(railed).collect()
+}
+
+/// `line`, a row of a corgi, with the rail in the last column of its gutter.
+fn railed(line: Line<'_>) -> Line<'_> {
+    let mut spans = line.spans;
+    if let Some(gutter) = spans.first_mut() {
+        let kept = super::leading_columns(&gutter.content, GUTTER_WIDTH - 1).to_string();
+        *gutter = Span::styled(kept, gutter.style);
+        spans.insert(1, Span::styled(RAIL, Style::default().fg(CORGI_ORANGE)));
+    }
+    Line::from(spans)
 }
 
 /// The foot of a collapsed card, `width` columns wide: how many workers the
@@ -759,7 +794,13 @@ pub(super) fn agent_status_line(
         inner_width.saturating_sub(leading_width + trailing_width),
     );
 
-    let task_style = Style::default().fg(TEXT);
+    // A corgi's task is its name, in its own color and always bold, which
+    // also keeps the darker orange legible on a light background.
+    let task_style = if agent.corgi {
+        bold(CORGI_ORANGE)
+    } else {
+        Style::default().fg(TEXT)
+    };
     let mut spans = vec![
         marker,
         Span::styled(
@@ -1269,6 +1310,127 @@ mod tests {
             1,
             "only the one card: {screen:#?}"
         );
+    }
+
+    /// Whether `row`, a row inside a card, carries the corgi's rail in the
+    /// last column of its gutter.
+    fn has_rail(row: &str) -> bool {
+        row.starts_with("│ │") && row.chars().nth(3 + GUTTER_WIDTH - 1) == Some('▌')
+    }
+
+    /// The color of the first cell of `needle` on the screen.
+    fn color_of(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        needle: &str,
+    ) -> Color {
+        let buffer = terminal.backend().buffer();
+        let rows = buffer_rows(buffer);
+        let (y, row) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains(needle))
+            .unwrap_or_else(|| panic!("no {needle:?}"));
+        let x = row[..row.find(needle).expect("needle")].width();
+        buffer[(x as u16, y as u16)].fg
+    }
+
+    #[test]
+    fn every_row_of_a_corgi_carries_its_rail_and_no_worker_row_does() {
+        let mut app = test_app();
+        app.agents = carded_herd();
+        let collapsed = rendered_screen(&mut app, 100, 40);
+        let top = collapsed
+            .iter()
+            .position(|row| row.starts_with("│ ╭ webshop ─"))
+            .expect("card top");
+        // The identity row, the message's two rows and the tool.
+        for row in &collapsed[top + 1..=top + 4] {
+            assert!(has_rail(row), "{row}");
+        }
+        // The selection bar keeps its place in front of the rail.
+        assert!(
+            collapsed[top + 1].starts_with("│ │██ ▌"),
+            "{}",
+            collapsed[top + 1]
+        );
+        assert!(!collapsed[top + 6..].iter().any(|row| has_rail(row)));
+
+        app.cards.set_expanded("webshop", true);
+        app.selected = 2;
+        let expanded = rendered_screen(&mut app, 100, 40);
+        let corgi = expanded
+            .iter()
+            .position(|row| row.contains("corgi"))
+            .expect("corgi");
+        for row in &expanded[corgi..corgi + 4] {
+            assert!(has_rail(row), "{row}");
+        }
+        assert!(
+            expanded[corgi].starts_with("│ │   ▌"),
+            "{}",
+            expanded[corgi]
+        );
+        let rails = expanded.iter().filter(|row| has_rail(row)).count();
+        assert_eq!(rails, 4, "{expanded:#?}");
+    }
+
+    #[test]
+    fn the_rail_runs_on_down_a_corgis_expanded_session() {
+        let mut app = test_app();
+        app.agents = carded_herd();
+        app.expanded = true;
+        app.transcript = vec![
+            Activity {
+                kind: ActivityKind::Message,
+                text: "Both workers are reviewed.".into(),
+            },
+            Activity {
+                kind: ActivityKind::Command,
+                text: "corgi fleet webshop".into(),
+            },
+        ]
+        .into();
+        let screen = rendered_screen(&mut app, 100, 30);
+        let identity = screen
+            .iter()
+            .position(|row| row.contains("corgi"))
+            .expect("identity");
+        // The identity row, the newest turn, the gap after it and the older
+        // turn, up to the card's bottom.
+        for row in &screen[identity..identity + 4] {
+            assert!(has_rail(row), "{row}");
+        }
+        assert!(screen[identity + 4].starts_with("│ ╰─"));
+
+        // A worker's expanded session has none, under the corgi's rows.
+        app.cards.set_expanded("webshop", true);
+        app.selected = 1;
+        let screen = rendered_screen(&mut app, 100, 30);
+        let worker = screen
+            .iter()
+            .position(|row| row.contains("Retry card payments"))
+            .expect("worker");
+        assert!(has_rail(&screen[worker - 2]), "{screen:#?}");
+        assert!(
+            !screen[worker..].iter().any(|row| has_rail(row)),
+            "{screen:#?}"
+        );
+    }
+
+    #[test]
+    fn a_corgis_card_title_rail_and_task_are_in_its_orange() {
+        let mut app = test_app();
+        app.agents = carded_herd();
+        let mut terminal = test_terminal(100, 40);
+        terminal
+            .draw(|frame| draw(frame, &mut app))
+            .expect("draw dashboard");
+        assert_eq!(color_of(&terminal, "webshop"), CORGI_ORANGE);
+        assert_eq!(color_of(&terminal, "▌"), CORGI_ORANGE);
+        assert_eq!(color_of(&terminal, "corgi ·"), CORGI_ORANGE);
+        // Workers' tasks and other projects' headings keep their colors.
+        assert_eq!(color_of(&terminal, "Export as Markdown"), TEXT);
+        assert_eq!(color_of(&terminal, "notes "), SUCCESS);
     }
 
     #[test]
