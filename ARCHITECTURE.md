@@ -75,7 +75,8 @@ Headless launch and the corgi
   ├─ corgi digest ─── the corgi's memory, bounded, joined with the fleet
   ├─ corgi report ─── an agent's report: kept in an inbox, else its newest message
   ├─ corgi notify ─── add an item to a corgi's inbox, text on stdin
-  └─ corgi inbox ──── a corgi's undelivered inbox items, bounded
+  ├─ corgi inbox ──── a corgi's undelivered inbox items, bounded
+  └─ corgi tag ────── tag an agent ready to merge (pane token), or clear it
 ```
 
 The dashboard refreshes from Herdr roughly once per second, except while a
@@ -329,7 +330,8 @@ submodules are split by flow, each adding methods to the one `App`.
   described below; `draft.rs` tells it whether a corgi's input box holds
   the user's draft.
 - `cli.rs` is `corgi spawn`, `corgi start`, `corgi fleet`,
-  `corgi digest`, `corgi report`, `corgi notify` and `corgi inbox`. The
+  `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
+  `corgi tag`. The
   digest's parsing and caps are pure functions in `src/digest.rs`.
 - `bar.rs` is the `--bar-*` endpoints of the Omarchy widget. Their JSON is
   that widget's contract, pinned by snapshot tests, and they drive the same
@@ -384,6 +386,11 @@ role. So Corgi keeps its own record and puts the tokens back.
   set for and its session is recorded; from then on the same rules apply as
   to the corgi's marks, so a later session in the pane does not inherit
   the id. Workers never get a corgi marker from reconciliation.
+- A corgi's merge tag (`corgi_merge`, see "Ready to merge") is recorded
+  and put back like the request id. `corgi tag` and the clears report only
+  that one key, so a worker's request id beside it is left alone; the
+  launch's and the corgi's own full mark sets clear it, as they clear every
+  Corgi pane token they leave out.
 - A corgi launched and lost in a restart before any dashboard saw its
   session is not re-marked: without a recorded session there is nothing to
   confirm the pane still holds it. The dashboard records the session at the
@@ -786,7 +793,9 @@ selection bar keeps its columns in front of the rail. The
 dashboard opens every card collapsed: the corgi's identity row, its message
 and tool rows wrapped to two rows each and then cut with `…`, a divider, and
 a footer such as `3 workers   ▲ 1 blocked   ● 1 working   ✓ 1 done` (only the
-states present, in the list's state order) with `→ expand` at the right.
+states present, in the list's state order, with workers tagged ready to merge
+counted apart as `⇡ 1 merge` right after the blocked) with `→ expand` at the
+right.
 Each blocked worker gets a footer line of its own, `▲ blocked: <task> —
 <what it waits on>`: the question on its screen, or `waiting for your
 input`. A collapsed card is one stop for the selection and acts as its
@@ -796,6 +805,40 @@ three rows follow the corgi inside the card, which closes with
 kept per project heading in `expanded-projects` in the state directory.
 Projects without a corgi and scratch sessions keep plain rows under a
 heading.
+
+### Ready to merge
+
+When a corgi recommends the user merge a worker, after its clean-merge
+check, it runs `corgi tag NAME merge --project <root>`. The command finds
+NAME (a Herdr name or pane ID) among the project's agents and refuses one
+that is not done or idle, or whose checkout (its linked worktree, else its
+cwd) has no commits ahead of the branch checked out in the primary checkout,
+the branch `m` merges into. It sets the pane token `corgi_merge` to
+`<state> <state_change_seq>`, the agent's state and Herdr's counter when it
+was tagged, through `markers::tag_pane`, so the tag survives dashboard and
+Herdr restarts like Corgi's other marks. `corgi tag NAME --clear` removes
+it, and `corgi fleet` ends each row with a TAG column, `merge` or `-`.
+
+A tag applies (`corgi::merge_tag`) while its agent rests where it was
+tagged: done or idle at the same state change, or idle at any after being
+tagged done, which is how Herdr shows a done agent the user has looked at.
+Working or blocked, done at another state change, or idle at another one
+after being tagged idle, the agent has worked since, and the tag is stale:
+every dashboard ignores it at once, and the one holding the wake lock clears
+it from Herdr and the record at its next refresh, also when the work
+happened while no dashboard ran. The one case it cannot tell is a worker
+tagged done that worked, finished and was looked at while no dashboard ran;
+it still shows MERGE until it works again. A merge with `m` clears the
+merged worker's tag too, also when only its push failed, since the branch
+is merged by then.
+
+A worker whose tag applies shows a magenta ` MERGE ` badge instead of
+` DONE ` or ` IDLE `; a busy one shows its real state. Magenta is the one
+semantic color no state the user acts on uses (an unknown state shares it)
+and is far from working's cyan in both Tokyo Night themes; its mark is `⇡`.
+A collapsed card counts these workers apart, and the header's HERD card
+reads WORKING, BLOCKED, MERGE, DONE and IDLE, the total making way for MERGE
+so the card keeps its height. `m` still acts only on a selected worker.
 
 ### The expanded session
 

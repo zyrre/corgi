@@ -21,6 +21,7 @@ use crate::{
 use super::{
     App,
     close::{CloseTarget, CloseWorkspaceForm},
+    markers,
     overlay::Overlay,
     progress::{JobReport, Progress},
     project_main::project_main_workspace,
@@ -188,6 +189,7 @@ impl App {
             };
             match result {
                 Ok(()) => {
+                    self.clear_merged_tag();
                     if let Some(form) = self.overlay.merge_worktree_form_mut() {
                         form.phase = MergePhase::Succeeded;
                         self.status = format!(
@@ -198,6 +200,12 @@ impl App {
                     self.request_refresh();
                 }
                 Err(MergeError::Failed(error)) => {
+                    // Only the push failed: the branch is merged all the same.
+                    let pushing = self.overlay.merge_worktree_form().map(|form| &form.phase)
+                        == Some(&MergePhase::Running(2));
+                    if pushing {
+                        self.clear_merged_tag();
+                    }
                     if let Some(form) = self.overlay.merge_worktree_form_mut() {
                         form.phase = MergePhase::Failed(error.clone());
                     }
@@ -217,6 +225,34 @@ impl App {
                     self.request_refresh();
                 }
             }
+        }
+    }
+
+    /// Clears the merge tag of the agent whose branch the open merge dialog
+    /// has just merged: there is nothing left for the user to merge.
+    pub(super) fn clear_merged_tag(&mut self) {
+        let Some(form) = self.overlay.merge_worktree_form() else {
+            return;
+        };
+        let Some(agent) = self.agents.iter_mut().find(|agent| {
+            agent.info.workspace_id == form.workspace_id
+                && agent.info.name.as_deref().unwrap_or(&agent.info.pane_id) == form.agent
+        }) else {
+            return;
+        };
+        if !agent.info.tokens.contains_key(corgi::MERGE_TOKEN) {
+            return;
+        }
+        let info = &agent.info;
+        let cleared = markers::tag_pane(
+            &self.client,
+            &info.pane_id,
+            &form.agent,
+            markers::session_of(info),
+            None,
+        );
+        if cleared.is_ok() {
+            agent.info.tokens.remove(corgi::MERGE_TOKEN);
         }
     }
 

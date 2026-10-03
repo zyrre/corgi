@@ -186,6 +186,14 @@ pub struct DashboardAgent {
     pub scratch: bool,
 }
 
+impl DashboardAgent {
+    /// Whether a corgi has tagged the agent ready for the user to merge, and
+    /// it still rests where it was tagged, so it shows as MERGE.
+    pub fn ready_to_merge(&self) -> bool {
+        crate::corgi::merge_tag(&self.info) == crate::corgi::MergeTag::Applies
+    }
+}
+
 /// The confidence Corgi has in a prompt-cache expiry.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PromptCacheKind {

@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    corgi::{self, BASELINE_TOKEN, CORGI_TOKEN, HANDOVER_TOKEN, OLD_CORGI_TOKEN},
+    corgi::{self, BASELINE_TOKEN, CORGI_TOKEN, HANDOVER_TOKEN, MERGE_TOKEN, OLD_CORGI_TOKEN},
     herdr::{HerdrClient, SessionSnapshot},
     model::{AgentInfo, WorkspaceInfo},
 };
@@ -40,15 +40,17 @@ use super::{
 };
 
 /// The pane tokens Corgi sets: the corgi's marks on the corgi's pane,
-/// and a spawned worker's request id on that worker's. The marker an older
-/// Corgi set under its pre-rename key counts among them, so that it is read,
-/// recorded under the new key, and cleared whenever Corgi writes.
-const PANE_TOKENS: [&str; 5] = [
+/// and a spawned worker's request id and a corgi's merge tag on that
+/// worker's. The marker an older Corgi set under its pre-rename key counts
+/// among them, so that it is read, recorded under the new key, and cleared
+/// whenever Corgi writes.
+const PANE_TOKENS: [&str; 6] = [
     CORGI_TOKEN,
     OLD_CORGI_TOKEN,
     HANDOVER_TOKEN,
     BASELINE_TOKEN,
     CORGI_REQUEST_TOKEN,
+    MERGE_TOKEN,
 ];
 
 /// The workspace tokens Corgi sets, on its project and agent workspaces.
@@ -124,6 +126,43 @@ pub(super) fn mark_pane(
                 tokens,
             },
         );
+    });
+    Ok(())
+}
+
+/// Sets the merge tag of the agent named `agent` in `pane_id`, whose
+/// harness session is `session` when known, to `value`, or clears it with
+/// `None`, and records it. Only [`MERGE_TOKEN`] is reported, so the pane's
+/// other Corgi tokens, such as a worker's request id, stay as they are, in
+/// Herdr and in the record.
+pub(super) fn tag_pane(
+    client: &HerdrClient,
+    pane_id: &str,
+    agent: &str,
+    session: Option<&str>,
+    value: Option<&str>,
+) -> Result<()> {
+    client.report_pane_metadata(pane_id, CORGI_METADATA_SOURCE, &[(MERGE_TOKEN, value)])?;
+    remember(client, |record| {
+        let marks = record
+            .panes
+            .entry(pane_id.to_string())
+            .or_insert_with(|| PaneMarks {
+                agent: agent.to_string(),
+                session: session.map(str::to_string),
+                tokens: Tokens::new(),
+            });
+        match value {
+            Some(value) => {
+                marks.tokens.insert(MERGE_TOKEN.into(), value.into());
+            }
+            None => {
+                marks.tokens.remove(MERGE_TOKEN);
+            }
+        }
+        if marks.tokens.is_empty() {
+            record.panes.remove(pane_id);
+        }
     });
     Ok(())
 }
@@ -523,6 +562,41 @@ impl App {
             );
         }
     }
+
+    /// Clears the merge tags in `snapshot` that no longer apply, because
+    /// their agent has worked since it was tagged, in Herdr, the record and
+    /// `snapshot` itself. A stale tag is never shown even before it is
+    /// cleared, so a clear that fails costs nothing but a retry on the next
+    /// refresh. Only the dashboard that wakes corgis calls this; clearing
+    /// twice would be harmless.
+    pub(super) fn clear_stale_merge_tags(&mut self, snapshot: &mut SessionSnapshot) {
+        for agent in snapshot
+            .agents
+            .iter_mut()
+            .filter(|agent| corgi::merge_tag(agent) == corgi::MergeTag::Stale)
+        {
+            let name = agent.name.clone().unwrap_or_default();
+            let session = session_of(agent).map(str::to_string);
+            if tag_pane(
+                &self.client,
+                &agent.pane_id,
+                &name,
+                session.as_deref(),
+                None,
+            )
+            .is_ok()
+            {
+                agent.tokens.remove(MERGE_TOKEN);
+                for pane in snapshot
+                    .panes
+                    .iter_mut()
+                    .filter(|pane| pane.pane_id == agent.pane_id)
+                {
+                    pane.tokens.remove(MERGE_TOKEN);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -542,7 +616,9 @@ mod tests {
 
     use crate::{
         app::{
-            cli::{fleet_rows, requested_agent},
+            cli::{TagOptions, fleet_rows, requested_agent, tag_agent},
+            merge::{MergePhase, MergeWorktreeForm},
+            overlay::Overlay,
             project_main::project_root_digest,
             waker::CorgiWaker,
         },
@@ -1148,7 +1224,7 @@ mod tests {
                 json!({
                     "corgi_handler": null, "corgi_steward": null,
                     "corgi_handover": null, "corgi_baseline": null,
-                    "corgi_request": null
+                    "corgi_request": null, "corgi_merge": null
                 })
             );
             for list in ["agents", "panes"] {
@@ -1191,7 +1267,7 @@ mod tests {
                     json!({
                         "corgi_handler": null, "corgi_steward": null,
                         "corgi_handover": null, "corgi_baseline": null,
-                        "corgi_request": null
+                        "corgi_request": null, "corgi_merge": null
                     })
                 );
                 json!({"error": {"code": "unavailable", "message": "try later"}})
@@ -1384,7 +1460,7 @@ mod tests {
             json!({
                 "corgi_handler": "corgi-corgi", "corgi_steward": null,
                 "corgi_handover": null, "corgi_baseline": null,
-                "corgi_request": null
+                "corgi_request": null, "corgi_merge": null
             })
         );
         for list in ["agents", "panes"] {
@@ -1485,6 +1561,285 @@ mod tests {
             reconcile(&mut record, &snapshot),
             [Restore::Pane("w8Z:p1".into(), Tokens::new())]
         );
+    }
+
+    /// A repository at `root` on `main`, with a worktree on its own branch at
+    /// `checkout`, which is one commit ahead of `main` when `ahead`.
+    fn tag_repo(scratch: &Path, ahead: bool) -> (String, String) {
+        let root = scratch.join("repo");
+        let checkout = scratch.join("worktree");
+        fs::create_dir_all(&root).expect("create repo");
+        let git = |dir: &Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args([
+                    "-c",
+                    "user.name=Corgi test",
+                    "-c",
+                    "user.email=corgi@example.test",
+                ])
+                .args(args)
+                .output()
+                .expect("run git");
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+        };
+        git(&root, &["init", "-b", "main"]);
+        git(&root, &["commit", "--allow-empty", "-m", "initial"]);
+        git(
+            &root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "worktree/brave",
+                checkout.to_str().unwrap(),
+            ],
+        );
+        if ahead {
+            git(&checkout, &["commit", "--allow-empty", "-m", "the work"]);
+        }
+        let text = |path: PathBuf| path.to_string_lossy().into_owned();
+        (text(root), text(checkout))
+    }
+
+    /// [`marked_session`] moved to the repository at `root` and its worktree
+    /// at `checkout`, with the worker done at state change 7 and carrying
+    /// the request id it was spawned with.
+    fn tag_session(root: &str, checkout: &str) -> Value {
+        let text = marked_session()
+            .to_string()
+            .replace(&project_root_digest(ROOT), &project_root_digest(root))
+            .replace("/wt/corgi-markers/brave-stone", checkout)
+            .replace(ROOT, root);
+        let mut live: Value = serde_json::from_str(&text).expect("session");
+        live["agents"][1]["agent_status"] = json!("done");
+        live["agents"][1]["state_change_seq"] = json!(7);
+        for list in ["agents", "panes"] {
+            live[list][1]["tokens"][CORGI_REQUEST_TOKEN] = json!("20261003-w-brave");
+        }
+        live
+    }
+
+    impl StatefulHerdr {
+        /// Puts the worker in `state`, as of state change `change`.
+        fn set_worker(&self, state: &str, change: u64) {
+            let mut live = self.state.lock().expect("state");
+            live["agents"][1]["agent_status"] = json!(state);
+            live["agents"][1]["state_change_seq"] = json!(change);
+        }
+    }
+
+    fn tag(merge: bool) -> TagOptions {
+        TagOptions {
+            name: "w-brave".into(),
+            merge,
+            project: None,
+        }
+    }
+
+    fn worker(app: &App) -> &crate::model::DashboardAgent {
+        app.agents
+            .iter()
+            .find(|agent| agent.info.name.as_deref() == Some("w-brave"))
+            .expect("the worker")
+    }
+
+    /// A corgi tags a done worker ready to merge: the tag sits beside its
+    /// request id, in Herdr and in the record, shows in `corgi fleet`, comes
+    /// back after a Herdr restart, outlives the user looking at the worker,
+    /// and goes once the worker works again, cleared by the dashboard that
+    /// wakes corgis.
+    #[test]
+    fn a_merge_tag_lasts_until_its_worker_works_again() {
+        let scratch = ScratchDir::new("markers-tag");
+        let (root, checkout) = tag_repo(&scratch, true);
+        let record = scratch.join("markers").join("herdr.json");
+        let herdr = StatefulHerdr::new("markers-tag", tag_session(&root, &checkout));
+        let client = herdr.client(&record);
+        let mut fleet = test_app();
+        fleet.client = client.clone();
+        let mut dashboard = leading_dashboard(client.clone(), &scratch);
+        let worker_tokens = || herdr.tokens("agents", "pane_id", "w8Z:p1");
+
+        // The leader records the request id the spawn set.
+        dashboard.refresh();
+        fleet.refresh();
+        assert_eq!(
+            tag_agent(&client, &fleet, &root, &tag(true)).expect("tag"),
+            "Tagged w-brave ready to merge: 1 commit ahead of main"
+        );
+        assert_eq!(worker_tokens()[MERGE_TOKEN], "done 7");
+        assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], "20261003-w-brave");
+        assert_eq!(read(&record).panes["w8Z:p1"].tokens[MERGE_TOKEN], "done 7");
+        fleet.refresh();
+        assert!(worker(&fleet).ready_to_merge());
+        let row = fleet_rows(&fleet, &root)
+            .into_iter()
+            .find(|row| row.starts_with("w-brave\t"))
+            .expect("the worker's row");
+        let fields: Vec<&str> = row.split('\t').collect();
+        assert_eq!((fields[2], fields[7]), ("done", "merge"), "{row}");
+
+        herdr.restart();
+        dashboard.refresh();
+        assert_eq!(worker_tokens()[MERGE_TOKEN], "done 7");
+        assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], "20261003-w-brave");
+
+        // Herdr shows a done agent idle once the user has looked at it.
+        herdr.set_worker("idle", 8);
+        dashboard.refresh();
+        assert!(worker(&dashboard).ready_to_merge());
+        assert_eq!(worker_tokens()[MERGE_TOKEN], "done 7");
+
+        herdr.set_worker("working", 9);
+        fleet.refresh();
+        assert!(
+            !worker(&fleet).ready_to_merge(),
+            "a working worker is shown working"
+        );
+        assert_eq!(
+            worker_tokens()[MERGE_TOKEN],
+            "done 7",
+            "only the leader clears"
+        );
+        dashboard.refresh();
+        assert!(worker_tokens().get(MERGE_TOKEN).is_none());
+        assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], "20261003-w-brave");
+        assert!(
+            !read(&record).panes["w8Z:p1"]
+                .tokens
+                .contains_key(MERGE_TOKEN)
+        );
+
+        herdr.set_worker("done", 10);
+        dashboard.refresh();
+        assert!(!worker(&dashboard).ready_to_merge());
+    }
+
+    /// A worker that worked and stopped again while no dashboard watched is
+    /// not shown as tagged, and the first dashboard to lead clears its tag.
+    #[test]
+    fn a_tag_its_worker_worked_past_unseen_is_ignored_and_cleared() {
+        let scratch = ScratchDir::new("markers-tag-stale");
+        let (root, checkout) = tag_repo(&scratch, true);
+        let record = scratch.join("markers").join("herdr.json");
+        let herdr = StatefulHerdr::new("markers-tag-stale", tag_session(&root, &checkout));
+        let client = herdr.client(&record);
+        let mut fleet = test_app();
+        fleet.client = client.clone();
+        fleet.refresh();
+        tag_agent(&client, &fleet, &root, &tag(true)).expect("tag");
+
+        herdr.set_worker("done", 12);
+        fleet.refresh();
+        assert!(!worker(&fleet).ready_to_merge());
+        let row = fleet_rows(&fleet, &root).join("\n");
+        assert!(!row.contains("\tmerge"), "{row}");
+        assert_eq!(
+            herdr.tokens("agents", "pane_id", "w8Z:p1")[MERGE_TOKEN],
+            "done 7"
+        );
+
+        let mut dashboard = leading_dashboard(client, &scratch);
+        dashboard.refresh();
+        assert!(
+            herdr
+                .tokens("agents", "pane_id", "w8Z:p1")
+                .get(MERGE_TOKEN)
+                .is_none()
+        );
+    }
+
+    /// `--clear` and a merge with `m` both take the tag off.
+    #[test]
+    fn a_merge_tag_is_cleared_on_request_and_by_merging_the_branch() {
+        let scratch = ScratchDir::new("markers-tag-clear");
+        let (root, checkout) = tag_repo(&scratch, true);
+        let record = scratch.join("markers").join("herdr.json");
+        let herdr = StatefulHerdr::new("markers-tag-clear", tag_session(&root, &checkout));
+        let client = herdr.client(&record);
+        let mut app = test_app();
+        app.client = client.clone();
+        let worker_tokens = || herdr.tokens("agents", "pane_id", "w8Z:p1");
+
+        app.refresh();
+        tag_agent(&client, &app, &root, &tag(true)).expect("tag");
+        app.refresh();
+        assert_eq!(
+            tag_agent(&client, &app, &root, &tag(false)).expect("clear"),
+            "Cleared the merge tag of w-brave"
+        );
+        assert!(worker_tokens().get(MERGE_TOKEN).is_none());
+        assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], "20261003-w-brave");
+        app.refresh();
+        assert_eq!(
+            tag_agent(&client, &app, &root, &tag(false)).expect("clear again"),
+            "w-brave had no merge tag"
+        );
+
+        tag_agent(&client, &app, &root, &tag(true)).expect("tag again");
+        app.refresh();
+        assert!(worker(&app).ready_to_merge());
+        app.overlay = Overlay::merge(MergeWorktreeForm {
+            label: "corgi-markers/brave".into(),
+            workspace_id: "w8Z".into(),
+            agent: "w-brave".into(),
+            project_root: root.clone().into(),
+            worktree_checkout: checkout.into(),
+            source_branch: "worktree/brave".into(),
+            target_branch: "main".into(),
+            task: String::new(),
+            commits: Vec::new(),
+            phase: MergePhase::Running(2),
+        });
+        app.clear_merged_tag();
+        assert!(!worker(&app).ready_to_merge());
+        assert!(worker_tokens().get(MERGE_TOKEN).is_none());
+        assert!(
+            read(&record)
+                .panes
+                .get("w8Z:p1")
+                .is_none_or(|marks| !marks.tokens.contains_key(MERGE_TOKEN))
+        );
+    }
+
+    /// Nothing to merge, a worker still at work, and a name the project does
+    /// not have are refused, and tag nothing.
+    #[test]
+    fn a_merge_tag_is_refused_without_commits_ahead_or_while_working() {
+        let scratch = ScratchDir::new("markers-tag-refused");
+        let (root, checkout) = tag_repo(&scratch, false);
+        let record = scratch.join("markers").join("herdr.json");
+        let herdr = StatefulHerdr::new("markers-tag-refused", tag_session(&root, &checkout));
+        let client = herdr.client(&record);
+        let mut app = test_app();
+        app.client = client.clone();
+        app.refresh();
+        let refused = tag_agent(&client, &app, &root, &tag(true)).expect_err("nothing ahead");
+        assert!(
+            refused.to_string().contains("no commits ahead of main"),
+            "{refused}"
+        );
+        let corgi = TagOptions {
+            name: "corgi-corgi".into(),
+            ..tag(true)
+        };
+        let refused = tag_agent(&client, &app, &root, &corgi).expect_err("a working corgi");
+        assert!(refused.to_string().contains("is working"), "{refused}");
+        let elsewhere = tag_agent(&client, &app, "/repos/elsewhere", &tag(true))
+            .expect_err("another project's agent");
+        assert!(
+            elsewhere.to_string().contains("no agent named w-brave"),
+            "{elsewhere}"
+        );
+        assert!(
+            herdr
+                .tokens("agents", "pane_id", "w8Z:p1")
+                .get(MERGE_TOKEN)
+                .is_none()
+        );
+        assert!(herdr.reports().is_empty());
     }
 
     /// A retry made while the first spawn of the project still runs waits

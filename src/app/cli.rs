@@ -1,5 +1,6 @@
 //! The command-line tools: `corgi spawn`, `corgi start`, `corgi fleet`,
-//! `corgi digest`, `corgi report`, `corgi notify` and `corgi inbox`.
+//! `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
+//! `corgi tag`.
 
 use std::{env, fs, io, path::PathBuf};
 
@@ -311,8 +312,10 @@ Usage: corgi fleet [PROJECT]
 
 Lists the agents of PROJECT (default: the project containing the current
 directory), one tab-separated row each under a header line:
-NAME, ROLE (corgi or worker), STATE, TASK, MODEL, CTX and CWD. When the
-project's corgi has missed inbox items, a line on stderr says so.";
+NAME, ROLE (corgi or worker), STATE, TASK, MODEL, CTX, CWD and TAG, which is
+merge for an agent a corgi tagged ready to merge (corgi tag) that still rests
+where it was tagged, else -. When the project's corgi has missed inbox items,
+a line on stderr says so.";
 
 /// `corgi fleet`: one tab-separated row per agent of a project (default: the
 /// project containing the current directory), for a corgi to read.
@@ -321,7 +324,7 @@ pub fn fleet(args: &[String]) -> Result<()> {
     let project = existing_project_dir(args.first().map(String::as_str))?;
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    println!("NAME\tROLE\tSTATE\tTASK\tMODEL\tCTX\tCWD");
+    println!("NAME\tROLE\tSTATE\tTASK\tMODEL\tCTX\tCWD\tTAG");
     for row in fleet_rows(&app, &root) {
         println!("{row}");
     }
@@ -337,7 +340,7 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
         .filter(|agent| agent.project_root == root)
         .map(|agent| {
             format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 field(agent.info.display_name()),
                 if agent.corgi { "corgi" } else { "worker" },
                 agent.info.state.label().to_lowercase(),
@@ -347,9 +350,147 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
                     .context_percent
                     .map_or_else(|| "-".to_string(), |percent| format!("{percent}%")),
                 field(agent.info.cwd()),
+                if agent.ready_to_merge() { "merge" } else { "-" },
             )
         })
         .collect()
+}
+
+pub const TAG_USAGE: &str = "\
+Usage: corgi tag NAME merge [--project PATH]
+       corgi tag NAME --clear [--project PATH]
+
+Tags the agent NAME (a Herdr agent name or pane ID) of PROJECT (default: the
+project containing the current directory) ready for the user to merge, or
+clears its tag. The dashboard then shows the agent, while it rests, with a
+MERGE badge instead of DONE. A tag is refused for an agent that is not done
+or idle, or whose checkout has no commits ahead of the branch checked out in
+the project's primary checkout. The tag goes away by itself when the user
+merges the branch with m, or once the agent works again.
+
+Options:
+  --project PATH  Project directory (default: the current directory)
+  --clear         Remove the tag";
+
+/// What `corgi tag` was asked to do.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct TagOptions {
+    pub(super) name: String,
+    /// Tag ready to merge, or else clear the tag.
+    pub(super) merge: bool,
+    pub(super) project: Option<String>,
+}
+
+fn parse_tag_options(args: &[String]) -> Result<TagOptions> {
+    let mut name = None;
+    let mut tag = None;
+    let mut clear = false;
+    let mut project = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--project" => project = Some(args.next().context("--project needs a value")?.clone()),
+            "--clear" => clear = true,
+            other if other.starts_with('-') => bail!("unknown option {other:?}\n\n{TAG_USAGE}"),
+            _ if name.is_none() => name = Some(arg.clone()),
+            _ if tag.is_none() => tag = Some(arg.clone()),
+            _ => bail!("{TAG_USAGE}"),
+        }
+    }
+    let name = name.with_context(|| format!("name the agent to tag\n\n{TAG_USAGE}"))?;
+    match (tag.as_deref(), clear) {
+        (Some("merge"), false) => {}
+        (None, true) => {}
+        (Some(tag), false) => bail!("merge is the only tag, not {tag:?}\n\n{TAG_USAGE}"),
+        _ => bail!("give the merge tag or --clear, not both or neither\n\n{TAG_USAGE}"),
+    }
+    Ok(TagOptions {
+        name,
+        merge: !clear,
+        project,
+    })
+}
+
+/// `corgi tag`: a corgi tags one of its project's agents ready for the user
+/// to merge, or clears the tag, for the dashboard to show.
+pub fn tag_command(args: &[String]) -> Result<()> {
+    let options = parse_tag_options(args)?;
+    let project = existing_project_dir(options.project.as_deref())?;
+    let (client, app) = connected_app()?;
+    let root = project_root_of(&client, &project)?;
+    println!("{}", tag_agent(&client, &app, &root, &options)?);
+    Ok(())
+}
+
+/// Tags or untags the agent `options` names among the agents of the project
+/// at `root`, and says what was done.
+pub(super) fn tag_agent(
+    client: &HerdrClient,
+    app: &App,
+    root: &str,
+    options: &TagOptions,
+) -> Result<String> {
+    let name = options.name.as_str();
+    let agent = app
+        .agents
+        .iter()
+        .find(|agent| {
+            agent.project_root == root
+                && (agent.info.name.as_deref() == Some(name) || agent.info.pane_id == name)
+        })
+        .with_context(|| format!("no agent named {name} in {root}"))?;
+    let info = &agent.info;
+    let agent_name = info.name.as_deref().unwrap_or(name);
+    let session = markers::session_of(info);
+    if !options.merge {
+        let had = info.tokens.contains_key(crate::corgi::MERGE_TOKEN);
+        markers::tag_pane(client, &info.pane_id, agent_name, session, None)?;
+        return Ok(if had {
+            format!("Cleared the merge tag of {agent_name}")
+        } else {
+            format!("{agent_name} had no merge tag")
+        });
+    }
+    let state = info.state;
+    anyhow::ensure!(
+        matches!(
+            state,
+            crate::model::AgentState::Done | crate::model::AgentState::Idle
+        ),
+        "{agent_name} is {}; tag it once it is done or idle",
+        state.label().to_lowercase()
+    );
+    let checkout = agent
+        .worktree_checkout
+        .as_deref()
+        .unwrap_or_else(|| info.cwd());
+    let base = git_current_branch(std::path::Path::new(root))
+        .with_context(|| format!("read the branch checked out in {root}"))?;
+    let ahead = commits_ahead(std::path::Path::new(checkout), &base)?;
+    anyhow::ensure!(
+        ahead > 0,
+        "{agent_name} has no commits ahead of {base} in {checkout}; there is nothing to merge"
+    );
+    let value = crate::corgi::merge_tag_value(state, info.state_change_seq);
+    markers::tag_pane(client, &info.pane_id, agent_name, session, Some(&value))?;
+    Ok(format!(
+        "Tagged {agent_name} ready to merge: {ahead} commit{} ahead of {base}",
+        if ahead == 1 { "" } else { "s" }
+    ))
+}
+
+/// How many commits `checkout`'s HEAD has that the branch `base` has not.
+fn commits_ahead(checkout: &std::path::Path, base: &str) -> Result<usize> {
+    let range = format!("{base}..HEAD");
+    git_output(checkout, &["rev-list", "--count", &range])?
+        .trim()
+        .parse()
+        .with_context(|| {
+            format!(
+                "count the commits of {} ahead of {base}",
+                checkout.display()
+            )
+        })
 }
 
 pub const DIGEST_USAGE: &str = "\
@@ -969,6 +1110,40 @@ mod tests {
         // Refused before stdin is read or Herdr is asked anything.
         let refused = start_command(&["~".to_string()]).expect_err("no corgi for ~");
         assert!(refused.to_string().contains("not a project"), "{refused}");
+    }
+
+    #[test]
+    fn tag_takes_a_name_and_merge_or_clear() {
+        let args = |line: &str| {
+            line.split_whitespace()
+                .map(String::from)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            parse_tag_options(&args("w-brave merge --project /repos/corgi")).unwrap(),
+            TagOptions {
+                name: "w-brave".into(),
+                merge: true,
+                project: Some("/repos/corgi".into()),
+            }
+        );
+        assert_eq!(
+            parse_tag_options(&args("w-brave --clear")).unwrap(),
+            TagOptions {
+                name: "w-brave".into(),
+                merge: false,
+                project: None,
+            }
+        );
+        for wrong in [
+            "",
+            "w-brave",
+            "w-brave merge --clear",
+            "w-brave ready",
+            "w-brave merge x",
+        ] {
+            assert!(parse_tag_options(&args(wrong)).is_err(), "{wrong:?}");
+        }
     }
 
     #[test]

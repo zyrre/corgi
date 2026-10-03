@@ -475,6 +475,57 @@ pub fn upgrade_marker(tokens: &mut BTreeMap<String, String>) {
     }
 }
 
+/// The pane token a corgi sets with `corgi tag NAME merge` when it
+/// recommends the user merge the agent's branch, as `<state> <change>`: the
+/// agent's resting state and `state_change_seq` when it was tagged, so a tag
+/// the agent has since worked past no longer applies, even before the
+/// dashboard that wakes corgis clears it.
+pub const MERGE_TOKEN: &str = "corgi_merge";
+
+/// The [`MERGE_TOKEN`] value for an agent tagged while in `state` at
+/// `change`.
+pub fn merge_tag_value(state: AgentState, change: u64) -> String {
+    format!("{} {change}", state.label().to_lowercase())
+}
+
+/// What an agent's [`MERGE_TOKEN`] means for it now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeTag {
+    /// Not tagged.
+    None,
+    /// Tagged, and still resting where it was tagged: shown as MERGE.
+    Applies,
+    /// Tagged, but it has worked since, or is busy: its tag is to clear.
+    Stale,
+    /// Tagged, but its state is unknown for now: neither shown nor cleared.
+    Unsure,
+}
+
+/// What `info`'s merge tag means for it now. The tag applies while the agent
+/// rests where it was tagged: at the same state change, or idle after being
+/// tagged done, which is how Herdr shows a done agent once the user has
+/// looked at it. An agent that is working or blocked, done at another state
+/// change, or idle at another one after being tagged idle, has worked since.
+pub fn merge_tag(info: &AgentInfo) -> MergeTag {
+    let Some(value) = info.tokens.get(MERGE_TOKEN) else {
+        return MergeTag::None;
+    };
+    let Some((state, change)) = value
+        .split_once(' ')
+        .and_then(|(state, change)| Some((state, change.parse::<u64>().ok()?)))
+    else {
+        return MergeTag::Stale;
+    };
+    let same_change = change == info.state_change_seq;
+    match info.state {
+        AgentState::Unknown => MergeTag::Unsure,
+        AgentState::Working | AgentState::Blocked => MergeTag::Stale,
+        AgentState::Done if same_change => MergeTag::Applies,
+        AgentState::Idle if same_change || state == "done" => MergeTag::Applies,
+        AgentState::Done | AgentState::Idle => MergeTag::Stale,
+    }
+}
+
 /// Native identity belongs to the live agent. A status-line `session` token
 /// can survive pane reuse, so it must never establish corgi ownership.
 pub fn native_session(info: &AgentInfo) -> Option<&str> {
@@ -961,6 +1012,37 @@ impl Handover {
 mod tests {
     use super::*;
     use AgentState::{Blocked, Done, Idle, Working};
+
+    #[test]
+    fn a_merge_tag_applies_only_while_its_agent_rests_where_it_was_tagged() {
+        let tag = |tagged: Option<&str>, state, change| {
+            merge_tag(&AgentInfo {
+                state,
+                state_change_seq: change,
+                tokens: tagged
+                    .map(|value| (MERGE_TOKEN.to_string(), value.to_string()))
+                    .into_iter()
+                    .collect(),
+                ..AgentInfo::default()
+            })
+        };
+        let done = merge_tag_value(Done, 7);
+        let idle = merge_tag_value(Idle, 7);
+        assert_eq!(done, "done 7");
+        assert_eq!(tag(None, Done, 7), MergeTag::None);
+        assert_eq!(tag(Some(&done), Done, 7), MergeTag::Applies);
+        // Herdr shows a done agent idle once the user has looked at it.
+        assert_eq!(tag(Some(&done), Idle, 9), MergeTag::Applies);
+        assert_eq!(tag(Some(&idle), Idle, 7), MergeTag::Applies);
+        // An idle agent gets to done, or to idle again, only by working.
+        assert_eq!(tag(Some(&idle), Idle, 9), MergeTag::Stale);
+        assert_eq!(tag(Some(&idle), Done, 9), MergeTag::Stale);
+        assert_eq!(tag(Some(&done), Done, 9), MergeTag::Stale);
+        assert_eq!(tag(Some(&done), Working, 8), MergeTag::Stale);
+        assert_eq!(tag(Some(&done), Blocked, 8), MergeTag::Stale);
+        assert_eq!(tag(Some(&done), AgentState::Unknown, 8), MergeTag::Unsure);
+        assert_eq!(tag(Some("merge"), Done, 7), MergeTag::Stale);
+    }
 
     #[test]
     fn corgi_identity_survives_renaming_but_not_pane_reuse() {

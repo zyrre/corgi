@@ -17,8 +17,8 @@ use crate::{
 
 use super::status::{StatusField, status_fields};
 use super::{
-    ACCENT, MUTED, SUCCESS, TEXT, TOTAL, WARNING, bold, clip, ellipsized, rounded_block,
-    unhighlighted_list,
+    ACCENT, MERGE, MERGE_MARK, MUTED, SUCCESS, TEXT, UNKNOWN, WARNING, bold, clip, ellipsized,
+    rounded_block, unhighlighted_list,
 };
 
 // Every row reserves the same gutter, selected or not, so the columns to the
@@ -514,20 +514,36 @@ fn worker_summary(workers: &[DashboardAgent], width: usize) -> Vec<Line<'static>
         1 => left.push(Span::styled("1 worker", bold(TEXT))),
         count => left.push(Span::styled(format!("{count} workers"), bold(TEXT))),
     }
+    // Workers tagged ready to merge are summed apart from the done and idle
+    // ones, right after the blocked, as the next thing the user can act on.
+    let merge = workers
+        .iter()
+        .filter(|worker| worker.ready_to_merge())
+        .count();
+    let mut count_of = |mark: &'static str, color: Color, count: usize, word: &str| {
+        if count > 0 {
+            left.push(Span::raw(SUMMARY_SEPARATOR));
+            left.push(Span::styled(mark, bold(color)));
+            left.push(Span::styled(
+                format!(" {count} {word}"),
+                Style::default().fg(TEXT),
+            ));
+        }
+    };
     for state in SUMMARY_STATES {
         let count = workers
             .iter()
-            .filter(|worker| worker.info.state == state)
+            .filter(|worker| worker.info.state == state && !worker.ready_to_merge())
             .count();
-        if count == 0 {
-            continue;
+        count_of(
+            state_mark(state),
+            state_color(state),
+            count,
+            state_word(state),
+        );
+        if state == AgentState::Blocked {
+            count_of(MERGE_MARK, MERGE, merge, "merge");
         }
-        left.push(Span::raw(SUMMARY_SEPARATOR));
-        left.push(Span::styled(state_mark(state), bold(state_color(state))));
-        left.push(Span::styled(
-            format!(" {count} {}", state_word(state)),
-            Style::default().fg(TEXT),
-        ));
     }
     let used: usize = left.iter().map(Span::width).sum();
     let hint = format!("{EXPAND_HINT} ");
@@ -774,7 +790,15 @@ pub(super) fn agent_status_line(
     now: u64,
 ) -> Line<'static> {
     let marker = gutter(selected);
-    let status = format!(" {} ", agent.info.state.label());
+    // A worker a corgi tagged ready to merge reads MERGE while it rests.
+    let (status, status_color) = if agent.ready_to_merge() {
+        (" MERGE ".to_string(), MERGE)
+    } else {
+        (
+            format!(" {} ", agent.info.state.label()),
+            state_color(agent.info.state),
+        )
+    };
     let mut trailing = status_fields(agent, now);
     // The block borders take one column on either side, and one more column
     // keeps the longest row off the right border.
@@ -806,7 +830,7 @@ pub(super) fn agent_status_line(
             status,
             Style::default()
                 .fg(Color::Black)
-                .bg(state_color(agent.info.state))
+                .bg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(FIELD_SEPARATOR, Style::default().fg(MUTED)),
@@ -834,7 +858,7 @@ fn state_color(state: AgentState) -> Color {
         AgentState::Blocked => WARNING,
         AgentState::Done => SUCCESS,
         AgentState::Idle => MUTED,
-        AgentState::Unknown => TOTAL,
+        AgentState::Unknown => UNKNOWN,
     }
 }
 
@@ -1515,6 +1539,75 @@ mod tests {
         assert!(!screen.iter().any(|row| row.contains("workers")));
         assert!(!screen.iter().any(|row| row.contains("├")));
         assert!(row_with(&screen, COLLAPSE_HINT).starts_with("│ ╰─"));
+    }
+
+    /// Tags `agent` ready to merge where it rests now.
+    fn tagged(mut agent: DashboardAgent) -> DashboardAgent {
+        agent.info.state_change_seq = 40;
+        agent.info.tokens.insert(
+            crate::corgi::MERGE_TOKEN.into(),
+            crate::corgi::merge_tag_value(agent.info.state, 40),
+        );
+        agent
+    }
+
+    /// The webshop card with its done worker tagged ready to merge, and its
+    /// blocked worker carrying a tag it has since worked past.
+    fn herd_with_a_merge() -> Vec<DashboardAgent> {
+        let mut herd = carded_herd();
+        herd[3] = tagged(herd[3].clone());
+        let mut blocked = tagged(herd[1].clone());
+        blocked.info.state_change_seq = 41;
+        herd[1] = blocked;
+        herd
+    }
+
+    #[test]
+    fn a_worker_tagged_ready_to_merge_is_summed_apart_after_the_blocked() {
+        let mut app = test_app();
+        app.agents = herd_with_a_merge();
+        let screen = rendered_screen(&mut app, 100, 40);
+        let sum = row_with(&screen, "workers");
+        assert!(
+            sum.contains("3 workers   ▲ 1 blocked   ⇡ 1 merge   ● 1 working"),
+            "{sum}"
+        );
+        assert!(!sum.contains("done"), "{sum}");
+
+        let mut terminal = test_terminal(100, 40);
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(color_of(&terminal, "⇡ 1 merge"), MERGE);
+    }
+
+    #[test]
+    fn a_resting_worker_tagged_ready_to_merge_reads_merge_in_magenta() {
+        let mut app = test_app();
+        app.agents = herd_with_a_merge();
+        app.cards.set_expanded("webshop", true);
+        let mut terminal = test_terminal(100, 40);
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let screen = buffer_rows(terminal.backend().buffer());
+        assert!(row_with(&screen, "Paginate orders").contains(" MERGE  · Paginate orders"));
+        // A busy worker shows its real state, tag or not.
+        assert!(row_with(&screen, "Retry card payments").contains(" BLOCKED  · "));
+        let bg_of = |needle: &str| {
+            let buffer = terminal.backend().buffer();
+            let (y, row) = screen
+                .iter()
+                .enumerate()
+                .find(|(_, row)| row.contains(needle))
+                .expect("needle");
+            let x = row[..row.find(needle).expect("needle")].width();
+            buffer[(x as u16, y as u16)].bg
+        };
+        assert_eq!(bg_of("MERGE  · Paginate"), MERGE);
+        assert_eq!(bg_of("BLOCKED  · Retry"), WARNING);
+
+        // An untagged done worker is still DONE.
+        app.agents[3].info.tokens.clear();
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let screen = buffer_rows(terminal.backend().buffer());
+        assert!(row_with(&screen, "Paginate orders").contains(" DONE  · Paginate orders"));
     }
 
     #[test]
