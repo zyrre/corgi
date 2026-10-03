@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use crate::{
-    handler,
+    corgi,
     harness::Harness,
     model::{AgentInfo, WorkspaceInfo, WorkspaceWorktreeInfo},
     paths::dir_name,
@@ -61,12 +61,10 @@ pub(super) fn agent_project(info: &AgentInfo, workspace: Option<&WorkspaceInfo>)
     {
         return format!("{}/{checkout}", worktree.repo_name);
     }
-    // Corgi's project workspace is labelled for its handler; the other agents
+    // Corgi's project workspace is labelled for its corgi; the other agents
     // in it, such as shared-checkout tabs, are named after the repository.
     if let Some(root) = workspace.and_then(project_main_root) {
-        return dir_name(root)
-            .unwrap_or(handler::UNNAMED_PROJECT)
-            .to_string();
+        return dir_name(root).unwrap_or(corgi::UNNAMED_PROJECT).to_string();
     }
     workspace
         .map(|workspace| workspace.label.trim())

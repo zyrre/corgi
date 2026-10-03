@@ -178,7 +178,7 @@ fn screen(app: &mut App) -> Terminal<TestBackend> {
 }
 
 /// The hero: the header over the webshop and weather projects as the
-/// dashboard opens them, each a collapsed card of its handler and a sum of
+/// dashboard opens them, each a collapsed card of its corgi and a sum of
 /// its workers, the blocked one named, in a terminal window just tall enough
 /// for them.
 fn hero() -> String {
@@ -362,7 +362,7 @@ struct Agent {
     worktree: Option<&'static str>,
     message: (ActivityKind, &'static str),
     tool: (ActivityKind, &'static str),
-    handler: bool,
+    corgi: bool,
 }
 
 impl Agent {
@@ -379,12 +379,7 @@ impl Agent {
             project: self.project.into(),
             project_root,
             worktree_label: self.worktree.map(str::to_string),
-            task: if self.handler {
-                "Project handler"
-            } else {
-                self.task
-            }
-            .into(),
+            task: if self.corgi { "corgi" } else { self.task }.into(),
             model: Some(self.model.into()),
             effort: self.effort.map(str::to_string),
             context_percent: Some(self.context),
@@ -395,7 +390,7 @@ impl Agent {
             }),
             message: activity(self.message),
             tool: activity(self.tool),
-            handler: self.handler,
+            corgi: self.corgi,
             ..DashboardAgent::default()
         }
     }
@@ -409,7 +404,7 @@ fn activity((kind, text): (ActivityKind, &str)) -> Activity {
 }
 
 /// The herd every dashboard screenshot shows, already in the dashboard's
-/// order: each project's handler first, then blocked, working, done and idle.
+/// order: each project's corgi first, then blocked, working, done and idle.
 /// Every countdown sits in the middle of its minute, so a second passing
 /// while the shot is drawn never changes what it reads.
 fn herd() -> Vec<Agent> {
@@ -437,7 +432,7 @@ fn herd() -> Vec<Agent> {
                 "git -C ~/.herdr/worktrees/webshop/worktree-order-pages-2d5a log --oneline main..HEAD \
                  && pnpm --dir ~/.herdr/worktrees/webshop/worktree-order-pages-2d5a test -- orders",
             ),
-            handler: true,
+            corgi: true,
         },
         Agent {
             project: "webshop",
@@ -451,7 +446,7 @@ fn herd() -> Vec<Agent> {
             worktree: Some("checkout-retry-4b1e"),
             message: (Question, "Allow Bash: npm run test:e2e -- checkout?"),
             tool: (Command, "npm run test:e2e -- checkout"),
-            handler: false,
+            corgi: false,
         },
         Agent {
             project: "webshop",
@@ -468,7 +463,7 @@ fn herd() -> Vec<Agent> {
                 "The badge re-renders on every cart event; debouncing the store subscription should stop the flicker.",
             ),
             tool: (Tool, "Edit src/components/CartBadge.tsx"),
-            handler: false,
+            corgi: false,
         },
         Agent {
             project: "webshop",
@@ -485,7 +480,7 @@ fn herd() -> Vec<Agent> {
                 "Pagination is in: 20 orders a page with a stable cursor, and tests for the first and last page.",
             ),
             tool: (Command, "pnpm test -- orders"),
-            handler: false,
+            corgi: false,
         },
         Agent {
             project: "weather",
@@ -506,7 +501,7 @@ fn herd() -> Vec<Agent> {
                 Command,
                 "git -C ~/.herdr/worktrees/weather/worktree-api-cache-e3b8 diff --stat main",
             ),
-            handler: true,
+            corgi: true,
         },
         Agent {
             project: "weather",
@@ -523,7 +518,7 @@ fn herd() -> Vec<Agent> {
                 "Use the same colours as the daily view, and keep it readable at 320px.",
             ),
             tool: (Command, "npm run storybook -- --smoke-test"),
-            handler: false,
+            corgi: false,
         },
         Agent {
             project: "weather",
@@ -540,7 +535,7 @@ fn herd() -> Vec<Agent> {
                 "Responses are cached for ten minutes, and a stale entry is refreshed in the background.",
             ),
             tool: (Tool, "Read src/api/client.ts"),
-            handler: false,
+            corgi: false,
         },
         Agent {
             project: "notes-app",
@@ -557,7 +552,7 @@ fn herd() -> Vec<Agent> {
                 "Export is done. Want front matter with the tags as well?",
             ),
             tool: (Command, "git log --oneline -3"),
-            handler: false,
+            corgi: false,
         },
     ]
 }
@@ -731,7 +726,7 @@ fn expanded() -> App {
     app
 }
 
-/// The new-agent form opened with `n` on the webshop handler, the task typed
+/// The new-agent form opened with `n` on the webshop corgi, the task typed
 /// and every other row on its preset.
 fn new_agent_form() -> App {
     let mut app = dashboard();

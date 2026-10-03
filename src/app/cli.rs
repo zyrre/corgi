@@ -1,4 +1,4 @@
-//! The command-line tools: `corgi spawn`, `corgi handler`, `corgi fleet`,
+//! The command-line tools: `corgi spawn`, `corgi start`, `corgi fleet`,
 //! `corgi digest` and `corgi report`.
 
 use std::{env, fs, io, path::PathBuf};
@@ -19,8 +19,8 @@ use super::{
     catalog::{EFFORT_LEVELS, default_harness},
     form::Checkout,
     launch::{
-        CORGI_REQUEST_TOKEN, HANDLER_HOME_REFUSAL, LaunchPlan, Role, calling_handler_harness,
-        handler_harness_error, handler_plan, launch_agent, sanitize_agent_name, unique_agent_name,
+        CORGI_HOME_REFUSAL, CORGI_REQUEST_TOKEN, LaunchPlan, Role, calling_corgi_harness,
+        corgi_harness_error, corgi_plan, launch_agent, sanitize_agent_name, unique_agent_name,
     },
     markers,
     progress::Stderr,
@@ -36,7 +36,7 @@ JSON. The task is read from stdin, or from --task-file, never from arguments.
 Options:
   --project PATH     Project directory (default: the current directory)
   --harness KIND     Agent CLI, as Herdr names it (default: the calling
-                     Project handler's own, else as in the form)
+                     corgi's own, else as in the form)
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max (Codex and Claude Code)
   --checkout MODE    worktree (default), directory, or root: the project
@@ -133,7 +133,7 @@ fn valid_request_id(id: String) -> Result<String> {
 }
 
 /// `corgi spawn`: starts one agent through the same launch as the new-agent
-/// form, for a caller without a dashboard, such as a handler agent. It runs
+/// form, for a caller without a dashboard, such as a corgi agent. It runs
 /// inside Herdr and uses the injected socket. Progress goes to stderr and the
 /// started agent to stdout as one JSON object.
 pub fn spawn(args: &[String]) -> Result<()> {
@@ -164,11 +164,11 @@ pub fn spawn(args: &[String]) -> Result<()> {
         return print_launch(&existing);
     }
     let pane_id = env::var("HERDR_PANE_ID").ok();
-    if let Some(warning) = calling_handler_state_conflict(&app, pane_id.as_deref()) {
+    if let Some(warning) = calling_corgi_state_conflict(&app, pane_id.as_deref()) {
         eprintln!("warning: {warning}");
     }
-    let handler_harness = calling_handler_harness(&app, pane_id.as_deref());
-    let harness = spawn_harness(options.harness, handler_harness, default_harness);
+    let corgi_harness = calling_corgi_harness(&app, pane_id.as_deref());
+    let harness = spawn_harness(options.harness, corgi_harness, default_harness);
     anyhow::ensure!(
         options.effort.is_empty() || harness.supports_effort(),
         "{harness} has no effort control; only codex and claude take --effort"
@@ -227,7 +227,7 @@ pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_j
         "model": agent.model.as_deref().unwrap_or_default(),
         "effort": agent.effort.as_deref().unwrap_or_default(),
         "checkout": checkout.value(),
-        "handler": agent.handler,
+        "corgi": agent.corgi,
         "location": format!(
             "already running in {} ({})",
             info.cwd(),
@@ -238,46 +238,46 @@ pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_j
 }
 
 /// The harness `corgi spawn` starts: the one asked for, else the calling
-/// handler's own, else the default the new-agent form would preset.
+/// corgi's own, else the default the new-agent form would preset.
 fn spawn_harness(
     requested: Option<Harness>,
-    handler: Option<Harness>,
+    corgi: Option<Harness>,
     default: impl FnOnce() -> Harness,
 ) -> Harness {
-    requested.or(handler).unwrap_or_else(default)
+    requested.or(corgi).unwrap_or_else(default)
 }
 
 /// The warning about pre-rename state beside the state directory of the
-/// handler in `pane_id`, when a handler is the one spawning, so that it sees
+/// corgi in `pane_id`, when a corgi is the one spawning, so that it sees
 /// it and can tell the user.
-fn calling_handler_state_conflict(app: &App, pane_id: Option<&str>) -> Option<String> {
+fn calling_corgi_state_conflict(app: &App, pane_id: Option<&str>) -> Option<String> {
     let pane_id = pane_id?;
     app.agents
         .iter()
-        .find(|agent| agent.handler && agent.info.pane_id == pane_id)
-        .and_then(|agent| crate::handler::state_dir_conflict(&agent.project_root))
+        .find(|agent| agent.corgi && agent.info.pane_id == pane_id)
+        .and_then(|agent| crate::corgi::state_dir_conflict(&agent.project_root))
 }
 
-pub const HANDLER_USAGE: &str = "\
-Usage: corgi handler [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
+pub const START_USAGE: &str = "\
+Usage: corgi start [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
 
-Starts the Project handler of PROJECT (default: the project containing the
-current directory) in the root tab of its Corgi workspace, and prints it as
-JSON. A task on stdin or in --task-file becomes its first request; without
-one the handler greets you with the state of the project.
+Starts the corgi of PROJECT (default: the project containing the current
+directory), the agent that herds its workers, in the root tab of its Corgi
+workspace, and prints it as JSON. A task on stdin or in --task-file becomes its first request; without
+one the corgi greets you with the state of the project.
 
 Options:
   --harness KIND     claude (default) or codex
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max
-  --name NAME        Agent name (default: handler-<project>)
+  --name NAME        Agent name (default: corgi-<project>)
   --task-file PATH   Read the first request from PATH
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
-/// `corgi handler`: launches a project's handler, the way the new-agent form
+/// `corgi start`: launches a project's corgi, the way the new-agent form
 /// does for a project with no agent sessions.
-pub fn handler_command(args: &[String]) -> Result<()> {
+pub fn start_command(args: &[String]) -> Result<()> {
     let (positional, args) = match args.first() {
         Some(first) if !first.starts_with('-') => (Some(first.as_str()), &args[1..]),
         _ => (None, args),
@@ -285,19 +285,19 @@ pub fn handler_command(args: &[String]) -> Result<()> {
     let options = parse_spawn_options(args)?;
     anyhow::ensure!(
         options.request_id.is_none(),
-        "--request-id is for corgi spawn; a project has one handler anyway"
+        "--request-id is for corgi spawn; a project has one corgi anyway"
     );
     let harness = options
         .harness
-        .unwrap_or_else(|| Harness::HANDLERS[0].clone());
-    anyhow::ensure!(harness.supports_handler(), handler_harness_error(&harness));
+        .unwrap_or_else(|| Harness::CORGI_HARNESSES[0].clone());
+    anyhow::ensure!(harness.supports_corgi(), corgi_harness_error(&harness));
     let project = existing_project_dir(positional.or(options.project.as_deref()))?;
-    anyhow::ensure!(!is_home(&project), HANDLER_HOME_REFUSAL);
+    anyhow::ensure!(!is_home(&project), CORGI_HOME_REFUSAL);
     let task = read_task(options.task_file.as_deref(), false)?;
 
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    let mut plan = handler_plan(&app, &root, harness, options.model, options.effort, task)?;
+    let mut plan = corgi_plan(&app, &root, harness, options.model, options.effort, task)?;
     if let Some(requested) = options.name.as_deref() {
         plan.name = free_agent_name(&client, requested)?;
     }
@@ -310,10 +310,10 @@ Usage: corgi fleet [PROJECT]
 
 Lists the agents of PROJECT (default: the project containing the current
 directory), one tab-separated row each under a header line:
-NAME, ROLE (handler or worker), STATE, TASK, MODEL, CTX and CWD.";
+NAME, ROLE (corgi or worker), STATE, TASK, MODEL, CTX and CWD.";
 
 /// `corgi fleet`: one tab-separated row per agent of a project (default: the
-/// project containing the current directory), for a handler to read.
+/// project containing the current directory), for a corgi to read.
 pub fn fleet(args: &[String]) -> Result<()> {
     anyhow::ensure!(args.len() <= 1, "Usage: corgi fleet [PROJECT]");
     let project = existing_project_dir(args.first().map(String::as_str))?;
@@ -336,7 +336,7 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 field(agent.info.display_name()),
-                if agent.handler { "handler" } else { "worker" },
+                if agent.corgi { "corgi" } else { "worker" },
                 agent.info.state.label().to_lowercase(),
                 field(&agent.task),
                 field(agent.model.as_deref().unwrap_or("-")),
@@ -352,8 +352,8 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
 pub const DIGEST_USAGE: &str = "\
 Usage: corgi digest [PROJECT] [--decision WORDS]
 
-Prints a bounded digest of the Project handler's memory of PROJECT (default:
-the project containing the current directory), for the start of a handler
+Prints a bounded digest of the memory of PROJECT's corgi (default: the
+project containing the current directory), for the start of a corgi's
 session: the base branch, the handover note if there is one, open ledger
 work joined with the running agents, recently finished work, the newest
 decisions in full (about 12 KB, at least 3) and the titles of older ones.
@@ -364,8 +364,8 @@ Options:
   --decision WORDS   Print in full every decision, superseded or not, whose
                      heading contains all of WORDS (ignoring case)";
 
-/// `corgi digest`: a bounded view of a project's handler state, joined with
-/// its running agents, for a handler to read at the start of its session.
+/// `corgi digest`: a bounded view of the state of a project's corgi, joined
+/// with its running agents, for a corgi to read at the start of its session.
 pub fn digest(args: &[String]) -> Result<()> {
     let mut project = None;
     let mut words = None;
@@ -383,7 +383,7 @@ pub fn digest(args: &[String]) -> Result<()> {
     let project = existing_project_dir(project)?;
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    let state_dir = crate::handler::state_dir(&root)?;
+    let state_dir = crate::corgi::state_dir(&root)?;
     let read = |name: &str| fs::read_to_string(state_dir.join(name)).ok();
     let decisions = read("decisions.md").unwrap_or_default();
 
@@ -410,13 +410,13 @@ pub fn digest(args: &[String]) -> Result<()> {
             context_percent: agent.context_percent,
         })
         .collect();
-    let corgi = env::current_exe().map_or_else(
+    let corgi_bin = env::current_exe().map_or_else(
         |_| "corgi".to_string(),
         |path| path.to_string_lossy().into_owned(),
     );
-    let decision_command = format!("{corgi} digest {root} --decision \"<words>\"");
+    let decision_command = format!("{corgi_bin} digest {root} --decision \"<words>\"");
     let state = state_dir.to_string_lossy();
-    let handover = read(crate::handler::HANDOVER_NOTE);
+    let handover = read(crate::corgi::HANDOVER_NOTE);
     let ledger = read("ledger.jsonl").unwrap_or_default();
     print!(
         "{}",
@@ -554,7 +554,7 @@ fn run_launch(client: HerdrClient, mut app: App, plan: LaunchPlan) -> Result<ser
         "model": plan.model,
         "effort": plan.effort,
         "checkout": plan.checkout.value(),
-        "handler": matches!(plan.role, Role::Handler { .. }),
+        "corgi": matches!(plan.role, Role::Corgi { .. }),
         "location": launched.location,
     }))
 }
@@ -570,19 +570,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn corgi_handler_refuses_the_home_directory() {
+    fn corgi_corgi_refuses_the_home_directory() {
         if !crate::paths::home().is_some_and(|home| home.is_dir()) {
             return;
         }
         // Refused before stdin is read or Herdr is asked anything.
-        let refused = handler_command(&["~".to_string()]).expect_err("no Project handler for ~");
+        let refused = start_command(&["~".to_string()]).expect_err("no corgi for ~");
         assert!(refused.to_string().contains("not a project"), "{refused}");
     }
 
     #[test]
-    fn a_handlers_workers_default_to_the_handlers_own_harness() {
+    fn a_corgis_workers_default_to_the_corgis_own_harness() {
         let default = || Harness::Claude;
-        // A Codex handler starts Codex workers, a Claude handler Claude ones.
+        // A Codex corgi starts Codex workers, a Claude corgi Claude ones.
         assert_eq!(
             spawn_harness(None, Some(Harness::Codex), default),
             Harness::Codex
@@ -596,7 +596,7 @@ mod tests {
             spawn_harness(Some(Harness::Claude), Some(Harness::Codex), default),
             Harness::Claude
         );
-        // A spawn not made by a handler, or by one whose harness Herdr has
+        // A spawn not made by a corgi, or by one whose harness Herdr has
         // not detected, keeps the form's default.
         assert_eq!(spawn_harness(None, None, || Harness::Codex), Harness::Codex);
     }
@@ -677,12 +677,12 @@ mod tests {
         let long = "x".repeat(81);
         let refused = valid_request_id(long).expect_err("81 characters");
         assert!(refused.to_string().contains("at most 80"), "{refused}");
-        // The parser applies it, and the handler does not take one, which
+        // The parser applies it, and the corgi does not take one, which
         // is refused before stdin is read or Herdr is asked anything.
         let args = ["--request-id".to_string(), "a b".to_string()];
         assert!(parse_spawn_options(&args).is_err());
-        let args = ["--request-id".to_string(), "20261002-handler".to_string()];
-        let refused = handler_command(&args).expect_err("no request id for a handler");
+        let args = ["--request-id".to_string(), "20261002-corgi".to_string()];
+        let refused = start_command(&args).expect_err("no request id for a corgi");
         assert!(refused.to_string().contains("for corgi spawn"), "{refused}");
     }
 }

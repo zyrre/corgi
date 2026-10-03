@@ -178,10 +178,10 @@ pub struct DashboardAgent {
     /// with its whole argument rather than the CLI's abbreviation of it.
     pub tool: Activity,
     /// The agent in the root tab of its project's Corgi workspace: the
-    /// project's handler, shown by that name and first in its project.
-    pub handler: bool,
+    /// project's corgi, shown by that name and first in its project.
+    pub corgi: bool,
     /// The agent runs in the home directory itself, which is never a
-    /// project: a scratch session, grouped under Scratch, that no handler
+    /// project: a scratch session, grouped under Scratch, that no corgi
     /// hears about.
     pub scratch: bool,
 }

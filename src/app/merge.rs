@@ -12,8 +12,8 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
+    corgi::{self, MergeConflict},
     git::{ensure_git_clean, git_current_branch, git_failure_detail, git_output, worktree_commits},
-    handler::{self, MergeConflict},
     job::{Job, Update},
     model::DashboardAgent,
 };
@@ -34,7 +34,7 @@ pub(crate) struct MergeWorktreeForm {
     /// Workspace behind the agent, so a finished merge can offer to close the
     /// worktree without going back through the dashboard selection.
     pub(crate) workspace_id: String,
-    /// The agent's name, by which its Project handler knows it.
+    /// The agent's name, by which its corgi knows it.
     pub(crate) agent: String,
     pub(crate) project_root: PathBuf,
     pub(crate) worktree_checkout: PathBuf,
@@ -64,14 +64,14 @@ pub(crate) enum MergePhase {
     },
 }
 
-/// Whether a conflicted merge can be handed to the project's handler.
+/// Whether a conflicted merge can be handed to the project's corgi.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConflictHelp {
-    /// The project's handler, by name, which `h` asks.
-    Handler(String),
-    /// The project has no running handler.
-    NoHandler,
-    /// This dashboard does not wake handlers (another one does, or it is
+    /// The project's corgi, by name, which `c` asks.
+    Corgi(String),
+    /// The project has no running corgi.
+    NoCorgi,
+    /// This dashboard does not wake corgis (another one does, or it is
     /// the Omarchy popup), so it has no queue to put the message in.
     Unavailable,
 }
@@ -221,40 +221,40 @@ impl App {
     }
 
     /// Who can take over the open merge dialog's conflict: its project's
-    /// handler, when this dashboard is the one that delivers to handlers.
+    /// corgi, when this dashboard is the one that delivers to corgis.
     fn conflict_help(&mut self) -> ConflictHelp {
         let Some(form) = self.overlay.merge_worktree_form() else {
             return ConflictHelp::Unavailable;
         };
-        let handler = project_handler(&self.agents, &form.project_root);
+        let corgi = project_corgi(&self.agents, &form.project_root);
         let leads = self
-            .handler_waker
+            .corgi_waker
             .as_mut()
             .is_some_and(|waker| waker.leads(&self.client));
-        match handler {
+        match corgi {
             _ if !leads => ConflictHelp::Unavailable,
-            Some(handler) => ConflictHelp::Handler(handler),
-            None => ConflictHelp::NoHandler,
+            Some(corgi) => ConflictHelp::Corgi(corgi),
+            None => ConflictHelp::NoCorgi,
         }
     }
 
     /// Aborts the conflicted merge Corgi started in the primary checkout,
-    /// and queues a message for the project's handler to have the worker
+    /// and queues a message for the project's corgi to have the worker
     /// merge the base branch into its own branch and resolve it there. The
     /// worktree stays open; the user merges again once the worker reports.
-    fn ask_handler_about_conflict(&mut self) {
+    fn ask_corgi_about_conflict(&mut self) {
         let Some(form) = self.overlay.merge_worktree_form() else {
             return;
         };
         let MergePhase::Conflicted { files, .. } = &form.phase else {
             return;
         };
-        let Some(handler) = project_handler(&self.agents, &form.project_root) else {
-            self.status = "The Project handler is no longer running".into();
+        let Some(corgi) = project_corgi(&self.agents, &form.project_root) else {
+            self.status = "The corgi is no longer running".into();
             if let Some(form) = self.overlay.merge_worktree_form_mut()
                 && let MergePhase::Conflicted { help, .. } = &mut form.phase
             {
-                *help = ConflictHelp::NoHandler;
+                *help = ConflictHelp::NoCorgi;
             }
             return;
         };
@@ -266,7 +266,7 @@ impl App {
             }
             return;
         }
-        let message = handler::merge_conflict_message(&MergeConflict {
+        let message = corgi::merge_conflict_message(&MergeConflict {
             worker: &form.agent,
             task: &form.task,
             branch: &form.source_branch,
@@ -277,10 +277,10 @@ impl App {
         let root = form.project_root.to_string_lossy().into_owned();
         let key = format!("{} merge conflict", form.agent);
         let status = format!(
-            "Merge aborted; asked {handler} to have {} merge {} into its branch",
+            "Merge aborted; asked {corgi} to have {} merge {} into its branch",
             form.agent, form.target_branch
         );
-        if let Some(waker) = self.handler_waker.as_mut() {
+        if let Some(waker) = self.corgi_waker.as_mut() {
             waker.queue(&root, key, message);
         }
         self.overlay = Overlay::None;
@@ -307,7 +307,7 @@ impl App {
             label: form.label,
             project_root: project_main_workspace(
                 &self.workspaces,
-                &self.handler_workspaces(),
+                &self.corgi_workspaces(),
                 &project_root,
             )
             .map(|main| main.project_root),
@@ -339,22 +339,22 @@ impl App {
             }
             (
                 Some(MergePhase::Conflicted {
-                    help: ConflictHelp::Handler(_),
+                    help: ConflictHelp::Corgi(_),
                     ..
                 }),
-                KeyCode::Char('h'),
-            ) => self.ask_handler_about_conflict(),
+                KeyCode::Char('c'),
+            ) => self.ask_corgi_about_conflict(),
             _ => {}
         }
         false
     }
 }
 
-/// The name of the running handler of the project at `project_root`.
-fn project_handler(agents: &[DashboardAgent], project_root: &Path) -> Option<String> {
+/// The name of the running corgi of the project at `project_root`.
+fn project_corgi(agents: &[DashboardAgent], project_root: &Path) -> Option<String> {
     agents
         .iter()
-        .filter(|agent| agent.handler && Path::new(&agent.project_root) == project_root)
+        .filter(|agent| agent.corgi && Path::new(&agent.project_root) == project_root)
         .find_map(|agent| agent.info.name.clone())
 }
 
@@ -474,7 +474,7 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        app::{progress::Silent, test_helpers::poll_until, waker::HandlerWaker},
+        app::{progress::Silent, test_helpers::poll_until, waker::CorgiWaker},
         herdr::HerdrClient,
         test_support::{answer, fake_herdr, test_app},
     };
@@ -699,7 +699,7 @@ mod tests {
             .success()
     }
 
-    fn project_agent(name: &str, root: &Path, handler: bool) -> DashboardAgent {
+    fn project_agent(name: &str, root: &Path, corgi: bool) -> DashboardAgent {
         DashboardAgent {
             info: crate::model::AgentInfo {
                 pane_id: format!("{name}:p1"),
@@ -707,18 +707,18 @@ mod tests {
                 ..Default::default()
             },
             project_root: root.to_string_lossy().into_owned(),
-            handler,
+            corgi,
             ..DashboardAgent::default()
         }
     }
 
-    /// The dashboard that wakes handlers, with the conflicted merge of
+    /// The dashboard that wakes corgis, with the conflicted merge of
     /// `form` reported by its merge job, and `agents` in view.
     fn conflicted_dashboard(form: &MergeWorktreeForm, agents: Vec<DashboardAgent>) -> App {
         let mut app = test_app();
-        let mut waker = HandlerWaker::default();
+        let mut waker = CorgiWaker::default();
         assert!(waker.lead(&form.project_root.join(".git").join("corgi-wake.lock")));
-        app.handler_waker = Some(waker);
+        app.corgi_waker = Some(waker);
         app.agents = agents;
         let mut running = form.clone();
         running.phase = MergePhase::Running(1);
@@ -730,13 +730,13 @@ mod tests {
     }
 
     #[test]
-    fn a_conflicted_merge_offers_to_hand_it_to_the_project_handler() {
-        let (repo, worktree, form) = conflicting_merge("merge-conflict-handler");
+    fn a_conflicted_merge_offers_to_hand_it_to_the_project_corgi() {
+        let (repo, worktree, form) = conflicting_merge("merge-conflict-corgi");
         let root = repo.to_string_lossy().into_owned();
         let mut app = conflicted_dashboard(
             &form,
             vec![
-                project_agent("handler-corgi", &repo, true),
+                project_agent("corgi-corgi", &repo, true),
                 project_agent("w-reviewed-agent", &repo, false),
             ],
         );
@@ -744,18 +744,18 @@ mod tests {
             app.overlay.merge_worktree_form().map(|form| &form.phase),
             Some(&MergePhase::Conflicted {
                 files: vec!["status.txt".into()],
-                help: ConflictHelp::Handler("handler-corgi".into()),
+                help: ConflictHelp::Corgi("corgi-corgi".into()),
             })
         );
         assert!(merge_in_progress(&repo));
 
-        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('h'))));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('c'))));
         assert!(matches!(app.overlay, Overlay::None), "{:?}", app.overlay);
         assert!(!merge_in_progress(&repo));
         ensure_git_clean(&repo, "primary checkout").expect("abort leaves the checkout clean");
         assert!(worktree.exists(), "the worktree stays open");
-        assert!(app.status.contains("asked handler-corgi"), "{}", app.status);
-        let pending = app.handler_waker.as_ref().unwrap().pending_for(&root);
+        assert!(app.status.contains("asked corgi-corgi"), "{}", app.status);
+        let pending = app.corgi_waker.as_ref().unwrap().pending_for(&root);
         assert_eq!(
             pending,
             [format!(
@@ -772,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn a_conflicted_merge_without_a_handler_offers_no_handoff() {
+    fn a_conflicted_merge_without_a_corgi_offers_no_handoff() {
         let (repo, worktree, form) = conflicting_merge("merge-conflict-alone");
         let root = repo.to_string_lossy().into_owned();
         let mut app =
@@ -780,15 +780,15 @@ mod tests {
         assert!(matches!(
             app.overlay.merge_worktree_form().map(|form| &form.phase),
             Some(MergePhase::Conflicted {
-                help: ConflictHelp::NoHandler,
+                help: ConflictHelp::NoCorgi,
                 ..
             })
         ));
-        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('h'))));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('c'))));
         assert!(app.overlay.merge_worktree_form().is_some());
-        assert!(merge_in_progress(&repo), "h does nothing without a handler");
+        assert!(merge_in_progress(&repo), "c does nothing without a corgi");
         assert!(
-            app.handler_waker
+            app.corgi_waker
                 .as_ref()
                 .unwrap()
                 .pending_for(&root)
@@ -802,8 +802,7 @@ mod tests {
     fn esc_on_a_conflicted_merge_leaves_it_to_resolve_by_hand() {
         let (repo, worktree, form) = conflicting_merge("merge-conflict-esc");
         let root = repo.to_string_lossy().into_owned();
-        let mut app =
-            conflicted_dashboard(&form, vec![project_agent("handler-corgi", &repo, true)]);
+        let mut app = conflicted_dashboard(&form, vec![project_agent("corgi-corgi", &repo, true)]);
         assert!(!app.handle_key(KeyEvent::from(KeyCode::Esc)));
         assert!(matches!(app.overlay, Overlay::None));
         assert!(
@@ -811,7 +810,7 @@ mod tests {
             "the primary checkout stays mid-merge"
         );
         assert!(
-            app.handler_waker
+            app.corgi_waker
                 .as_ref()
                 .unwrap()
                 .pending_for(&root)
@@ -825,12 +824,11 @@ mod tests {
     fn a_failed_abort_is_reported_in_the_popup_and_asks_no_one() {
         let (repo, worktree, form) = conflicting_merge("merge-conflict-abort");
         let root = repo.to_string_lossy().into_owned();
-        let mut app =
-            conflicted_dashboard(&form, vec![project_agent("handler-corgi", &repo, true)]);
+        let mut app = conflicted_dashboard(&form, vec![project_agent("corgi-corgi", &repo, true)]);
         // The user finished the merge by hand behind the popup's back.
         git_test(&repo, &["checkout", "--theirs", "status.txt"]);
         git_test(&repo, &["commit", "-am", "resolved by hand"]);
-        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('h'))));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('c'))));
         assert!(
             matches!(
                 app.overlay.merge_worktree_form().map(|form| &form.phase),
@@ -840,7 +838,7 @@ mod tests {
             app.overlay
         );
         assert!(
-            app.handler_waker
+            app.corgi_waker
                 .as_ref()
                 .unwrap()
                 .pending_for(&root)

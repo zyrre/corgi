@@ -1,10 +1,10 @@
 pub mod activity;
 pub mod app;
 pub mod choices;
+pub mod corgi;
 pub mod defaults;
 pub mod digest;
 pub mod git;
-pub mod handler;
 pub mod harness;
 pub mod herdr;
 pub mod job;

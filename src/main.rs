@@ -12,10 +12,11 @@ fn main() -> Result<()> {
         Some("--version" | "-V") => usage(concat!("corgi ", env!("CARGO_PKG_VERSION"))),
         Some("spawn") if help() => usage(corgi::app::SPAWN_USAGE),
         Some("spawn") => corgi::app::spawn(&args[2..]),
-        // `steward` is the command's name from before the Steward was
-        // renamed Project handler, kept unlisted so existing scripts still work.
-        Some("handler" | "steward") if help() => usage(corgi::app::HANDLER_USAGE),
-        Some("handler" | "steward") => corgi::app::handler_command(&args[2..]),
+        // `handler` and `steward` are the command's names from while the
+        // corgi was the Project handler and, before that, the Steward, kept
+        // unlisted so existing scripts still work.
+        Some("start" | "handler" | "steward") if help() => usage(corgi::app::START_USAGE),
+        Some("start" | "handler" | "steward") => corgi::app::start_command(&args[2..]),
         Some("fleet") if help() => usage(corgi::app::FLEET_USAGE),
         Some("fleet") => corgi::app::fleet(&args[2..]),
         Some("digest") if help() => usage(corgi::app::DIGEST_USAGE),
