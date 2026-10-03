@@ -6,6 +6,8 @@
 
 use std::{collections::HashMap, fmt::Write as _};
 
+pub mod search;
+
 /// Full decision entries, newest first, are shown up to this many bytes...
 pub const RECENT_DECISION_BYTES: usize = 12 * 1024;
 /// ...but always at least this many, however long they are.
@@ -26,6 +28,8 @@ pub struct Decision<'a> {
     pub text: &'a str,
     /// The headings named by its `Supersedes:` lines.
     pub supersedes: Vec<&'a str>,
+    /// The line of `decisions.md` its heading is on, counting from 1.
+    pub line: usize,
 }
 
 impl Decision<'_> {
@@ -38,7 +42,7 @@ impl Decision<'_> {
     }
 }
 
-fn is_date(text: &str) -> bool {
+pub(crate) fn is_date(text: &str) -> bool {
     let bytes = text.as_bytes();
     bytes.len() == 10
         && bytes.iter().enumerate().all(|(index, byte)| match index {
@@ -54,19 +58,19 @@ pub fn parse_decisions(text: &str) -> Vec<Decision<'_>> {
     let mut starts = Vec::new();
     let mut offset = 0;
     let mut fenced = false;
-    for line in text.split_inclusive('\n') {
+    for (line_index, line) in text.split_inclusive('\n').enumerate() {
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
         } else if !fenced && line.starts_with("## ") {
-            starts.push(offset);
+            starts.push((offset, line_index + 1));
         }
         offset += line.len();
     }
     starts
         .iter()
         .enumerate()
-        .map(|(index, &start)| {
-            let end = starts.get(index + 1).copied().unwrap_or(text.len());
+        .map(|(index, &(start, line))| {
+            let end = starts.get(index + 1).map_or(text.len(), |next| next.0);
             let entry = text[start..end].trim_end();
             let heading = entry.lines().next().unwrap_or_default()[3..].trim();
             let supersedes = entry
@@ -79,22 +83,24 @@ pub fn parse_decisions(text: &str) -> Vec<Decision<'_>> {
                 heading,
                 text: entry,
                 supersedes,
+                line,
             }
         })
         .collect()
 }
 
-/// Which entries a later one supersedes, by index, and a warning for each
-/// `Supersedes:` line that names no earlier heading.
-fn superseded(decisions: &[Decision]) -> (Vec<bool>, Vec<String>) {
-    let mut hidden = vec![false; decisions.len()];
+/// For each entry, by index, the heading of the latest one that supersedes
+/// it, if any, and a warning for each `Supersedes:` line that names no
+/// earlier heading.
+pub(crate) fn superseded<'a>(decisions: &[Decision<'a>]) -> (Vec<Option<&'a str>>, Vec<String>) {
+    let mut hidden = vec![None; decisions.len()];
     let mut warnings = Vec::new();
     for (index, decision) in decisions.iter().enumerate() {
         for &target in &decision.supersedes {
             let mut found = false;
             for (earlier, candidate) in decisions[..index].iter().enumerate() {
                 if candidate.heading == target {
-                    hidden[earlier] = true;
+                    hidden[earlier] = Some(decision.heading);
                     found = true;
                 }
             }
@@ -127,11 +133,11 @@ pub fn decision_view<'a>(decisions: &[Decision<'a>]) -> DecisionView<'a> {
         .iter()
         .zip(&hidden)
         .rev()
-        .filter(|(_, hidden)| !**hidden)
+        .filter(|(_, hidden)| hidden.is_none())
         .map(|(decision, _)| decision)
         .peekable();
     let mut view = DecisionView {
-        superseded: hidden.iter().filter(|hidden| **hidden).count(),
+        superseded: hidden.iter().filter(|hidden| hidden.is_some()).count(),
         warnings,
         ..DecisionView::default()
     };
@@ -180,6 +186,8 @@ pub struct LedgerEntry {
     pub branch: String,
     pub summary: String,
     pub outcome: String,
+    /// The line of `ledger.jsonl` this newest line is on, counting from 1.
+    pub line: usize,
 }
 
 impl LedgerEntry {
@@ -214,6 +222,7 @@ pub fn parse_ledger(text: &str) -> Vec<LedgerEntry> {
             branch: field("branch"),
             summary: field("summary"),
             outcome: field("outcome"),
+            line: line_number + 1,
         };
         match by_id.get(&id) {
             Some(&slot) => entries[slot] = (line_number, entry),
@@ -242,11 +251,60 @@ pub struct DigestInput<'a> {
     pub head: &'a str,
     pub state_dir: &'a str,
     pub handover: Option<&'a str>,
+    /// The newest archived note in `handovers/`, as `(file name, text)`,
+    /// whose open threads are shown when there is no `handover`.
+    pub previous_handover: Option<(&'a str, &'a str)>,
     pub decisions: &'a str,
     pub ledger: &'a str,
     pub fleet: &'a [LiveAgent],
     /// The command that prints one decision in full, with `<words>` in it.
     pub decision_command: &'a str,
+    /// The command that searches all of the memory, with `<words>` in it.
+    pub search_command: &'a str,
+}
+
+/// `YYYY-MM-DD HH:MM UTC` from an archived note's name,
+/// `YYYYMMDD-HHMMSS.md`, or `None` for any other name.
+pub fn handover_time(name: &str) -> Option<String> {
+    let stamp = name.strip_suffix(".md").unwrap_or(name);
+    let (date, time) = stamp.split_once('-')?;
+    let digits = |text: &str, len| text.len() == len && text.bytes().all(|b| b.is_ascii_digit());
+    (digits(date, 8) && digits(time, 6)).then(|| {
+        format!(
+            "{}-{}-{} {}:{} UTC",
+            &date[..4],
+            &date[4..6],
+            &date[6..],
+            &time[..2],
+            &time[2..4]
+        )
+    })
+}
+
+/// The body of a handover note's "Open threads" section, under any heading
+/// level, up to the next heading of the same level or higher.
+pub fn open_threads(note: &str) -> Option<&str> {
+    let level = |line: &str| line.bytes().take_while(|b| *b == b'#').count();
+    let mut offset = 0;
+    let mut start = None;
+    let mut fenced = false;
+    for line in note.split_inclusive('\n') {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced && level(line) > 0 {
+            match start {
+                Some((from, heading)) if level(line) <= heading => {
+                    return Some(note[from..offset].trim());
+                }
+                None if line.to_lowercase().contains("open threads") => {
+                    start = Some((offset + line.len(), level(line)));
+                }
+                _ => {}
+            }
+        }
+        offset += line.len();
+    }
+    start.map(|(from, _)| note[from..].trim())
 }
 
 /// The digest, its seven sections in order.
@@ -261,6 +319,16 @@ pub fn render(input: &DigestInput) -> String {
             out,
             "\n# Handover note (archive it as your role says)\n{}",
             handover.trim()
+        );
+    } else if let Some((name, note)) = input.previous_handover
+        && let Some(threads) = open_threads(note)
+    {
+        let when = handover_time(name).unwrap_or_else(|| name.to_string());
+        let _ = writeln!(
+            out,
+            "\n# Open threads from the previous session's note ({when}, handovers/{name}; \
+             may be out of date, check before acting on it)\n{}",
+            if threads.is_empty() { "none" } else { threads }
         );
     }
 
@@ -359,6 +427,12 @@ pub fn render(input: &DigestInput) -> String {
         if view.superseded == 1 { "" } else { "s" }
     );
     let _ = writeln!(out, "Read any decision in full: {}", input.decision_command);
+    let _ = writeln!(
+        out,
+        "Search all of your memory (decisions, ledger, briefs, archived handovers) before \
+         you say something is unknown or never happened: {}",
+        input.search_command
+    );
     for warning in &view.warnings {
         let _ = writeln!(out, "warning: {warning}");
     }
@@ -520,10 +594,12 @@ not json
             head: "abc1234",
             state_dir: "/state/corgis/weather",
             handover: None,
+            previous_handover: None,
             decisions,
             ledger,
             fleet,
             decision_command: "corgi digest /repos/weather --decision \"<words>\"",
+            search_command: "corgi digest /repos/weather --search \"<words>\"",
         }
     }
 
@@ -550,5 +626,44 @@ not json
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(!empty.contains("# Handover"));
         assert!(empty.contains("# Open work (0)\nnone\n"));
+    }
+
+    #[test]
+    fn without_a_handover_note_the_newest_archived_open_threads_are_shown() {
+        let note = "# Handover\n\n## Open threads with the user\n- Ask about X.\n  ### detail\n\n\
+                    ### Sub\nkept\n## Promises to the user\nnone\n";
+        // A deeper heading stays inside the section; the next `##` ends it.
+        assert_eq!(
+            open_threads(note),
+            Some("- Ask about X.\n  ### detail\n\n### Sub\nkept")
+        );
+        assert_eq!(open_threads("# Handover\nnone\n"), None);
+        assert_eq!(open_threads("## Open threads\n- last\n"), Some("- last"));
+        assert_eq!(
+            handover_time("20261003-153017.md").as_deref(),
+            Some("2026-10-03 15:30 UTC")
+        );
+        assert_eq!(handover_time("notes.md"), None);
+
+        let mut archived = input("", "", &[]);
+        archived.previous_handover = Some(("20261003-153017.md", note));
+        let shown = render(&archived);
+        assert!(shown.contains(
+            "\n# Open threads from the previous session's note (2026-10-03 15:30 UTC, \
+             handovers/20261003-153017.md; may be out of date, check before acting on it)\n\
+             - Ask about X.\n  ### detail\n\n### Sub\nkept\n\n# Open work"
+        ));
+        assert!(!shown.contains("Promises"));
+        // A current note wins, and the archived one is not shown beside it.
+        archived.handover = Some("## Open threads\nnew\n");
+        let shown = render(&archived);
+        assert!(shown.contains("# Handover note") && !shown.contains("previous session"));
+        // Without either, the digest is as before, apart from the search line.
+        let plain = render(&input("", "", &[]));
+        assert!(!plain.contains("Open threads"));
+        assert!(plain.contains(
+            "before you say something is unknown or never happened: \
+             corgi digest /repos/weather --search \"<words>\"\n"
+        ));
     }
 }

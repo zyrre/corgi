@@ -423,7 +423,7 @@ const IDLE_BASELINE_FACTOR: u64 = 2;
 pub const HANDOVER_NOTE: &str = "handover.md";
 
 /// Where the corgi that took over keeps the notes it read.
-const HANDOVERS_DIR: &str = "handovers";
+pub const HANDOVERS_DIR: &str = "handovers";
 
 /// The pane token recording that a corgi session was asked for its
 /// handover note, as `<unix seconds> <session>`, so a dashboard that takes

@@ -872,16 +872,31 @@ and `--harness codex` starts it on Codex. The corgi lists its workers with
 A corgi starts its session with `corgi digest <project>` instead of
 reading its state files raw, since `decisions.md` and `ledger.jsonl` only
 grow. The digest only reads, and prints, in order: the project, its base
-branch and short HEAD; `handover.md` whole if it exists; every ledger id whose
+branch and short HEAD; `handover.md` whole if it exists, else the "Open
+threads" section of the newest note in `handovers/`, labelled with its date
+as the previous session's; every ledger id whose
 newest line is not `merged` or `abandoned`, joined by agent name with the
 running agents (a missing one shows `**NOT RUNNING**`); the last 10 finished
 ids; the newest decisions in full, whole entries up to 12 KB but at least 3;
 the titles of the rest, at most 500 and a line counting any beyond; and a
 footer with the number of superseded entries hidden, how to read one in full,
-and warnings. A decision entry's `Supersedes: <heading>` line hides the
+how to search, and warnings. A decision entry's `Supersedes: <heading>` line hides the
 earlier entry with exactly that heading (after `## `); one that matches none
 is warned about. `corgi digest --decision "<words>"` prints every entry,
-superseded or not, whose heading contains all the words. Like `fleet`, it
+superseded or not, whose heading contains all the words.
+
+`corgi digest --search "<words>"` (`src/digest/search.rs`) looks in all of
+the memory, since a test showed a corgi answering "don't know" to every
+question about older history with the digest alone: decision entries
+(superseded ones marked), the newest ledger line of each id, and the
+paragraphs and list items of briefs and archived handover notes. A word hits
+a block that has a word starting with it, ignoring case. Hits are ranked by
+how many of the words they have, then newest first, with a file's hits past
+its first two moved behind every other file's; each shows `file:line`, its
+date (a handover note's in full, since a stale note misled the test's
+answers) and up to three lines of context, and the output stops near 5 KB
+with a line counting the hits left out. No index: the files are small enough
+to read on each search. Like `fleet`, it
 needs Herdr to resolve the project and its agents. `corgi handler` and
 `corgi steward`, the command's names before the renames, still work but
 are not listed.

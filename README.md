@@ -94,7 +94,7 @@ flowchart LR
     corgi -->|"corgi report, git log"| workers
 ```
 
-Press `c` to start it, or run `corgi start ~/repos/webshop` from a shell. Scripts start workers the way it does, with `corgi spawn` (see `corgi spawn --help`). The corgi starts each session with `corgi digest`, a bounded summary of its decisions, ledger and handover note joined with the running agents.
+Press `c` to start it, or run `corgi start ~/repos/webshop` from a shell. Scripts start workers the way it does, with `corgi spawn` (see `corgi spawn --help`). The corgi starts each session with `corgi digest`, a bounded summary of its decisions, ledger and handover note joined with the running agents. It looks up older history with `corgi digest --search "<words>"`.
 
 ## Data and privacy
 
