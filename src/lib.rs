@@ -8,8 +8,6 @@ pub mod git;
 pub mod harness;
 pub mod herdr;
 pub mod job;
-#[cfg(test)]
-mod mockups;
 pub mod model;
 pub(crate) mod motion;
 pub mod paths;

@@ -130,13 +130,13 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                 lines.extend(
                     corgi_lines(corgi, selected, card_width, now)
                         .into_iter()
-                        .map(|line| card_row(line, Part::Corgi, area.width)),
+                        .map(|line| card.frame(line)),
                 );
                 if workers.is_empty() {
                     lines.push(card_bottom(area.width, Some(COLLAPSE_HINT)));
                     lines.push(Line::raw(""));
                 } else {
-                    lines.push(corgi_worker_gap(area.width));
+                    lines.push(card.frame(Line::from(gutter(false))));
                 }
                 items.push(ListItem::new(lines));
                 for (offset, worker) in workers.iter().enumerate() {
@@ -152,12 +152,10 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
                             break 'runs;
                         }
                     }
-                    let last = offset + 1 == workers.len();
-                    let mut lines: Vec<Line<'_>> =
-                        worker_lines(worker, selected, card_width, last, now)
-                            .into_iter()
-                            .map(|line| card_row(line, Part::Worker, area.width))
-                            .collect();
+                    let mut lines: Vec<Line<'_>> = agent_lines(worker, selected, card_width, now)
+                        .into_iter()
+                        .map(|line| card.frame(line))
+                        .collect();
                     if offset + 1 == workers.len() {
                         lines.push(card_bottom(area.width, Some(COLLAPSE_HINT)));
                         lines.push(Line::raw(""));
@@ -373,57 +371,36 @@ fn fitted_spans(line: Line<'_>, width: usize) -> Vec<Span<'_>> {
 /// The top of a card: its corner, the project's name as its title, and the
 /// rule on to the other corner.
 fn card_top(project: &str, area_width: u16) -> Line<'static> {
-    let style = card_style();
     let inner = card_inner_width(area_width);
-    let mut title_spans = Vec::new();
-    if style == CardStyle::Lead {
-        title_spans.push(Span::raw(" "));
-        title_spans.push(Span::styled(CORGI_ICON, bold(COAT)));
-    }
-    let title = clip(&format!(" {project} "), inner.saturating_sub(3));
-    let title_color = match style {
-        CardStyle::Current | CardStyle::Tree => SUCCESS,
-        _ => COAT,
-    };
-    title_spans.push(Span::styled(title, bold(title_color)));
-    let rule = inner.saturating_sub(title_spans.iter().map(Span::width).sum());
-    let (corner, line, end, edge) = match style {
-        CardStyle::Heavy => ("┏", "━", "┓", bold(COAT)),
-        CardStyle::Ember => ("╭", "─", "╮", Style::default().fg(COAT)),
-        _ => ("╭", "─", "╮", Style::default().fg(MUTED)),
-    };
-    let mut spans = vec![Span::raw(CARD_MARGIN), Span::styled(corner, edge)];
-    spans.extend(title_spans);
-    spans.push(Span::styled(format!("{}{end}", line.repeat(rule)), edge));
-    Line::from(spans)
+    let title = clip(&format!(" {project} "), inner);
+    let rule = inner.saturating_sub(title.width());
+    Line::from(vec![
+        Span::raw(CARD_MARGIN),
+        Span::styled("╭", Style::default().fg(MUTED)),
+        Span::styled(title, bold(SUCCESS)),
+        Span::styled(format!("{}╮", "─".repeat(rule)), Style::default().fg(MUTED)),
+    ])
 }
 
 /// The rule between a card's corgi and the sum of its workers, joined to
 /// the card's sides.
 fn card_divider(area_width: u16) -> Line<'static> {
     let inner = card_inner_width(area_width);
-    let (left, line, right, edge) = match card_style() {
-        CardStyle::Heavy => ("┡", "━", "┩", bold(COAT)),
-        CardStyle::Ember => ("├", "─", "┤", Style::default().fg(COAT)),
-        _ => ("├", "─", "┤", Style::default().fg(MUTED)),
-    };
     Line::from(vec![
         Span::raw(CARD_MARGIN),
-        Span::styled(format!("{left}{}{right}", line.repeat(inner)), edge),
+        Span::styled(
+            format!("├{}┤", "─".repeat(inner)),
+            Style::default().fg(MUTED),
+        ),
     ])
 }
 
 /// The bottom of a card, with `hint` set into its rule near the right corner.
 fn card_bottom(area_width: u16, hint: Option<&'static str>) -> Line<'static> {
     let inner = card_inner_width(area_width);
-    let edge = if card_style() == CardStyle::Ember {
-        COAT
-    } else {
-        MUTED
-    };
     let mut spans = vec![
         Span::raw(CARD_MARGIN),
-        Span::styled("╰", Style::default().fg(edge)),
+        Span::styled("╰", Style::default().fg(MUTED)),
     ];
     let hint = hint
         .map(|hint| format!(" {hint} "))
@@ -431,13 +408,13 @@ fn card_bottom(area_width: u16, hint: Option<&'static str>) -> Line<'static> {
     match hint {
         Some(hint) => {
             let left = inner - hint.width() - 1;
-            spans.push(Span::styled("─".repeat(left), Style::default().fg(edge)));
+            spans.push(Span::styled("─".repeat(left), Style::default().fg(MUTED)));
             spans.push(Span::styled(hint, bold(MUTED)));
-            spans.push(Span::styled("─╯", Style::default().fg(edge)));
+            spans.push(Span::styled("─╯", Style::default().fg(MUTED)));
         }
         None => spans.push(Span::styled(
             format!("{}╯", "─".repeat(inner)),
-            Style::default().fg(edge),
+            Style::default().fg(MUTED),
         )),
     }
     Line::from(spans)
@@ -458,33 +435,16 @@ fn collapsed_card(
     lines.extend(
         corgi_lines(corgi, selected, content_area, now)
             .into_iter()
-            .map(|line| card_row(line, Part::Corgi, area_width)),
+            .map(|line| rim.frame(line)),
     );
-    let treed = matches!(card_style(), CardStyle::Tree | CardStyle::Lead);
-    if treed {
-        lines.push(card_row(
-            Line::from(vec![
-                gutter(false),
-                Span::styled(" │", Style::default().fg(MUTED)),
-            ]),
-            Part::Worker,
-            area_width,
-        ));
-    } else {
-        lines.push(card_divider(area_width));
-    }
+    lines.push(card_divider(area_width));
     // The same column to spare at the right as every other row.
     let width = card_inner_width(area_width).saturating_sub(1);
-    let summary = worker_summary(workers, width - if treed { TREE_WIDTH } else { 0 });
-    let count = summary.len();
-    lines.extend(summary.into_iter().enumerate().map(|(index, line)| {
-        let line = if treed {
-            branch(line, index + 1 == count)
-        } else {
-            line
-        };
-        card_row(line, Part::Worker, area_width)
-    }));
+    lines.extend(
+        worker_summary(workers, width)
+            .into_iter()
+            .map(|line| rim.frame(line)),
+    );
     lines.push(card_bottom(area_width, None));
     lines
 }
@@ -498,11 +458,7 @@ fn corgi_lines(
     now: u64,
 ) -> Vec<Line<'static>> {
     let text_width = transcript_text_width(area_width);
-    let mut identity = agent_status_line(corgi, selected, area_width, now);
-    if card_style() == CardStyle::CoatBadge {
-        identity = coat_badge(identity, corgi.info.state);
-    }
-    let mut lines = vec![identity];
+    let mut lines = vec![agent_status_line(corgi, selected, area_width, now)];
     for activity in [&corgi.message, &corgi.tool] {
         lines.extend(entry_lines(
             activity,
@@ -867,285 +823,6 @@ fn activity_color(kind: ActivityKind) -> Color {
         ActivityKind::Message => TEXT,
         ActivityKind::Ready => MUTED,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Mockup-only: ways a card could set its corgi apart from its workers. The
-// mockup generator in `src/mockups.rs` switches between them; the dashboard
-// itself always draws `Current`.
-
-/// How a card sets its corgi apart from its workers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) enum CardStyle {
-    /// Today's card, for comparison.
-    #[default]
-    Current,
-    /// A faint coat-orange band behind the corgi's rows, fading to the right.
-    Band,
-    /// A coat-orange rail beside the corgi's rows, the title in coat orange.
-    Rail,
-    /// The whole card's border in coat orange, the workers muted.
-    Ember,
-    /// The workers hang under the corgi as a tree.
-    Tree,
-    /// The corgi's state badge becomes a coat-coloured `corgi` pill.
-    CoatBadge,
-    /// A heavy coat-orange border round the corgi, a light one round the
-    /// workers.
-    Heavy,
-    /// The corgi on a raised panel with a coat tab and an icon in the title,
-    /// the workers as a dimmed tree.
-    Lead,
-}
-
-#[cfg(test)]
-thread_local! {
-    static CARD_STYLE: std::cell::Cell<CardStyle> = const { std::cell::Cell::new(CardStyle::Current) };
-}
-
-/// Draws every card on this thread in `style` from now on.
-#[cfg(test)]
-pub(crate) fn set_card_style(style: CardStyle) {
-    CARD_STYLE.set(style);
-}
-
-fn card_style() -> CardStyle {
-    #[cfg(test)]
-    {
-        CARD_STYLE.get()
-    }
-    #[cfg(not(test))]
-    {
-        CardStyle::Current
-    }
-}
-
-// The header mascot's coat and the dark of its eyes, fixed so they read as a
-// corgi in any theme.
-const COAT: Color = Color::Indexed(208);
-const COAT_DARK: Color = Color::Indexed(16);
-// A placeholder for the pixel-art icon a sibling task draws: two ears over a
-// head, in two cells.
-const CORGI_ICON: &str = "▙▟";
-// Columns a tree branch takes after the gutter.
-const TREE_WIDTH: usize = 4;
-
-/// Which part of a card a row belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Part {
-    Corgi,
-    Worker,
-}
-
-/// `line` between a card's borders, as the card style draws a row of `part`.
-fn card_row(line: Line<'_>, part: Part, area_width: u16) -> Line<'_> {
-    let style = card_style();
-    let inner = card_inner_width(area_width);
-    let muted = Style::default().fg(MUTED);
-    let (left, right) = match (style, part) {
-        (CardStyle::Ember, _) => (
-            Span::styled("│", Style::default().fg(COAT)),
-            Span::styled("│", Style::default().fg(COAT)),
-        ),
-        (CardStyle::Heavy, Part::Corgi) => {
-            (Span::styled("┃", bold(COAT)), Span::styled("┃", bold(COAT)))
-        }
-        (CardStyle::Lead, Part::Corgi) => (
-            Span::styled("▐", Style::default().fg(COAT)),
-            Span::styled("│", muted),
-        ),
-        _ => (Span::styled("│", muted), Span::styled("│", muted)),
-    };
-    let line = match (style, part) {
-        (CardStyle::Rail, Part::Corgi) => railed(line),
-        (CardStyle::Ember, Part::Worker) => quieted(line, false),
-        (CardStyle::Lead, Part::Worker) => quieted(line, true),
-        _ => line,
-    };
-    let mut content = fitted_spans(line, inner);
-    match (style, part) {
-        (CardStyle::Band, Part::Corgi) => content = banded(content, inner),
-        (CardStyle::Lead, Part::Corgi) => {
-            for span in &mut content {
-                if span.style.bg.is_none() {
-                    span.style = span.style.bg(Color::Black);
-                }
-            }
-        }
-        _ => {}
-    }
-    let mut spans = vec![Span::raw(CARD_MARGIN), left];
-    spans.extend(content);
-    spans.push(right);
-    Line::from(spans)
-}
-
-/// The row between a corgi and its first worker in an expanded card.
-fn corgi_worker_gap(area_width: u16) -> Line<'static> {
-    match card_style() {
-        CardStyle::Heavy => card_divider(area_width),
-        CardStyle::Tree | CardStyle::Lead => card_row(
-            Line::from(vec![
-                gutter(false),
-                Span::styled(" │", Style::default().fg(MUTED)),
-            ]),
-            Part::Worker,
-            area_width,
-        ),
-        _ => card_row(Line::from(gutter(false)), Part::Worker, area_width),
-    }
-}
-
-/// A worker's rows in an expanded card, hung from the corgi as a branch of
-/// a tree when the style draws one.
-fn worker_lines(
-    worker: &DashboardAgent,
-    selected: bool,
-    area_width: u16,
-    last: bool,
-    now: u64,
-) -> Vec<Line<'_>> {
-    if !matches!(card_style(), CardStyle::Tree | CardStyle::Lead) {
-        return agent_lines(worker, selected, area_width, now);
-    }
-    let narrower = area_width.saturating_sub(TREE_WIDTH as u16);
-    agent_lines(worker, selected, narrower, now)
-        .into_iter()
-        .enumerate()
-        .map(|(index, line)| {
-            if index == 0 {
-                branch(line, last)
-            } else {
-                twig(line, last)
-            }
-        })
-        .collect()
-}
-
-/// `line` with a tree branch after its gutter, the last one a corner.
-fn branch(line: Line<'_>, last: bool) -> Line<'_> {
-    let mark = if last { " └─ " } else { " ├─ " };
-    after_gutter(line, Span::styled(mark, Style::default().fg(MUTED)))
-}
-
-/// A continuation row of a branch: the trunk carried on, or nothing after
-/// the last branch.
-fn twig(line: Line<'_>, last: bool) -> Line<'_> {
-    let mark = if last { "    " } else { " │  " };
-    after_gutter(line, Span::styled(mark, Style::default().fg(MUTED)))
-}
-
-fn after_gutter<'a>(line: Line<'a>, span: Span<'a>) -> Line<'a> {
-    let mut spans = line.spans;
-    let at = spans.len().min(1);
-    spans.insert(at, span);
-    Line::from(spans)
-}
-
-/// A corgi row with a coat rail in the last column of its gutter.
-fn railed(line: Line<'_>) -> Line<'_> {
-    let mut spans = line.spans;
-    if spans.is_empty() {
-        return Line::from(spans);
-    }
-    let gutter = spans.remove(0);
-    let kept = super::leading_columns(&gutter.content, GUTTER_WIDTH - 1).to_string();
-    spans.insert(0, Span::styled("▌", Style::default().fg(COAT)));
-    spans.insert(0, Span::styled(kept, gutter.style));
-    Line::from(spans)
-}
-
-/// A worker row in the background: muted, or dimmed, but for the state
-/// badge and anything blocked, which stay in color.
-fn quieted(line: Line<'_>, dim: bool) -> Line<'_> {
-    // The selected row is where the cursor is, and keeps all its color.
-    if line
-        .spans
-        .first()
-        .is_some_and(|span| span.content.starts_with('█'))
-    {
-        return line;
-    }
-    let spans = line
-        .spans
-        .into_iter()
-        .map(|mut span| {
-            let keep = span.style.bg.is_some() || span.style.fg == Some(WARNING);
-            if !keep {
-                span.style = if dim {
-                    span.style.add_modifier(Modifier::DIM)
-                } else {
-                    span.style.fg(MUTED)
-                };
-            }
-            span
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans)
-}
-
-/// `spans`, `width` columns, on a coat-orange band that fades out to the
-/// right. Cells with a background of their own keep it.
-fn banded(spans: Vec<Span<'_>>, width: usize) -> Vec<Span<'_>> {
-    // The coat over the dark theme's background, strongest at the left.
-    let shade = |column: usize| {
-        let fade = 1.0 - column as f32 / width.max(1) as f32;
-        let strength = 0.30 * fade.powf(0.8);
-        let mix = |coat: f32, back: f32| (back + (coat - back) * strength).round() as u8;
-        Color::Rgb(mix(255.0, 26.0), mix(135.0, 27.0), mix(0.0, 38.0))
-    };
-    let mut out = Vec::new();
-    let mut column = 0;
-    for span in spans {
-        if span.style.bg.is_some() {
-            column += span.width();
-            out.push(span);
-            continue;
-        }
-        for character in span.content.chars() {
-            out.push(Span::styled(
-                character.to_string(),
-                span.style.bg(shade(column)),
-            ));
-            column += unicode_width::UnicodeWidthChar::width(character).unwrap_or(0);
-        }
-    }
-    out
-}
-
-/// The corgi's identity row with its state badge swapped for a pill in its
-/// coat colours and the icon, and its state said after it instead.
-fn coat_badge(line: Line<'static>, state: AgentState) -> Line<'static> {
-    let mut spans = line.spans;
-    if spans.len() < 4 {
-        return Line::from(spans);
-    }
-    let pill = [
-        Span::styled(CORGI_ICON, bold(COAT)),
-        Span::raw(" "),
-        Span::styled("▐", Style::default().fg(COAT)),
-        Span::styled(
-            "CORGI",
-            Style::default()
-                .fg(COAT_DARK)
-                .bg(COAT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled("▌", Style::default().fg(COAT)),
-    ];
-    let state = [
-        Span::styled(state_mark(state), bold(state_color(state))),
-        Span::styled(
-            format!(" {}", state_word(state)),
-            Style::default().fg(state_color(state)),
-        ),
-    ];
-    // The gutter, then the badge, its separator and the task.
-    spans.splice(1..2, pill);
-    let task = spans.len().min(1 + 5 + 1);
-    spans.splice(task..task + 1, state);
-    Line::from(spans)
 }
 
 #[cfg(test)]

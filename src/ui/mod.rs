@@ -24,8 +24,6 @@ mod prompt;
 mod status;
 
 use agents::draw_agents;
-#[cfg(test)]
-pub(crate) use agents::{CardStyle, set_card_style};
 pub(crate) use dialogs::{close_dialog_lines, merge_dialog_lines};
 use dialogs::{draw_close_workspace, draw_merge_worktree};
 use header::{HEADER_HEIGHT, draw_header};

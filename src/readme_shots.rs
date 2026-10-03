@@ -70,38 +70,6 @@ const ANSI: [&str; 16] = [
 ];
 const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 
-/// The terminal theme a shot is drawn in: its default colors, its sixteen
-/// ANSI colors, and the window's edge and title.
-pub(crate) struct Palette {
-    pub(crate) background: &'static str,
-    pub(crate) foreground: &'static str,
-    pub(crate) ansi: [&'static str; 16],
-    pub(crate) edge: &'static str,
-    pub(crate) title: &'static str,
-}
-
-/// Tokyo Night, every README shot's theme.
-pub(crate) const TOKYO_NIGHT: Palette = Palette {
-    background: BACKGROUND,
-    foreground: FOREGROUND,
-    ansi: ANSI,
-    edge: WINDOW_EDGE,
-    title: TITLE_TEXT,
-};
-
-thread_local! {
-    static PALETTE: std::cell::Cell<&'static Palette> = const { std::cell::Cell::new(&TOKYO_NIGHT) };
-}
-
-/// Draws every shot on this thread in `palette` from now on.
-pub(crate) fn set_palette(palette: &'static Palette) {
-    PALETTE.set(palette);
-}
-
-fn palette() -> &'static Palette {
-    PALETTE.get()
-}
-
 /// The dashboard's size in the screenshots cut from it: wide enough for the
 /// header's whole band of cards, and tall enough for three projects.
 const WIDTH: u16 = 112;
@@ -175,7 +143,7 @@ fn animations() -> Vec<Animation> {
 
 /// How a shot is framed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Chrome {
+enum Chrome {
     /// A terminal window with a title bar, for a whole screen.
     Window,
     /// A rounded panel of the terminal's background, for part of a screen.
@@ -185,7 +153,7 @@ pub(crate) enum Chrome {
 }
 
 /// A label pointing at one cell of a shot, at `x`, `y` in the shot's area.
-pub(crate) struct Callout {
+struct Callout {
     x: u16,
     y: u16,
     label: &'static str,
@@ -203,7 +171,7 @@ enum Place {
 }
 
 /// The screen `app` draws, its popups and their effects played out.
-pub(crate) fn screen(app: &mut App) -> Terminal<TestBackend> {
+fn screen(app: &mut App) -> Terminal<TestBackend> {
     let mut terminal = test_terminal(WIDTH, HEIGHT);
     settle(&mut terminal, app);
     terminal
@@ -244,7 +212,7 @@ fn draw_at(terminal: &mut Terminal<TestBackend>, app: &mut App, millis: u64) {
 /// Draws `app` on a manual clock until its popup, if it has one, has grown
 /// in and the dashboard behind it has dimmed. A key was just pressed before
 /// the last frame, so a text field's caret is in its on phase.
-pub(crate) fn settle(terminal: &mut Terminal<TestBackend>, app: &mut App) {
+fn settle(terminal: &mut Terminal<TestBackend>, app: &mut App) {
     draw_at(terminal, app, 0);
     draw_at(terminal, app, 1_000);
     app.motion.key_pressed();
@@ -311,7 +279,7 @@ fn row_anatomy() -> String {
 }
 
 /// Where `needle` first starts within `area` of the screen.
-pub(crate) fn find(buffer: &Buffer, needle: &str, area: Rect) -> Position {
+fn find(buffer: &Buffer, needle: &str, area: Rect) -> Position {
     for y in area.top()..area.bottom() {
         let mut row = String::new();
         let mut starts = Vec::new();
@@ -381,7 +349,7 @@ const HOME: &str = "/home/jane.doe";
 
 /// One made-up agent: where it works, what state it is in, and what it said
 /// and ran last.
-pub(crate) struct Agent {
+struct Agent {
     project: &'static str,
     kind: &'static str,
     state: AgentState,
@@ -398,7 +366,7 @@ pub(crate) struct Agent {
 }
 
 impl Agent {
-    pub(crate) fn dashboard_agent(&self, now: u64) -> DashboardAgent {
+    fn dashboard_agent(&self, now: u64) -> DashboardAgent {
         let project_root = format!("{HOME}/repos/{}", self.project);
         DashboardAgent {
             info: AgentInfo {
@@ -439,7 +407,7 @@ fn activity((kind, text): (ActivityKind, &str)) -> Activity {
 /// order: each project's corgi first, then blocked, working, done and idle.
 /// Every countdown sits in the middle of its minute, so a second passing
 /// while the shot is drawn never changes what it reads.
-pub(crate) fn herd() -> Vec<Agent> {
+fn herd() -> Vec<Agent> {
     use ActivityKind::*;
     use PromptCacheKind::*;
     vec![
@@ -611,7 +579,7 @@ fn usage_slot(provider: Provider, plan: &str, windows: [(u8, u64); 2], now: u64)
 
 /// The dashboard over the whole herd, the webshop card expanded into its
 /// workers' rows and the blocked one selected.
-pub(crate) fn dashboard() -> App {
+fn dashboard() -> App {
     let now = unix_now();
     let mut app = test_app();
     app.motion = Motion::manual();
@@ -814,7 +782,7 @@ fn merge(phase: MergePhase) -> App {
 
 /// The `area` of the terminal's screen as an SVG image, framed by `chrome`,
 /// with `callouts` labelling its parts.
-pub(crate) fn svg(
+fn svg(
     terminal: &mut Terminal<TestBackend>,
     area: Rect,
     chrome: Chrome,
@@ -859,11 +827,9 @@ pub(crate) fn svg(
     if chrome != Chrome::Bare {
         let _ = writeln!(
             out,
-            r#"<rect x="0.5" y="0.5" width="{}" height="{}" rx="{WINDOW_RADIUS}" fill="{}" stroke="{}"/>"#,
+            r#"<rect x="0.5" y="0.5" width="{}" height="{}" rx="{WINDOW_RADIUS}" fill="{BACKGROUND}" stroke="{WINDOW_EDGE}"/>"#,
             outer_width - 1,
-            outer_height - 1,
-            palette().background,
-            palette().edge
+            outer_height - 1
         );
     }
     if chrome == Chrome::Window {
@@ -877,10 +843,9 @@ pub(crate) fn svg(
         }
         let _ = writeln!(
             out,
-            r#"<text x="{}" y="{}" fill="{}" font-family="{FONT_FAMILY}" font-size="13" text-anchor="middle">{}</text>"#,
+            r#"<text x="{}" y="{}" fill="{TITLE_TEXT}" font-family="{FONT_FAMILY}" font-size="13" text-anchor="middle">{}</text>"#,
             outer_width / 2,
             TITLE_BAR / 2 + 5,
-            palette().title,
             escape(WINDOW_TITLE)
         );
     }
@@ -896,10 +861,9 @@ pub(crate) fn svg(
     {
         let _ = writeln!(
             out,
-            r#"<rect x="{}" y="{}" width="2" height="{CELL_HEIGHT}" fill="{}"/>"#,
+            r#"<rect x="{}" y="{}" width="2" height="{CELL_HEIGHT}" fill="{FOREGROUND}"/>"#,
             u32::from(x - area.x) * CELL_WIDTH,
-            u32::from(y - area.y) * CELL_HEIGHT,
-            palette().foreground
+            u32::from(y - area.y) * CELL_HEIGHT
         );
     }
     for callout in callouts {
@@ -1129,7 +1093,7 @@ fn row_svg(out: &mut String, buffer: &Buffer, area: Rect, y: u16) {
     while x < looks.len() {
         let bg = &looks[x].2;
         let run = looks[x..].iter().take_while(|cell| &cell.2 == bg).count();
-        if bg != palette().background {
+        if bg != BACKGROUND {
             let _ = writeln!(
                 out,
                 r#"<rect x="{}" y="{row_top}" width="{}" height="{CELL_HEIGHT}" fill="{bg}" shape-rendering="crispEdges"/>"#,
@@ -1210,8 +1174,6 @@ fn shape(symbol: &str, left: u32, top: u32, fill: &str) -> Option<String> {
     let radius = w as f32 / 2.0;
     let path =
         |d: String| format!(r#"<path d="{d}" fill="none" stroke="{fill}" stroke-width="1.2"/>"#);
-    let heavy =
-        |d: String| format!(r#"<path d="{d}" fill="none" stroke="{fill}" stroke-width="2.6"/>"#);
     Some(match symbol {
         "█" => rect(left, top, w, h),
         "▀" => rect(left, top, w, h / 2),
@@ -1246,34 +1208,6 @@ fn shape(symbol: &str, left: u32, top: u32, fill: &str) -> Option<String> {
         "┘" => path(format!("M{left} {mid_y}H{mid_x}V{top}")),
         "├" => path(format!("M{mid_x} {top}V{bottom}M{mid_x} {mid_y}H{right}")),
         "┤" => path(format!("M{mid_x} {top}V{bottom}M{mid_x} {mid_y}H{left}")),
-        "━" => heavy(format!("M{left} {mid_y}H{right}")),
-        "┃" => heavy(format!("M{mid_x} {top}V{bottom}")),
-        "┏" => heavy(format!("M{right} {mid_y}H{mid_x}V{bottom}")),
-        "┓" => heavy(format!("M{left} {mid_y}H{mid_x}V{bottom}")),
-        "┡" => format!(
-            "{}{}",
-            heavy(format!("M{mid_x} {top}V{mid_y}H{right}")),
-            path(format!("M{mid_x} {mid_y}V{bottom}"))
-        ),
-        "┩" => format!(
-            "{}{}",
-            heavy(format!("M{mid_x} {top}V{mid_y}H{left}")),
-            path(format!("M{mid_x} {mid_y}V{bottom}"))
-        ),
-        "▖" => rect(left, top + h / 2, w / 2, h - h / 2),
-        "▗" => rect(left + w / 2, top + h / 2, w - w / 2, h - h / 2),
-        "▘" => rect(left, top, w / 2, h / 2),
-        "▝" => rect(left + w / 2, top, w - w / 2, h / 2),
-        "▙" => format!(
-            "{}{}",
-            rect(left, top, w / 2, h / 2),
-            rect(left, top + h / 2, w, h - h / 2)
-        ),
-        "▟" => format!(
-            "{}{}",
-            rect(left + w / 2, top, w - w / 2, h / 2),
-            rect(left, top + h / 2, w, h - h / 2)
-        ),
         _ => return None,
     })
 }
@@ -1281,12 +1215,8 @@ fn shape(symbol: &str, left: u32, top: u32, fill: &str) -> Option<String> {
 /// A cell color in the screenshot's theme. The terminal's default is the
 /// theme's foreground or background, depending on which the cell asks for.
 fn color(color: Color, foreground: bool) -> String {
-    let default = if foreground {
-        palette().foreground
-    } else {
-        palette().background
-    };
-    let ansi = |index: usize| palette().ansi[index].to_string();
+    let default = if foreground { FOREGROUND } else { BACKGROUND };
+    let ansi = |index: usize| ANSI[index].to_string();
     match color {
         Color::Reset => default.to_string(),
         Color::Black => ansi(0),
