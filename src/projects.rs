@@ -136,7 +136,7 @@ fn memory_path() -> Option<PathBuf> {
 /// The projects Corgi created itself, one canonical path per line, in
 /// `created-projects` beside the project list (`$CORGI_CREATED_PROJECTS_FILE`
 /// overrides it). Corgi made each of these as an empty directory for its
-/// handler, so it answers Claude Code's folder-trust question for them.
+/// corgi, so it answers Claude Code's folder-trust question for them.
 fn created_projects_path() -> Option<PathBuf> {
     if let Some(path) = env::var_os("CORGI_CREATED_PROJECTS_FILE").filter(|path| !path.is_empty()) {
         return Some(PathBuf::from(path));

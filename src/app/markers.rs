@@ -2,12 +2,12 @@
 //! back the ones Herdr lost.
 //!
 //! A Herdr restart or live handoff restores panes and workspaces under the
-//! same IDs but without the tokens clients set. Corgi recognises its handler,
+//! same IDs but without the tokens clients set. Corgi recognises its corgi,
 //! its project workspaces and its agent workspaces by those tokens alone, so
 //! every one of its marks goes through here: it is reported to Herdr and
 //! written to a file in Corgi's state directory, `markers/<socket>.json`,
 //! together with what identifies the pane's agent or the workspace's
-//! checkout. The dashboard that wakes handlers compares the record with each
+//! checkout. The dashboard that wakes corgis compares the record with each
 //! snapshot ([`App::restore_markers`]): where Herdr has Corgi's tokens, Herdr
 //! is right and the record follows it; where Herdr has none, they are put
 //! back if the pane or workspace still holds the same occupant, and the
@@ -25,7 +25,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    handler::{self, BASELINE_TOKEN, CORGI_HANDLER_TOKEN, HANDOVER_TOKEN, OLD_HANDLER_TOKEN},
+    corgi::{self, BASELINE_TOKEN, CORGI_TOKEN, HANDOVER_TOKEN, OLD_CORGI_TOKEN},
     herdr::{HerdrClient, SessionSnapshot},
     model::{AgentInfo, WorkspaceInfo},
 };
@@ -39,13 +39,13 @@ use super::{
     },
 };
 
-/// The pane tokens Corgi sets: the handler's marks on the handler's pane,
+/// The pane tokens Corgi sets: the corgi's marks on the corgi's pane,
 /// and a spawned worker's request id on that worker's. The marker an older
 /// Corgi set under its pre-rename key counts among them, so that it is read,
 /// recorded under the new key, and cleared whenever Corgi writes.
 const PANE_TOKENS: [&str; 5] = [
-    CORGI_HANDLER_TOKEN,
-    OLD_HANDLER_TOKEN,
+    CORGI_TOKEN,
+    OLD_CORGI_TOKEN,
     HANDOVER_TOKEN,
     BASELINE_TOKEN,
     CORGI_REQUEST_TOKEN,
@@ -111,8 +111,8 @@ pub(super) fn mark_pane(
     tokens: &[(&str, &str)],
 ) -> Result<()> {
     let mut tokens = owned(tokens);
-    if tokens.contains_key(CORGI_HANDLER_TOKEN) {
-        tokens.insert(CORGI_HANDLER_TOKEN.into(), handler::marker(agent, session));
+    if tokens.contains_key(CORGI_TOKEN) {
+        tokens.insert(CORGI_TOKEN.into(), corgi::marker(agent, session));
     }
     client.report_pane_metadata(pane_id, CORGI_METADATA_SOURCE, &pane_patch(&tokens))?;
     remember(client, |record| {
@@ -189,7 +189,7 @@ pub(super) fn spawn_lock(
 
 /// Only Herdr's live session can establish pane ownership.
 pub(super) fn session_of(agent: &AgentInfo) -> Option<&str> {
-    handler::native_session(agent)
+    corgi::native_session(agent)
 }
 
 /// The checkout Herdr reports for a workspace.
@@ -243,7 +243,7 @@ fn read(path: &Path) -> Record {
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_default();
     for marks in record.panes.values_mut() {
-        handler::upgrade_marker(&mut marks.tokens);
+        corgi::upgrade_marker(&mut marks.tokens);
     }
     record
 }
@@ -313,7 +313,7 @@ fn reconcile(record: &mut Record, snapshot: &SessionSnapshot) -> Vec<Restore> {
         // A marker under the pre-rename key is read as the current one; the
         // difference makes the pane's marks be written again, under it.
         let mut upgraded = held_tokens.clone();
-        handler::upgrade_marker(&mut upgraded);
+        corgi::upgrade_marker(&mut upgraded);
         let tokens = &upgraded;
         let Some(agent) = agents.get(pane) else {
             // A native session can be temporarily undiscovered after restart.
@@ -321,12 +321,12 @@ fn reconcile(record: &mut Record, snapshot: &SessionSnapshot) -> Vec<Restore> {
             continue;
         };
         let session = session_of(agent);
-        let live_marker = tokens.get(CORGI_HANDLER_TOKEN);
+        let live_marker = tokens.get(CORGI_TOKEN);
         let legacy = live_marker.is_some_and(|value| !value.starts_with("session:"));
         let previous = record
             .panes
             .get(*pane)
-            .filter(|marks| marks.tokens.get(CORGI_HANDLER_TOKEN) == live_marker || legacy);
+            .filter(|marks| marks.tokens.get(CORGI_TOKEN) == live_marker || legacy);
         let recorded_session = previous.and_then(|marks| marks.session.as_deref());
         let same_session = session.is_some() && session == recorded_session;
         let stale = matches!((session, recorded_session), (Some(now), Some(then)) if now != then);
@@ -334,7 +334,7 @@ fn reconcile(record: &mut Record, snapshot: &SessionSnapshot) -> Vec<Restore> {
         // has it and no recorded session says otherwise, the agent in the
         // pane is the one it was set for, and its session is bound to it.
         let unbound_worker = live_marker.is_none() && recorded_session.is_none();
-        if stale || !(handler::is_handler(agent) || same_session || unbound_worker) {
+        if stale || !(corgi::is_corgi(agent) || same_session || unbound_worker) {
             // A missing native identity is inconclusive, not permission to
             // fall back to the name on a session-bound marker.
             if session.is_none()
@@ -356,7 +356,7 @@ fn reconcile(record: &mut Record, snapshot: &SessionSnapshot) -> Vec<Restore> {
         let name = agent.name.as_deref().unwrap_or_default();
         let mut promoted = tokens.clone();
         if session.is_some() && live_marker.is_some() {
-            promoted.insert(CORGI_HANDLER_TOKEN.into(), handler::marker(name, session));
+            promoted.insert(CORGI_TOKEN.into(), corgi::marker(name, session));
         }
         let session = session
             .map(str::to_string)
@@ -389,11 +389,10 @@ fn reconcile(record: &mut Record, snapshot: &SessionSnapshot) -> Vec<Restore> {
                 // Persisted name markers are safe to migrate even after a
                 // rename, because their recorded native session still matches.
                 marks.agent = agent.name.clone().unwrap_or_default();
-                if marks.tokens.contains_key(CORGI_HANDLER_TOKEN) {
-                    marks.tokens.insert(
-                        CORGI_HANDLER_TOKEN.into(),
-                        handler::marker(&marks.agent, Some(now)),
-                    );
+                if marks.tokens.contains_key(CORGI_TOKEN) {
+                    marks
+                        .tokens
+                        .insert(CORGI_TOKEN.into(), corgi::marker(&marks.agent, Some(now)));
                 }
                 restores.push(Restore::Pane(pane.clone(), marks.tokens.clone()));
                 true
@@ -457,8 +456,8 @@ impl App {
     /// Puts back the tokens Corgi set that Herdr lost, as after a restart or
     /// live handoff, and keeps the record in step with `snapshot`. What is
     /// put back goes into `snapshot` too, so the refresh that found the loss
-    /// already sees the handler and the project workspaces again. Only the
-    /// dashboard that wakes handlers calls this, so one process writes.
+    /// already sees the corgi and the project workspaces again. Only the
+    /// dashboard that wakes corgis calls this, so one process writes.
     pub(super) fn restore_markers(&mut self, snapshot: &mut SessionSnapshot) {
         let Some(path) = self.client.marker_record() else {
             return;
@@ -545,7 +544,7 @@ mod tests {
         app::{
             cli::{fleet_rows, requested_agent},
             project_main::project_root_digest,
-            waker::HandlerWaker,
+            waker::CorgiWaker,
         },
         model::{AgentSession, WorkspaceWorktreeInfo},
         test_support::{ScratchDir, fake_herdr, test_app},
@@ -554,7 +553,7 @@ mod tests {
     use super::*;
 
     const ROOT: &str = "/repos/corgi-markers";
-    const SESSION: &str = "5e55-handler";
+    const SESSION: &str = "5e55-corgi";
 
     /// A Herdr that keeps a session's panes, agents and workspaces, sets the
     /// tokens reported to it (a report replaces the Corgi tokens it had, as
@@ -707,12 +706,12 @@ mod tests {
         }
     }
 
-    /// A session like the one of 2026-09-27: the corgi handler in its
+    /// A session like the one of 2026-09-27: the corgi project's corgi in its
     /// project workspace, which it was asked to hand over from, and one
     /// worker in a Corgi worktree workspace.
     fn marked_session() -> Value {
-        let handler_tokens = json!({
-            "corgi_handler": "handler-corgi",
+        let corgi_tokens = json!({
+            "corgi_handler": "corgi-corgi",
             "corgi_handover": format!("1790000000 {SESSION}"),
             "corgi_baseline": format!("200000 {SESSION}"),
             "session": SESSION,
@@ -723,7 +722,7 @@ mod tests {
             "workspaces": [
                 {
                     "workspace_id": "w70",
-                    "label": "corgi-markers handler",
+                    "label": "corgi-markers corgi",
                     "tokens": {
                         "corgi_workspace_role": "project-main",
                         "corgi_project_main_tab": "w70:t1",
@@ -751,16 +750,16 @@ mod tests {
                 { "tab_id": "w8Z:t1", "workspace_id": "w8Z", "label": "1", "number": 1 }
             ],
             "panes": [
-                { "pane_id": "w70:p1", "workspace_id": "w70", "tab_id": "w70:t1", "tokens": handler_tokens },
+                { "pane_id": "w70:p1", "workspace_id": "w70", "tab_id": "w70:t1", "tokens": corgi_tokens },
                 { "pane_id": "w8Z:p1", "workspace_id": "w8Z", "tab_id": "w8Z:t1", "tokens": worker_tokens }
             ],
             "agents": [
                 {
                     "pane_id": "w70:p1", "workspace_id": "w70", "tab_id": "w70:t1",
-                    "agent": "claude", "name": "handler-corgi", "agent_status": "working",
+                    "agent": "claude", "name": "corgi-corgi", "agent_status": "working",
                     "cwd": ROOT,
                     "agent_session": { "agent": "claude", "kind": "id", "value": SESSION },
-                    "tokens": handler_tokens
+                    "tokens": corgi_tokens
                 },
                 {
                     "pane_id": "w8Z:p1", "workspace_id": "w8Z", "tab_id": "w8Z:t1",
@@ -773,13 +772,13 @@ mod tests {
         })
     }
 
-    /// The dashboard that wakes handlers, on `client`.
+    /// The dashboard that wakes corgis, on `client`.
     fn leading_dashboard(client: HerdrClient, scratch: &Path) -> App {
         let mut app = test_app();
         app.client = client;
-        let mut waker = HandlerWaker::default();
+        let mut waker = CorgiWaker::default();
         assert!(waker.lead(&scratch.join("wake.lock")));
-        app.handler_waker = Some(waker);
+        app.corgi_waker = Some(waker);
         app
     }
 
@@ -799,53 +798,50 @@ mod tests {
 
     /// A Steward an older Corgi launched carries its marker under the
     /// pre-rename key, in Herdr and in the record. After the dashboard is
-    /// rebuilt and restarted, it is still the project's handler, and its
+    /// rebuilt and restarted, it is still the project's corgi, and its
     /// marker moves to the new key.
     #[test]
-    fn a_steward_marked_by_an_older_corgi_stays_the_handler_under_the_new_key() {
+    fn a_steward_marked_by_an_older_corgi_stays_the_corgi_under_the_new_key() {
         let scratch = ScratchDir::new("markers-steward");
         let record = scratch.join("markers").join("herdr.json");
-        let marker = handler::marker("", Some(SESSION));
+        let marker = corgi::marker("", Some(SESSION));
         fs::create_dir_all(record.parent().unwrap()).unwrap();
         let old_record = json!({
             "panes": { "w70:p1": {
                 "agent": "steward-corgi", "session": SESSION,
-                "tokens": { OLD_HANDLER_TOKEN: marker }
+                "tokens": { OLD_CORGI_TOKEN: marker }
             } }
         });
         fs::write(&record, old_record.to_string()).unwrap();
         assert_eq!(
             read(&record).panes["w70:p1"].tokens,
-            owned(&[(CORGI_HANDLER_TOKEN, &marker)]),
+            owned(&[(CORGI_TOKEN, &marker)]),
             "the old record reads under the new key"
         );
         let mut live = marked_session();
         live["agents"][0]["name"] = json!("steward-corgi");
         for list in ["agents", "panes"] {
             let tokens = live[list][0]["tokens"].as_object_mut().unwrap();
-            tokens.remove(CORGI_HANDLER_TOKEN);
-            tokens.insert(OLD_HANDLER_TOKEN.into(), json!(marker));
+            tokens.remove(CORGI_TOKEN);
+            tokens.insert(OLD_CORGI_TOKEN.into(), json!(marker));
         }
         let herdr = StatefulHerdr::new("markers-steward", live);
         let mut dashboard = leading_dashboard(herdr.client(&record), &scratch);
 
         dashboard.refresh();
-        assert_eq!(
-            roles(&dashboard),
-            ["steward-corgi handler", "w-brave worker"]
-        );
+        assert_eq!(roles(&dashboard), ["steward-corgi corgi", "w-brave worker"]);
         for list in ["agents", "panes"] {
             let tokens = herdr.tokens(list, "pane_id", "w70:p1");
-            assert_eq!(tokens[CORGI_HANDLER_TOKEN], json!(marker), "{list}");
-            assert!(tokens.get(OLD_HANDLER_TOKEN).is_none(), "{list}: {tokens}");
+            assert_eq!(tokens[CORGI_TOKEN], json!(marker), "{list}");
+            assert!(tokens.get(OLD_CORGI_TOKEN).is_none(), "{list}: {tokens}");
             assert_eq!(
                 tokens[HANDOVER_TOKEN],
                 json!(format!("1790000000 {SESSION}"))
             );
         }
         let marks = &read(&record).panes["w70:p1"];
-        assert_eq!(marks.tokens[CORGI_HANDLER_TOKEN], marker);
-        assert!(!marks.tokens.contains_key(OLD_HANDLER_TOKEN));
+        assert_eq!(marks.tokens[CORGI_TOKEN], marker);
+        assert!(!marks.tokens.contains_key(OLD_CORGI_TOKEN));
 
         // The next refresh finds the marks in place and writes nothing.
         let reports = herdr.reports().len();
@@ -864,18 +860,15 @@ mod tests {
         dashboard.refresh();
         assert_eq!(herdr.reports().len(), 1);
         assert_eq!(
-            herdr.tokens("agents", "pane_id", "w70:p1")[CORGI_HANDLER_TOKEN],
-            handler::marker("", Some(SESSION))
+            herdr.tokens("agents", "pane_id", "w70:p1")[CORGI_TOKEN],
+            corgi::marker("", Some(SESSION))
         );
         let before = [
             herdr.tokens("agents", "pane_id", "w70:p1"),
             herdr.tokens("workspaces", "workspace_id", "w70"),
             herdr.tokens("workspaces", "workspace_id", "w8Z"),
         ];
-        assert_eq!(
-            roles(&dashboard),
-            ["handler-corgi handler", "w-brave worker"]
-        );
+        assert_eq!(roles(&dashboard), ["corgi-corgi corgi", "w-brave worker"]);
 
         herdr.restart();
         let mut fleet = test_app();
@@ -883,8 +876,8 @@ mod tests {
         fleet.refresh();
         assert_eq!(
             roles(&fleet),
-            ["handler-corgi worker", "w-brave worker"],
-            "without its marks the Project handler is a worker"
+            ["corgi-corgi worker", "w-brave worker"],
+            "without its marks the corgi is a worker"
         );
 
         dashboard.refresh();
@@ -901,16 +894,13 @@ mod tests {
             before[0],
             "the pane has them too"
         );
-        // The refresh that put them back already sees the handler.
-        assert_eq!(
-            roles(&dashboard),
-            ["handler-corgi handler", "w-brave worker"]
-        );
+        // The refresh that put them back already sees the corgi.
+        assert_eq!(roles(&dashboard), ["corgi-corgi corgi", "w-brave worker"]);
         assert_eq!(herdr.reports().len(), 4);
 
         // And so does `corgi fleet`.
         fleet.refresh();
-        assert_eq!(roles(&fleet), ["handler-corgi handler", "w-brave worker"]);
+        assert_eq!(roles(&fleet), ["corgi-corgi corgi", "w-brave worker"]);
 
         // A later refresh finds everything in place and writes nothing.
         dashboard.refresh();
@@ -924,7 +914,7 @@ mod tests {
         assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
-    fn handler_agent(
+    fn corgi_agent(
         pane: &str,
         name: &str,
         session: Option<&str>,
@@ -943,11 +933,11 @@ mod tests {
         }
     }
 
-    fn handler_marks(session: Option<&str>) -> PaneMarks {
+    fn corgi_marks(session: Option<&str>) -> PaneMarks {
         PaneMarks {
-            agent: "handler-corgi".into(),
+            agent: "corgi-corgi".into(),
             session: session.map(str::to_string),
-            tokens: owned(&[(CORGI_HANDLER_TOKEN, "handler-corgi")]),
+            tokens: owned(&[(CORGI_TOKEN, "corgi-corgi")]),
         }
     }
 
@@ -958,9 +948,9 @@ mod tests {
         }
     }
 
-    fn record_with_handler(session: Option<&str>) -> Record {
+    fn record_with_corgi(session: Option<&str>) -> Record {
         Record {
-            panes: BTreeMap::from([("w70:p1".into(), handler_marks(session))]),
+            panes: BTreeMap::from([("w70:p1".into(), corgi_marks(session))]),
             ..Record::default()
         }
     }
@@ -970,11 +960,11 @@ mod tests {
         for agent in [
             // The same name on a new session, as after a handover Corgi did
             // not record, or a resumed conversation.
-            handler_agent("w70:p1", "handler-corgi", Some("new-session"), &[]),
+            corgi_agent("w70:p1", "corgi-corgi", Some("new-session"), &[]),
             // Another agent altogether.
-            handler_agent("w70:p1", "w-other", Some("another-session"), &[]),
+            corgi_agent("w70:p1", "w-other", Some("another-session"), &[]),
         ] {
-            let mut record = record_with_handler(Some(SESSION));
+            let mut record = record_with_corgi(Some(SESSION));
             let snapshot = SessionSnapshot {
                 agents: vec![agent],
                 panes: vec![pane("w70:p1")],
@@ -989,34 +979,34 @@ mod tests {
     fn a_pane_waits_while_herdr_has_not_found_its_agent_or_session_again() {
         for agents in [
             vec![],
-            vec![handler_agent("w70:p1", "handler-corgi", None, &[])],
+            vec![corgi_agent("w70:p1", "corgi-corgi", None, &[])],
         ] {
-            let mut record = record_with_handler(Some(SESSION));
+            let mut record = record_with_corgi(Some(SESSION));
             let snapshot = SessionSnapshot {
                 agents,
                 panes: vec![pane("w70:p1")],
                 ..SessionSnapshot::default()
             };
             assert_eq!(reconcile(&mut record, &snapshot), []);
-            assert_eq!(record, record_with_handler(Some(SESSION)));
+            assert_eq!(record, record_with_corgi(Some(SESSION)));
         }
         // A pane that is gone is forgotten.
-        let mut record = record_with_handler(Some(SESSION));
+        let mut record = record_with_corgi(Some(SESSION));
         assert_eq!(reconcile(&mut record, &SessionSnapshot::default()), []);
         assert!(record.panes.is_empty());
     }
 
     #[test]
-    fn a_marked_pane_is_recorded_only_while_its_handler_is_in_it() {
-        let marker = [(CORGI_HANDLER_TOKEN, "handler-corgi")];
-        // A handler whose session is not known yet keeps the one recorded.
-        let mut record = record_with_handler(Some(SESSION));
+    fn a_marked_pane_is_recorded_only_while_its_corgi_is_in_it() {
+        let marker = [(CORGI_TOKEN, "corgi-corgi")];
+        // A corgi whose session is not known yet keeps the one recorded.
+        let mut record = record_with_corgi(Some(SESSION));
         let snapshot = SessionSnapshot {
-            agents: vec![handler_agent("w70:p1", "handler-corgi", None, &marker)],
+            agents: vec![corgi_agent("w70:p1", "corgi-corgi", None, &marker)],
             ..SessionSnapshot::default()
         };
         assert_eq!(reconcile(&mut record, &snapshot), []);
-        assert_eq!(record, record_with_handler(Some(SESSION)));
+        assert_eq!(record, record_with_corgi(Some(SESSION)));
         // Herdr can temporarily lose the agent during restart. Retain the
         // record but restore nothing until its native session returns.
         let snapshot = SessionSnapshot {
@@ -1027,20 +1017,20 @@ mod tests {
             ..SessionSnapshot::default()
         };
         assert_eq!(reconcile(&mut record, &snapshot), []);
-        assert_eq!(record, record_with_handler(Some(SESSION)));
+        assert_eq!(record, record_with_corgi(Some(SESSION)));
     }
 
     #[test]
     fn what_herdr_has_wins_over_the_record() {
-        let mut record = record_with_handler(Some(SESSION));
+        let mut record = record_with_corgi(Some(SESSION));
         let newer = [
-            (CORGI_HANDLER_TOKEN, "session:new-session"),
+            (CORGI_TOKEN, "session:new-session"),
             (BASELINE_TOKEN, "1000 new-session"),
         ];
         let snapshot = SessionSnapshot {
-            agents: vec![handler_agent(
+            agents: vec![corgi_agent(
                 "w70:p1",
-                "handler-corgi",
+                "corgi-corgi",
                 Some("new-session"),
                 &newer,
             )],
@@ -1059,7 +1049,7 @@ mod tests {
         assert_eq!(
             record.panes["w70:p1"],
             PaneMarks {
-                agent: "handler-corgi".into(),
+                agent: "corgi-corgi".into(),
                 session: Some("new-session".into()),
                 tokens: owned(&newer),
             }
@@ -1072,18 +1062,13 @@ mod tests {
 
     #[test]
     fn legacy_markers_migrate_by_recorded_session_even_after_a_rename() {
-        for live in [vec![], vec![(CORGI_HANDLER_TOKEN, "handler-corgi")]] {
-            let mut record = record_with_handler(Some(SESSION));
+        for live in [vec![], vec![(CORGI_TOKEN, "corgi-corgi")]] {
+            let mut record = record_with_corgi(Some(SESSION));
             let snapshot = SessionSnapshot {
-                agents: vec![handler_agent(
-                    "w70:p1",
-                    "renamed-task",
-                    Some(SESSION),
-                    &live,
-                )],
+                agents: vec![corgi_agent("w70:p1", "renamed-task", Some(SESSION), &live)],
                 ..Default::default()
             };
-            let expected = owned(&[(CORGI_HANDLER_TOKEN, &handler::marker("", Some(SESSION)))]);
+            let expected = owned(&[(CORGI_TOKEN, &corgi::marker("", Some(SESSION)))]);
             assert_eq!(
                 reconcile(&mut record, &snapshot),
                 [Restore::Pane("w70:p1".into(), expected.clone())]
@@ -1100,14 +1085,14 @@ mod tests {
 
     #[test]
     fn a_live_legacy_marker_cannot_override_a_recorded_session_mismatch() {
-        let mut record = record_with_handler(Some(SESSION));
+        let mut record = record_with_corgi(Some(SESSION));
         let snapshot = SessionSnapshot {
-            agents: vec![handler_agent(
+            agents: vec![corgi_agent(
                 "w70:p1",
-                "handler-corgi",
+                "corgi-corgi",
                 Some("new-session"),
                 &[
-                    (CORGI_HANDLER_TOKEN, "handler-corgi"),
+                    (CORGI_TOKEN, "corgi-corgi"),
                     (BASELINE_TOKEN, "1000 old-session"),
                 ],
             )],
@@ -1117,7 +1102,7 @@ mod tests {
             reconcile(&mut record, &snapshot),
             [Restore::Pane("w70:p1".into(), Tokens::new())]
         );
-        assert_eq!(record, record_with_handler(Some(SESSION)));
+        assert_eq!(record, record_with_corgi(Some(SESSION)));
         assert_eq!(
             reconcile(&mut record, &snapshot),
             [Restore::Pane("w70:p1".into(), Tokens::new())]
@@ -1130,26 +1115,23 @@ mod tests {
 
     #[test]
     fn rejected_ownership_clears_live_tokens_with_null_patches() {
-        for marker in [
-            "handler-corgi".to_string(),
-            handler::marker("", Some(SESSION)),
-        ] {
+        for marker in ["corgi-corgi".to_string(), corgi::marker("", Some(SESSION))] {
             let scratch = ScratchDir::new("markers-live-clear");
             let path = scratch.join("markers.json");
             update(&path, |record| {
-                *record = record_with_handler(Some(SESSION));
+                *record = record_with_corgi(Some(SESSION));
                 record
                     .panes
                     .get_mut("w70:p1")
                     .unwrap()
                     .tokens
-                    .insert(CORGI_HANDLER_TOKEN.into(), marker.clone());
+                    .insert(CORGI_TOKEN.into(), marker.clone());
             })
             .unwrap();
             let mut live = marked_session();
             live["agents"][0]["agent_session"]["value"] = json!("replacement-session");
             for list in ["agents", "panes"] {
-                live[list][0]["tokens"][CORGI_HANDLER_TOKEN] = json!(marker);
+                live[list][0]["tokens"][CORGI_TOKEN] = json!(marker);
                 live[list][0]["tokens"]["task"] = json!("another plugin's title");
                 live[list][0]["tokens"]["corgi_unrelated"] = json!("keep me");
             }
@@ -1158,7 +1140,7 @@ mod tests {
             app.client = herdr.client(&path);
             let mut snapshot = app.client.snapshot().unwrap();
             app.restore_markers(&mut snapshot);
-            assert!(!handler::is_handler(&snapshot.agents[0]));
+            assert!(!corgi::is_corgi(&snapshot.agents[0]));
             assert_eq!(herdr.reports().len(), 1);
             assert_eq!(
                 herdr.reports()[0]["params"]["tokens"],
@@ -1184,7 +1166,7 @@ mod tests {
             }
             // Read independently from Herdr, not the locally edited snapshot.
             let mut fresh = app.client.snapshot().unwrap();
-            assert!(!handler::is_handler(&fresh.agents[0]));
+            assert!(!corgi::is_corgi(&fresh.agents[0]));
             app.restore_markers(&mut fresh);
             assert!(read(&path).panes.is_empty());
             assert_eq!(
@@ -1199,7 +1181,7 @@ mod tests {
     fn a_failed_clear_does_not_let_the_waker_adopt_a_reused_pane() {
         let scratch = ScratchDir::new("markers-failed-clear");
         let path = scratch.join("markers.json");
-        update(&path, |record| *record = record_with_handler(Some(SESSION))).unwrap();
+        update(&path, |record| *record = record_with_corgi(Some(SESSION))).unwrap();
         let (socket, server) = fake_herdr("markers-failed-clear", |listener| {
             crate::test_support::answer(&listener, |request| {
                 assert_eq!(request["method"], "pane.report_metadata");
@@ -1218,27 +1200,27 @@ mod tests {
         let mut app = test_app();
         app.client = HerdrClient::from_socket_path(&socket).with_marker_record(&path);
         let mut snapshot = SessionSnapshot {
-            agents: vec![handler_agent(
+            agents: vec![corgi_agent(
                 "w70:p1",
-                "handler-corgi",
+                "corgi-corgi",
                 Some("new-session"),
-                &[(CORGI_HANDLER_TOKEN, "handler-corgi")],
+                &[(CORGI_TOKEN, "corgi-corgi")],
             )],
             ..Default::default()
         };
         app.restore_markers(&mut snapshot);
-        assert!(!handler::is_handler(&snapshot.agents[0]));
-        assert_eq!(read(&path), record_with_handler(Some(SESSION)));
+        assert!(!corgi::is_corgi(&snapshot.agents[0]));
+        assert_eq!(read(&path), record_with_corgi(Some(SESSION)));
         server.join().unwrap();
         fs::remove_file(socket).unwrap();
     }
 
     #[test]
     fn legacy_markers_need_a_matching_name_or_a_known_session() {
-        let marker = [(CORGI_HANDLER_TOKEN, "handler-corgi")];
+        let marker = [(CORGI_TOKEN, "corgi-corgi")];
         let mut record = Record::default();
         let mut snapshot = SessionSnapshot {
-            agents: vec![handler_agent("w70:p1", "handler-corgi", None, &marker)],
+            agents: vec![corgi_agent("w70:p1", "corgi-corgi", None, &marker)],
             ..Default::default()
         };
         assert!(reconcile(&mut record, &snapshot).is_empty());
@@ -1252,7 +1234,7 @@ mod tests {
             value: SESSION.into(),
             ..Default::default()
         });
-        let expected = owned(&[(CORGI_HANDLER_TOKEN, &handler::marker("", Some(SESSION)))]);
+        let expected = owned(&[(CORGI_TOKEN, &corgi::marker("", Some(SESSION)))]);
         assert_eq!(
             reconcile(&mut record, &snapshot),
             [Restore::Pane("w70:p1".into(), expected)]
@@ -1261,7 +1243,7 @@ mod tests {
         // An already renamed legacy marker with no recorded session cannot
         // safely be distinguished from a pane now running another agent.
         snapshot.agents[0].name = Some("unproven-rename".into());
-        record = record_with_handler(None);
+        record = record_with_corgi(None);
         assert_eq!(
             reconcile(&mut record, &snapshot),
             [Restore::Pane("w70:p1".into(), Tokens::new())]
@@ -1271,14 +1253,14 @@ mod tests {
 
     #[test]
     fn a_session_marker_waits_for_native_detection_and_rejects_reuse() {
-        let marker = handler::marker("", Some(SESSION));
+        let marker = corgi::marker("", Some(SESSION));
         let mut record = Record::default();
         let mut snapshot = SessionSnapshot {
-            agents: vec![handler_agent(
+            agents: vec![corgi_agent(
                 "w70:p1",
                 "renamed-task",
                 None,
-                &[(CORGI_HANDLER_TOKEN, &marker)],
+                &[(CORGI_TOKEN, &marker)],
             )],
             ..Default::default()
         };
@@ -1342,19 +1324,19 @@ mod tests {
         update(&path, |record| {
             record
                 .panes
-                .insert("w1:p1".into(), handler_marks(Some(SESSION)));
+                .insert("w1:p1".into(), corgi_marks(Some(SESSION)));
         })
         .expect("first write");
-        assert_eq!(read(&path), record_with_handler_at("w1:p1"));
+        assert_eq!(read(&path), record_with_corgi_at("w1:p1"));
         // A file that cannot be parsed counts as empty and is replaced.
         fs::write(&path, b"{\"panes\": {").expect("tear the record");
         update(&path, |record| {
             record
                 .panes
-                .insert("w1:p1".into(), handler_marks(Some(SESSION)));
+                .insert("w1:p1".into(), corgi_marks(Some(SESSION)));
         })
         .expect("second write");
-        assert_eq!(read(&path), record_with_handler_at("w1:p1"));
+        assert_eq!(read(&path), record_with_corgi_at("w1:p1"));
         let names: Vec<_> = fs::read_dir(path.parent().expect("dir"))
             .expect("dir")
             .filter_map(|entry| entry.ok())
@@ -1372,8 +1354,8 @@ mod tests {
         let record = scratch.join("markers").join("herdr.json");
         let herdr = StatefulHerdr::new("markers-mark", marked_session());
         let client = herdr.client(&record);
-        let marker = [(CORGI_HANDLER_TOKEN, "handler-corgi")];
-        mark_pane(&client, "w70:p1", "handler-corgi", None, &marker).expect("mark pane");
+        let marker = [(CORGI_TOKEN, "corgi-corgi")];
+        mark_pane(&client, "w70:p1", "corgi-corgi", None, &marker).expect("mark pane");
         let role = [(CORGI_WORKSPACE_ROLE_TOKEN, "agent-workspace")];
         mark_workspace(&client, "w8Z", Some("/wt/corgi-markers/brave-stone"), &role)
             .expect("mark workspace");
@@ -1382,7 +1364,7 @@ mod tests {
         assert_eq!(
             read(&record),
             Record {
-                panes: BTreeMap::from([("w70:p1".into(), handler_marks(None))]),
+                panes: BTreeMap::from([("w70:p1".into(), corgi_marks(None))]),
                 workspaces: BTreeMap::from([(
                     "w8Z".into(),
                     WorkspaceMarks {
@@ -1394,13 +1376,13 @@ mod tests {
         );
         assert_eq!(
             herdr.tokens("agents", "pane_id", "w70:p1")["corgi_handler"],
-            "handler-corgi"
+            "corgi-corgi"
         );
         assert_eq!(
             herdr.reports()[0]["params"]["tokens"],
             // The pre-rename marker key is cleared too.
             json!({
-                "corgi_handler": "handler-corgi", "corgi_steward": null,
+                "corgi_handler": "corgi-corgi", "corgi_steward": null,
                 "corgi_handover": null, "corgi_baseline": null,
                 "corgi_request": null
             })
@@ -1415,19 +1397,19 @@ mod tests {
         let fresh = client
             .snapshot()
             .expect("fresh live tokens deserialize without null values");
-        assert!(handler::is_handler(&fresh.agents[0]));
+        assert!(corgi::is_corgi(&fresh.agents[0]));
     }
 
-    fn record_with_handler_at(pane: &str) -> Record {
+    fn record_with_corgi_at(pane: &str) -> Record {
         Record {
-            panes: BTreeMap::from([(pane.into(), handler_marks(Some(SESSION)))]),
+            panes: BTreeMap::from([(pane.into(), corgi_marks(Some(SESSION)))]),
             ..Record::default()
         }
     }
 
     /// A worker `corgi spawn --request-id` started keeps its id while it
     /// runs, gets it back after a Herdr restart, and never becomes the
-    /// handler on the way; a retry of the spawn finds it by that id.
+    /// corgi on the way; a retry of the spawn finds it by that id.
     #[test]
     fn a_spawned_workers_request_id_survives_a_herdr_restart() {
         const ID: &str = "20261002-w-brave";
@@ -1451,7 +1433,7 @@ mod tests {
 
         dashboard.refresh();
         assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], ID);
-        assert!(worker_tokens().get(CORGI_HANDLER_TOKEN).is_none());
+        assert!(worker_tokens().get(CORGI_TOKEN).is_none());
         let marks = &read(&record).panes["w8Z:p1"];
         assert_eq!(marks.session.as_deref(), Some("5e55-worker"));
         assert_eq!(marks.tokens, owned(&[(CORGI_REQUEST_TOKEN, ID)]));
@@ -1473,10 +1455,10 @@ mod tests {
         assert!(requested_agent(&fleet, ROOT, ID).is_none());
         dashboard.refresh();
         assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], ID);
-        assert!(worker_tokens().get(CORGI_HANDLER_TOKEN).is_none());
+        assert!(worker_tokens().get(CORGI_TOKEN).is_none());
         fleet.refresh();
         assert!(requested_agent(&fleet, ROOT, ID).is_some());
-        assert_eq!(roles(&fleet), ["handler-corgi handler", "w-brave worker"]);
+        assert_eq!(roles(&fleet), ["corgi-corgi corgi", "w-brave worker"]);
     }
 
     /// Another session in a tagged pane, as when the worker exited and
@@ -1496,7 +1478,7 @@ mod tests {
             ..Record::default()
         };
         let snapshot = SessionSnapshot {
-            agents: vec![handler_agent("w8Z:p1", "w-next", Some("later"), &tagged)],
+            agents: vec![corgi_agent("w8Z:p1", "w-next", Some("later"), &tagged)],
             ..SessionSnapshot::default()
         };
         assert_eq!(
