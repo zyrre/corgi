@@ -39,7 +39,13 @@ const MUTED: Color = Color::DarkGray;
 const SUCCESS: Color = Color::Green;
 const WARNING: Color = Color::Yellow;
 const DANGER: Color = Color::Red;
-const TOTAL: Color = Color::Magenta;
+// A state Corgi cannot tell.
+const UNKNOWN: Color = Color::Magenta;
+// An agent a corgi tagged ready for the user to merge: magenta, the one
+// semantic color no state the user acts on uses, far from working's cyan in
+// both Tokyo Night themes, with an arrow up towards the base branch.
+const MERGE: Color = Color::Magenta;
+const MERGE_MARK: &str = "⇡";
 const TEXT: Color = Color::White;
 // The quieter greys of a popup's content, from the fixed ramp so they sit
 // the same on every theme's black fill: the cap a key is drawn on, the rule

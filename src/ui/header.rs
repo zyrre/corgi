@@ -16,7 +16,9 @@ use crate::{
 };
 
 use super::status::model_color;
-use super::{ACCENT, DANGER, MUTED, SUCCESS, TEXT, TOTAL, WARNING, bold, clip, rounded_block};
+use super::{
+    ACCENT, DANGER, MERGE, MERGE_MARK, MUTED, SUCCESS, TEXT, WARNING, bold, clip, rounded_block,
+};
 
 // Each subscription gets ten content columns: exactly `Weekly 99%`, with one
 // blank column between the content and each side of its border.
@@ -93,23 +95,31 @@ fn draw_header_cards(frame: &mut Frame<'_>, band: Rect, cards: Vec<HeaderCard<'_
 }
 
 pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    // An agent tagged ready to merge counts as MERGE rather than done or
+    // idle, as its badge reads.
     let count = |state: AgentState| {
         app.agents
             .iter()
-            .filter(|agent| agent.info.state == state)
+            .filter(|agent| agent.info.state == state && !agent.ready_to_merge())
             .count()
     };
     let working = count(AgentState::Working);
     let blocked = count(AgentState::Blocked);
+    let merge = app
+        .agents
+        .iter()
+        .filter(|agent| agent.ready_to_merge())
+        .count();
     let done = count(AgentState::Done);
     // Unknown is counted as idle: neither is doing anything, and a separate
     // row for a state the user cannot act on would only dilute the card.
     let idle = count(AgentState::Idle) + count(AgentState::Unknown);
-    let total = app.agents.len();
     let agent_color = if blocked > 0 {
         WARNING
     } else if working > 0 {
         ACCENT
+    } else if merge > 0 {
+        MERGE
     } else if done > 0 {
         SUCCESS
     } else {
@@ -156,11 +166,12 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         horizontal_padding: 0,
         title: "HERD",
         color: agent_color,
-        // Lead with the whole-pack total, then break it down by state.
+        // The pack by state, the ones ready to merge right after the
+        // blocked, as the next thing the user can act on.
         lines: vec![
-            Line::from(agent_summary_spans("Σ", total, "TOTAL", TOTAL)),
             Line::from(agent_summary_spans("●", working, "WORKING", ACCENT)),
             Line::from(agent_summary_spans("!", blocked, "BLOCKED", WARNING)),
+            Line::from(agent_summary_spans(MERGE_MARK, merge, "MERGE", MERGE)),
             Line::from(agent_summary_spans("✓", done, "DONE", SUCCESS)),
             Line::from(agent_summary_spans("·", idle, "IDLE", MUTED)),
         ],
@@ -515,7 +526,7 @@ fn usage_color(used_percent: u8) -> Style {
 mod tests {
     use super::*;
     use crate::{
-        model::DashboardAgent,
+        model::{AgentState, DashboardAgent},
         test_support::{buffer_text, lines_text, test_app, test_terminal},
         ui::draw,
         usage::{PlanUsage, Provider},
@@ -568,7 +579,17 @@ mod tests {
     /// The dashboard's header, as the cells of a 130-column screen and the
     /// column and row the herd card's top-left corner is drawn at.
     fn rendered_header(app: &mut App) -> (Buffer, u16, u16) {
+        // One working, one done, one done a corgi tagged ready to merge,
+        // and one in a state Corgi cannot tell.
         app.agents = vec![DashboardAgent::default(); 4];
+        app.agents[0].info.state = AgentState::Working;
+        app.agents[1].info.state = AgentState::Done;
+        app.agents[2].info.state = AgentState::Done;
+        app.agents[2].info.state_change_seq = 9;
+        app.agents[2].info.tokens.insert(
+            crate::corgi::MERGE_TOKEN.into(),
+            crate::corgi::merge_tag_value(AgentState::Done, 9),
+        );
         let mut terminal = test_terminal(130, 24);
         terminal
             .draw(|frame| draw(frame, app))
@@ -634,13 +655,26 @@ mod tests {
         let rows: Vec<String> = (herd_y + 1..herd_y + HERD_HEIGHT - 1)
             .map(|y| text(herd_x..herd_x + HERD_WIDTH, y))
             .collect();
-        assert!(rows[0].contains("Σ 4 TOTAL"), "{rows:?}");
-        for (row, label) in rows[1..].iter().zip(["WORKING", "BLOCKED", "DONE", "IDLE"]) {
+        // The tagged agent counts as MERGE, not as done; the card keeps its
+        // five rows, the total making way for MERGE.
+        let expected = [
+            "● 1 WORKING",
+            "! 0 BLOCKED",
+            "⇡ 1 MERGE",
+            "✓ 1 DONE",
+            "· 1 IDLE",
+        ];
+        assert_eq!(rows.len(), expected.len(), "{rows:?}");
+        for (row, label) in rows.iter().zip(expected) {
             assert!(row.contains(label), "{rows:?}");
         }
-        // The total and the state counts share a column.
-        let column = |row: &str, count| row.chars().position(|character| character == count);
-        assert_eq!(column(&rows[0], '4'), column(&rows[1], '0'), "{rows:?}");
+        assert!(rows.iter().all(|row| !row.contains("TOTAL")), "{rows:?}");
+        // The counts share a column.
+        let column = |row: &str| row.chars().position(|character| character.is_ascii_digit());
+        assert!(
+            rows.iter().all(|row| column(row) == column(&rows[0])),
+            "{rows:?}"
+        );
 
         // Each detected subscription gets a card of its own after the herd,
         // sharing the band's height.
@@ -931,7 +965,17 @@ mod tests {
     #[test]
     fn a_provider_without_a_card_states_its_reason_in_the_top_right_corner() {
         let mut app = test_app();
+        // One working, one done, one done a corgi tagged ready to merge,
+        // and one in a state Corgi cannot tell.
         app.agents = vec![DashboardAgent::default(); 4];
+        app.agents[0].info.state = AgentState::Working;
+        app.agents[1].info.state = AgentState::Done;
+        app.agents[2].info.state = AgentState::Done;
+        app.agents[2].info.state_change_seq = 9;
+        app.agents[2].info.tokens.insert(
+            crate::corgi::MERGE_TOKEN.into(),
+            crate::corgi::merge_tag_value(AgentState::Done, 9),
+        );
         app.usage = vec![
             UsageSlot {
                 provider: Provider::Codex,

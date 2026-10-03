@@ -17,12 +17,13 @@ Corgi launched you and ships these commands. Call them by this full path:
 | Command | What it does |
 | --- | --- |
 | `{{corgi}} spawn --request-id <brief id> [options] <<'EOF' … EOF` | Start a worker from a brief on stdin (or `--task-file`). Prints JSON: `name`, `pane_id`, `workspace_id`, `cwd`, `location`, and `"existing": true` when a running worker already has that request id, in which case nothing new starts. `--help` lists options. |
-| `{{corgi}} fleet` | This project's agents, one tab-separated row each: name, role, state, task, model, context %, cwd. |
+| `{{corgi}} fleet` | This project's agents, one tab-separated row each: name, role, state, task, model, context %, cwd, and tag: `merge` for an agent you tagged ready to merge that still rests where you tagged it, else `-`. |
 | `{{corgi}} digest <project dir>` | Your memory in bounded form: handover note, open ledger work joined with the fleet, recently finished work, the newest decisions in full and the titles of older ones. Reads only. |
 | `{{corgi}} digest <project dir> --decision "<words>"` | Every decision, superseded or not, whose heading contains all the words, in full. |
 | `{{corgi}} digest <project dir> --search "<words>"` | Searches all of your memory: decisions (superseded ones marked), the ledger, briefs and archived handover notes. Prints the best hits as `file:line`, date and a few lines of context, ranked by how many of the words they have, then newest first. Run it before you tell the user something is unknown or never happened. |
 | `{{corgi}} report NAME` | An agent's report: the one Corgi kept in your inbox when the agent last stopped (also after its pane is closed), else its newest assistant message from its transcript, or its screen when there is none. |
 | `{{corgi}} inbox <project dir>` | Your inbox: the `[corgi]` lines not typed into your box yet, each with its report or the command that prints it. `--take` records them delivered so they are not typed in again; `--delivered` adds the newest delivered ones. |
+| `{{corgi}} tag NAME merge --project <project dir>` | Tags an agent ready for the user to merge: Corgi's dashboard shows it with a magenta MERGE badge instead of DONE. Refused while the agent works or when its checkout has no commits ahead of the base branch. `{{corgi}} tag NAME --clear --project <project dir>` removes the tag; merging with `m`, or the agent working again, removes it too. |
 | `{{corgi}} notify <project dir> [--agent NAME] <<'EOF' … EOF` | Adds a line to an inbox, delivered like a wake. For scripts and hooks; you rarely need it. `--help` lists options. |
 
 And Herdr directly:
@@ -331,8 +332,12 @@ section says.
   only recommend ready to merge once that report shows a clean merge. Then
   tell the user briefly: what was done, whether it meets the brief, and your
   recommendation: ready to merge (the user merges it with `m` in Corgi), a
-  follow-up prompt to the worker (propose it), or abandon. Update the
-  ledger.
+  follow-up prompt to the worker (propose it), or abandon. When you
+  recommend ready to merge, and never before the clean-merge check passed,
+  run `tag NAME merge --project <project dir>` so the dashboard shows the
+  worker as MERGE. If its branch later stops merging cleanly, as when the
+  base branch moved on, run `tag NAME --clear --project <project dir>`
+  before you have the worker merge the base branch. Update the ledger.
 - `blocked`: run `herdr agent read`, tell the user exactly what the worker
   is asking, and wait. **Never answer a permission prompt or question
   dialog for a worker, and never send keys to one.** The one question you

@@ -64,7 +64,7 @@ pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_stream, bar_transc
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub use cli::{
     DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, REPORT_USAGE, SPAWN_USAGE, START_USAGE,
-    digest, fleet, inbox_command, notify, report, spawn, start_command,
+    TAG_USAGE, digest, fleet, inbox_command, notify, report, spawn, start_command, tag_command,
 };
 use rows::{
     NO_TOOL_YET, SCRATCH_GROUP, agent_project, agent_worktree, checkout_label, codex_thread_id,
@@ -323,13 +323,15 @@ impl App {
             Ok(mut snapshot) => {
                 self.connected = true;
                 // The dashboard that wakes corgis is the one that puts back
-                // the marks a Herdr restart lost, before anything reads them.
+                // the marks a Herdr restart lost, before anything reads them,
+                // and that clears the merge tags their agents worked past.
                 if self
                     .corgi_waker
                     .as_mut()
                     .is_some_and(|waker| waker.leads(&self.client))
                 {
                     self.restore_markers(&mut snapshot);
+                    self.clear_stale_merge_tags(&mut snapshot);
                 }
                 relabel_project_mains(&self.client, &mut snapshot.workspaces);
                 self.install_snapshot(snapshot);

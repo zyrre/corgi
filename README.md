@@ -94,7 +94,7 @@ flowchart LR
     corgi -->|"corgi report, git log"| workers
 ```
 
-Press `c` to start it, or run `corgi start ~/repos/webshop` from a shell. Scripts start workers the way it does, with `corgi spawn` (see `corgi spawn --help`). The corgi starts each session with `corgi digest`, a bounded summary of its decisions, ledger and handover note joined with the running agents. It looks up older history with `corgi digest --search "<words>"`. The dashboard puts every wake in the corgi's inbox first, with the worker's report, and types it in once the corgi is between turns, so a wake survives the dashboard closing or restarting; scripts add their own lines with `corgi notify`, and `corgi inbox` shows what has not been typed in yet.
+Press `c` to start it, or run `corgi start ~/repos/webshop` from a shell. Scripts start workers the way it does, with `corgi spawn` (see `corgi spawn --help`). The corgi starts each session with `corgi digest`, a bounded summary of its decisions, ledger and handover note joined with the running agents. It looks up older history with `corgi digest --search "<words>"`. The dashboard puts every wake in the corgi's inbox first, with the worker's report, and types it in once the corgi is between turns, so a wake survives the dashboard closing or restarting; scripts add their own lines with `corgi notify`, and `corgi inbox` shows what has not been typed in yet. When the corgi has reviewed a worker and recommends you merge it, it runs `corgi tag NAME merge`: the worker's badge then reads a magenta `MERGE` instead of `DONE`, a collapsed card counts it as `⇡ 1 merge`, and the header's herd card has a MERGE row. The tag goes when you merge with `m`, when the worker works again, or with `corgi tag NAME --clear`.
 
 ## Data and privacy
 

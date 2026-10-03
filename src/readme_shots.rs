@@ -29,6 +29,7 @@ use crate::{
     app::{
         App, Checkout, MergePhase, MergeWorktreeForm, NewAgentForm, NewField, Overlay, UsageSlot,
     },
+    corgi,
     defaults::HarnessDefaults,
     model::{
         Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, PromptCache, PromptCacheKind,
@@ -363,6 +364,8 @@ struct Agent {
     message: (ActivityKind, &'static str),
     tool: (ActivityKind, &'static str),
     corgi: bool,
+    /// Its corgi tagged it ready to merge.
+    merge: bool,
 }
 
 impl Agent {
@@ -373,6 +376,17 @@ impl Agent {
                 agent: Some(self.kind.into()),
                 state: self.state,
                 cwd: Some(project_root.clone()),
+                state_change_seq: 1,
+                tokens: self
+                    .merge
+                    .then(|| {
+                        (
+                            corgi::MERGE_TOKEN.to_string(),
+                            corgi::merge_tag_value(self.state, 1),
+                        )
+                    })
+                    .into_iter()
+                    .collect(),
                 ..AgentInfo::default()
             },
             project_group: self.project.into(),
@@ -433,6 +447,7 @@ fn herd() -> Vec<Agent> {
                  && pnpm --dir ~/.herdr/worktrees/webshop/worktree-order-pages-2d5a test -- orders",
             ),
             corgi: true,
+            merge: false,
         },
         Agent {
             project: "webshop",
@@ -447,6 +462,7 @@ fn herd() -> Vec<Agent> {
             message: (Question, "Allow Bash: npm run test:e2e -- checkout?"),
             tool: (Command, "npm run test:e2e -- checkout"),
             corgi: false,
+            merge: false,
         },
         Agent {
             project: "webshop",
@@ -464,6 +480,7 @@ fn herd() -> Vec<Agent> {
             ),
             tool: (Tool, "Edit src/components/CartBadge.tsx"),
             corgi: false,
+            merge: false,
         },
         Agent {
             project: "webshop",
@@ -481,6 +498,7 @@ fn herd() -> Vec<Agent> {
             ),
             tool: (Command, "pnpm test -- orders"),
             corgi: false,
+            merge: true,
         },
         Agent {
             project: "weather",
@@ -494,14 +512,12 @@ fn herd() -> Vec<Agent> {
             worktree: None,
             message: (
                 Thinking,
-                "api-cache is done and only touches the client, so it can merge first; the hourly \
-                 chart reuses the daily view's colours and still needs its smoke test.",
+                "api-cache is done, only touches the client and merges cleanly, so I tagged it ready \
+                 to merge; the hourly chart reuses the daily view's colours and still needs its smoke test.",
             ),
-            tool: (
-                Command,
-                "git -C ~/.herdr/worktrees/weather/worktree-api-cache-e3b8 diff --stat main",
-            ),
+            tool: (Command, "corgi tag w-api-cache merge"),
             corgi: true,
+            merge: false,
         },
         Agent {
             project: "weather",
@@ -519,6 +535,7 @@ fn herd() -> Vec<Agent> {
             ),
             tool: (Command, "npm run storybook -- --smoke-test"),
             corgi: false,
+            merge: false,
         },
         Agent {
             project: "weather",
@@ -536,6 +553,7 @@ fn herd() -> Vec<Agent> {
             ),
             tool: (Tool, "Read src/api/client.ts"),
             corgi: false,
+            merge: true,
         },
         Agent {
             project: "notes-app",
@@ -553,6 +571,7 @@ fn herd() -> Vec<Agent> {
             ),
             tool: (Command, "git log --oneline -3"),
             corgi: false,
+            merge: false,
         },
     ]
 }
