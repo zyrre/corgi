@@ -31,11 +31,10 @@ const FIRST_PROMPT_ANSWER_POLL: Duration = Duration::from_millis(500);
 /// How long Claude Code may take to leave its folder-trust question once
 /// Corgi has answered it.
 const FOLDER_TRUST_SETTLE: Duration = Duration::from_secs(10);
-/// How long a delivered first prompt may take to show up before it is sent
-/// again: about six seconds. A multi-line prompt is only a collapsed paste
-/// placeholder on screen until the agent records the turn, which a session
-/// starting with a large system prompt can take several seconds to do, and a
-/// resend then lands as a duplicate.
+/// How long a delivered first prompt may take to show up: about six seconds.
+/// A multi-line prompt is only a collapsed paste placeholder on screen until
+/// the agent records the turn, which a session
+/// starting with a large system prompt can take several seconds to do.
 const FIRST_PROMPT_VERIFY_ATTEMPTS: usize = 24;
 const FIRST_PROMPT_VERIFY_DELAY: Duration = Duration::from_millis(250);
 
@@ -50,20 +49,23 @@ pub(super) fn prompt_started_agent(
     // The first prompt can be acknowledged while a newly opened agent is
     // still replacing its startup screen. Confirm that it reached the pane
     // before telling the user the launch succeeded.
-    for delivery in 1..=2 {
-        let agent = send_first_prompt(client, pane_id, prompt, name, progress)?;
-        accepted(&agent)?;
-        for _ in 0..FIRST_PROMPT_VERIFY_ATTEMPTS {
-            if first_prompt_visible(client, pane_id, prompt) {
-                return Ok(());
-            }
-            thread::sleep(FIRST_PROMPT_VERIFY_DELAY);
+    let agent = send_first_prompt(client, pane_id, prompt, name, progress)?;
+    accepted(&agent)?;
+    for _ in 0..FIRST_PROMPT_VERIFY_ATTEMPTS {
+        if first_prompt_visible(client, pane_id, prompt) {
+            return Ok(());
         }
-        if delivery == 1 {
-            progress.report(format!("Retrying {name}'s first prompt after startup…"));
-        }
+        thread::sleep(FIRST_PROMPT_VERIFY_DELAY);
     }
-    bail!("first prompt was acknowledged but never appeared in {name}'s session")
+    // An acknowledgement followed by missing text is ambiguous: a collapsed
+    // paste or a scrolled prompt may already be processing. Resending here
+    // can queue the same task twice. Only explicit pre-send startup failures
+    // in send_first_prompt are safe to retry.
+    bail!(
+        "Could not confirm the first prompt in {name}'s pane ({pane_id}). \
+         It was acknowledged and was not sent again. Open the pane to check \
+         whether it arrived before sending it manually."
+    )
 }
 
 fn send_first_prompt(
@@ -198,17 +200,24 @@ fn wait_until_answered(
 
 fn first_prompt_visible(client: &HerdrClient, pane_id: &str, prompt: &str) -> bool {
     let expected = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
-    if client
-        .read_agent(pane_id, ReadSource::RecentUnwrapped, Some(200))
-        .is_ok_and(|read| {
-            read.text
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .contains(&expected)
-        })
-    {
-        return true;
+    // Read the current buffer without requesting application-owned history
+    // first. Codex uses an alternate screen; Herdr can collect its history
+    // only while idle and rejects a 200-line read while it is working.
+    // Scratch Codex may have no native session ID, so this terminal evidence
+    // can be the only way to confirm its prompt without borrowing a session.
+    for lines in [None, Some(200)] {
+        if client
+            .read_agent(pane_id, ReadSource::RecentUnwrapped, lines)
+            .is_ok_and(|read| {
+                read.text
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .contains(&expected)
+            })
+        {
+            return true;
+        }
     }
     let Ok(snapshot) = client.snapshot() else {
         return false;
@@ -308,15 +317,17 @@ mod tests {
     }
 
     #[test]
-    fn first_prompt_is_resent_when_startup_acknowledges_but_drops_it() {
+    fn an_unconfirmed_prompt_fails_without_sending_a_duplicate() {
         let (socket_path, server) = fake_herdr("dropped-prompt", move |listener| {
             let mut prompts = 0;
             let mut reads = 0;
-            loop {
+            let mut snapshots = 0;
+            while snapshots < FIRST_PROMPT_VERIFY_ATTEMPTS {
                 answer(&listener, |request| {
                     let result = match request["method"].as_str().expect("method") {
                         "agent.prompt" => {
                             prompts += 1;
+                            assert_eq!(prompts, 1, "an acknowledged prompt must not be resent");
                             assert_eq!(request["params"]["text"], "Build it");
                             json!({"type": "agent_prompted", "agent": {
                                 "agent": "codex", "agent_status": "idle", "pane_id": "w9:p1",
@@ -326,24 +337,28 @@ mod tests {
                         "agent.read" => {
                             reads += 1;
                             json!({"type": "pane_read", "read": {
-                                "text": if prompts == 1 { "› Ask Codex to do anything" } else { "› Build it" }
+                                "text": "› Ask Codex to do anything"
                             }})
                         }
-                        "session.snapshot" => json!({"type": "session_snapshot", "snapshot": {}}),
+                        "session.snapshot" => {
+                            snapshots += 1;
+                            json!({"type": "session_snapshot", "snapshot": {"agents": [{
+                                "agent": "codex", "agent_status": "idle", "pane_id": "w9:p1",
+                                "workspace_id": "w9", "tab_id": "w9:t1", "cwd": "/home/me"
+                            }]}})
+                        }
                         other => panic!("unexpected method {other}"),
                     };
                     json!({"result": result})
                 });
-                if prompts == 2 && reads > FIRST_PROMPT_VERIFY_ATTEMPTS {
-                    break;
-                }
             }
-            assert_eq!(prompts, 2);
+            assert_eq!(prompts, 1);
+            assert_eq!(reads, FIRST_PROMPT_VERIFY_ATTEMPTS * 2);
         });
 
         let client = HerdrClient::from_socket_path(&socket_path);
         let mut progress = Recorded::default();
-        prompt_started_agent(
+        let error = prompt_started_agent(
             &client,
             "w9:p1",
             "Build it",
@@ -351,13 +366,147 @@ mod tests {
             &mut progress,
             |_| Ok(()),
         )
-        .expect("resend dropped prompt");
-        assert!(
-            progress
-                .0
-                .iter()
-                .any(|message| message.contains("Retrying"))
-        );
+        .expect_err("acknowledgement alone cannot confirm a missing prompt");
+        let message = error.to_string();
+        assert!(message.contains("Could not confirm"), "{message}");
+        assert!(message.contains("w9:p1"), "{message}");
+        assert!(message.contains("was not sent again"), "{message}");
+        assert!(message.contains("Open the pane"), "{message}");
+        assert!(progress.0.is_empty());
+        server.join().expect("fake server panicked");
+        fs::remove_file(socket_path).expect("remove fake socket");
+    }
+
+    #[test]
+    fn scratch_codex_without_session_id_confirms_while_working_and_sends_once() {
+        let prompt =
+            "Corgi scratch confirmation test.\nReply TEST_RECEIVED_ONCE. Do not run tools.";
+        let (socket_path, server) = fake_herdr("scratch-prompt", move |listener| {
+            answer(&listener, |request| {
+                assert_eq!(request["method"], "agent.prompt");
+                assert_eq!(request["params"]["target"], "w9:p1");
+                assert_eq!(request["params"]["text"], prompt);
+                json!({"result": {"type": "agent_prompted", "agent": {
+                    "agent": "codex", "agent_status": "working", "pane_id": "w9:p1",
+                    "workspace_id": "w9", "tab_id": "w9:t1", "cwd": "/home/me"
+                }}})
+            });
+            answer(&listener, |request| {
+                assert_eq!(request["method"], "agent.read");
+                assert_eq!(request["params"]["target"], "w9:p1");
+                assert_eq!(request["params"]["source"], "recent_unwrapped");
+                assert!(
+                    request["params"]["lines"].is_null(),
+                    "history reads fail while working"
+                );
+                json!({"result": {"type": "pane_read", "read": {
+                    "text": "› Corgi scratch confirmation test.\n  Reply TEST_RECEIVED_ONCE. Do not run tools.\n• Working (0s • esc to interrupt)"
+                }}})
+            });
+        });
+        let client = HerdrClient::from_socket_path(&socket_path);
+        let mut accepted = 0;
+        prompt_started_agent(
+            &client,
+            "w9:p1",
+            prompt,
+            "corgi-scratch-test",
+            &mut Recorded::default(),
+            |agent| {
+                assert!(!has_real_agent_session(agent));
+                assert_eq!(agent.state, AgentState::Working);
+                accepted += 1;
+                Ok(())
+            },
+        )
+        .expect("confirm exact terminal prompt without a native session ID");
+        assert_eq!(accepted, 1);
+        server.join().expect("fake server panicked");
+        fs::remove_file(socket_path).expect("remove fake socket");
+    }
+
+    #[test]
+    fn a_collapsed_paste_waits_for_exact_text_without_resending() {
+        let prompt = "Corgi scratch confirmation test.\nReply TEST_RECEIVED_ONCE.";
+        let (socket_path, server) = fake_herdr("collapsed-prompt", move |listener| {
+            let mut prompts = 0;
+            let mut snapshots = 0;
+            loop {
+                let mut confirmed = false;
+                answer(&listener, |request| {
+                    let result = match request["method"].as_str().expect("method") {
+                        "agent.prompt" => {
+                            prompts += 1;
+                            assert_eq!(prompts, 1);
+                            json!({"type": "agent_prompted", "agent": {
+                                "agent": "codex", "agent_status": "working", "pane_id": "w9:p1",
+                                "workspace_id": "w9", "tab_id": "w9:t1"
+                            }})
+                        }
+                        "agent.read" => {
+                            assert_eq!(request["params"]["target"], "w9:p1");
+                            if request["params"]["lines"] == 200 {
+                                return json!({"error": {"code": "agent_not_idle",
+                                    "message": "alternate-screen history can only be captured while idle"}});
+                            }
+                            confirmed = snapshots == 2;
+                            json!({"type": "pane_read", "read": {
+                                "text": if confirmed { prompt } else { "› [Pasted Content 2 lines]\n• Working" }
+                            }})
+                        }
+                        "session.snapshot" => {
+                            snapshots += 1;
+                            json!({"type": "session_snapshot", "snapshot": {"agents": [{
+                                "agent": "codex", "agent_status": "working", "pane_id": "w9:p1",
+                                "workspace_id": "w9", "tab_id": "w9:t1", "cwd": "/home/me"
+                            }]}})
+                        }
+                        other => panic!("unexpected method {other}"),
+                    };
+                    json!({"result": result})
+                });
+                if confirmed {
+                    break;
+                }
+            }
+            assert_eq!(prompts, 1);
+            assert_eq!(
+                snapshots, 2,
+                "neither a paste placeholder nor Working confirms the text"
+            );
+        });
+        prompt_started_agent(
+            &HerdrClient::from_socket_path(&socket_path),
+            "w9:p1",
+            prompt,
+            "corgi-scratch-test",
+            &mut Recorded::default(),
+            |_| Ok(()),
+        )
+        .expect("wait for the submitted multiline prompt to be displayed");
+        server.join().expect("fake server panicked");
+        fs::remove_file(socket_path).expect("remove fake socket");
+    }
+
+    #[test]
+    fn prompt_confirmation_still_reads_history_when_text_has_scrolled_off_screen() {
+        let (socket_path, server) = fake_herdr("prompt-history", move |listener| {
+            for lines in [None, Some(200)] {
+                answer(&listener, |request| {
+                    assert_eq!(request["method"], "agent.read");
+                    assert_eq!(request["params"]["target"], "w9:p1");
+                    assert_eq!(request["params"]["lines"], json!(lines));
+                    json!({"result": {"type": "pane_read", "read": {
+                        "text": if lines.is_some() { "› Build it\n• Built" } else { "• Built" }
+                    }}})
+                });
+            }
+        });
+        assert!(first_prompt_visible(
+            &HerdrClient::from_socket_path(&socket_path),
+            "w9:p1",
+            "Build it"
+        ));
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
     }

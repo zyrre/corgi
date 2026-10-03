@@ -68,8 +68,8 @@ pub use cli::{
 };
 use rows::{
     NO_TOOL_YET, SCRATCH_GROUP, agent_project, agent_worktree, checkout_label, codex_thread_id,
-    has_real_agent_session, project_group, reported_context_percent, reported_effort,
-    reported_model, task_summary,
+    has_real_agent_session, is_corgi_scratch_codex, project_group, reported_context_percent,
+    reported_effort, reported_model, task_summary,
 };
 
 // The launch sequence, the project workspace Corgi owns, the record of the
@@ -361,6 +361,7 @@ impl App {
             .map(|workspace| (workspace.workspace_id.as_str(), workspace))
             .collect();
         let dashboard_pane_ids = self.dashboard_pane_ids(&snapshot.panes);
+        let client = self.client.clone();
 
         let mut agents: Vec<_> = snapshot
             .agents
@@ -370,7 +371,14 @@ impl App {
             // managed agent, including after its launcher has moved it and
             // changed the original HERDR_PANE_ID.
             .filter(|info| {
-                !dashboard_pane_ids.contains(info.pane_id.as_str()) && has_real_agent_session(info)
+                !dashboard_pane_ids.contains(info.pane_id.as_str())
+                    && (has_real_agent_session(info)
+                        || (is_corgi_scratch_codex(
+                            info,
+                            workspaces.get(info.workspace_id.as_str()).copied(),
+                        ) && client
+                            .has_foreground_codex(&info.pane_id, info.cwd())
+                            .unwrap_or(false)))
             })
             .map(|info| {
                 let workspace = workspaces.get(info.workspace_id.as_str()).copied();
@@ -522,7 +530,12 @@ impl App {
         message: Option<Activity>,
         tool: Option<Activity>,
     ) -> (Activity, Activity) {
-        let previous = self.cached_rows.remove(&info.pane_id);
+        // Without an identity, a reused pane cannot safely inherit the
+        // previous occupant's conversation when a terminal read fails.
+        let previous = self
+            .cached_rows
+            .remove(&info.pane_id)
+            .filter(|_| has_real_agent_session(info));
         let (mut message, mut tool) = (message, tool);
         let blocked = info.state == AgentState::Blocked;
         if (message.is_none() || tool.is_none() || blocked)
@@ -1289,6 +1302,162 @@ mod tests {
         assert_eq!(app.agents.len(), 1);
         assert_eq!(app.agents[0].info.pane_id, "w-real:p1");
         assert!(has_real_agent_session(&app.agents[0].info));
+    }
+
+    #[test]
+    fn unidentified_scratch_codex_needs_current_process_evidence_on_every_refresh() {
+        use crate::test_support::{answer, fake_herdr};
+        use serde_json::json;
+
+        let home = crate::paths::home().expect("home directory");
+        let cwd = home.to_string_lossy().into_owned();
+        let process_cwd = cwd.clone();
+        let (socket, server) = fake_herdr("unidentified-scratch", move |listener| {
+            answer(&listener, |request| {
+                assert_eq!(request["method"], "pane.process_info");
+                assert_eq!(request["params"]["pane_id"], "w-scratch:p1");
+                json!({ "result": {
+                    "type": "pane_process_info",
+                    "process_info": {
+                        "pane_id": "w-scratch:p1",
+                        "foreground_processes": [{
+                            "name": "codex", "cwd": process_cwd,
+                            "argv": ["/opt/codex/bin/codex"]
+                        }]
+                    }
+                }})
+            });
+            answer(&listener, |request| {
+                assert_eq!(request["method"], "agent.read");
+                assert_eq!(request["params"]["target"], "w-scratch:p1");
+                json!({ "result": { "type": "pane_read", "read": {
+                    "text": "", "pane_id": "w-scratch:p1"
+                }}})
+            });
+            // The workspace's marks and stale Codex detection survive a
+            // dashboard replacing the original process in the same pane.
+            answer(&listener, |request| {
+                assert_eq!(request["method"], "pane.process_info");
+                json!({ "result": { "type": "pane_process_info", "process_info": {
+                    "pane_id": "w-scratch:p1", "foreground_processes": [{
+                        "name": "corgi", "cwd": process_cwd, "argv": ["corgi"]
+                    }]
+                }}})
+            });
+            answer(&listener, |request| {
+                assert_eq!(request["method"], "pane.process_info");
+                json!({ "error": { "code": "unsupported", "message": "unavailable" }})
+            });
+        });
+        let mut app = test_app();
+        app.client = HerdrClient::from_socket_path(&socket);
+        let snapshot = || SessionSnapshot {
+            workspaces: vec![WorkspaceInfo {
+                workspace_id: "w-scratch".into(),
+                label: "scratch".into(),
+                tokens: [(CORGI_WORKSPACE_ROLE_TOKEN.into(), "agent-workspace".into())].into(),
+                ..WorkspaceInfo::default()
+            }],
+            panes: vec![PaneInfo {
+                pane_id: "w-scratch:dashboard".into(),
+                label: Some("Corgi".into()),
+                ..PaneInfo::default()
+            }],
+            agents: vec![
+                AgentInfo {
+                    pane_id: "w-scratch:p1".into(),
+                    workspace_id: "w-scratch".into(),
+                    tab_id: "w-scratch:t1".into(),
+                    agent: Some("codex".into()),
+                    cwd: Some(cwd.clone()),
+                    name: Some("scratch-agent".into()),
+                    state: AgentState::Idle,
+                    ..AgentInfo::default()
+                },
+                AgentInfo {
+                    pane_id: "w-scratch:dashboard".into(),
+                    workspace_id: "w-scratch".into(),
+                    agent: Some("codex".into()),
+                    cwd: Some(cwd.clone()),
+                    ..AgentInfo::default()
+                },
+                AgentInfo {
+                    pane_id: "w-phantom:p1".into(),
+                    workspace_id: "w-phantom".into(),
+                    agent: Some("codex".into()),
+                    cwd: Some(cwd.clone()),
+                    ..AgentInfo::default()
+                },
+            ],
+            ..SessionSnapshot::default()
+        };
+        app.install_snapshot(snapshot());
+        assert_eq!(app.agents.len(), 1);
+        let agent = &app.agents[0];
+        assert_eq!(agent.info.pane_id, "w-scratch:p1");
+        assert_eq!(agent.project_group, "Scratch");
+        assert!(agent.scratch);
+        assert!(!agent.corgi);
+        assert!(agent.worktree_checkout.is_none());
+        assert_eq!(agent.model, None);
+        assert_eq!(agent.context_percent, None);
+        assert_eq!(agent.task, "No task yet");
+        assert_eq!(codex_thread_id(&agent.info), None);
+        app.begin_merge_worktree();
+        assert_eq!(
+            app.status,
+            "Merge is available only for an agent in a linked worktree"
+        );
+        app.begin_prompt();
+        let Overlay::Prompt(form) = &app.overlay else {
+            panic!("prompt should target the current pane");
+        };
+        assert_eq!(form.target, "w-scratch:p1");
+        app.begin_close_workspace();
+        let Overlay::Close(form) = &app.overlay else {
+            panic!("close should ask for confirmation");
+        };
+        assert_eq!(form.target, CloseTarget::Workspace);
+        assert_eq!(form.workspace_id, "w-scratch");
+        app.install_snapshot(snapshot());
+        assert!(
+            app.agents.is_empty(),
+            "reused dashboard pane must be hidden"
+        );
+        app.install_snapshot(snapshot());
+        assert!(
+            app.agents.is_empty(),
+            "process lookup errors must fail closed"
+        );
+        server.join().expect("fake Herdr server");
+        std::fs::remove_file(socket).ok();
+    }
+
+    #[test]
+    fn unidentified_pane_does_not_inherit_cached_conversation_after_a_failed_read() {
+        let mut app = test_app();
+        let info = AgentInfo {
+            pane_id: "scratch:p1".into(),
+            agent: Some("codex".into()),
+            state: AgentState::Idle,
+            ..AgentInfo::default()
+        };
+        app.cached_rows.insert(
+            info.pane_id.clone(),
+            (
+                Activity {
+                    kind: ActivityKind::Message,
+                    text: "Previous occupant's reply".into(),
+                },
+                Activity {
+                    kind: ActivityKind::Command,
+                    text: "Previous occupant's command".into(),
+                },
+            ),
+        );
+        let (message, tool) = app.conversation_rows(&info, None, None);
+        assert_eq!(message, message_from_state(AgentState::Idle));
+        assert_eq!(tool.text, NO_TOOL_YET);
     }
 
     #[test]

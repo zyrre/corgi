@@ -248,6 +248,17 @@ impl SessionReader {
     }
 
     fn session_file(&mut self, info: &AgentInfo) -> Option<PathBuf> {
+        // An unidentified scratch Codex pane can be real, but its cwd is
+        // shared with other live and historical sessions. Never borrow one
+        // of their transcripts or retain its facts across pane reuse.
+        let session_id = info
+            .agent_session
+            .as_ref()
+            .map(|session| session.value.trim())
+            .filter(|value| !value.is_empty());
+        if info.harness().session_format() == Some(SessionFormat::Codex) && session_id.is_none() {
+            return None;
+        }
         let key = session_key(info);
         let previous = self.files.get(&key);
         if let Some(lookup) = previous
@@ -263,11 +274,6 @@ impl SessionReader {
             }
             _ => (Search::Everywhere, Instant::now()),
         };
-        let session_id = info
-            .agent_session
-            .as_ref()
-            .map(|session| session.value.as_str())
-            .filter(|value| !value.is_empty());
         let path = match info.harness().session_format() {
             Some(SessionFormat::Claude) => claude_dirs(self.home.as_deref())
                 .iter()

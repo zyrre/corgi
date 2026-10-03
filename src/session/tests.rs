@@ -749,6 +749,43 @@ fn reader(home: &Path) -> SessionReader {
     }
 }
 
+#[test]
+fn unidentified_codex_never_borrows_a_transcript_from_the_same_directory() {
+    let home = TempDir::new("codex-unidentified");
+    let directory = home.join(".codex/sessions/2026/10/02");
+    fs::create_dir_all(&directory).expect("create sessions directory");
+    write(
+        &directory.join("rollout-other-thread.jsonl"),
+        &[
+            r#"{"type":"session_meta","payload":{"id":"other-thread","cwd":"/home/me","model":"gpt-5-codex"}}"#,
+            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Another session's reply"}]}}"#,
+        ],
+    );
+    let mut reader = reader(&home);
+    let mut info = agent("codex", "scratch:p1", "other-thread", "/home/me");
+    assert!(reader.facts(&info).model.is_some());
+    assert!(!reader.transcript(&info).is_empty());
+    for session in [
+        None,
+        Some(AgentSession {
+            value: "   ".into(),
+            ..AgentSession::default()
+        }),
+    ] {
+        info.agent_session = session;
+        assert_eq!(reader.facts(&info), SessionFacts::default());
+        assert!(reader.transcript(&info).is_empty());
+    }
+    info.agent_session = Some(AgentSession {
+        value: "other-thread".into(),
+        ..AgentSession::default()
+    });
+    assert!(
+        reader.facts(&info).model.is_some(),
+        "facts return when the identity arrives"
+    );
+}
+
 /// Moves every lookup of `reader` back in time, as if `by` had passed.
 fn age_lookups(reader: &mut SessionReader, by: Duration) {
     for lookup in reader.files.values_mut() {
