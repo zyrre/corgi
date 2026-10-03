@@ -7,13 +7,15 @@ use std::{fmt::Write as _, fs, path::Path};
 
 use crate::{
     model::{Activity, ActivityKind, AgentState, DashboardAgent},
-    readme_shots::{Chrome, Palette, TOKYO_NIGHT, dashboard, set_palette, settle, svg},
+    readme_shots::{Chrome, Palette, TOKYO_NIGHT, color, dashboard, set_palette, settle, svg},
     test_support::test_terminal,
     ui::{CardStyle, set_card_style},
 };
 
 const WIDTH: u16 = 112;
 const HEIGHT: u16 = 52;
+/// The width of the terminal-viewable copies, for a pager over SSH.
+const ANSI_WIDTH: u16 = 100;
 
 /// Tokyo Night Day, the light Tokyo Night.
 const TOKYO_DAY: Palette = Palette {
@@ -197,6 +199,17 @@ fn card_mockups() {
         }
     }
     fs::write(directory.join("index.html"), index()).expect("write index");
+    let ansi_directory = directory.join("ansi");
+    fs::create_dir_all(&ansi_directory).expect("create mockups/ansi");
+    for (style, file, title, caption) in VARIANTS {
+        for (theme, palette) in [("dark", &TOKYO_NIGHT), ("light", &TOKYO_DAY)] {
+            let suffix = if theme == "dark" { "" } else { "-light" };
+            let path = ansi_directory.join(format!("{file}{suffix}.ans"));
+            let mut out = format!("\x1b[1m{title} ({theme})\x1b[0m: {caption}\n");
+            out.push_str(&render_ansi(style, palette));
+            fs::write(&path, out).expect("write ansi mockup");
+        }
+    }
 }
 
 /// `svg` as a PNG, for looking at a mockup without a browser.
@@ -209,4 +222,61 @@ fn rasterize(svg: &str) -> Vec<u8> {
     let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).expect("pixmap");
     resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
     pixmap.encode_png().expect("encode png")
+}
+
+/// The dashboard in `style` and `palette`, `ANSI_WIDTH` columns wide, as
+/// lines of true-colour SGR escapes a pager such as `less -R` shows.
+fn render_ansi(style: CardStyle, palette: &'static Palette) -> String {
+    use ratatui::style::Modifier;
+    set_card_style(style);
+    set_palette(palette);
+    let mut app = herd_app();
+    let mut terminal = test_terminal(ANSI_WIDTH, HEIGHT);
+    settle(&mut terminal, &mut app);
+    let buffer = terminal.backend().buffer().clone();
+    set_card_style(CardStyle::Current);
+    set_palette(&TOKYO_NIGHT);
+    let rgb = |hex: &str| {
+        let channel = |at: usize| u8::from_str_radix(&hex[at..at + 2], 16).unwrap_or(0);
+        format!("{};{};{}", channel(1), channel(3), channel(5))
+    };
+    let mut out = String::new();
+    for y in 0..buffer.area.height {
+        let mut last = String::new();
+        // The cells a wide glyph covers after its own.
+        let mut covered = 0;
+        for x in 0..buffer.area.width {
+            let cell = &buffer[(x, y)];
+            if covered > 0 {
+                covered -= 1;
+                continue;
+            }
+            covered = unicode_width::UnicodeWidthStr::width(cell.symbol()).saturating_sub(1);
+            let reversed = cell.modifier.contains(Modifier::REVERSED);
+            let (fg, bg) = if reversed {
+                (cell.bg, cell.fg)
+            } else {
+                (cell.fg, cell.bg)
+            };
+            let mut sgr = format!(
+                "\x1b[0;38;2;{};48;2;{}",
+                rgb(&color(fg, true)),
+                rgb(&color(bg, false))
+            );
+            if cell.modifier.contains(Modifier::BOLD) {
+                sgr.push_str(";1");
+            }
+            if cell.modifier.contains(Modifier::DIM) {
+                sgr.push_str(";2");
+            }
+            sgr.push('m');
+            if sgr != last {
+                out.push_str(&sgr);
+                last = sgr;
+            }
+            out.push_str(cell.symbol());
+        }
+        out.push_str("\x1b[0m\n");
+    }
+    out
 }

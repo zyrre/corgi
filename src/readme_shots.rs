@@ -1280,7 +1280,7 @@ fn shape(symbol: &str, left: u32, top: u32, fill: &str) -> Option<String> {
 
 /// A cell color in the screenshot's theme. The terminal's default is the
 /// theme's foreground or background, depending on which the cell asks for.
-fn color(color: Color, foreground: bool) -> String {
+pub(crate) fn color(color: Color, foreground: bool) -> String {
     let default = if foreground {
         palette().foreground
     } else {
