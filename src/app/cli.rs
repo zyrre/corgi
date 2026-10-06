@@ -451,6 +451,17 @@ pub(super) fn tag_agent(
             format!("{agent_name} had no merge tag")
         });
     }
+    if let Some(questions) = open_questions(root, agent_name) {
+        if questions.is_empty() {
+            bail!(
+                "{agent_name} has open questions (its ledger status is needs-answer); answer them first"
+            );
+        }
+        bail!(
+            "{agent_name} has open questions: {}; answer them first",
+            questions.join("; ")
+        );
+    }
     let state = info.state;
     anyhow::ensure!(
         matches!(
@@ -477,6 +488,15 @@ pub(super) fn tag_agent(
         "Tagged {agent_name} ready to merge: {ahead} commit{} ahead of {base}",
         if ahead == 1 { "" } else { "s" }
     ))
+}
+
+/// The questions the project corgi's ledger still has open about the agent
+/// `agent` (see [`digest::open_questions`]). A project without a ledger, or
+/// one that cannot be read, has none.
+fn open_questions(root: &str, agent: &str) -> Option<Vec<String>> {
+    let state_dir = crate::corgi::state_dir(root).ok()?;
+    let ledger = fs::read_to_string(state_dir.join("ledger.jsonl")).ok()?;
+    digest::open_questions(&ledger, agent)
 }
 
 /// How many commits `checkout`'s HEAD has that the branch `base` has not.
