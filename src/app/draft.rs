@@ -1,4 +1,4 @@
-//! Whether a corgi's input box holds text the user is writing, read from
+//! Whether a supervisor's input box holds text the user is writing, read from
 //! its visible screen, so the dashboard never types a wake into a draft.
 //!
 //! The screen is read with its styling, because plain text cannot tell a

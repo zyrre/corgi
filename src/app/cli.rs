@@ -1,4 +1,4 @@
-//! The command-line tools: `corgi spawn`, `corgi start`, `corgi fleet`,
+//! The command-line tools: `corgi spawn`, `corgi supervisor`, `corgi fleet`,
 //! `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
 //! `corgi tag`.
 
@@ -14,6 +14,7 @@ use crate::{
     inbox::{self, Inbox, Item, Kind},
     paths::{corgi_state_dir, expand_home, is_home},
     session::SessionReader,
+    supervisor::{OLD_WAKE_PREFIX, WAKE_PREFIX},
 };
 
 use super::{
@@ -21,8 +22,9 @@ use super::{
     catalog::{EFFORT_LEVELS, default_harness},
     form::Checkout,
     launch::{
-        CORGI_HOME_REFUSAL, CORGI_REQUEST_TOKEN, LaunchPlan, Role, calling_corgi_harness,
-        corgi_harness_error, corgi_plan, launch_agent, sanitize_agent_name, unique_agent_name,
+        CORGI_REQUEST_TOKEN, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL, calling_supervisor_harness,
+        launch_agent, sanitize_agent_name, supervisor_harness_error, supervisor_plan,
+        unique_agent_name,
     },
     markers,
     progress::Stderr,
@@ -38,7 +40,7 @@ JSON. The task is read from stdin, or from --task-file, never from arguments.
 Options:
   --project PATH     Project directory (default: the current directory)
   --harness KIND     Agent CLI, as Herdr names it (default: the calling
-                     corgi's own, else as in the form)
+                     supervisor's own, else as in the form)
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max (Codex and Claude Code)
   --checkout MODE    worktree (default), directory, or root: the project
@@ -135,7 +137,7 @@ fn valid_request_id(id: String) -> Result<String> {
 }
 
 /// `corgi spawn`: starts one agent through the same launch as the new-agent
-/// form, for a caller without a dashboard, such as a corgi agent. It runs
+/// form, for a caller without a dashboard, such as a supervisor agent. It runs
 /// inside Herdr and uses the injected socket. Progress goes to stderr and the
 /// started agent to stdout as one JSON object.
 pub fn spawn(args: &[String]) -> Result<()> {
@@ -166,11 +168,11 @@ pub fn spawn(args: &[String]) -> Result<()> {
         return print_launch(&existing);
     }
     let pane_id = env::var("HERDR_PANE_ID").ok();
-    if let Some(warning) = calling_corgi_state_conflict(&app, pane_id.as_deref()) {
+    if let Some(warning) = calling_supervisor_state_conflict(&app, pane_id.as_deref()) {
         eprintln!("warning: {warning}");
     }
-    let corgi_harness = calling_corgi_harness(&app, pane_id.as_deref());
-    let harness = spawn_harness(options.harness, corgi_harness, default_harness);
+    let supervisor_harness = calling_supervisor_harness(&app, pane_id.as_deref());
+    let harness = spawn_harness(options.harness, supervisor_harness, default_harness);
     anyhow::ensure!(
         options.effort.is_empty() || harness.supports_effort(),
         "{harness} has no effort control; only codex and claude take --effort"
@@ -229,7 +231,7 @@ pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_j
         "model": agent.model.as_deref().unwrap_or_default(),
         "effort": agent.effort.as_deref().unwrap_or_default(),
         "checkout": checkout.value(),
-        "corgi": agent.corgi,
+        "supervisor": agent.supervisor,
         "location": format!(
             "already running in {} ({})",
             info.cwd(),
@@ -240,46 +242,47 @@ pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_j
 }
 
 /// The harness `corgi spawn` starts: the one asked for, else the calling
-/// corgi's own, else the default the new-agent form would preset.
+/// supervisor's own, else the default the new-agent form would preset.
 fn spawn_harness(
     requested: Option<Harness>,
-    corgi: Option<Harness>,
+    supervisor: Option<Harness>,
     default: impl FnOnce() -> Harness,
 ) -> Harness {
-    requested.or(corgi).unwrap_or_else(default)
+    requested.or(supervisor).unwrap_or_else(default)
 }
 
 /// The warning about pre-rename state beside the state directory of the
-/// corgi in `pane_id`, when a corgi is the one spawning, so that it sees
+/// supervisor in `pane_id`, when a supervisor is the one spawning, so that it sees
 /// it and can tell the user.
-fn calling_corgi_state_conflict(app: &App, pane_id: Option<&str>) -> Option<String> {
+fn calling_supervisor_state_conflict(app: &App, pane_id: Option<&str>) -> Option<String> {
     let pane_id = pane_id?;
     app.agents
         .iter()
-        .find(|agent| agent.corgi && agent.info.pane_id == pane_id)
-        .and_then(|agent| crate::corgi::state_dir_conflict(&agent.project_root))
+        .find(|agent| agent.supervisor && agent.info.pane_id == pane_id)
+        .and_then(|agent| crate::supervisor::state_dir_conflict(&agent.project_root))
 }
 
-pub const START_USAGE: &str = "\
-Usage: corgi start [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
+pub const SUPERVISOR_USAGE: &str = "\
+Usage: corgi supervisor [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
 
-Starts the corgi of PROJECT (default: the project containing the current
-directory), the agent that herds its workers, in the root tab of its Corgi
-workspace, and prints it as JSON. A task on stdin or in --task-file becomes its first request; without
-one the corgi greets you with the state of the project.
+Starts the supervisor of PROJECT (default: the project containing the current
+directory), the agent that directs its workers, in the root tab of its Corgi
+workspace, and prints it as JSON. A task on stdin or in --task-file becomes
+its first request; without one the supervisor greets you with the state of
+the project.
 
 Options:
   --harness KIND     claude (default) or codex
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max
-  --name NAME        Agent name (default: corgi-<project>)
+  --name NAME        Agent name (default: supervisor-<project>)
   --task-file PATH   Read the first request from PATH
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
-/// `corgi start`: launches a project's corgi, the way the new-agent form
-/// does for a project with no agent sessions.
-pub fn start_command(args: &[String]) -> Result<()> {
+/// `corgi supervisor`: launches a project's supervisor, the way the new-agent
+/// form does for a project with no agent sessions.
+pub fn supervisor_command(args: &[String]) -> Result<()> {
     let (positional, args) = match args.first() {
         Some(first) if !first.starts_with('-') => (Some(first.as_str()), &args[1..]),
         _ => (None, args),
@@ -287,19 +290,22 @@ pub fn start_command(args: &[String]) -> Result<()> {
     let options = parse_spawn_options(args)?;
     anyhow::ensure!(
         options.request_id.is_none(),
-        "--request-id is for corgi spawn; a project has one corgi anyway"
+        "--request-id is for corgi spawn; a project has one supervisor anyway"
     );
     let harness = options
         .harness
-        .unwrap_or_else(|| Harness::CORGI_HARNESSES[0].clone());
-    anyhow::ensure!(harness.supports_corgi(), corgi_harness_error(&harness));
+        .unwrap_or_else(|| Harness::SUPERVISOR_HARNESSES[0].clone());
+    anyhow::ensure!(
+        harness.supports_supervisor(),
+        supervisor_harness_error(&harness)
+    );
     let project = existing_project_dir(positional.or(options.project.as_deref()))?;
-    anyhow::ensure!(!is_home(&project), CORGI_HOME_REFUSAL);
+    anyhow::ensure!(!is_home(&project), SUPERVISOR_HOME_REFUSAL);
     let task = read_task(options.task_file.as_deref(), false)?;
 
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    let mut plan = corgi_plan(&app, &root, harness, options.model, options.effort, task)?;
+    let mut plan = supervisor_plan(&app, &root, harness, options.model, options.effort, task)?;
     if let Some(requested) = options.name.as_deref() {
         plan.name = free_agent_name(&client, requested)?;
     }
@@ -312,13 +318,13 @@ Usage: corgi fleet [PROJECT]
 
 Lists the agents of PROJECT (default: the project containing the current
 directory), one tab-separated row each under a header line:
-NAME, ROLE (corgi or worker), STATE, TASK, MODEL, CTX, CWD and TAG, which is
-merge for an agent a corgi tagged ready to merge (corgi tag) that still rests
-where it was tagged, else -. When the project's corgi has missed inbox items,
+NAME, ROLE (supervisor or worker), STATE, TASK, MODEL, CTX, CWD and TAG, which is
+merge for an agent a supervisor tagged ready to merge (corgi tag) that still rests
+where it was tagged, else -. When the project's supervisor has missed inbox items,
 a line on stderr says so.";
 
 /// `corgi fleet`: one tab-separated row per agent of a project (default: the
-/// project containing the current directory), for a corgi to read.
+/// project containing the current directory), for a supervisor to read.
 pub fn fleet(args: &[String]) -> Result<()> {
     anyhow::ensure!(args.len() <= 1, "Usage: corgi fleet [PROJECT]");
     let project = existing_project_dir(args.first().map(String::as_str))?;
@@ -342,7 +348,11 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 field(agent.info.display_name()),
-                if agent.corgi { "corgi" } else { "worker" },
+                if agent.supervisor {
+                    "supervisor"
+                } else {
+                    "worker"
+                },
                 agent.info.state.label().to_lowercase(),
                 field(&agent.task),
                 field(agent.model.as_deref().unwrap_or("-")),
@@ -411,7 +421,7 @@ fn parse_tag_options(args: &[String]) -> Result<TagOptions> {
     })
 }
 
-/// `corgi tag`: a corgi tags one of its project's agents ready for the user
+/// `corgi tag`: a supervisor tags one of its project's agents ready for the user
 /// to merge, or clears the tag, for the dashboard to show.
 pub fn tag_command(args: &[String]) -> Result<()> {
     let options = parse_tag_options(args)?;
@@ -443,7 +453,7 @@ pub(super) fn tag_agent(
     let agent_name = info.name.as_deref().unwrap_or(name);
     let session = markers::session_of(info);
     if !options.merge {
-        let had = info.tokens.contains_key(crate::corgi::MERGE_TOKEN);
+        let had = info.tokens.contains_key(crate::supervisor::MERGE_TOKEN);
         markers::tag_pane(client, &info.pane_id, agent_name, session, None)?;
         return Ok(if had {
             format!("Cleared the merge tag of {agent_name}")
@@ -482,7 +492,7 @@ pub(super) fn tag_agent(
         ahead > 0,
         "{agent_name} has no commits ahead of {base} in {checkout}; there is nothing to merge"
     );
-    let value = crate::corgi::merge_tag_value(state, info.state_change_seq);
+    let value = crate::supervisor::merge_tag_value(state, info.state_change_seq);
     markers::tag_pane(client, &info.pane_id, agent_name, session, Some(&value))?;
     Ok(format!(
         "Tagged {agent_name} ready to merge: {ahead} commit{} ahead of {base}",
@@ -490,11 +500,11 @@ pub(super) fn tag_agent(
     ))
 }
 
-/// The questions the project corgi's ledger still has open about the agent
+/// The questions the project supervisor's ledger still has open about the agent
 /// `agent` (see [`digest::open_questions`]). A project without a ledger, or
 /// one that cannot be read, has none.
 fn open_questions(root: &str, agent: &str) -> Option<Vec<String>> {
-    let state_dir = crate::corgi::state_dir(root).ok()?;
+    let state_dir = crate::supervisor::state_dir(root).ok()?;
     let ledger = fs::read_to_string(state_dir.join("ledger.jsonl")).ok()?;
     digest::open_questions(&ledger, agent)
 }
@@ -516,14 +526,14 @@ fn commits_ahead(checkout: &std::path::Path, base: &str) -> Result<usize> {
 pub const DIGEST_USAGE: &str = "\
 Usage: corgi digest [PROJECT] [--decision WORDS | --search WORDS]
 
-Prints a bounded digest of the memory of PROJECT's corgi (default: the
-project containing the current directory), for the start of a corgi's
+Prints a bounded digest of the memory of PROJECT's supervisor (default: the
+project containing the current directory), for the start of a supervisor's
 session: the base branch, the handover note if there is one (else the open
 threads of the newest archived one), open ledger work joined with the
 running agents, recently finished work, the newest decisions in full (about
 12 KB, at least 3) and the titles of older ones. Decisions named by a later
 entry's `Supersedes:` line are left out. Reads only; it never changes the
-state directory. When the corgi has missed inbox items, a line on
+state directory. When the supervisor has missed inbox items, a line on
 stderr says so.
 
 Options:
@@ -536,8 +546,8 @@ Options:
                      first, and shown as file:line, date and a few lines of
                      context, about 5 KB at most";
 
-/// `corgi digest`: a bounded view of the state of a project's corgi, joined
-/// with its running agents, for a corgi to read at the start of its session.
+/// `corgi digest`: a bounded view of the state of a project's supervisor, joined
+/// with its running agents, for a supervisor to read at the start of its session.
 pub fn digest(args: &[String]) -> Result<()> {
     let mut project = None;
     let mut words = None;
@@ -566,7 +576,7 @@ pub fn digest(args: &[String]) -> Result<()> {
     let project = existing_project_dir(project)?;
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    let state_dir = crate::corgi::state_dir(&root)?;
+    let state_dir = crate::supervisor::state_dir(&root)?;
     let read = |name: &str| fs::read_to_string(state_dir.join(name)).ok();
     let decisions = read("decisions.md").unwrap_or_default();
 
@@ -579,7 +589,7 @@ pub fn digest(args: &[String]) -> Result<()> {
     }
 
     let state = state_dir.to_string_lossy();
-    let handovers = markdown_files(&state_dir.join(crate::corgi::HANDOVERS_DIR));
+    let handovers = markdown_files(&state_dir.join(crate::supervisor::HANDOVERS_DIR));
     if let Some(words) = search {
         let briefs = markdown_files(&state_dir.join("briefs"));
         let ledger = read("ledger.jsonl").unwrap_or_default();
@@ -617,7 +627,7 @@ pub fn digest(args: &[String]) -> Result<()> {
     let corgi_bin = corgi_bin_text();
     let decision_command = format!("{corgi_bin} digest {root} --decision \"<words>\"");
     let search_command = format!("{corgi_bin} digest {root} --search \"<words>\"");
-    let handover = read(crate::corgi::HANDOVER_NOTE);
+    let handover = read(crate::supervisor::HANDOVER_NOTE);
     // Names are UTC stamps, so the last sorts newest.
     let previous_handover = handovers
         .last()
@@ -666,12 +676,12 @@ pub const REPORT_USAGE: &str = "\
 Usage: corgi report NAME
 
 Prints, in full, the report the agent NAME (a Herdr agent name or pane ID)
-left. For a running agent: the one the Corgi dashboard kept in its corgi's
+left. For a running agent: the one the Corgi dashboard kept in its supervisor's
 inbox when the agent last stopped, if that is its current state, else the
 newest thing it said, which for a worker that followed its brief is its
 report, or its screen when its harness writes no readable transcript. For
-an agent whose pane is gone: the newest report kept in any corgi's inbox.
-When the corgi of the current directory's project has missed inbox items, a
+an agent whose pane is gone: the newest report kept in any supervisor's inbox.
+When the supervisor of the current directory's project has missed inbox items, a
 line on stderr says so.";
 
 /// `corgi report NAME`: the report an agent left, which for a worker that
@@ -712,7 +722,7 @@ fn print_running_report(
 ) -> Result<()> {
     let info = &agent.info;
     let name = info.name.as_deref().unwrap_or(target);
-    let kept = crate::corgi::state_dir(&agent.project_root)
+    let kept = crate::supervisor::state_dir(&agent.project_root)
         .ok()
         .and_then(|dir| {
             let item = current_report(&Inbox::read(&dir), agent, name)?.clone();
@@ -757,7 +767,7 @@ fn print_kept_report(name: &str, dir: &std::path::Path, item: &Item) {
     println!("{}", text.trim_end());
 }
 
-/// The newest report of the agent `name` kept in any corgi's inbox, with
+/// The newest report of the agent `name` kept in any supervisor's inbox, with
 /// the state directory it is in, for an agent whose pane is gone.
 fn inbox_report(name: &str) -> Option<(PathBuf, Item)> {
     let base = corgi_state_dir()?;
@@ -773,13 +783,14 @@ fn inbox_report(name: &str) -> Option<(PathBuf, Item)> {
 pub const NOTIFY_USAGE: &str = "\
 Usage: corgi notify [PROJECT] [OPTIONS] < text
 
-Adds an item to the inbox of the corgi of PROJECT (default: the project
+Adds an item to the inbox of the supervisor of PROJECT (default: the project
 containing the current directory), the one way anything but the dashboard
-reaches a corgi. The Corgi dashboard that wakes corgis types it into the
-corgi's input box once the corgi is between turns and its box holds no
-draft, together with any other undelivered items, and records it delivered;
-it survives the dashboard closing or restarting meanwhile. The text is read
-from stdin, and gets a leading [corgi] when it has none. Prints the item's
+reaches a supervisor. The Corgi dashboard that wakes supervisors types it
+into the supervisor's input box once the supervisor is between turns and its
+box holds no draft, together with any other undelivered items, and records
+it delivered; it survives the dashboard closing or restarting meanwhile. The
+text is read from stdin, and gets a leading [Corgi] when it has none (a
+leading [corgi], as Corgi wrote it before, becomes [Corgi]). Prints the item's
 id and inbox as JSON.
 
 Options:
@@ -792,7 +803,7 @@ Options:
   --report-file PATH  The agent's report, kept with the item, which
                       corgi report NAME then prints";
 
-/// `corgi notify`: adds an item to a corgi's inbox through the same code the
+/// `corgi notify`: adds an item to a supervisor's inbox through the same code the
 /// dashboard uses, for scripts and hooks.
 pub fn notify(args: &[String]) -> Result<()> {
     let mut project = None;
@@ -834,7 +845,7 @@ pub fn notify(args: &[String]) -> Result<()> {
             Some(fs::read_to_string(&path).with_context(|| format!("read report file {path}"))?);
     }
     item.project = project_root(project)?;
-    let dir = crate::corgi::state_dir(&item.project)?;
+    let dir = crate::supervisor::state_dir(&item.project)?;
     let item = inbox::append(&dir, item)?.context("the inbox already has an item with that id")?;
     serde_json::to_writer(
         io::stdout(),
@@ -844,28 +855,33 @@ pub fn notify(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `text` as a line a corgi tells from the user's: it starts with `[corgi]`.
+/// `text` as a line a supervisor tells from the user's: it starts with
+/// [`WAKE_PREFIX`], which replaces the `[corgi]` Corgi wrote before the
+/// supervisor was given its name, so that a script written for it still
+/// reads as Corgi's.
 fn notify_text(text: &str) -> String {
-    if text.starts_with("[corgi]") {
+    if text.starts_with(WAKE_PREFIX) {
         text.to_string()
+    } else if let Some(rest) = text.strip_prefix(OLD_WAKE_PREFIX) {
+        format!("{WAKE_PREFIX}{rest}")
     } else {
-        format!("[corgi] {text}")
+        format!("{WAKE_PREFIX} {text}")
     }
 }
 
 pub const INBOX_USAGE: &str = "\
 Usage: corgi inbox [PROJECT] [--delivered] [--take]
 
-Prints the undelivered items in the inbox of the corgi of PROJECT (default:
+Prints the undelivered items in the inbox of the supervisor of PROJECT (default:
 the project containing the current directory), oldest first: what the Corgi
-dashboard has not typed into the corgi's input box yet, each with its report
+dashboard has not typed into the supervisor's input box yet, each with its report
 or where to find it. Printing marks nothing delivered, so the dashboard still
-types them in. A corgi handing over leaves them to its successor.
+types them in. A supervisor handing over leaves them to its successor.
 
 Options:
   --delivered  Also print the newest delivered items
   --take       Record the printed undelivered items delivered, so the
-               dashboard does not type them in again: for the corgi, which
+               dashboard does not type them in again: for the supervisor, which
                acts on them now";
 
 /// The most undelivered items `corgi inbox` prints, the newest.
@@ -876,7 +892,7 @@ const INBOX_DELIVERED_SHOWN: usize = 10;
 /// report is only pointed to.
 const INBOX_REPORT_BUDGET: usize = 16 * 1024;
 
-/// `corgi inbox`: a bounded view of a corgi's inbox.
+/// `corgi inbox`: a bounded view of a supervisor's inbox.
 pub fn inbox_command(args: &[String]) -> Result<()> {
     let mut project = None;
     let (mut delivered, mut take) = (false, false);
@@ -890,7 +906,7 @@ pub fn inbox_command(args: &[String]) -> Result<()> {
         }
     }
     let root = project_root(project)?;
-    let dir = crate::corgi::state_dir(&root)?;
+    let dir = crate::supervisor::state_dir(&root)?;
     let inbox = Inbox::read(&dir);
     let (text, shown) = inbox_text(&inbox, &dir, &root, delivered);
     print!("{text}");
@@ -988,13 +1004,13 @@ fn corgi_bin_text() -> String {
     )
 }
 
-/// Prints, on stderr, that the corgi of the project at `root` has missed
+/// Prints, on stderr, that the supervisor of the project at `root` has missed
 /// inbox items, if it does: any undelivered while no dashboard delivers,
-/// else those that have waited minutes, not just for the corgi's turn.
+/// else those that have waited minutes, not just for the supervisor's turn.
 fn print_inbox_footer(root: &str) {
     let delivering = HerdrClient::from_env()
         .is_ok_and(|client| super::waker::wake_lock_held(client.socket_path()));
-    if let Some(footer) = crate::corgi::state_dir(root).ok().and_then(|dir| {
+    if let Some(footer) = crate::supervisor::state_dir(root).ok().and_then(|dir| {
         inbox::footer(
             &dir,
             &corgi_bin_text(),
@@ -1107,7 +1123,7 @@ fn run_launch(client: HerdrClient, mut app: App, plan: LaunchPlan) -> Result<ser
         "model": plan.model,
         "effort": plan.effort,
         "checkout": plan.checkout.value(),
-        "corgi": matches!(plan.role, Role::Corgi { .. }),
+        "supervisor": matches!(plan.role, Role::Supervisor { .. }),
         "location": launched.location,
     }))
 }
@@ -1128,7 +1144,7 @@ mod tests {
             return;
         }
         // Refused before stdin is read or Herdr is asked anything.
-        let refused = start_command(&["~".to_string()]).expect_err("no corgi for ~");
+        let refused = supervisor_command(&["~".to_string()]).expect_err("no supervisor for ~");
         assert!(refused.to_string().contains("not a project"), "{refused}");
     }
 
@@ -1167,9 +1183,9 @@ mod tests {
     }
 
     #[test]
-    fn a_corgis_workers_default_to_the_corgis_own_harness() {
+    fn a_supervisors_workers_default_to_the_supervisors_own_harness() {
         let default = || Harness::Claude;
-        // A Codex corgi starts Codex workers, a Claude corgi Claude ones.
+        // A Codex supervisor starts Codex workers, a Claude supervisor Claude ones.
         assert_eq!(
             spawn_harness(None, Some(Harness::Codex), default),
             Harness::Codex
@@ -1183,7 +1199,7 @@ mod tests {
             spawn_harness(Some(Harness::Claude), Some(Harness::Codex), default),
             Harness::Claude
         );
-        // A spawn not made by a corgi, or by one whose harness Herdr has
+        // A spawn not made by a supervisor, or by one whose harness Herdr has
         // not detected, keeps the form's default.
         assert_eq!(spawn_harness(None, None, || Harness::Codex), Harness::Codex);
     }
@@ -1242,8 +1258,10 @@ mod tests {
 
     #[test]
     fn a_notified_line_is_marked_as_corgis() {
-        assert_eq!(notify_text("deploy done"), "[corgi] deploy done");
-        assert_eq!(notify_text("[corgi] deploy done"), "[corgi] deploy done");
+        assert_eq!(notify_text("deploy done"), "[Corgi] deploy done");
+        assert_eq!(notify_text("[Corgi] deploy done"), "[Corgi] deploy done");
+        // A script that adds the prefix Corgi used before the rename.
+        assert_eq!(notify_text("[corgi] deploy done"), "[Corgi] deploy done");
     }
 
     #[test]
@@ -1255,13 +1273,13 @@ mod tests {
             agent: Some(agent.into()),
             state: Some("done".into()),
             key: agent.into(),
-            text: format!("[corgi] {agent} is done."),
+            text: format!("[Corgi] {agent} is done."),
             own: true,
             report,
             ..Item::default()
         };
         inbox::append(&dir, wake("w-old", "a", Some("old report".into()))).unwrap();
-        inbox::mark_delivered(&dir, &["a".into()], "corgi-weather").unwrap();
+        inbox::mark_delivered(&dir, &["a".into()], "supervisor-weather").unwrap();
         inbox::append(
             &dir,
             wake("w-forecast", "b", Some("forecast report".into())),
@@ -1273,11 +1291,11 @@ mod tests {
         let (text, shown) = inbox_text(&read, &dir, "", false);
         assert!(text.starts_with("2 undelivered item(s) in "), "{text}");
         assert!(
-            text.contains("[corgi] w-forecast is done.\nforecast report\n"),
+            text.contains("[Corgi] w-forecast is done.\nforecast report\n"),
             "{text}"
         );
         assert!(
-            text.contains("[corgi] w-radar is done.\n(report: run "),
+            text.contains("[Corgi] w-radar is done.\n(report: run "),
             "{text}"
         );
         assert!(!text.contains("old report"), "{text}");
@@ -1285,7 +1303,7 @@ mod tests {
         let (text, _) = inbox_text(&read, &dir, "", true);
         assert!(text.contains("Newest delivered (1 in all):"), "{text}");
         assert!(
-            text.contains("[corgi] w-old is done.\n(report: run "),
+            text.contains("[Corgi] w-old is done.\n(report: run "),
             "{text}"
         );
         // Printing marked nothing.
@@ -1334,7 +1352,7 @@ mod tests {
                 &dir,
                 Item {
                     agent: Some(format!("w-{n}")),
-                    text: format!("[corgi] w-{n} is done."),
+                    text: format!("[Corgi] w-{n} is done."),
                     report: Some("r".repeat(inbox::INLINE_REPORT_MAX)),
                     ..Item::default()
                 },
@@ -1372,12 +1390,12 @@ mod tests {
         let long = "x".repeat(81);
         let refused = valid_request_id(long).expect_err("81 characters");
         assert!(refused.to_string().contains("at most 80"), "{refused}");
-        // The parser applies it, and the corgi does not take one, which
+        // The parser applies it, and the supervisor does not take one, which
         // is refused before stdin is read or Herdr is asked anything.
         let args = ["--request-id".to_string(), "a b".to_string()];
         assert!(parse_spawn_options(&args).is_err());
         let args = ["--request-id".to_string(), "20261002-corgi".to_string()];
-        let refused = start_command(&args).expect_err("no request id for a corgi");
+        let refused = supervisor_command(&args).expect_err("no request id for a supervisor");
         assert!(refused.to_string().contains("for corgi spawn"), "{refused}");
     }
 }

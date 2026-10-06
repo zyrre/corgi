@@ -198,10 +198,10 @@ pub(crate) fn merge_dialog_lines<'a>(
                 form.project_root.display()
             );
             let legend = match help {
-                ConflictHelp::Corgi(_) => {
+                ConflictHelp::Supervisor(_) => {
                     lines.push(Line::styled(
                         format!(
-                            "Its corgi can have the agent merge {} into its own branch.",
+                            "Its supervisor can have the agent merge {} into its own branch.",
                             form.target_branch
                         ),
                         Style::default().fg(TEXT),
@@ -215,14 +215,14 @@ pub(crate) fn merge_dialog_lines<'a>(
                         Style::default().fg(MUTED),
                     ));
                     vec![
-                        ("c", "abort merge and ask the corgi to fix", SUCCESS),
+                        ("s", "abort merge and ask the supervisor to fix", SUCCESS),
                         ("Esc", "resolve by hand", WARNING),
                     ]
                 }
-                ConflictHelp::NoCorgi | ConflictHelp::Unavailable => {
-                    if *help == ConflictHelp::NoCorgi {
+                ConflictHelp::NoSupervisor | ConflictHelp::Unavailable => {
+                    if *help == ConflictHelp::NoSupervisor {
                         lines.push(Line::styled(
-                            "No corgi is running for this project.",
+                            "No supervisor is running for this project.",
                             Style::default().fg(WARNING),
                         ));
                     }
@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn a_conflicted_merge_lists_its_files_and_offers_the_corgi_only_if_running() {
+    fn a_conflicted_merge_lists_its_files_and_offers_the_supervisor_only_if_running() {
         let mut app = test_app();
         app.overlay = Overlay::merge(MergeWorktreeForm {
             label: "corgi/reviewed-agent".into(),
@@ -386,7 +386,7 @@ mod tests {
             commits: Vec::new(),
             phase: MergePhase::Conflicted {
                 files: vec!["src/ui/dialogs.rs".into(), "README.md".into()],
-                help: ConflictHelp::Corgi("corgi-corgi".into()),
+                help: ConflictHelp::Supervisor("supervisor-corgi".into()),
             },
         });
         let mut terminal = test_terminal(120, 40);
@@ -402,23 +402,23 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains(" c  abort merge and ask the corgi to fix"),
+            rendered.contains(" s  abort merge and ask the supervisor to fix"),
             "{rendered}"
         );
 
         let form = app.overlay.merge_worktree_form_mut().expect("form");
         form.phase = MergePhase::Conflicted {
             files: vec!["README.md".into()],
-            help: ConflictHelp::NoCorgi,
+            help: ConflictHelp::NoSupervisor,
         };
         terminal
             .draw(|frame| draw_overlay(frame, frame.area(), &mut app))
             .expect("draw conflicted merge dialog");
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("1 conflicted file"), "{rendered}");
-        assert!(rendered.contains("No corgi is running"), "{rendered}");
+        assert!(rendered.contains("No supervisor is running"), "{rendered}");
         assert!(rendered.contains("git merge --continue"), "{rendered}");
-        assert!(!rendered.contains("corgi to fix"), "{rendered}");
+        assert!(!rendered.contains("supervisor to fix"), "{rendered}");
     }
 
     #[test]

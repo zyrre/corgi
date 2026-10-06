@@ -18,7 +18,7 @@ use crate::{
 };
 
 use super::{
-    App, CORGI_NAME,
+    App, SUPERVISOR_NAME,
     catalog::{ModelCatalogUpdate, effort_choices, harness_choices, model_choices},
     close::CloseTarget,
     form::{Checkout, NewField},
@@ -353,7 +353,7 @@ fn bar_stream_frame(app: &App, now: u64) -> serde_json::Value {
         .map(|agent| {
             serde_json::json!({
                 "pane_id": agent.info.pane_id,
-                "name": if agent.corgi { CORGI_NAME } else { agent.info.display_name() },
+                "name": if agent.supervisor { SUPERVISOR_NAME } else { agent.info.display_name() },
                 "kind": agent.info.kind(),
                 "agent_status": agent.info.state,
                 "project_group": agent.project_group,
@@ -425,8 +425,8 @@ mod tests {
                 CORGI_PROJECT_ROOT_TOKEN, CORGI_WORKSPACE_ROLE_TOKEN,
             },
         },
-        corgi::CORGI_TOKEN,
         herdr::HerdrClient,
+        supervisor::SUPERVISOR_TOKEN,
         test_support::{answer, fake_herdr, test_app},
         usage::Provider,
     };
@@ -459,7 +459,7 @@ mod tests {
                 "workspaces": [
                     {
                         "workspace_id": "w-main",
-                        "label": "corgi corgi",
+                        "label": "corgi supervisor",
                         "tokens": {
                             CORGI_WORKSPACE_ROLE_TOKEN: CORGI_PROJECT_MAIN_ROLE,
                             CORGI_PROJECT_MAIN_TAB_TOKEN: "w-main:t1",
@@ -503,14 +503,14 @@ mod tests {
                     },
                     {
                         "agent": "claude",
-                        "name": "corgi-corgi",
+                        "name": "supervisor-corgi",
                         "agent_status": "idle",
                         "agent_session": { "agent": "claude", "value": "corgi-bar-test-corgi" },
                         "pane_id": "w-main:p1",
                         "workspace_id": "w-main",
                         "tab_id": "w-main:t1",
                         "cwd": "/repos/corgi",
-                        "tokens": { CORGI_TOKEN: "corgi-corgi" }
+                        "tokens": { SUPERVISOR_TOKEN: "supervisor-corgi" }
                     }
                 ],
                 "panes": []
@@ -599,10 +599,10 @@ mod tests {
                         "message": "Ready",
                         "message_kind": "ready",
                         "model": null,
-                        "name": "corgi",
+                        "name": "Supervisor",
                         "pane_id": "w-main:p1",
                         "project_group": "corgi",
-                        "task": "corgi",
+                        "task": "Supervisor",
                         "tool": "No command yet",
                         "tool_kind": "ready"
                     },

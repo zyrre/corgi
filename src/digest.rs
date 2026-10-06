@@ -1,4 +1,4 @@
-//! `corgi digest`: a bounded view of a corgi's memory, read at the
+//! `corgi digest`: a bounded view of a supervisor's memory, read at the
 //! start of its session instead of the raw files, which grow without limit.
 //!
 //! Everything here is pure text in, text out. The command in `app/cli.rs`
@@ -186,7 +186,7 @@ pub struct LedgerEntry {
     pub branch: String,
     pub summary: String,
     pub outcome: String,
-    /// The corgi's questions to the user about this work, still unanswered,
+    /// The supervisor's questions to the user about this work, still unanswered,
     /// such as `Q2: Keep the old flag?`.
     pub questions: Vec<String>,
     /// The line of `ledger.jsonl` this newest line is on, counting from 1.
@@ -649,7 +649,7 @@ not json
             project: "/repos/weather",
             branch: "main",
             head: "abc1234",
-            state_dir: "/state/corgis/weather",
+            state_dir: "/state/supervisors/weather",
             handover: None,
             previous_handover: None,
             decisions,

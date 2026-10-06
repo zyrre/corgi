@@ -1,4 +1,4 @@
-//! `corgi digest --search`: plain words looked up in all of a corgi's
+//! `corgi digest --search`: plain words looked up in all of a supervisor's
 //! memory, not only the bounded part the digest shows, so that it can look
 //! something up before it says it does not know or that it never happened.
 //!
@@ -420,7 +420,7 @@ mod tests {
         handovers: &'a [(String, String)],
     ) -> SearchInput<'a> {
         SearchInput {
-            state_dir: "/state/corgis/weather",
+            state_dir: "/state/supervisors/weather",
             decisions,
             ledger,
             briefs,

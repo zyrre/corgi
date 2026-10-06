@@ -10,7 +10,7 @@
   directly from the same place.
 </p>
 
-![The Corgi dashboard: the header's herd and plan-usage cards over the webshop and weather projects, each a card of its corgi's latest message and command over a count of its workers by state, with webshop's blocked worker named](docs/images/dashboard.svg)
+![The Corgi dashboard: the header's herd and plan-usage cards over the webshop and weather projects, each a card of its supervisor's latest message and command over a count of its workers by state, with webshop's blocked worker named](docs/images/dashboard.svg)
 
 ## Install
 
@@ -30,25 +30,25 @@ description = "Corgi (open or focus)"
 
 ## What you get
 
-- **One card per project with a corgi**: the corgi's latest message and command, and its workers summed up by state, with every blocked worker named. `→` expands a card into each worker's own rows, and Corgi remembers the choice per project.
-- **One row per agent** of any kind Herdr can start, such as Codex and Claude Code, for expanded cards, projects without a corgi, and scratch sessions.
-- **What needs you first**: the corgi, then blocked, working, done and idle; within a state, the agent that arrived there last comes first.
+- **One card per project with a supervisor**: the supervisor's latest message and command, and its workers summed up by state, with every blocked worker named. `→` expands a card into each worker's own rows, and Corgi remembers the choice per project.
+- **One row per agent** of any kind Herdr can start, such as Codex and Claude Code, for expanded cards, projects without a supervisor, and scratch sessions.
+- **What needs you first**: the supervisor, then blocked, working, done and idle; within a state, the agent that arrived there last comes first.
 - **What each agent is doing**: the newest thing said in its session and the command or tool it runs.
 - **What it costs**: its model and effort, how full its context is, how long its prompt cache stays warm, and in the header, each CLI's 5-hour and weekly plan usage.
 - **New agents in their own worktree** with `n`, and their work merged back with `m`.
-- **A corgi per project**: a long-lived agent you talk to, which herds the project's worker agents: it keeps the project's knowledge and context and dispatches the work to worktree agents.
+- **A supervisor per project**: a long-lived agent you talk to, which directs the project's worker agents: it keeps the project's knowledge and context and dispatches the work to worktree agents.
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, `↑` / `↓` | Select an agent, or a collapsed project card as its corgi |
+| `j` / `k`, `↑` / `↓` | Select an agent, or a collapsed project card as its supervisor |
 | `→` / `←` | Expand the selected project's card into its workers' rows, or collapse it again |
 | `space`, then `u` / `d`, `PgUp` / `PgDn` | Expand the selected session into its transcript and scroll it; `space` collapses it |
 | `p` | Prompt the selected agent |
 | `n` | Start a new agent in its own worktree |
 | `t` | Start a scratch session in your home directory |
-| `c` | Start or focus the corgi of the selected agent's project |
+| `s` | Start or focus the supervisor of the selected agent's project |
 | `m` | Merge and push an agent's worktree branch (asks first) |
 | `f` or `Enter` | Focus the selected agent's pane |
 | `x` | Close the selected agent, and delete its worktree checkout (asks first) |
@@ -59,7 +59,7 @@ For a compact popup instead of a tab, open the `quick` pane: `herdr plugin pane 
 
 ## Reading a row
 
-In an expanded card, a project without a corgi, and the scratch sessions, each agent has three rows:
+In an expanded card, a project without a supervisor, and the scratch sessions, each agent has three rows:
 
 ![One agent row, labelled: selection bar, state, task, model, effort, context used, prompt cache left, worktree, the newest thing said, and the command it runs](docs/images/row-anatomy.svg)
 
@@ -73,28 +73,28 @@ In an expanded card, a project without a corgi, and the scratch sessions, each a
 
 ![The new-agent form: the task typed, and the harness, model, effort, project and checkout on their presets](docs/images/new-agent-form.svg)
 
-`n` opens the new-agent form with everything but the task preset: the selected agent's project, the default harness with its own model and effort, and a fresh worktree. Type the task and press `Enter`; `←` / `→` change a setting in place, and `Space` or typing opens its list. The first agent of a new project is its corgi. Each worker gets its own Git worktree on a fresh `worktree/<name>` branch; switch the Checkout row to work in the project directory as it is instead.
+`n` opens the new-agent form with everything but the task preset: the selected agent's project, the default harness with its own model and effort, and a fresh worktree. Type the task and press `Enter`; `←` / `→` change a setting in place, and `Space` or typing opens its list. The first agent of a new project is its supervisor. Each worker gets its own Git worktree on a fresh `worktree/<name>` branch; switch the Checkout row to work in the project directory as it is instead.
 
 ## Merging
 
-`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout. If the merge stops on conflicts, the popup lists the files; with a corgi running, `c` aborts the merge and asks the corgi to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
+`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
 
 <img src="docs/images/merge-outcomes.gif" width="757" alt="A merge refused because the agent's worktree has uncommitted changes, the popup pulsing red and shaking; then retried, its steps running, and stamped with a big green check">
 
-## The corgi
+## The supervisor
 
-Each project can have one corgi, a herding dog for its worker agents: a long-lived Claude Code or Codex session in the project's root tab. You talk to it about what to build; it dispatches the work to worktree agents and reviews what they report. Its role is [`corgi/ROLE.md`](corgi/ROLE.md).
+Each project can have one supervisor, which directs its worker agents: a long-lived Claude Code or Codex session in the project's root tab. You talk to it about what to build; it dispatches the work to worktree agents and reviews what they report. Its role is [`supervisor/ROLE.md`](supervisor/ROLE.md).
 
 ```mermaid
 flowchart LR
-    you(["You"]) <-->|"what to build"| corgi["The project's corgi<br/>project root tab"]
-    corgi -->|"corgi spawn + brief"| workers["Worker agents<br/>one worktree each"]
+    you(["You"]) <-->|"what to build"| supervisor["The project's supervisor<br/>project root tab"]
+    supervisor -->|"corgi spawn + brief"| workers["Worker agents<br/>one worktree each"]
     workers -.->|"done, idle or blocked"| dashboard["Corgi dashboard"]
-    dashboard -.->|"[corgi] w-x is done.<br/>Run: corgi report w-x"| corgi
-    corgi -->|"corgi report, git log"| workers
+    dashboard -.->|"[Corgi] w-x is done.<br/>Run: corgi report w-x"| supervisor
+    supervisor -->|"corgi report, git log"| workers
 ```
 
-Press `c` to start it, or run `corgi start ~/repos/webshop` from a shell. Scripts start workers the way it does, with `corgi spawn` (see `corgi spawn --help`). The corgi starts each session with `corgi digest`, a bounded summary of its decisions, ledger and handover note joined with the running agents. It looks up older history with `corgi digest --search "<words>"`. The dashboard puts every wake in the corgi's inbox first, with the worker's report, and types it in once the corgi is between turns, so a wake survives the dashboard closing or restarting; scripts add their own lines with `corgi notify`, and `corgi inbox` shows what has not been typed in yet. When the corgi has reviewed a worker and recommends you merge it, it runs `corgi tag NAME merge`: the worker's badge then reads a magenta `MERGE` instead of `DONE`, a collapsed card counts it as `⇡ 1 merge`, and the header's herd card has a MERGE row. The corgi does not tag a worker while it still has questions for you about it: it asks them first, and `corgi tag NAME merge` refuses while the corgi's ledger lists the worker's questions as open. The tag goes when you merge with `m`, when the worker works again, or with `corgi tag NAME --clear`.
+Press `s` to start it, or run `corgi supervisor ~/repos/webshop` from a shell. Scripts start workers the way it does, with `corgi spawn` (see `corgi spawn --help`). The supervisor starts each session with `corgi digest`, a bounded summary of its decisions, ledger and handover note joined with the running agents. It looks up older history with `corgi digest --search "<words>"`. The dashboard puts every wake in the supervisor's inbox first, with the worker's report, and types it in once the supervisor is between turns, so a wake survives the dashboard closing or restarting; scripts add their own lines with `corgi notify`, and `corgi inbox` shows what has not been typed in yet. When the supervisor has reviewed a worker and recommends you merge it, it runs `corgi tag NAME merge`: the worker's badge then reads a magenta `MERGE` instead of `DONE`, a collapsed card counts it as `⇡ 1 merge`, and the header's herd card has a MERGE row. The supervisor does not tag a worker while it still has questions for you about it: it asks them first, and `corgi tag NAME merge` refuses while the supervisor's ledger lists the worker's questions as open. The tag goes when you merge with `m`, when the worker works again, or with `corgi tag NAME --clear`.
 
 ## Data and privacy
 

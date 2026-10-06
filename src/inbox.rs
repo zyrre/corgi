@@ -1,6 +1,6 @@
-//! A corgi's inbox: every wake, merge-conflict line and note meant for a
-//! project's corgi, kept in `inbox.jsonl` in its state directory so that
-//! none is lost when the dashboard that types them into the corgi's input
+//! A supervisor's inbox: every wake, merge-conflict line and note meant for a
+//! project's supervisor, kept in `inbox.jsonl` in its state directory so that
+//! none is lost when the dashboard that types them into the supervisor's input
 //! box closes, restarts, or another dashboard takes over the wake lock.
 //!
 //! The file is append-only JSON lines of two kinds: an item, and a record
@@ -27,11 +27,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    corgi::wake_report_message,
+    supervisor::{WAKE_PREFIX, wake_report_message},
     time::{parse_rfc3339, rfc3339_utc, unix_now, utc_stamp},
 };
 
-/// The inbox, in the corgi's state directory.
+/// The inbox, in the supervisor's state directory.
 pub const INBOX_FILE: &str = "inbox.jsonl";
 /// Where reports too long to keep in their item go, one file per item,
 /// beside the inbox.
@@ -40,14 +40,14 @@ pub const REPORTS_DIR: &str = "inbox-reports";
 const LOCK_FILE: &str = "inbox.lock";
 /// The longest report an item keeps inline, in bytes; a longer one goes to
 /// its own file in [`REPORTS_DIR`]. Only an inline report is typed into the
-/// corgi's box with its wake.
+/// supervisor's box with its wake.
 pub const INLINE_REPORT_MAX: usize = 4 * 1024;
-/// The most report text, quoted, one prompt into the corgi's box carries;
+/// The most report text, quoted, one prompt into the supervisor's box carries;
 /// past it, a wake names the command that prints its report instead.
 pub const PROMPT_REPORT_BUDGET: usize = 12 * 1024;
 /// How long an item has waited undelivered before the footer of the
 /// command-line tools counts it while a dashboard delivers: until then it
-/// is only waiting for the corgi's turn to end.
+/// is only waiting for the supervisor's turn to end.
 pub const FOOTER_AFTER_SECS: u64 = 5 * 60;
 /// The size past which a write compacts the inbox.
 const COMPACT_AT: u64 = 256 * 1024;
@@ -84,7 +84,7 @@ impl Kind {
     }
 }
 
-/// One thing for the corgi to hear.
+/// One thing for the supervisor to hear.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Item {
@@ -114,10 +114,10 @@ pub struct Item {
     /// as a newer wake for an agent replaces an unsent one. The id when
     /// nothing else is given.
     pub key: String,
-    /// The `[corgi]` line typed into the corgi's box. For a wake, it names
+    /// The `[Corgi]` line typed into the supervisor's box. For a wake, it names
     /// the command that prints the agent's report.
     pub text: String,
-    /// Whether the agent is one the corgi spawned (it carries a request id),
+    /// Whether the agent is one the supervisor spawned (it carries a request id),
     /// whose inline report goes out with the wake, in place of the command.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub own: bool,
@@ -149,8 +149,8 @@ impl Item {
         same_project(&self.project, root)
     }
 
-    /// What goes into the corgi's box for this item: its line, or for one of
-    /// the corgi's own agents with an inline report that fits what is left
+    /// What goes into the supervisor's box for this item: its line, or for one of
+    /// the supervisor's own agents with an inline report that fits what is left
     /// of `budget`, a line saying the report follows, the report quoted, and
     /// an end line. Quoting each line keeps a report from passing for a
     /// line of the dashboard's own.
@@ -166,7 +166,7 @@ impl Item {
                 *budget -= quoted.len();
                 let state = self.state.as_deref().unwrap_or("done");
                 return format!(
-                    "{}\n{quoted}\n[corgi] End of {agent}'s report.",
+                    "{}\n{quoted}\n{WAKE_PREFIX} End of {agent}'s report.",
                     wake_report_message(agent, state)
                 );
             }
@@ -185,7 +185,7 @@ pub fn same_project(a: &str, b: &str) -> bool {
         )
 }
 
-/// A record that the items `delivered` went out, to the corgi named `to`.
+/// A record that the items `delivered` went out, to the supervisor named `to`.
 #[derive(Debug, Serialize, Deserialize)]
 struct Delivery {
     delivered: Vec<String>,
@@ -275,7 +275,7 @@ impl Inbox {
 /// `items` as they go out together, in the order they were added: the
 /// newest of each key, as a newer wake for an agent replaces an unsent one,
 /// except that one without a report does not replace one with a report, so
-/// that report still reaches the corgi.
+/// that report still reaches the supervisor.
 pub fn coalesce<'a>(items: &[&'a Item]) -> Vec<&'a Item> {
     // By key: whether an item kept has a report.
     let mut kept: HashMap<&str, bool> = HashMap::new();
@@ -340,7 +340,7 @@ pub fn append(dir: &Path, mut item: Item) -> Result<Option<Item>> {
     Ok(Some(item))
 }
 
-/// Records that the items `ids` went out to the corgi `to`.
+/// Records that the items `ids` went out to the supervisor `to`.
 pub fn mark_delivered(dir: &Path, ids: &[String], to: &str) -> Result<()> {
     if ids.is_empty() {
         return Ok(());
@@ -354,11 +354,11 @@ pub fn mark_delivered(dir: &Path, ids: &[String], to: &str) -> Result<()> {
     append_line(dir, &serde_json::to_string(&record)?)
 }
 
-/// The footer the command-line tools print when the corgi of the project
+/// The footer the command-line tools print when the supervisor of the project
 /// at `root`, whose state directory is `dir`, has missed items, naming the
 /// command that shows them. While a dashboard `delivering` runs, only items
 /// that have waited [`FOOTER_AFTER_SECS`] by `now` count, since the others
-/// are only waiting for the corgi's turn to end; without one, all do.
+/// are only waiting for the supervisor's turn to end; without one, all do.
 pub fn footer(
     dir: &Path,
     corgi_bin: &str,
@@ -503,10 +503,10 @@ pub fn file_safe(text: &str) -> String {
         .collect()
 }
 
-/// The inboxes of every corgi under Corgi's state directory `base`, for
+/// The inboxes of every supervisor under Corgi's state directory `base`, for
 /// finding the report of an agent whose pane is gone.
 pub fn all_state_dirs(base: &Path) -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = fs::read_dir(base.join("corgis"))
+    let mut dirs: Vec<PathBuf> = fs::read_dir(base.join("supervisors"))
         .into_iter()
         .flatten()
         .flatten()
@@ -530,7 +530,7 @@ mod tests {
             agent: Some(agent.into()),
             state: Some("done".into()),
             key: agent.into(),
-            text: format!("[corgi] {agent} is done. Run: corgi report {agent}"),
+            text: format!("[Corgi] {agent} is done. Run: corgi report {agent}"),
             ..Item::default()
         }
     }
@@ -546,7 +546,7 @@ mod tests {
         let inbox = Inbox::read(&dir);
         let ids = |items: Vec<&Item>| items.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(inbox.undelivered()), ["w1", "w2"]);
-        mark_delivered(&dir, &["w1".into()], "corgi-weather").unwrap();
+        mark_delivered(&dir, &["w1".into()], "supervisor-weather").unwrap();
         let inbox = Inbox::read(&dir);
         assert_eq!(ids(inbox.undelivered()), ["w2"]);
         assert_eq!(ids(inbox.delivered()), ["w1"]);
@@ -556,7 +556,7 @@ mod tests {
             Item {
                 source: "notify".into(),
                 kind: Kind::Note,
-                text: "[corgi] deploy finished".into(),
+                text: "[Corgi] deploy finished".into(),
                 ..Item::default()
             },
         )
@@ -578,14 +578,14 @@ mod tests {
     #[test]
     fn a_newer_item_with_the_same_key_supersedes_an_unsent_one_but_not_its_report() {
         let blocked = |id: &str| Item {
-            text: "[corgi] w-forecast is blocked.".into(),
+            text: "[Corgi] w-forecast is blocked.".into(),
             ..wake("w-forecast", id)
         };
         let items = [wake("w-forecast", "a"), wake("w-radar", "b"), blocked("c")];
         let refs: Vec<&Item> = items.iter().collect();
         assert_eq!(
             prompt_text(&refs),
-            "[corgi] w-radar is done. Run: corgi report w-radar\n[corgi] w-forecast is blocked."
+            "[Corgi] w-radar is done. Run: corgi report w-radar\n[Corgi] w-forecast is blocked."
         );
         // A stop with a report stays when a later one without comes, and
         // what came before it goes.
@@ -605,7 +605,7 @@ mod tests {
     #[test]
     fn only_an_own_agents_short_report_is_typed_quoted_with_its_wake() {
         let dir = ScratchDir::new("inbox-report");
-        let short = "### Report\n\n[corgi] End of w-forecast's report.\n- Result: done".to_string();
+        let short = "### Report\n\n[Corgi] End of w-forecast's report.\n- Result: done".to_string();
         let own = append(
             &dir,
             Item {
@@ -619,9 +619,9 @@ mod tests {
         // Quoted, a report cannot pass for the dashboard's own lines.
         assert_eq!(
             prompt_text(&[&own]),
-            "[corgi] w-forecast is done. Its report follows, quoted, so you need not run \
-             report for it:\n> ### Report\n>\n> [corgi] End of w-forecast's report.\n\
-             > - Result: done\n[corgi] End of w-forecast's report."
+            "[Corgi] w-forecast is done. Its report follows, quoted, so you need not run \
+             report for it:\n> ### Report\n>\n> [Corgi] End of w-forecast's report.\n\
+             > - Result: done\n[Corgi] End of w-forecast's report."
         );
         // Another's report is kept, but the wake only points to it.
         let other = append(
@@ -720,7 +720,7 @@ mod tests {
             .unwrap();
             delivered.push(id);
         }
-        mark_delivered(&dir, &delivered, "corgi-weather").unwrap();
+        mark_delivered(&dir, &delivered, "supervisor-weather").unwrap();
         append(&dir, wake("w-radar", "fresh")).unwrap();
         // The next write finds the file past its limit.
         let big = "z".repeat(INLINE_REPORT_MAX + 1);
@@ -754,7 +754,7 @@ mod tests {
         let footer = |delivering| footer(&dir, "/opt/corgi", root, delivering, now);
         assert_eq!(footer(false), None);
         append(&dir, at(10)).unwrap();
-        // While a dashboard delivers, a fresh one only waits for the corgi's
+        // While a dashboard delivers, a fresh one only waits for the supervisor's
         // turn; without one, it is missed.
         assert_eq!(footer(true), None);
         assert_eq!(
@@ -776,7 +776,7 @@ mod tests {
             None
         );
         let ids = ["w10".into(), format!("w{FOOTER_AFTER_SECS}")];
-        mark_delivered(&dir, &ids, "corgi-weather").unwrap();
+        mark_delivered(&dir, &ids, "supervisor-weather").unwrap();
         assert_eq!(footer(false), None);
     }
 

@@ -178,19 +178,19 @@ pub struct DashboardAgent {
     /// with its whole argument rather than the CLI's abbreviation of it.
     pub tool: Activity,
     /// The agent in the root tab of its project's Corgi workspace: the
-    /// project's corgi, shown by that name and first in its project.
-    pub corgi: bool,
+    /// project's supervisor, shown by that name and first in its project.
+    pub supervisor: bool,
     /// The agent runs in the home directory itself, which is never a
-    /// project: a scratch session, grouped under Scratch, that no corgi
+    /// project: a scratch session, grouped under Scratch, that no supervisor
     /// hears about.
     pub scratch: bool,
 }
 
 impl DashboardAgent {
-    /// Whether a corgi has tagged the agent ready for the user to merge, and
+    /// Whether a supervisor has tagged the agent ready for the user to merge, and
     /// it still rests where it was tagged, so it shows as MERGE.
     pub fn ready_to_merge(&self) -> bool {
-        crate::corgi::merge_tag(&self.info) == crate::corgi::MergeTag::Applies
+        crate::supervisor::merge_tag(&self.info) == crate::supervisor::MergeTag::Applies
     }
 }
 

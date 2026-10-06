@@ -29,11 +29,11 @@ use super::{
 const GUTTER_WIDTH: usize = 4;
 const SELECTED_GUTTER: &str = "██  ";
 const BLANK_GUTTER: &str = "    ";
-// A corgi's rows carry a rail in the last column of their gutter, so the
+// A supervisor's rows carry a rail in the last column of their gutter, so the
 // project's lead stands apart from its workers while the selection bar
-// keeps its place. The rail, the corgi's task and its card's title are in
+// keeps its place. The rail, the supervisor's task and its card's title are in
 // the same color as the pixel wordmark at the top of the dashboard, so the
-// corgi's own lead reads as part of the same brand, and follows the theme
+// supervisor's own lead reads as part of the same brand, and follows the theme
 // the same way the wordmark does.
 const RAIL: &str = "▌";
 // The gutter plus the status badge's leading padding, so a project name sits
@@ -61,7 +61,7 @@ const MIN_TRANSCRIPT_ROWS: usize = 6;
 // either side: its rows are those of a box this much narrower.
 const CARD_INSET: u16 = 4;
 const CARD_MARGIN: &str = " ";
-// Rows a corgi's message and its tool each wrap to in its card.
+// Rows a supervisor's message and its tool each wrap to in its card.
 const CARD_ACTIVITY_ROWS: usize = 2;
 // The keys that expand and collapse a card, where the card shows them.
 const EXPAND_HINT: &str = "→ expand";
@@ -81,7 +81,7 @@ const WAITING_FOR_INPUT: &str = "waiting for your input";
 
 /// The agent list, and the one session in it that is expanded.
 ///
-/// A project led by its corgi is one card: the corgi's rows, then a sum
+/// A project led by its supervisor is one card: the supervisor's rows, then a sum
 /// of its workers, or, once `→` expanded it, every worker's own rows. Other
 /// projects and the scratch sessions are a heading over their rows.
 ///
@@ -112,16 +112,16 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         let agents = &app.agents[run.clone()];
         if is_card(&app.agents, &run) {
             let open = app.card_expanded(&run);
-            let (corgi, workers) = (&agents[0], &agents[1..]);
+            let (supervisor, workers) = (&agents[0], &agents[1..]);
             // A worker folded into a collapsed card is selected as the card.
             let selected = run.contains(&app.selected) && (!open || app.selected == run.start);
             if selected {
                 selected_item = items.len();
                 if app.expanded {
                     zoom = Some(Zoom {
-                        agent: corgi,
+                        agent: supervisor,
                         rim: card,
-                        lead: vec![card_top(&corgi.project_group, area.width)],
+                        lead: vec![card_top(&supervisor.project_group, area.width)],
                         rail: true,
                     });
                     break;
@@ -130,13 +130,13 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
             // The gap after a card closes its last item, so a scrolled list
             // never starts on a blank line above a card.
             if !open {
-                let mut lines = collapsed_card(corgi, workers, selected, area.width, now);
+                let mut lines = collapsed_card(supervisor, workers, selected, area.width, now);
                 lines.push(Line::raw(""));
                 items.push(ListItem::new(lines));
             } else {
-                let mut lines = vec![card_top(&corgi.project_group, area.width)];
+                let mut lines = vec![card_top(&supervisor.project_group, area.width)];
                 lines.extend(
-                    corgi_lines(corgi, selected, card_width, now)
+                    supervisor_lines(supervisor, selected, card_width, now)
                         .into_iter()
                         .map(|line| card.frame(line)),
                 );
@@ -298,7 +298,7 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
 
 /// The session expanded with `space`: the agent, where its rows are drawn,
 /// the lines of its item above its identity line, such as the top of the
-/// card it leads, and whether its rows carry a corgi's rail.
+/// card it leads, and whether its rows carry a supervisor's rail.
 struct Zoom<'a> {
     agent: &'a DashboardAgent,
     rim: Rim,
@@ -353,8 +353,8 @@ impl Rim {
         Line::from(spans)
     }
 
-    /// `line` inside this rim, with a corgi's rail when `rail` is set, which
-    /// runs on down the turns of a corgi's expanded session.
+    /// `line` inside this rim, with a supervisor's rail when `rail` is set, which
+    /// runs on down the turns of a supervisor's expanded session.
     fn frame_rail(self, line: Line<'_>, rail: bool) -> Line<'_> {
         self.frame(if rail { railed(line) } else { line })
     }
@@ -405,7 +405,7 @@ fn card_top(project: &str, area_width: u16) -> Line<'static> {
     ])
 }
 
-/// The rule between a card's corgi and the sum of its workers, joined to
+/// The rule between a card's supervisor and the sum of its workers, joined to
 /// the card's sides.
 fn card_divider(area_width: u16) -> Line<'static> {
     let inner = card_inner_width(area_width);
@@ -443,10 +443,10 @@ fn card_bottom(area_width: u16, hint: Option<&'static str>) -> Line<'static> {
     Line::from(spans)
 }
 
-/// A collapsed card, which is one item of the list: the corgi's rows, a
+/// A collapsed card, which is one item of the list: the supervisor's rows, a
 /// divider, and the sum of its workers with each blocked one named.
 fn collapsed_card(
-    corgi: &DashboardAgent,
+    supervisor: &DashboardAgent,
     workers: &[DashboardAgent],
     selected: bool,
     area_width: u16,
@@ -454,9 +454,9 @@ fn collapsed_card(
 ) -> Vec<Line<'static>> {
     let rim = Rim::card(area_width);
     let content_area = rim.content_area(area_width);
-    let mut lines = vec![card_top(&corgi.project_group, area_width)];
+    let mut lines = vec![card_top(&supervisor.project_group, area_width)];
     lines.extend(
-        corgi_lines(corgi, selected, content_area, now)
+        supervisor_lines(supervisor, selected, content_area, now)
             .into_iter()
             .map(|line| rim.frame(line)),
     );
@@ -472,17 +472,17 @@ fn collapsed_card(
     lines
 }
 
-/// A corgi's rows in its card: its identity row, then its message and its
-/// tool, each wrapped to at most two rows, all with the corgi's rail.
-fn corgi_lines(
-    corgi: &DashboardAgent,
+/// A supervisor's rows in its card: its identity row, then its message and its
+/// tool, each wrapped to at most two rows, all with the supervisor's rail.
+fn supervisor_lines(
+    supervisor: &DashboardAgent,
     selected: bool,
     area_width: u16,
     now: u64,
 ) -> Vec<Line<'static>> {
     let text_width = transcript_text_width(area_width);
-    let mut lines = vec![agent_status_line(corgi, selected, area_width, now)];
-    for activity in [&corgi.message, &corgi.tool] {
+    let mut lines = vec![agent_status_line(supervisor, selected, area_width, now)];
+    for activity in [&supervisor.message, &supervisor.tool] {
         lines.extend(entry_lines(
             activity,
             text_width,
@@ -493,7 +493,7 @@ fn corgi_lines(
     lines.into_iter().map(railed).collect()
 }
 
-/// `line`, a row of a corgi, with the rail in the last column of its gutter.
+/// `line`, a row of a supervisor, with the rail in the last column of its gutter.
 fn railed(line: Line<'_>) -> Line<'_> {
     let mut spans = line.spans;
     if let Some(gutter) = spans.first_mut() {
@@ -790,7 +790,7 @@ pub(super) fn agent_status_line(
     now: u64,
 ) -> Line<'static> {
     let marker = gutter(selected);
-    // A worker a corgi tagged ready to merge reads MERGE while it rests.
+    // A worker a supervisor tagged ready to merge reads MERGE while it rests.
     let (status, status_color) = if agent.ready_to_merge() {
         (" MERGE ".to_string(), MERGE)
     } else {
@@ -817,9 +817,9 @@ pub(super) fn agent_status_line(
         inner_width.saturating_sub(leading_width + trailing_width),
     );
 
-    // A corgi's task is its name, in the wordmark's color; selection turns
+    // A supervisor's task is its name, in the wordmark's color; selection turns
     // it bold, same as a worker's task, so the cue still shows on its row.
-    let task_style = if agent.corgi {
+    let task_style = if agent.supervisor {
         Style::default().fg(SUCCESS)
     } else {
         Style::default().fg(TEXT)
@@ -1228,7 +1228,7 @@ mod tests {
         assert_eq!(rendered_screen(&mut app, 100, 24), before);
     }
 
-    fn member(group: &str, task: &str, state: AgentState, corgi: bool) -> DashboardAgent {
+    fn member(group: &str, task: &str, state: AgentState, supervisor: bool) -> DashboardAgent {
         DashboardAgent {
             info: AgentInfo {
                 state,
@@ -1236,21 +1236,21 @@ mod tests {
             },
             project_group: group.into(),
             task: task.into(),
-            corgi,
+            supervisor,
             ..DashboardAgent::default()
         }
     }
 
-    /// A corgi project whose corgi talks at length, with a blocked, a
-    /// working and a finished worker; a project without a corgi; and a
+    /// A project whose supervisor talks at length, with a blocked, a
+    /// working and a finished worker; a project without a supervisor; and a
     /// scratch session.
     fn carded_herd() -> Vec<DashboardAgent> {
-        let mut corgi = member("webshop", "corgi", AgentState::Idle, true);
-        corgi.message = Activity {
+        let mut supervisor = member("webshop", "Supervisor", AgentState::Idle, true);
+        supervisor.message = Activity {
             kind: ActivityKind::Message,
             text: "word ".repeat(60),
         };
-        corgi.tool = Activity {
+        supervisor.tool = Activity {
             kind: ActivityKind::Command,
             text: "git log --oneline main..HEAD".into(),
         };
@@ -1260,7 +1260,7 @@ mod tests {
             text: "Allow Bash: npm test?".into(),
         };
         vec![
-            corgi,
+            supervisor,
             blocked,
             member("webshop", "Cart badge count", AgentState::Working, false),
             member("webshop", "Paginate orders", AgentState::Done, false),
@@ -1280,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corgi_project_opens_as_a_collapsed_card_of_its_corgi_and_its_workers_sum() {
+    fn a_supervisor_project_opens_as_a_collapsed_card_of_its_supervisor_and_its_workers_sum() {
         let mut app = test_app();
         app.agents = carded_herd();
         let screen = rendered_screen(&mut app, 100, 40);
@@ -1291,9 +1291,12 @@ mod tests {
             .position(|row| row.starts_with("│ ╭ webshop ─"))
             .expect("card top");
         assert!(screen[top].ends_with("╮ │"), "{}", screen[top]);
-        // The corgi's identity row, then its message wrapped to two rows
+        // The supervisor's identity row, then its message wrapped to two rows
         // and cut, then its tool.
-        assert!(screen[top + 1].contains("IDLE  · corgi"), "{screen:#?}");
+        assert!(
+            screen[top + 1].contains("IDLE  · Supervisor"),
+            "{screen:#?}"
+        );
         assert!(screen[top + 1].contains(SELECTION_BAR));
         assert!(screen[top + 2].contains("› word word"));
         assert!(screen[top + 3].trim_end_matches([' ', '│']).ends_with('…'));
@@ -1322,7 +1325,7 @@ mod tests {
         assert!(!screen.iter().any(|row| row.contains("Cart badge count")));
         assert!(!screen.iter().any(|row| row.contains("Paginate orders")));
 
-        // A project without a corgi and the scratch sessions are a heading
+        // A project without a supervisor and the scratch sessions are a heading
         // over their rows, as before.
         assert!(row_with(&screen, " notes ").starts_with("│────"));
         assert!(row_with(&screen, "Export as Markdown").contains("IDLE"));
@@ -1335,7 +1338,7 @@ mod tests {
         );
     }
 
-    /// Whether `row`, a row inside a card, carries the corgi's rail in the
+    /// Whether `row`, a row inside a card, carries the supervisor's rail in the
     /// last column of its gutter.
     fn has_rail(row: &str) -> bool {
         row.starts_with("│ │") && row.chars().nth(3 + GUTTER_WIDTH - 1) == Some('▌')
@@ -1374,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn selecting_the_corgis_row_turns_its_task_bold_same_as_a_worker() {
+    fn selecting_the_supervisors_row_turns_its_task_bold_same_as_a_worker() {
         let mut app = test_app();
         app.agents = carded_herd();
         app.selected = 0;
@@ -1382,24 +1385,24 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("draw dashboard");
-        // Selected: the corgi's task is bold, in the wordmark's color.
-        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
-        assert!(modifier_of(&terminal, "corgi ·").contains(Modifier::BOLD));
+        // Selected: the supervisor's task is bold, in the wordmark's color.
+        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
+        assert!(modifier_of(&terminal, "Supervisor ·").contains(Modifier::BOLD));
 
         // A worker folded into a collapsed card selects as the card, so the
-        // corgi must be expanded with a worker picked to see it unselected.
+        // supervisor must be expanded with a worker picked to see it unselected.
         app.cards.set_expanded("webshop", true);
         app.selected = 1;
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("draw dashboard");
         // Unselected: still the wordmark's color, but no longer bold.
-        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
-        assert!(!modifier_of(&terminal, "corgi ·").contains(Modifier::BOLD));
+        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
+        assert!(!modifier_of(&terminal, "Supervisor ·").contains(Modifier::BOLD));
     }
 
     #[test]
-    fn every_row_of_a_corgi_carries_its_rail_and_no_worker_row_does() {
+    fn every_row_of_a_supervisor_carries_its_rail_and_no_worker_row_does() {
         let mut app = test_app();
         app.agents = carded_herd();
         let collapsed = rendered_screen(&mut app, 100, 40);
@@ -1422,24 +1425,24 @@ mod tests {
         app.cards.set_expanded("webshop", true);
         app.selected = 2;
         let expanded = rendered_screen(&mut app, 100, 40);
-        let corgi = expanded
+        let supervisor = expanded
             .iter()
-            .position(|row| row.contains("corgi"))
-            .expect("corgi");
-        for row in &expanded[corgi..corgi + 4] {
+            .position(|row| row.contains("Supervisor"))
+            .expect("supervisor");
+        for row in &expanded[supervisor..supervisor + 4] {
             assert!(has_rail(row), "{row}");
         }
         assert!(
-            expanded[corgi].starts_with("│ │   ▌"),
+            expanded[supervisor].starts_with("│ │   ▌"),
             "{}",
-            expanded[corgi]
+            expanded[supervisor]
         );
         let rails = expanded.iter().filter(|row| has_rail(row)).count();
         assert_eq!(rails, 4, "{expanded:#?}");
     }
 
     #[test]
-    fn the_rail_runs_on_down_a_corgis_expanded_session() {
+    fn the_rail_runs_on_down_a_supervisors_expanded_session() {
         let mut app = test_app();
         app.agents = carded_herd();
         app.expanded = true;
@@ -1457,7 +1460,7 @@ mod tests {
         let screen = rendered_screen(&mut app, 100, 30);
         let identity = screen
             .iter()
-            .position(|row| row.contains("corgi"))
+            .position(|row| row.contains("Supervisor"))
             .expect("identity");
         // The identity row, the newest turn, the gap after it and the older
         // turn, up to the card's bottom.
@@ -1466,7 +1469,7 @@ mod tests {
         }
         assert!(screen[identity + 4].starts_with("│ ╰─"));
 
-        // A worker's expanded session has none, under the corgi's rows.
+        // A worker's expanded session has none, under the supervisor's rows.
         app.cards.set_expanded("webshop", true);
         app.selected = 1;
         let screen = rendered_screen(&mut app, 100, 30);
@@ -1482,7 +1485,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corgis_card_title_rail_and_task_are_in_the_wordmarks_color() {
+    fn a_supervisors_card_title_rail_and_task_are_in_the_wordmarks_color() {
         let mut app = test_app();
         app.agents = carded_herd();
         let mut terminal = test_terminal(100, 40);
@@ -1491,7 +1494,7 @@ mod tests {
             .expect("draw dashboard");
         assert_eq!(color_of(&terminal, "webshop"), SUCCESS);
         assert_eq!(color_of(&terminal, "▌"), SUCCESS);
-        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
+        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
         // Workers' tasks keep their own color.
         assert_eq!(color_of(&terminal, "Export as Markdown"), TEXT);
     }
@@ -1519,20 +1522,20 @@ mod tests {
         app.selected = 2;
         let screen = rendered_screen(&mut app, 100, 40);
 
-        let corgi = screen
+        let supervisor = screen
             .iter()
-            .position(|row| row.contains("IDLE  · corgi"))
-            .expect("corgi");
+            .position(|row| row.contains("IDLE  · Supervisor"))
+            .expect("supervisor");
         // Each worker's three rows, in the list's order, inside the card.
-        // The corgi's message wraps to two rows, then its tool and a gap.
-        let blocked = corgi + 5;
+        // The supervisor's message wraps to two rows, then its tool and a gap.
+        let blocked = supervisor + 5;
         assert!(screen[blocked].contains("BLOCKED  · Retry card payments"));
         assert!(screen[blocked + 1].contains("? Allow Bash: npm test?"));
         let working = blocked + AGENT_ROWS;
         assert!(screen[working].contains("WORKING  · Cart badge count"));
         assert!(screen[working].contains(SELECTION_BAR));
         assert!(screen[working + AGENT_ROWS].contains("DONE  · Paginate orders"));
-        for row in &screen[corgi..working + 2 * AGENT_ROWS] {
+        for row in &screen[supervisor..working + 2 * AGENT_ROWS] {
             assert!(row.starts_with("│ │") && row.ends_with("│ │"), "{row}");
         }
         // No sum and no divider, and the card closes with its collapse key.
@@ -1545,8 +1548,8 @@ mod tests {
     fn tagged(mut agent: DashboardAgent) -> DashboardAgent {
         agent.info.state_change_seq = 40;
         agent.info.tokens.insert(
-            crate::corgi::MERGE_TOKEN.into(),
-            crate::corgi::merge_tag_value(agent.info.state, 40),
+            crate::supervisor::MERGE_TOKEN.into(),
+            crate::supervisor::merge_tag_value(agent.info.state, 40),
         );
         agent
     }
@@ -1629,10 +1632,10 @@ mod tests {
         .into();
         let expanded = rendered_screen(&mut app, 100, 30);
 
-        // The card's top and the corgi's identity row stay where they were.
+        // The card's top and the supervisor's identity row stay where they were.
         let identity = expanded
             .iter()
-            .position(|row| row.contains("corgi"))
+            .position(|row| row.contains("Supervisor"))
             .expect("identity");
         assert_eq!(collapsed[..=identity], expanded[..=identity]);
         // Its turns follow inside the card, and the card closes under them.
@@ -1648,7 +1651,7 @@ mod tests {
             .flat_map(|index| {
                 let project = format!("project-{index:02}");
                 [
-                    member(&project, "corgi", AgentState::Idle, true),
+                    member(&project, "Supervisor", AgentState::Idle, true),
                     member(&project, "A worker", AgentState::Working, false),
                 ]
             })
@@ -1744,7 +1747,7 @@ mod tests {
                 ));
             }
         }
-        agents.push(member("delta", "corgi", AgentState::Idle, true));
+        agents.push(member("delta", "Supervisor", AgentState::Idle, true));
         agents.push(member("delta", "delta task 1", AgentState::Idle, false));
         agents.push(member("delta", "delta task 2", AgentState::Idle, false));
         for index in 0..3 {
@@ -1768,7 +1771,7 @@ mod tests {
                 ("alpha", "alpha task 0"),
                 ("bravo", "bravo task 0"),
                 ("charlie", "charlie task 0"),
-                ("delta", "corgi"),
+                ("delta", "Supervisor"),
                 ("Scratch", "Scratch task 0"),
             ] {
                 if let Some(row) = screen.iter().position(|row| row.contains(first)) {
