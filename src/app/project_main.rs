@@ -9,10 +9,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    corgi,
     herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS, PaneInfo, SessionSnapshot, TabInfo},
     model::{AgentInfo, WorkspaceInfo},
     paths::dir_name,
+    supervisor,
 };
 
 use super::{
@@ -97,8 +97,8 @@ pub(super) fn ensure_project_main_workspace(
         .snapshot()
         .context("inspect existing project workspaces")?;
     relabel_project_mains(client, &mut snapshot.workspaces);
-    let corgis = corgi_workspaces(&snapshot.agents);
-    if let Some(main) = project_main_workspace(&snapshot.workspaces, &corgis, root) {
+    let supervisors = supervisor_workspaces(&snapshot.agents);
+    if let Some(main) = project_main_workspace(&snapshot.workspaces, &supervisors, root) {
         progress.report(format!("Using project workspace {}…", main.label));
         return Ok(main);
     }
@@ -132,19 +132,19 @@ fn create_project_main_workspace(
     })
 }
 
-/// The Corgi project-main workspace to start a corgi of `root` in, when the
-/// project already has agent sessions elsewhere (a corgi launch beside
+/// The Corgi project-main workspace to start a supervisor of `root` in, when the
+/// project already has agent sessions elsewhere (a supervisor launch beside
 /// running work, as opposed to a new project's or an idle one's, which are
 /// unaffected). Herdr's own root workspace for the repository is adopted —
 /// marked, relabelled, and used as Corgi's project-main — when it is not
-/// already Corgi's and holds no agent, so the corgi lands where Herdr's own
+/// already Corgi's and holds no agent, so the supervisor lands where Herdr's own
 /// tree shows the project's root instead of nested under it. Otherwise this
 /// behaves exactly like [`ensure_project_main_workspace`].
 ///
 /// Once adopted, both it and any older Corgi project-main of the same
 /// repository can satisfy [`project_main_workspace`]'s lookup; that lookup
-/// prefers the one the corgi runs in, which is the adopted root once the
-/// corgi starts there, and otherwise takes the first match in the session
+/// prefers the one the supervisor runs in, which is the adopted root once the
+/// supervisor starts there, and otherwise takes the first match in the session
 /// snapshot's own workspace order, which Herdr returns in sidebar order, so
 /// the adopted root — Herdr's own, earlier in that order than a
 /// later-created duplicate — is still what later lookups find. An older,
@@ -176,8 +176,8 @@ pub(super) fn corgi_project_main(
         return Ok(adopted);
     }
 
-    let corgis = corgi_workspaces(&snapshot.agents);
-    if let Some(main) = project_main_workspace(&snapshot.workspaces, &corgis, root) {
+    let supervisors = supervisor_workspaces(&snapshot.agents);
+    if let Some(main) = project_main_workspace(&snapshot.workspaces, &supervisors, root) {
         progress.report(format!("Using project workspace {}…", main.label));
         return Ok(main);
     }
@@ -204,7 +204,7 @@ fn herdr_root_workspace_id(client: &HerdrClient, root: &str) -> Result<Option<St
 }
 
 /// Whether `project_root` already has a real agent session in some workspace
-/// of its own, the condition under which a new corgi launch may adopt
+/// of its own, the condition under which a new supervisor launch may adopt
 /// Herdr's root workspace instead of always using Corgi's own.
 fn project_has_other_agent_sessions(snapshot: &SessionSnapshot, project_root: &str) -> bool {
     let workspaces: HashMap<&str, &WorkspaceInfo> = snapshot
@@ -329,24 +329,24 @@ pub(super) fn project_root_digest(root: &str) -> String {
 }
 
 /// The label of a project's Corgi workspace: `<project> corgi`, since that
-/// workspace's root tab is where the project's corgi lives. It sets the
+/// workspace's root tab is where the project's supervisor lives. It sets the
 /// workspace apart from worker workspaces and from plain workspaces that
 /// share the project's name.
 fn project_workspace_label(project_root: &str) -> String {
     format!(
         "{} corgi",
-        dir_name(project_root).unwrap_or(corgi::UNNAMED_PROJECT)
+        dir_name(project_root).unwrap_or(supervisor::UNNAMED_PROJECT)
     )
 }
 
 /// The label a project workspace should change to, if it still carries a
 /// label Corgi used to give it: the bare project name, `<project> handler`
-/// from while the corgi was the Project handler, or `<project> steward`
+/// from while the supervisor was the Project handler, or `<project> steward`
 /// from before that, when it was the Steward. Any other label was chosen by
 /// the user and is kept.
 fn project_main_relabel(workspace: &WorkspaceInfo) -> Option<String> {
     let root = project_main_root(workspace)?;
-    let project = dir_name(root).unwrap_or(corgi::UNNAMED_PROJECT);
+    let project = dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT);
     let label = workspace.label.trim();
     (label == project
         || ["handler", "steward"]
@@ -372,12 +372,12 @@ pub(super) fn relabel_project_mains(client: &HerdrClient, workspaces: &mut [Work
 
 /// The Corgi project workspace of `project_root`. A project can have two,
 /// when Herdr lost Corgi's marks in a restart and a launch created another
-/// before they were put back; the one a corgi runs in, among the
-/// workspaces in `corgis`, is the project's, and otherwise the first in
+/// before they were put back; the one a supervisor runs in, among the
+/// workspaces in `supervisors`, is the project's, and otherwise the first in
 /// snapshot order.
 pub(super) fn project_main_workspace(
     workspaces: &[WorkspaceInfo],
-    corgis: &[&str],
+    supervisors: &[&str],
     project_root: &str,
 ) -> Option<ProjectMain> {
     let mut mains = workspaces
@@ -385,7 +385,7 @@ pub(super) fn project_main_workspace(
         .filter(|workspace| is_corgi_project_main(workspace, project_root));
     let workspace = mains
         .clone()
-        .find(|workspace| corgis.contains(&workspace.workspace_id.as_str()))
+        .find(|workspace| supervisors.contains(&workspace.workspace_id.as_str()))
         .or_else(|| mains.next())?;
     Some(ProjectMain {
         workspace_id: workspace.workspace_id.clone(),
@@ -399,12 +399,12 @@ pub(super) fn project_main_workspace(
     })
 }
 
-/// The workspaces the corgis among `agents` run in, for
+/// The workspaces the supervisors among `agents` run in, for
 /// [`project_main_workspace`].
-pub(super) fn corgi_workspaces(agents: &[AgentInfo]) -> Vec<&str> {
+pub(super) fn supervisor_workspaces(agents: &[AgentInfo]) -> Vec<&str> {
     agents
         .iter()
-        .filter(|agent| corgi::is_corgi(agent))
+        .filter(|agent| supervisor::is_supervisor(agent))
         .map(|agent| agent.workspace_id.as_str())
         .collect()
 }
@@ -523,12 +523,12 @@ impl App {
             .collect()
     }
 
-    /// The workspaces the dashboard's corgis run in, for
+    /// The workspaces the dashboard's supervisors run in, for
     /// [`project_main_workspace`].
-    pub(super) fn corgi_workspaces(&self) -> Vec<&str> {
+    pub(super) fn supervisor_workspaces(&self) -> Vec<&str> {
         self.agents
             .iter()
-            .filter(|agent| agent.corgi)
+            .filter(|agent| agent.supervisor)
             .map(|agent| agent.info.workspace_id.as_str())
             .collect()
     }
@@ -544,8 +544,9 @@ impl App {
         let Ok(snapshot) = self.client.snapshot() else {
             return Vec::new();
         };
-        let corgis = corgi_workspaces(&snapshot.agents);
-        let Some(main) = project_main_workspace(&snapshot.workspaces, &corgis, project_root) else {
+        let supervisors = supervisor_workspaces(&snapshot.agents);
+        let Some(main) = project_main_workspace(&snapshot.workspaces, &supervisors, project_root)
+        else {
             return Vec::new();
         };
         let dashboard_pane_ids = self.dashboard_pane_ids(&snapshot.panes);
@@ -570,8 +571,9 @@ impl App {
             .client
             .snapshot()
             .context("refresh project workspace before cleanup")?;
-        let corgis = corgi_workspaces(&snapshot.agents);
-        let Some(main) = project_main_workspace(&snapshot.workspaces, &corgis, project_root) else {
+        let supervisors = supervisor_workspaces(&snapshot.agents);
+        let Some(main) = project_main_workspace(&snapshot.workspaces, &supervisors, project_root)
+        else {
             return Ok(None);
         };
         let dashboard_pane_ids = self.dashboard_pane_ids(&snapshot.panes);
@@ -861,7 +863,7 @@ mod tests {
         };
 
         // The bare project name, and the labels an older Corgi gave it while
-        // the corgi was the Project handler and, before that, the Steward.
+        // the supervisor was the Project handler and, before that, the Steward.
         for old in ["weather", "weather handler", "weather steward"] {
             assert_eq!(
                 project_main_relabel(&main(old, CORGI_PROJECT_MAIN_ROLE, false)).as_deref(),
@@ -1098,7 +1100,7 @@ mod tests {
         fs::remove_file(socket_path).expect("remove fake socket");
     }
 
-    /// A snapshot with one agent session elsewhere in `root` (so a corgi
+    /// A snapshot with one agent session elsewhere in `root` (so a supervisor
     /// launch may adopt), a root workspace `wR` at sidebar position 1 (Herdr's
     /// root), and the `workspace.list` order backing it.
     fn adoption_snapshot(root: &str, root_tokens: Value, root_tabs: Value) -> Value {
@@ -1157,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corgi_launch_adopts_a_free_herdr_root_workspace() {
+    fn a_supervisor_launch_adopts_a_free_herdr_root_workspace() {
         let root = "/repos/webshop-backend";
         let (socket_path, server) = fake_herdr("adopt-free-root", move |listener| {
             for method in [
@@ -1212,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corgi_launch_falls_back_when_herdr_s_root_runs_an_agent() {
+    fn a_supervisor_launch_falls_back_when_herdr_s_root_runs_an_agent() {
         let root = "/repos/webshop-backend";
         let (socket_path, server) = fake_herdr("adopt-busy-root", move |listener| {
             for method in [
@@ -1281,9 +1283,9 @@ mod tests {
     }
 
     #[test]
-    fn a_corgi_launch_is_unaffected_when_herdr_s_root_is_already_corgi_s() {
+    fn a_supervisor_launch_is_unaffected_when_herdr_s_root_is_already_corgi_s() {
         let root = "/repos/webshop-backend";
-        let (socket_path, server) = fake_herdr("adopt-corgis", move |listener| {
+        let (socket_path, server) = fake_herdr("adopt-supervisors", move |listener| {
             for method in ["session.snapshot", "workspace.rename", "workspace.list"] {
                 answer(&listener, |request| {
                     assert_eq!(request["method"], method);
@@ -1424,15 +1426,15 @@ mod duplicate_tests {
     }
 
     #[test]
-    fn of_two_project_workspaces_the_one_the_corgi_runs_in_is_the_projects() {
+    fn of_two_project_workspaces_the_one_the_supervisor_runs_in_is_the_projects() {
         // The empty duplicate a spawn created while the marks were gone comes
-        // first in snapshot order; the corgi's workspace wins all the same.
+        // first in snapshot order; the supervisor's workspace wins all the same.
         let workspaces = [main_workspace("w8Y"), main_workspace("w70")];
-        let corgi = AgentInfo {
+        let supervisor = AgentInfo {
             pane_id: "w70:p2".into(),
             workspace_id: "w70".into(),
             name: Some("corgi-corgi".into()),
-            tokens: [(corgi::CORGI_TOKEN.into(), "corgi-corgi".into())].into(),
+            tokens: [(supervisor::SUPERVISOR_TOKEN.into(), "corgi-corgi".into())].into(),
             ..AgentInfo::default()
         };
         let worker = AgentInfo {
@@ -1440,15 +1442,15 @@ mod duplicate_tests {
             name: Some("w-worker".into()),
             ..AgentInfo::default()
         };
-        let agents = [worker, corgi];
-        let corgis = corgi_workspaces(&agents);
-        assert_eq!(corgis, ["w70"]);
-        let main = project_main_workspace(&workspaces, &corgis, ROOT).expect("main");
+        let agents = [worker, supervisor];
+        let supervisors = supervisor_workspaces(&agents);
+        assert_eq!(supervisors, ["w70"]);
+        let main = project_main_workspace(&workspaces, &supervisors, ROOT).expect("main");
         assert_eq!(
             (main.workspace_id.as_str(), main.root_tab_id.as_str()),
             ("w70", "w70:t1")
         );
-        // Without a corgi, snapshot order decides, as before.
+        // Without a supervisor, snapshot order decides, as before.
         let main = project_main_workspace(&workspaces, &[], ROOT).expect("main");
         assert_eq!(main.workspace_id, "w8Y");
     }

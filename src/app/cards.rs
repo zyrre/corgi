@@ -1,5 +1,5 @@
-//! Project cards: a project led by its corgi is drawn as one card that
-//! shows the corgi and sums up its workers, until `→` expands it into
+//! Project cards: a project led by its supervisor is drawn as one card that
+//! shows the supervisor and sums up its workers, until `→` expands it into
 //! every worker's own rows. Which projects are expanded is remembered across
 //! restarts, and the list's selection only stops on the rows that are shown.
 
@@ -92,12 +92,12 @@ pub(crate) fn project_runs(agents: &[DashboardAgent]) -> Vec<Range<usize>> {
     runs
 }
 
-/// Whether a project's run is drawn as a card: it is led by its corgi, and
+/// Whether a project's run is drawn as a card: it is led by its supervisor, and
 /// it is not the scratch sessions, which keep their own rows.
 pub(crate) fn is_card(agents: &[DashboardAgent], run: &Range<usize>) -> bool {
     agents
         .get(run.start)
-        .is_some_and(|lead| lead.corgi && !lead.scratch)
+        .is_some_and(|lead| lead.supervisor && !lead.scratch)
 }
 
 impl App {
@@ -205,7 +205,7 @@ mod tests {
 
     use super::{super::test_helpers::press, *};
 
-    fn agent(pane: &str, group: &str, corgi: bool) -> DashboardAgent {
+    fn agent(pane: &str, group: &str, supervisor: bool) -> DashboardAgent {
         DashboardAgent {
             info: AgentInfo {
                 pane_id: pane.into(),
@@ -213,7 +213,7 @@ mod tests {
                 ..AgentInfo::default()
             },
             project_group: group.into(),
-            corgi,
+            supervisor,
             ..DashboardAgent::default()
         }
     }
@@ -274,7 +274,7 @@ mod tests {
         press(&mut app, KeyCode::Char('k'), KeyModifiers::NONE);
         assert_eq!(selected_pane(&app), "scratch");
 
-        // Neither a project without a corgi nor a scratch session has a
+        // Neither a project without a supervisor nor a scratch session has a
         // card to expand.
         press(&mut app, KeyCode::Right, KeyModifiers::NONE);
         assert!(!app.cards.is_expanded("Scratch"));
@@ -297,7 +297,7 @@ mod tests {
         press(&mut app, KeyCode::Char('j'), KeyModifiers::NONE);
         assert_eq!(selected_pane(&app), "worker-b");
 
-        // From a worker row, the card folds and the corgi is selected.
+        // From a worker row, the card folds and the supervisor is selected.
         press(&mut app, KeyCode::Left, KeyModifiers::NONE);
         assert!(!app.cards.is_expanded("corgi"));
         assert_eq!(selected_pane(&app), "corgi");

@@ -1,7 +1,6 @@
 pub mod activity;
 pub mod app;
 pub mod choices;
-pub mod corgi;
 pub mod defaults;
 pub mod digest;
 pub mod git;
@@ -16,6 +15,7 @@ pub mod projects;
 #[cfg(test)]
 mod readme_shots;
 pub mod session;
+pub mod supervisor;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod textfield;

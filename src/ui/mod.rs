@@ -41,7 +41,7 @@ const WARNING: Color = Color::Yellow;
 const DANGER: Color = Color::Red;
 // A state Corgi cannot tell.
 const UNKNOWN: Color = Color::Magenta;
-// An agent a corgi tagged ready for the user to merge: magenta, the one
+// An agent a supervisor tagged ready for the user to merge: magenta, the one
 // semantic color no state the user acts on uses, far from working's cyan in
 // both Tokyo Night themes, with an arrow up towards the base branch.
 const MERGE: Color = Color::Magenta;

@@ -34,11 +34,11 @@ const NEW_AGENT_LABEL_WIDTH: u16 = 10;
 // and the legend.
 const NEW_AGENT_CHROME_HEIGHT: u16 = 6;
 
-/// Why the form is about to start the project's corgi rather than a
+/// Why the form is about to start the project's supervisor rather than a
 /// worker, and on which harness.
-fn corgi_notice(project: &str, new_project: bool, harness: &Harness) -> Line<'static> {
+fn supervisor_notice(project: &str, new_project: bool, harness: &Harness) -> Line<'static> {
     let name = dir_name(project.trim())
-        .unwrap_or(crate::corgi::UNNAMED_PROJECT)
+        .unwrap_or(crate::supervisor::UNNAMED_PROJECT)
         .to_string();
     let reason = if new_project {
         format!("{name} is a new project")
@@ -48,12 +48,12 @@ fn corgi_notice(project: &str, new_project: bool, harness: &Harness) -> Line<'st
     Line::from(vec![
         Span::styled("  ✦ ", bold(ACCENT)),
         Span::styled(
-            if harness.supports_corgi() {
-                format!("{reason}, so this starts its corgi on {harness} with your task")
+            if harness.supports_supervisor() {
+                format!("{reason}, so this starts its supervisor on {harness} with your task")
             } else {
                 format!(
-                    "{reason}, so this starts its corgi, on {}",
-                    Harness::corgi_kinds()
+                    "{reason}, so this starts its supervisor, on {}",
+                    Harness::supervisor_kinds()
                 )
             },
             Style::default().fg(ACCENT),
@@ -73,7 +73,7 @@ pub(super) fn draw_new_agent(
     // Asked once, because it looks at the filesystem and every part of the
     // form below depends on it.
     let new_project = form.is_new_project();
-    let starts_corgi = form.starts_corgi_among(new_project, agents);
+    let starts_supervisor = form.starts_supervisor_among(new_project, agents);
     let fields = form.fields_for(new_project);
     // The legend is the one row that cannot wrap or scroll, so the panel is
     // never narrower than the widest legend any row shows, whatever share of
@@ -101,7 +101,7 @@ pub(super) fn draw_new_agent(
         .filter(|field| *field != NewField::Task)
         .collect();
     let error_rows = u16::from(form.error.is_some());
-    let notice_rows = u16::from(starts_corgi);
+    let notice_rows = u16::from(starts_supervisor);
     let fixed_rows = NEW_AGENT_CHROME_HEIGHT + settings.len() as u16 + notice_rows + error_rows;
     let visible_task_rows =
         (prompt_rows.len() as u16).clamp(1, area.height.saturating_sub(fixed_rows).max(1));
@@ -111,8 +111,8 @@ pub(super) fn draw_new_agent(
         (fixed_rows + visible_task_rows).min(area.height),
     );
     frame.render_widget(Clear, popup);
-    let title = if starts_corgi {
-        "New corgi"
+    let title = if starts_supervisor {
+        "New supervisor"
     } else if form.is_scratch() {
         "Scratch agent in ~"
     } else {
@@ -157,9 +157,13 @@ pub(super) fn draw_new_agent(
 
     let legend_index = sections.len() - 1;
     let rule_index = legend_index - 1;
-    if starts_corgi {
+    if starts_supervisor {
         frame.render_widget(
-            Paragraph::new(corgi_notice(&form.project, new_project, &form.harness())),
+            Paragraph::new(supervisor_notice(
+                &form.project,
+                new_project,
+                &form.harness(),
+            )),
             sections[rule_index - 1 - usize::from(error_rows)],
         );
     }
@@ -774,13 +778,13 @@ mod tests {
     }
 
     #[test]
-    fn the_form_says_when_it_starts_the_projects_corgi() {
+    fn the_form_says_when_it_starts_the_projects_supervisor() {
         let mut app = test_app();
         app.overlay = Overlay::NewAgent(form(NewField::Task, "Plan the release"));
         let (screen, _) = render_new_agent(&mut app, 120, 30);
-        assert!(screen.contains("New corgi"), "{screen}");
+        assert!(screen.contains("New supervisor"), "{screen}");
         assert!(
-            screen.contains("No agent works in corgi yet, so this starts its corgi"),
+            screen.contains("No agent works in corgi yet, so this starts its supervisor"),
             "{screen}"
         );
 
@@ -791,8 +795,8 @@ mod tests {
         }];
         let (screen, _) = render_new_agent(&mut app, 120, 30);
         assert!(screen.contains("New agent"), "{screen}");
-        assert!(!screen.contains("New corgi"), "{screen}");
-        assert!(!screen.contains("starts its corgi"), "{screen}");
+        assert!(!screen.contains("New supervisor"), "{screen}");
+        assert!(!screen.contains("starts its supervisor"), "{screen}");
     }
 
     #[test]

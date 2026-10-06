@@ -18,7 +18,7 @@ use crate::{
 };
 
 use super::{
-    App, CORGI_NAME,
+    App, SUPERVISOR_NAME,
     catalog::{ModelCatalogUpdate, effort_choices, harness_choices, model_choices},
     close::CloseTarget,
     form::{Checkout, NewField},
@@ -353,7 +353,7 @@ fn bar_stream_frame(app: &App, now: u64) -> serde_json::Value {
         .map(|agent| {
             serde_json::json!({
                 "pane_id": agent.info.pane_id,
-                "name": if agent.corgi { CORGI_NAME } else { agent.info.display_name() },
+                "name": if agent.supervisor { SUPERVISOR_NAME } else { agent.info.display_name() },
                 "kind": agent.info.kind(),
                 "agent_status": agent.info.state,
                 "project_group": agent.project_group,
@@ -425,8 +425,8 @@ mod tests {
                 CORGI_PROJECT_ROOT_TOKEN, CORGI_WORKSPACE_ROLE_TOKEN,
             },
         },
-        corgi::CORGI_TOKEN,
         herdr::HerdrClient,
+        supervisor::SUPERVISOR_TOKEN,
         test_support::{answer, fake_herdr, test_app},
         usage::Provider,
     };
@@ -510,7 +510,7 @@ mod tests {
                         "workspace_id": "w-main",
                         "tab_id": "w-main:t1",
                         "cwd": "/repos/corgi",
-                        "tokens": { CORGI_TOKEN: "corgi-corgi" }
+                        "tokens": { SUPERVISOR_TOKEN: "corgi-corgi" }
                     }
                 ],
                 "panes": []

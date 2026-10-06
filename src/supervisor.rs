@@ -1,4 +1,4 @@
-//! The corgi: a project's long-lived coordinating agent. It keeps
+//! The supervisor: a project's long-lived coordinating agent. It keeps
 //! the project's knowledge and high-level context, writes briefs, and
 //! dispatches and follows the workers that carry them out.
 //!
@@ -29,10 +29,10 @@ use crate::{
 
 /// The role, with `{{corgi}}` and `{{state}}` standing for the Corgi binary
 /// and the project's state directory.
-const ROLE: &str = include_str!("../corgi/ROLE.md");
+const ROLE: &str = include_str!("../supervisor/ROLE.md");
 
-/// Where one project's corgi keeps its decisions, briefs, and ledger:
-/// `corgis/<project>` in Corgi's state directory. Until [`prepare`] moves
+/// Where one project's supervisor keeps its decisions, briefs, and ledger:
+/// `supervisors/<project>` in Corgi's state directory. Until [`prepare`] moves
 /// it there, a directory left from before a rename is used where it is,
 /// since a session started by an older Corgi may still be working in it.
 pub fn state_dir(project_root: &str) -> Result<PathBuf> {
@@ -40,11 +40,12 @@ pub fn state_dir(project_root: &str) -> Result<PathBuf> {
     Ok(current_state_dir(dir, &old))
 }
 
-/// Where Corgi kept a project's state before the corgi was given its name,
-/// the most recent first: `handler/` while the role was called Project
-/// handler, and `steward/` while it was the Steward. The old names are kept
-/// only to find state written before the renames.
-const OLD_STATE_DIRS: [&str; 2] = ["handler", "steward"];
+/// Where Corgi kept a project's state before the supervisor was given its
+/// name, the most recent first: `corgis/` while the role was called the
+/// supervisor, `handler/` while it was the Project handler, and `steward/` while
+/// it was the Steward. The old names are kept only to find state written
+/// before the renames.
+const OLD_STATE_DIRS: [&str; 3] = ["corgis", "handler", "steward"];
 
 /// A project's state directory, and the ones Corgi kept it in before the
 /// renames ([`OLD_STATE_DIRS`]).
@@ -60,7 +61,7 @@ fn state_base() -> Result<PathBuf> {
 fn state_dirs_in(base: &Path, project_root: &str) -> (PathBuf, Vec<PathBuf>) {
     let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
     (
-        base.join("corgis").join(project),
+        base.join("supervisors").join(project),
         OLD_STATE_DIRS
             .iter()
             .map(|old| base.join(old).join(project))
@@ -169,10 +170,10 @@ fn move_state_dir(dir: &Path, old: &Path) -> Result<Option<String>> {
 }
 
 /// What a project is called, in its state directory, its workspace label and
-/// the corgi's name, when its root has no directory name of its own.
+/// the supervisor's name, when its root has no directory name of its own.
 pub const UNNAMED_PROJECT: &str = "project";
 
-/// A project's state directory, ready for a corgi to start in: the files
+/// A project's state directory, ready for a supervisor to start in: the files
 /// it reads exist, and its role names the commands of the Corgi binary that
 /// launches it.
 pub struct Prepared {
@@ -188,18 +189,19 @@ pub struct Prepared {
 /// Corgi's Herdr plugin ID, under which its installed build is found.
 pub const PLUGIN_ID: &str = "io.github.zyrre.corgi";
 
-/// Chooses a development build for corgis' commands on purpose, instead of
-/// the installed plugin.
+/// Chooses a development build for supervisors' commands on purpose, instead
+/// of the installed plugin.
 const BIN_OVERRIDE_ENV: &str = "CORGI_BIN";
 
-/// What `CORGI_BIN` was called while the corgi was the Project handler, and
-/// before that the Steward, still read so an existing setup keeps its build.
+/// What `CORGI_BIN` was called while the supervisor was the Project handler,
+/// and before that the Steward, still read so an existing setup keeps its
+/// build.
 const OLD_BIN_OVERRIDE_ENVS: [&str; 2] = ["CORGI_HANDLER_BIN", "CORGI_STEWARD_BIN"];
 
-/// The Corgi binary a corgi's commands call: `CORGI_BIN` (or an older name
-/// of it) when it is set, else the release build of the installed plugin (what the dashboard
-/// runs), else the running binary. A worktree build therefore launches
-/// corgis that still use the installed Corgi unless told otherwise.
+/// The Corgi binary a supervisor's commands call: `CORGI_BIN` (or an older
+/// name of it) when it is set, else the release build of the installed plugin
+/// (what the dashboard runs), else the running binary. A worktree build therefore launches
+/// supervisors that still use the installed Corgi unless told otherwise.
 pub fn corgi_bin(installed_plugin_root: Option<&Path>) -> Result<PathBuf> {
     if let Some(path) = [BIN_OVERRIDE_ENV]
         .into_iter()
@@ -269,7 +271,7 @@ fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Resul
     })
 }
 
-/// How a corgi was launched, kept in its state directory so the corgi
+/// How a supervisor was launched, kept in its state directory so the supervisor
 /// that takes over from it starts the same way.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Launch {
@@ -284,22 +286,22 @@ pub struct Launch {
 
 const LAUNCH_FILE: &str = "launch.json";
 
-/// Records how the corgi in `state_dir` was launched.
+/// Records how the supervisor in `state_dir` was launched.
 pub fn save_launch(state_dir: &Path, launch: &Launch) -> Result<()> {
     let file = state_dir.join(LAUNCH_FILE);
     fs::write(&file, serde_json::to_vec_pretty(launch)?)
         .with_context(|| format!("write {}", file.display()))
 }
 
-/// How the corgi in `state_dir` was last launched, if Corgi recorded it.
+/// How the supervisor in `state_dir` was last launched, if Corgi recorded it.
 pub fn saved_launch(state_dir: &Path) -> Option<Launch> {
     fs::read(state_dir.join(LAUNCH_FILE))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Launch>(&bytes).ok())
 }
 
-/// How the corgi in `state_dir` was launched, if it was on `harness`. A
-/// corgi launched before Corgi recorded this, or since moved to another
+/// How the supervisor in `state_dir` was launched, if it was on `harness`. A
+/// supervisor launched before Corgi recorded this, or since moved to another
 /// harness, starts on `harness` with its defaults.
 pub fn launch_of(state_dir: &Path, harness: &Harness) -> Launch {
     saved_launch(state_dir)
@@ -315,21 +317,21 @@ fn role(corgi_bin: &Path, state_dir: &Path) -> String {
         .replace("{{state}}", &state_dir.to_string_lossy())
 }
 
-/// The corgi's first prompt. With a task from the user, the corgi skips
-/// its greeting and takes that task up; without one it greets with the state
-/// of the project.
+/// The supervisor's first prompt. With a task from the user, the supervisor
+/// skips its greeting and takes that task up; without one it greets with the
+/// state of the project.
 pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String {
     let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
     let state = state_dir.display();
     let task = task.trim();
     if task.is_empty() {
         format!(
-            "Start your corgi session for {project}. Project directory: {project_root}. \
+            "Start your supervisor session for {project}. Project directory: {project_root}. \
              State directory: {state}. Follow the start-of-session steps in your role."
         )
     } else {
         format!(
-            "Start your corgi session for {project}. Project directory: {project_root}. \
+            "Start your supervisor session for {project}. Project directory: {project_root}. \
              State directory: {state}. Do the start-of-session reading, but skip the \
              greeting: the user started this project's session with the request below, \
              so take it up with them.\n\n{task}"
@@ -337,15 +339,15 @@ pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String 
     }
 }
 
-/// The first prompt of a corgi that takes over from a previous session:
+/// The first prompt of a supervisor that takes over from a previous session:
 /// the usual start-of-session reading, whose digest includes the note that
 /// session left, which it archives as `archive`. A short word to the user replaces the greeting.
 pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> String {
     let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
     let state = state_dir.display();
     format!(
-        "Start your corgi session for {project}. Project directory: {project_root}. \
-         State directory: {state}. You take over from the previous corgi session. \
+        "Start your supervisor session for {project}. Project directory: {project_root}. \
+         State directory: {state}. You take over from the previous supervisor session. \
          Do the start-of-session reading; the digest shows the note it left, \
          {}: move it to {}, as your role's section on handing over says. Skip the \
          greeting: tell the user in at most three lines that you took over, and what \
@@ -355,11 +357,12 @@ pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> 
     )
 }
 
-/// How a wake message starts, so the corgi and the user can tell it from
-/// a message the user typed.
-const WAKE_PREFIX: &str = "[corgi]";
+/// How a line from the dashboard starts, so the supervisor and the user can
+/// tell it from a message the user typed: the app's name, which is not the
+/// `[supervisor]` the supervisor starts its own prompts to workers with.
+pub const WAKE_PREFIX: &str = "[Corgi]";
 
-/// Context usage, in percent of the window, from which a corgi is handed
+/// Context usage, in percent of the window, from which a supervisor is handed
 /// over to a fresh session.
 const HANDOVER_PERCENT: u8 = 50;
 
@@ -380,7 +383,7 @@ fn percent_or_default(value: Option<&str>) -> u8 {
         .unwrap_or(HANDOVER_PERCENT)
 }
 
-/// How long a Claude Code corgi rests before it is handed over: ten
+/// How long a Claude Code supervisor rests before it is handed over: ten
 /// minutes short of its one-hour prompt cache, so the request still finds
 /// the cache warm.
 const CLAUDE_IDLE_SECS: u64 = 50 * 60;
@@ -392,7 +395,7 @@ const CODEX_IDLE_SECS: u64 = 25 * 60;
 /// not a setting.
 const HANDOVER_IDLE_ENV: &str = "CORGI_DEBUG_HANDOVER_IDLE_SECS";
 
-/// How long a corgi on `harness` rests before it is handed over:
+/// How long a supervisor on `harness` rests before it is handed over:
 /// `CORGI_DEBUG_HANDOVER_IDLE_SECS` when it holds a positive number of
 /// seconds, else the harness's own. `None` for a harness whose context Corgi
 /// cannot read.
@@ -414,23 +417,23 @@ fn idle_secs_or_default(harness: &Harness, value: Option<&str>) -> Option<u64> {
     )
 }
 
-/// How many times its baseline a resting corgi's context must be before
+/// How many times its baseline a resting supervisor's context must be before
 /// idleness hands it over. Below that a fresh session saves too little.
 const IDLE_BASELINE_FACTOR: u64 = 2;
 
-/// The note a corgi writes for the session that takes over from it, in
+/// The note a supervisor writes for the session that takes over from it, in
 /// its state directory.
 pub const HANDOVER_NOTE: &str = "handover.md";
 
-/// Where the corgi that took over keeps the notes it read.
+/// Where the supervisor that took over keeps the notes it read.
 pub const HANDOVERS_DIR: &str = "handovers";
 
-/// The pane token recording that a corgi session was asked for its
+/// The pane token recording that a supervisor session was asked for its
 /// handover note, as `<unix seconds> <session>`, so a dashboard that takes
 /// over waking does not ask the same session again.
 pub const HANDOVER_TOKEN: &str = "corgi_handover";
 
-/// The pane token recording a corgi session's baseline, the context it
+/// The pane token recording a supervisor session's baseline, the context it
 /// had when its first turn ended, as `<tokens> <session>`, so a dashboard
 /// that restarts or takes over waking measures growth from the same point.
 pub const BASELINE_TOKEN: &str = "corgi_baseline";
@@ -443,43 +446,43 @@ fn session_token<T: std::str::FromStr>(token: Option<&str>, session: &str) -> Op
         .and_then(|(value, _)| value.parse().ok())
 }
 
-/// The pane token that marks a project's corgi: `session:<native session>`
+/// The pane token that marks a project's supervisor: `session:<native session>`
 /// once known, otherwise the launch name. Name values from older Corgi
 /// versions remain valid until they can be upgraded to a session marker.
 ///
-/// The key keeps the name it had while the corgi was the Project handler.
+/// The key keeps the name it had while the supervisor was the Project handler.
 /// Marks live on running panes, where every Corgi build in the Herdr session
 /// reads them: an installed dashboard not yet rebuilt, or another worktree's
-/// build, would not recognise a corgi under a new key, and moving the mark
-/// to one would take the corgi away from them.
-pub const CORGI_TOKEN: &str = "corgi_handler";
+/// build, would not recognise a supervisor under a new key, and moving the mark
+/// to one would take the supervisor away from them.
+pub const SUPERVISOR_TOKEN: &str = "corgi_handler";
 
-/// What [`CORGI_TOKEN`] was called while the corgi was the Steward. A
+/// What [`SUPERVISOR_TOKEN`] was called while the supervisor was the Steward. A
 /// session an older Corgi launched still carries it, so it counts as the
-/// corgi's marker, and Corgi moves it to [`CORGI_TOKEN`] the next time it
+/// supervisor's marker, and Corgi moves it to [`SUPERVISOR_TOKEN`] the next time it
 /// writes the pane's marks.
-pub const OLD_CORGI_TOKEN: &str = "corgi_steward";
+pub const OLD_SUPERVISOR_TOKEN: &str = "corgi_steward";
 
-/// The corgi marker among a pane's `tokens`, under either key.
-pub fn corgi_marker(tokens: &BTreeMap<String, String>) -> Option<&String> {
+/// The supervisor marker among a pane's `tokens`, under either key.
+pub fn supervisor_marker(tokens: &BTreeMap<String, String>) -> Option<&String> {
     tokens
-        .get(CORGI_TOKEN)
-        .or_else(|| tokens.get(OLD_CORGI_TOKEN))
+        .get(SUPERVISOR_TOKEN)
+        .or_else(|| tokens.get(OLD_SUPERVISOR_TOKEN))
 }
 
-/// Moves a marker under [`OLD_CORGI_TOKEN`] to [`CORGI_TOKEN`],
+/// Moves a marker under [`OLD_SUPERVISOR_TOKEN`] to [`SUPERVISOR_TOKEN`],
 /// unless that is set already.
 pub fn upgrade_marker(tokens: &mut BTreeMap<String, String>) {
-    if let Some(marker) = tokens.remove(OLD_CORGI_TOKEN) {
-        tokens.entry(CORGI_TOKEN.to_string()).or_insert(marker);
+    if let Some(marker) = tokens.remove(OLD_SUPERVISOR_TOKEN) {
+        tokens.entry(SUPERVISOR_TOKEN.to_string()).or_insert(marker);
     }
 }
 
-/// The pane token a corgi sets with `corgi tag NAME merge` when it
+/// The pane token a supervisor sets with `corgi tag NAME merge` when it
 /// recommends the user merge the agent's branch, as `<state> <change>`: the
 /// agent's resting state and `state_change_seq` when it was tagged, so a tag
 /// the agent has since worked past no longer applies, even before the
-/// dashboard that wakes corgis clears it.
+/// dashboard that wakes supervisors clears it.
 pub const MERGE_TOKEN: &str = "corgi_merge";
 
 /// The [`MERGE_TOKEN`] value for an agent tagged while in `state` at
@@ -542,11 +545,11 @@ pub fn marker(name: &str, session: Option<&str>) -> String {
     }
 }
 
-/// Whether `info` is a project's corgi: the agent Corgi launched as one and
+/// Whether `info` is a project's supervisor: the agent Corgi launched as one and
 /// marked, wherever its pane has since moved. Sitting in the project's root
 /// tab does not make an agent the corgi.
-pub fn is_corgi(info: &AgentInfo) -> bool {
-    let Some(marker) = corgi_marker(&info.tokens) else {
+pub fn is_supervisor(info: &AgentInfo) -> bool {
+    let Some(marker) = supervisor_marker(&info.tokens) else {
         return false;
     };
     if let Some(session) = marker.strip_prefix("session:") {
@@ -557,7 +560,7 @@ pub fn is_corgi(info: &AgentInfo) -> bool {
         .is_some_and(|name| !name.is_empty() && marker == name)
 }
 
-/// The line that asks a corgi for its handover note, saying why.
+/// The line that asks a supervisor for its handover note, saying why.
 pub fn handover_request(state_dir: &Path, trigger: Trigger) -> String {
     let note = state_dir.join(HANDOVER_NOTE);
     let why = match trigger {
@@ -575,7 +578,7 @@ pub fn handover_request(state_dir: &Path, trigger: Trigger) -> String {
         ),
     };
     format!(
-        "{WAKE_PREFIX} {why}, so a fresh corgi session takes over from you. Write {} \
+        "{WAKE_PREFIX} {why}, so a fresh supervisor session takes over from you. Write {} \
          as your role's section on handing over says, then end your turn.",
         note.display()
     )
@@ -594,14 +597,14 @@ pub fn note_written_since(state_dir: &Path, since: u64) -> bool {
     })
 }
 
-/// Where the corgi taking over at `now` (Unix seconds) archives the note.
+/// Where the supervisor taking over at `now` (Unix seconds) archives the note.
 pub fn handover_archive(state_dir: &Path, now: u64) -> PathBuf {
     state_dir
         .join(HANDOVERS_DIR)
         .join(format!("{}.md", utc_stamp(now)))
 }
 
-/// The line that tells a corgi where `worker` is and what to run next.
+/// The line that tells a supervisor where `worker` is and what to run next.
 pub fn wake_message(corgi_bin: &Path, worker: &str, state: AgentState) -> String {
     let next = if state == AgentState::Blocked {
         format!("herdr agent read {worker} --source recent --lines 120")
@@ -614,7 +617,7 @@ pub fn wake_message(corgi_bin: &Path, worker: &str, state: AgentState) -> String
     )
 }
 
-/// The line that brings a corgi the report of `worker`, one of its own, in
+/// The line that brings a supervisor the report of `worker`, one of its own, in
 /// `state` (lowercase), which follows it quoted in the same prompt.
 pub fn wake_report_message(worker: &str, state: &str) -> String {
     format!(
@@ -628,7 +631,7 @@ const CONFLICT_FILES_NAMED: usize = 20;
 
 /// What the user's merge of a worker's branch ran into, for its corgi.
 pub struct MergeConflict<'a> {
-    /// The worker's agent name, as the corgi's ledger has it.
+    /// The worker's agent name, as the supervisor's ledger has it.
     pub worker: &'a str,
     /// What the worker was asked to do; empty when unknown.
     pub task: &'a str,
@@ -639,7 +642,7 @@ pub struct MergeConflict<'a> {
     pub files: &'a [String],
 }
 
-/// The line that tells a corgi that the user's merge of a worker's branch
+/// The line that tells a supervisor that the user's merge of a worker's branch
 /// stopped on conflicts, which Corgi aborted, and that the worker is to merge
 /// the base branch into its own branch and resolve them there.
 pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
@@ -685,7 +688,7 @@ enum Rest {
 }
 
 /// One agent's states, as the dashboard sees them refresh by refresh,
-/// reduced to the ones worth waking its corgi for. Nothing wakes until the
+/// reduced to the ones worth waking its supervisor for. Nothing wakes until the
 /// agent has been seen working, so neither the state it had when the
 /// dashboard started nor a question on its way up (such as folder trust)
 /// counts. After that: each time it rests after working, and each change
@@ -704,7 +707,7 @@ pub struct Transitions {
 }
 
 impl Transitions {
-    /// The state to wake the corgi with, if `state` is news.
+    /// The state to wake the supervisor with, if `state` is news.
     pub fn observe(&mut self, state: AgentState, change: u64) -> Option<AgentState> {
         let previous = self.seen.replace((state, change));
         if previous == Some((state, change)) {
@@ -734,7 +737,7 @@ impl Transitions {
     }
 }
 
-/// What the dashboard sees of a corgi at one refresh, for its handover.
+/// What the dashboard sees of a supervisor at one refresh, for its handover.
 #[derive(Debug, Clone, Copy)]
 pub struct Sighting<'a> {
     /// The harness's session identity: a handover is once per session.
@@ -745,7 +748,7 @@ pub struct Sighting<'a> {
     /// The tokens of its context, when its session file records them.
     pub context_tokens: Option<u64>,
     /// Whether another agent of its project is working or blocked. The
-    /// dashboard cannot tell which of them the corgi dispatched, so any
+    /// dashboard cannot tell which of them the supervisor dispatched, so any
     /// of them counts as one of its workers.
     pub workers_busy: bool,
     /// The session's [`HANDOVER_TOKEN`], if its pane carries one.
@@ -754,7 +757,7 @@ pub struct Sighting<'a> {
     pub baseline_token: Option<&'a str>,
 }
 
-/// When the dashboard hands a corgi over, for one refresh.
+/// When the dashboard hands a supervisor over, for one refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thresholds {
     /// Context usage, in percent of the window.
@@ -763,7 +766,7 @@ pub struct Thresholds {
     pub idle_secs: Option<u64>,
 }
 
-/// Why a corgi is asked for its handover note.
+/// Why a supervisor is asked for its handover note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     /// Its context is past this percentage.
@@ -775,7 +778,7 @@ pub enum Trigger {
     Update,
 }
 
-/// What to do about a corgi's handover at this refresh.
+/// What to do about a supervisor's handover at this refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandoverStep {
     /// Ask it for its note, recording the request at the given time.
@@ -787,7 +790,7 @@ pub enum HandoverStep {
     NoNote,
 }
 
-/// Where one project's corgi is in handing over, refresh by refresh.
+/// Where one project's supervisor is in handing over, refresh by refresh.
 ///
 /// A session is asked once it is idle or done (never working, and never
 /// blocked on a question) with its context at the threshold, or once it has
@@ -800,9 +803,9 @@ pub enum HandoverStep {
 /// that restarts or takes over waking starts that clock again. Its answer is
 /// the turn that follows: when that turn ends, a note written since the
 /// request means the session is replaced, and no note means it stays. It is
-/// asked again only after a later turn of its own, so a corgi that keeps
+/// asked again only after a later turn of its own, so a supervisor that keeps
 /// failing to write the note is not asked at every refresh. A request the
-/// corgi never takes up (its state does not change within
+/// supervisor never takes up (its state does not change within
 /// [`HANDOVER_ANSWER_SECS`]) counts as no note.
 #[derive(Debug, Default)]
 pub struct Handover {
@@ -815,7 +818,7 @@ pub struct Handover {
     resting: Option<(u64, u64)>,
 }
 
-/// How long a corgi has to start the turn a handover request asks for.
+/// How long a supervisor has to start the turn a handover request asks for.
 const HANDOVER_ANSWER_SECS: u64 = 120;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -841,11 +844,11 @@ enum Phase {
 }
 
 impl Handover {
-    /// The next step for the corgi as `seen` at `now` (Unix seconds), with
+    /// The next step for the supervisor as `seen` at `now` (Unix seconds), with
     /// `limits` as the thresholds. `note_since(at)` says whether the note was
     /// written since the request made at `at`, and `may_type()`, asked only
     /// when a request or the replacement is due, whether Corgi may type into
-    /// the corgi's pane now: one that cannot stays due for a later refresh.
+    /// the supervisor's pane now: one that cannot stays due for a later refresh.
     pub fn observe(
         &mut self,
         seen: Sighting,
@@ -860,7 +863,7 @@ impl Handover {
         if self.session != seen.session {
             self.session = seen.session.to_string();
             // A request this session already had, from a dashboard that woke
-            // corgis before this one, is still the one being answered.
+            // supervisors before this one, is still the one being answered.
             self.phase = session_token(seen.token, seen.session).map_or(Phase::Watching, |at| {
                 Phase::Asked {
                     at,
@@ -932,7 +935,7 @@ impl Handover {
         }
     }
 
-    /// Why the corgi as `seen` at `now` is due for a handover, if it is:
+    /// Why the supervisor as `seen` at `now` is due for a handover, if it is:
     /// only ever while it rests.
     fn trigger(&self, seen: Sighting, limits: Thresholds, now: u64) -> Option<Trigger> {
         let (since, _) = self.resting?;
@@ -951,7 +954,7 @@ impl Handover {
             .then_some(Trigger::Idle(rested / 60))
     }
 
-    /// Starts the replacement of a corgi whose note was found, unless
+    /// Starts the replacement of a supervisor whose note was found, unless
     /// `may_type()` says its input box holds a draft.
     fn replace_unless_drafting(&mut self, may_type: impl FnOnce() -> bool) -> Option<HandoverStep> {
         may_type().then(|| {
@@ -982,7 +985,7 @@ impl Handover {
         };
     }
 
-    /// The request could not be sent: the corgi is asked again after a
+    /// The request could not be sent: the supervisor is asked again after a
     /// later turn.
     pub fn unsent(&mut self, change: u64) {
         self.fail(change);
@@ -998,8 +1001,8 @@ impl Handover {
         }
     }
 
-    /// Whether the corgi is between its request and its successor's first
-    /// prompt, when wakes wait for the corgi that takes over.
+    /// Whether the supervisor is between its request and its successor's first
+    /// prompt, when wakes wait for the supervisor that takes over.
     pub fn in_progress(&self) -> bool {
         matches!(
             self.phase,
@@ -1045,72 +1048,81 @@ mod tests {
     }
 
     #[test]
-    fn corgi_identity_survives_renaming_but_not_pane_reuse() {
+    fn supervisor_identity_survives_renaming_but_not_pane_reuse() {
         let mut agent = AgentInfo {
             name: Some("corgi-m-ta-sverige".into()),
             agent_session: Some(crate::model::AgentSession {
                 value: "original-session".into(),
                 ..Default::default()
             }),
-            tokens: [(CORGI_TOKEN.into(), marker("", Some("original-session")))].into(),
+            tokens: [(
+                SUPERVISOR_TOKEN.into(),
+                marker("", Some("original-session")),
+            )]
+            .into(),
             ..Default::default()
         };
-        assert!(is_corgi(&agent));
+        assert!(is_supervisor(&agent));
         agent.name = Some("start-your-corgi-session-for-m".into());
-        assert!(is_corgi(&agent));
+        assert!(is_supervisor(&agent));
         // Neither an old bridge token nor the old name can override native identity.
         agent
             .tokens
             .insert("session".into(), "original-session".into());
         agent.agent_session.as_mut().unwrap().value = "replacement-session".into();
-        assert!(!is_corgi(&agent));
+        assert!(!is_supervisor(&agent));
         agent.name = Some("corgi-m-ta-sverige".into());
-        assert!(!is_corgi(&agent));
+        assert!(!is_supervisor(&agent));
         agent.agent_session = None;
-        assert!(!is_corgi(&agent));
+        assert!(!is_supervisor(&agent));
         agent.agent_session = Some(Default::default());
-        assert!(!is_corgi(&agent));
-        agent.tokens.insert(CORGI_TOKEN.into(), "session:".into());
-        assert!(!is_corgi(&agent));
+        assert!(!is_supervisor(&agent));
+        agent
+            .tokens
+            .insert(SUPERVISOR_TOKEN.into(), "session:".into());
+        assert!(!is_supervisor(&agent));
     }
 
     /// A session an older Corgi started as the project's Steward carries its
     /// marker under the old key, and is still the project's corgi.
     #[test]
-    fn a_session_marked_as_a_steward_by_an_older_corgi_is_the_corgi() {
+    fn a_session_marked_as_a_steward_by_an_older_corgi_is_the_supervisor() {
         let mut agent = AgentInfo {
             name: Some("steward-corgi".into()),
             agent_session: Some(crate::model::AgentSession {
                 value: "old-session".into(),
                 ..Default::default()
             }),
-            tokens: [(OLD_CORGI_TOKEN.into(), "session:old-session".into())].into(),
+            tokens: [(OLD_SUPERVISOR_TOKEN.into(), "session:old-session".into())].into(),
             ..Default::default()
         };
-        assert!(is_corgi(&agent));
+        assert!(is_supervisor(&agent));
         agent.agent_session.as_mut().unwrap().value = "another-session".into();
-        assert!(!is_corgi(&agent));
-        agent.tokens = [(OLD_CORGI_TOKEN.into(), "steward-corgi".into())].into();
-        assert!(is_corgi(&agent), "an old name marker");
+        assert!(!is_supervisor(&agent));
+        agent.tokens = [(OLD_SUPERVISOR_TOKEN.into(), "steward-corgi".into())].into();
+        assert!(is_supervisor(&agent), "an old name marker");
 
         let mut tokens = agent.tokens.clone();
         upgrade_marker(&mut tokens);
         assert_eq!(
             tokens,
-            [(CORGI_TOKEN.into(), "steward-corgi".into())].into()
+            [(SUPERVISOR_TOKEN.into(), "steward-corgi".into())].into()
         );
         // A current marker beside an old one wins.
         let mut tokens: BTreeMap<String, String> = [
-            (CORGI_TOKEN.into(), "session:new".into()),
-            (OLD_CORGI_TOKEN.into(), "session:old".into()),
+            (SUPERVISOR_TOKEN.into(), "session:new".into()),
+            (OLD_SUPERVISOR_TOKEN.into(), "session:old".into()),
         ]
         .into();
         assert_eq!(
-            corgi_marker(&tokens).map(String::as_str),
+            supervisor_marker(&tokens).map(String::as_str),
             Some("session:new")
         );
         upgrade_marker(&mut tokens);
-        assert_eq!(tokens, [(CORGI_TOKEN.into(), "session:new".into())].into());
+        assert_eq!(
+            tokens,
+            [(SUPERVISOR_TOKEN.into(), "session:new".into())].into()
+        );
     }
 
     /// A scratch Corgi state directory, removed when dropped.
@@ -1149,7 +1161,7 @@ mod tests {
         out
     }
 
-    /// The memory of a corgi an older Corgi ran, in a pre-rename place.
+    /// The memory of a supervisor an older Corgi ran, in a pre-rename place.
     fn populated_old_dir(old: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         for dir in ["briefs", "handovers"] {
             fs::create_dir_all(old.join(dir)).unwrap();
@@ -1260,7 +1272,7 @@ mod tests {
                 let prompt = if handover {
                     let archive = handover_archive(&prepared.state_dir, 1_790_262_245);
                     assert!(archive.starts_with(&dir));
-                    assert!(archive.starts_with(base.0.join("corgis")));
+                    assert!(archive.starts_with(base.0.join("supervisors")));
                     takeover_prompt("/repos/weather", &prepared.state_dir, &archive)
                 } else {
                     first_prompt("/repos/weather", &prepared.state_dir, "")
@@ -1402,19 +1414,19 @@ mod tests {
     fn legacy_and_pre_prompt_markers_require_the_launch_name() {
         let mut agent = AgentInfo {
             name: Some("corgi-corgi".into()),
-            tokens: [(CORGI_TOKEN.into(), marker("corgi-corgi", None))].into(),
+            tokens: [(SUPERVISOR_TOKEN.into(), marker("corgi-corgi", None))].into(),
             ..Default::default()
         };
-        assert!(is_corgi(&agent));
+        assert!(is_supervisor(&agent));
         agent.agent_session = Some(crate::model::AgentSession {
             value: "s1".into(),
             ..Default::default()
         });
-        assert!(is_corgi(&agent));
+        assert!(is_supervisor(&agent));
         agent.name = Some("worker".into());
-        assert!(!is_corgi(&agent));
+        assert!(!is_supervisor(&agent));
         agent.name = None;
-        assert!(!is_corgi(&agent));
+        assert!(!is_supervisor(&agent));
     }
 
     fn wakes(steps: &[(AgentState, u64)]) -> Vec<Option<AgentState>> {
@@ -1426,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_wakes_its_corgi_each_time_it_stops_after_working() {
+    fn an_agent_wakes_its_supervisor_each_time_it_stops_after_working() {
         assert_eq!(
             wakes(&[
                 (Idle, 1),
@@ -1500,14 +1512,14 @@ mod tests {
     fn the_role_names_this_binary_and_this_projects_state() {
         let role = role(
             Path::new("/opt/corgi/corgi"),
-            Path::new("/state/corgis/corgi"),
+            Path::new("/state/supervisors/corgi"),
         );
         assert!(role.contains("`/opt/corgi/corgi spawn"));
         assert!(role.contains("`/opt/corgi/corgi fleet`"));
         assert!(role.contains("Run `/opt/corgi/corgi digest <project dir>`"));
         assert!(role.contains("`/opt/corgi/corgi digest <project dir> --decision"));
         assert!(!role.contains("ARCHITECTURE.md"));
-        assert!(role.contains("`/state/corgis/corgi`"));
+        assert!(role.contains("`/state/supervisors/corgi`"));
         assert!(!role.contains("{{"));
     }
 
@@ -1525,7 +1537,7 @@ mod tests {
     }
 
     #[test]
-    fn corgis_call_the_installed_plugin_build_when_there_is_one() {
+    fn supervisors_call_the_installed_plugin_build_when_there_is_one() {
         if env::var_os(BIN_OVERRIDE_ENV).is_some()
             || OLD_BIN_OVERRIDE_ENVS
                 .iter()
@@ -1552,7 +1564,7 @@ mod tests {
 
     #[test]
     fn a_first_task_replaces_the_greeting() {
-        let state = Path::new("/state/corgis/weather");
+        let state = Path::new("/state/supervisors/weather");
         let greeting = first_prompt("/repos/weather", state, "  ");
         assert!(greeting.contains("Follow the start-of-session steps"));
         let task = first_prompt("/repos/weather", state, "Build a forecast CLI\nin Rust");
@@ -1580,7 +1592,7 @@ mod tests {
         }
     }
 
-    /// The steps of one corgi session's handover, refresh by refresh, a
+    /// The steps of one supervisor session's handover, refresh by refresh, a
     /// second apart, with the note written when `note` says so.
     fn handover_steps(steps: &[(AgentState, u64, u8)], note: bool) -> Vec<Option<HandoverStep>> {
         let mut handover = Handover::default();
@@ -1625,7 +1637,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corgi_is_asked_once_and_replaced_when_its_turn_ends_with_a_note() {
+    fn a_supervisor_is_asked_once_and_replaced_when_its_turn_ends_with_a_note() {
         assert_eq!(
             handover_steps(
                 &[
@@ -1662,7 +1674,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corgi_blocked_on_a_question_or_at_work_is_not_asked() {
+    fn a_supervisor_blocked_on_a_question_or_at_work_is_not_asked() {
         assert_eq!(
             handover_steps(
                 &[(Blocked, 1, 80), (Working, 2, 80), (Blocked, 3, 80)],
@@ -1691,7 +1703,7 @@ mod tests {
     }
 
     #[test]
-    fn without_a_note_the_corgi_stays_and_is_asked_again_only_after_a_later_turn() {
+    fn without_a_note_the_supervisor_stays_and_is_asked_again_only_after_a_later_turn() {
         assert_eq!(
             handover_steps(
                 &[
@@ -1816,7 +1828,7 @@ mod tests {
     }
 
     #[test]
-    fn a_note_not_brought_up_to_date_leaves_the_corgi_in_place() {
+    fn a_note_not_brought_up_to_date_leaves_the_supervisor_in_place() {
         let mut handover = Handover::default();
         // The note is written at 12 and never again.
         let mut step = |seen, now, drafting: bool| {
@@ -1849,7 +1861,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_the_corgi_never_takes_up_counts_as_no_note() {
+    fn a_request_the_supervisor_never_takes_up_counts_as_no_note() {
         let mut handover = Handover::default();
         let idle = seen(Idle, 1, 60);
         assert_eq!(
@@ -1947,7 +1959,7 @@ mod tests {
         idle_secs: Some(CLAUDE_IDLE_SECS),
     };
 
-    /// A corgi whose first turn ended at 30,000 tokens, at 10% of its
+    /// A supervisor whose first turn ended at 30,000 tokens, at 10% of its
     /// window, now at `tokens`.
     fn idle(state: AgentState, change: u64, tokens: u64) -> Sighting<'static> {
         Sighting {
@@ -1971,7 +1983,7 @@ mod tests {
         Some(HandoverStep::Ask(CLAUDE_IDLE_SECS, Trigger::Idle(50)));
 
     #[test]
-    fn a_grown_corgi_resting_past_its_idle_time_with_no_busy_worker_is_asked_once() {
+    fn a_grown_supervisor_resting_past_its_idle_time_with_no_busy_worker_is_asked_once() {
         let last = CLAUDE_IDLE_SECS;
         assert_eq!(
             idle_steps(&[
@@ -1987,7 +1999,7 @@ mod tests {
         let request = handover_request(Path::new("/state"), Trigger::Idle(50));
         assert!(request.starts_with(
             "[corgi] You have been idle for 50 minutes and your prompt cache is about to \
-             expire, so a fresh corgi session takes over from you. Write /state/handover.md"
+             expire, so a fresh supervisor session takes over from you. Write /state/handover.md"
         ));
     }
 
@@ -2022,7 +2034,7 @@ mod tests {
     }
 
     #[test]
-    fn idleness_waits_for_busy_workers_and_for_the_corgi_itself() {
+    fn idleness_waits_for_busy_workers_and_for_the_supervisor_itself() {
         let last = CLAUDE_IDLE_SECS;
         let waiting = Sighting {
             workers_busy: true,
@@ -2083,7 +2095,7 @@ mod tests {
     }
 
     #[test]
-    fn a_codex_corgi_rests_half_as_long_and_a_debug_run_shortens_both() {
+    fn a_codex_supervisor_rests_half_as_long_and_a_debug_run_shortens_both() {
         assert_eq!(CLAUDE_IDLE_SECS, 50 * 60);
         assert_eq!(idle_secs_or_default(&Harness::Claude, None), Some(3_000));
         assert_eq!(idle_secs_or_default(&Harness::Codex, None), Some(1_500));
@@ -2182,26 +2194,26 @@ mod tests {
         assert_eq!(utc_stamp(0), "19700101-000000");
         assert_eq!(utc_stamp(1_790_262_245), "20260924-150405");
         assert_eq!(utc_stamp(951_782_400), "20000229-000000");
-        let state = Path::new("/state/corgis/weather");
+        let state = Path::new("/state/supervisors/weather");
         let archive = handover_archive(state, 1_790_262_245);
         assert_eq!(
             archive,
-            Path::new("/state/corgis/weather/handovers/20260924-150405.md")
+            Path::new("/state/supervisors/weather/handovers/20260924-150405.md")
         );
         let prompt = takeover_prompt("/repos/weather", state, &archive);
-        assert!(prompt.contains("State directory: /state/corgis/weather."));
+        assert!(prompt.contains("State directory: /state/supervisors/weather."));
         assert!(prompt.contains(
-            "the note it left, /state/corgis/weather/handover.md: move it to \
-             /state/corgis/weather/handovers/20260924-150405.md"
+            "the note it left, /state/supervisors/weather/handover.md: move it to \
+             /state/supervisors/weather/handovers/20260924-150405.md"
         ));
         assert!(prompt.contains("Skip the greeting"));
         let request = handover_request(state, Trigger::Full(50));
         assert!(request.starts_with("[corgi] Your context is past 50%"));
-        assert!(request.contains("Write /state/corgis/weather/handover.md"));
+        assert!(request.contains("Write /state/supervisors/weather/handover.md"));
         assert_eq!(
             handover_request(state, Trigger::Update),
             "[corgi] You worked after writing your handover note; bring \
-             /state/corgis/weather/handover.md up to date with what happened since you \
+             /state/supervisors/weather/handover.md up to date with what happened since you \
              wrote it, then end your turn."
         );
     }
@@ -2245,7 +2257,7 @@ mod tests {
         };
         save_launch(&dir, &launch).expect("save launch");
         assert_eq!(launch_of(&dir, &Harness::Claude), launch);
-        // A corgi now on another harness starts on its defaults.
+        // A supervisor now on another harness starts on its defaults.
         assert_eq!(
             launch_of(&dir, &Harness::Codex),
             Launch {

@@ -13,7 +13,7 @@ fn main() -> Result<()> {
         Some("spawn") if help() => usage(corgi::app::SPAWN_USAGE),
         Some("spawn") => corgi::app::spawn(&args[2..]),
         // `handler` and `steward` are the command's names from while the
-        // corgi was the Project handler and, before that, the Steward, kept
+        // supervisor was the Project handler and, before that, the Steward, kept
         // unlisted so existing scripts still work.
         Some("start" | "handler" | "steward") if help() => usage(corgi::app::START_USAGE),
         Some("start" | "handler" | "steward") => corgi::app::start_command(&args[2..]),

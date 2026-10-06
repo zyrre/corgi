@@ -136,7 +136,7 @@ fn memory_path() -> Option<PathBuf> {
 /// The projects Corgi created itself, one canonical path per line, in
 /// `created-projects` beside the project list (`$CORGI_CREATED_PROJECTS_FILE`
 /// overrides it). Corgi made each of these as an empty directory for its
-/// corgi, so it answers Claude Code's folder-trust question for them.
+/// supervisor, so it answers Claude Code's folder-trust question for them.
 fn created_projects_path() -> Option<PathBuf> {
     if let Some(path) = env::var_os("CORGI_CREATED_PROJECTS_FILE").filter(|path| !path.is_empty()) {
         return Some(PathBuf::from(path));
@@ -539,14 +539,14 @@ mod tests {
     #[test]
     fn nearby_directories_of_open_projects_are_suggested() {
         let dir = ScratchDir::new("projects-nearby");
-        let corgi = dir.join("corgi");
+        let supervisor = dir.join("corgi");
         let other = dir.join("other-project");
-        fs::create_dir_all(&corgi).expect("create open project");
+        fs::create_dir_all(&supervisor).expect("create open project");
         fs::create_dir_all(&other).expect("create sibling project");
 
         let projects = known_projects(
             &[],
-            &[primary_workspace(corgi.to_string_lossy().as_ref())],
+            &[primary_workspace(supervisor.to_string_lossy().as_ref())],
             &ProjectMemory::default(),
         );
 
@@ -554,7 +554,7 @@ mod tests {
             projects,
             vec![
                 Project {
-                    root: corgi.to_string_lossy().into_owned(),
+                    root: supervisor.to_string_lossy().into_owned(),
                     name: "corgi".into(),
                     source: ProjectSource::Open,
                 },

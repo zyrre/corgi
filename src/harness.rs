@@ -1,6 +1,6 @@
 //! Everything Corgi knows about one agent harness: its Herdr kind and title,
 //! where its CLI is, the flags it starts on, its offline models, what it
-//! supports, how a corgi runs on it, and which session file it writes.
+//! supports, how a supervisor runs on it, and which session file it writes.
 //!
 //! Herdr reports an agent's kind as a string and the new-agent form takes a
 //! harness typed by hand, so a kind Corgi knows nothing about stays
@@ -60,8 +60,8 @@ impl Harness {
         Harness::OpenCode,
     ];
 
-    /// The harnesses a corgi runs on, the first being the default.
-    pub const CORGI_HARNESSES: &'static [Harness] = &[Harness::Claude, Harness::Codex];
+    /// The harnesses a supervisor runs on, the first being the default.
+    pub const SUPERVISOR_HARNESSES: &'static [Harness] = &[Harness::Claude, Harness::Codex];
 
     /// The harness Herdr reports as `kind`. The match is exact, so every kind
     /// comes back from [`Harness::kind`] as it went in.
@@ -180,18 +180,18 @@ impl Harness {
         matches!(self, Self::Codex | Self::OpenCode)
     }
 
-    /// The harnesses a corgi runs on, as one phrase: `claude or codex`.
-    pub fn corgi_kinds() -> String {
-        Self::CORGI_HARNESSES
+    /// The harnesses a supervisor runs on, as one phrase: `claude or codex`.
+    pub fn supervisor_kinds() -> String {
+        Self::SUPERVISOR_HARNESSES
             .iter()
             .map(Harness::kind)
             .collect::<Vec<_>>()
             .join(" or ")
     }
 
-    /// Whether a corgi can run on this harness.
-    pub fn supports_corgi(&self) -> bool {
-        Self::CORGI_HARNESSES.contains(self)
+    /// Whether a supervisor can run on this harness.
+    pub fn supports_supervisor(&self) -> bool {
+        Self::SUPERVISOR_HARNESSES.contains(self)
     }
 
     /// The models the harness's CLI currently offers. Codex asks its
@@ -258,16 +258,16 @@ impl Harness {
         }
     }
 
-    /// The arguments that make a session a project's corgi: its `role`
+    /// The arguments that make a session a project's supervisor: its `role`
     /// (also written to `role_file`) on top of the harness's own
     /// instructions, and its `state_dir` writable next to the project.
-    pub fn corgi_args(&self, role_file: &Path, role: &str, state_dir: &Path) -> Vec<String> {
+    pub fn supervisor_args(&self, role_file: &Path, role: &str, state_dir: &Path) -> Vec<String> {
         let state_dir = state_dir.to_string_lossy().into_owned();
         match self {
             // Codex has no flag that appends to its system prompt. Developer
             // instructions add to Codex's own, where `model_instructions_file`
             // would replace them. Commands run in the workspace-write sandbox,
-            // which keeps the corgi's writes to the project and its state
+            // which keeps the supervisor's writes to the project and its state
             // directory; network access is what lets them reach Herdr's socket,
             // which `herdr` and `corgi` need. Anything else the sandbox refuses,
             // such as the bootstrap's `git init`, Codex asks the user to approve.
@@ -512,13 +512,13 @@ mod tests {
     }
 
     #[test]
-    fn the_form_offers_codex_first_and_a_corgi_defaults_to_claude() {
+    fn the_form_offers_codex_first_and_a_supervisor_defaults_to_claude() {
         let kinds: Vec<&str> = Harness::KNOWN.iter().map(Harness::kind).collect();
         assert_eq!(kinds, ["codex", "claude", "gemini", "copilot", "opencode"]);
-        assert_eq!(Harness::CORGI_HARNESSES[0], Harness::Claude);
-        assert!(Harness::Claude.supports_corgi() && Harness::Codex.supports_corgi());
-        assert!(!Harness::Gemini.supports_corgi());
-        assert!(!Harness::from_kind("").supports_corgi());
+        assert_eq!(Harness::SUPERVISOR_HARNESSES[0], Harness::Claude);
+        assert!(Harness::Claude.supports_supervisor() && Harness::Codex.supports_supervisor());
+        assert!(!Harness::Gemini.supports_supervisor());
+        assert!(!Harness::from_kind("").supports_supervisor());
     }
 
     #[test]
@@ -594,31 +594,32 @@ mod tests {
         assert_eq!(Harness::Codex.exit_command(), "/quit");
     }
 
-    fn corgi_args(harness: &Harness) -> Vec<String> {
-        harness.corgi_args(
-            Path::new("/state/corgis/weather/ROLE.md"),
-            "# You are the project's corgi\nRun `corgi \"fleet\"`.\n",
-            Path::new("/state/corgis/weather"),
+    fn supervisor_args(harness: &Harness) -> Vec<String> {
+        harness.supervisor_args(
+            Path::new("/state/supervisors/weather/ROLE.md"),
+            "# You are the project's supervisor\nRun `corgi \"fleet\"`.\n",
+            Path::new("/state/supervisors/weather"),
         )
     }
 
     #[test]
-    fn a_claude_corgi_appends_its_role_file_to_the_system_prompt() {
+    fn a_claude_supervisor_appends_its_role_file_to_the_system_prompt() {
         assert_eq!(
-            corgi_args(&Harness::Claude),
+            supervisor_args(&Harness::Claude),
             [
                 "--append-system-prompt-file",
-                "/state/corgis/weather/ROLE.md",
+                "/state/supervisors/weather/ROLE.md",
                 "--add-dir",
-                "/state/corgis/weather",
+                "/state/supervisors/weather",
             ]
         );
     }
 
     #[test]
-    fn a_codex_corgi_gets_its_role_as_developer_instructions_in_a_sandbox_that_reaches_herdr() {
+    fn a_codex_supervisor_gets_its_role_as_developer_instructions_in_a_sandbox_that_reaches_herdr()
+    {
         assert_eq!(
-            corgi_args(&Harness::Codex),
+            supervisor_args(&Harness::Codex),
             [
                 "--sandbox",
                 "workspace-write",
@@ -627,9 +628,9 @@ mod tests {
                 "-c",
                 "sandbox_workspace_write.network_access=true",
                 "--add-dir",
-                "/state/corgis/weather",
+                "/state/supervisors/weather",
                 "-c",
-                r##"developer_instructions="# You are the project's corgi\nRun `corgi \"fleet\"`.\n""##,
+                r##"developer_instructions="# You are the project's supervisor\nRun `corgi \"fleet\"`.\n""##,
             ]
         );
     }

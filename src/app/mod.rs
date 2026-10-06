@@ -22,7 +22,6 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
     activity::{command_from_screen, message_from_screen, message_from_state},
-    corgi::{self, is_corgi},
     herdr::{HerdrClient, ReadSource, SessionSnapshot},
     job::Job,
     model::{Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, WorkspaceInfo},
@@ -30,6 +29,7 @@ use crate::{
     paths::is_home,
     projects::ProjectMemory,
     session::SessionReader,
+    supervisor::{self, is_supervisor},
     ui,
     usage::{PlanUsage, Provider, installed_providers, read_codex_thread_titles},
     usage_cache::{CachedUsage, shared_plan_usage},
@@ -73,8 +73,8 @@ use rows::{
 };
 
 // The launch sequence, the project workspace Corgi owns, the record of the
-// marks Corgi sets in Herdr, the corgi waker and the draft check it makes
-// before typing into a corgi's pane.
+// marks Corgi sets in Herdr, the supervisor waker and the draft check it makes
+// before typing into a supervisor's pane.
 mod draft;
 mod first_prompt;
 mod launch;
@@ -85,7 +85,7 @@ mod waker;
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
 use progress::JobReport;
 use project_main::relabel_project_mains;
-use waker::CorgiWaker;
+use waker::SupervisorWaker;
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(850);
 /// How old a plan-usage reading may be before one Corgi process on the
@@ -105,7 +105,7 @@ const CODEX_TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const DASHBOARD_PANE_LABEL: &str = "Corgi";
 /// What the dashboard calls a project's corgi. There is one per project, so
 /// the project heading says whose it is.
-const CORGI_NAME: &str = "corgi";
+const SUPERVISOR_NAME: &str = "corgi";
 
 type UsageResult = (Provider, Option<CachedUsage>);
 
@@ -178,9 +178,9 @@ pub(crate) struct App {
     /// The model catalogs and harness configurations behind the new-agent
     /// form's selectors.
     model_catalogs: ModelCatalogs,
-    /// Wakes corgis about their projects' agents; only the interactive
+    /// Wakes supervisors about their projects' agents; only the interactive
     /// dashboard has one.
-    corgi_waker: Option<CorgiWaker>,
+    supervisor_waker: Option<SupervisorWaker>,
     /// The project roots whose state directories this dashboard has checked
     /// for pre-rename state left beside them, so each is warned about once.
     state_dirs_checked: HashSet<String>,
@@ -253,7 +253,7 @@ impl App {
             codex_task_job: Job::default(),
             merge_job: Job::default(),
             model_catalogs: ModelCatalogs::default(),
-            corgi_waker: None,
+            supervisor_waker: None,
             state_dirs_checked: HashSet::new(),
             status_hold_until: None,
         }
@@ -282,24 +282,24 @@ impl App {
         self.status_hold_until = hold.map(|hold| Instant::now() + hold);
     }
 
-    /// Tells the user, once per project, when the state a project's corgi
+    /// Tells the user, once per project, when the state a project's supervisor
     /// had before the rename sits beside its current state directory instead
     /// of having been moved into it, so that history is not overlooked. Only
     /// the interactive dashboard, the one with a waker, checks.
     fn warn_about_old_state_dirs(&mut self) {
-        if self.corgi_waker.is_none() {
+        if self.supervisor_waker.is_none() {
             return;
         }
         let roots: Vec<String> = self
             .agents
             .iter()
-            .filter(|agent| agent.corgi)
+            .filter(|agent| agent.supervisor)
             .map(|agent| agent.project_root.clone())
             .filter(|root| !self.state_dirs_checked.contains(root))
             .collect();
         let mut warnings = Vec::new();
         for root in roots {
-            warnings.extend(corgi::state_dir_conflict(&root));
+            warnings.extend(supervisor::state_dir_conflict(&root));
             self.state_dirs_checked.insert(root);
         }
         if !warnings.is_empty() {
@@ -322,11 +322,11 @@ impl App {
         match self.client.snapshot() {
             Ok(mut snapshot) => {
                 self.connected = true;
-                // The dashboard that wakes corgis is the one that puts back
+                // The dashboard that wakes supervisors is the one that puts back
                 // the marks a Herdr restart lost, before anything reads them,
                 // and that clears the merge tags their agents worked past.
                 if self
-                    .corgi_waker
+                    .supervisor_waker
                     .as_mut()
                     .is_some_and(|waker| waker.leads(&self.client))
                 {
@@ -336,7 +336,7 @@ impl App {
                 relabel_project_mains(&self.client, &mut snapshot.workspaces);
                 self.install_snapshot(snapshot);
                 self.warn_about_old_state_dirs();
-                self.wake_corgis();
+                self.wake_supervisors();
                 let status_held = self
                     .status_hold_until
                     .is_some_and(|deadline| Instant::now() < deadline);
@@ -444,9 +444,9 @@ impl App {
             .context_percent
             .or_else(|| reported_context_percent(&info));
         let (message, tool) = self.conversation_rows(&info, facts.message, facts.tool);
-        let corgi = is_corgi(&info);
-        let (project, task) = if corgi {
-            (CORGI_NAME.to_string(), CORGI_NAME.to_string())
+        let supervisor = is_supervisor(&info);
+        let (project, task) = if supervisor {
+            (SUPERVISOR_NAME.to_string(), SUPERVISOR_NAME.to_string())
         } else {
             (project, task)
         };
@@ -465,7 +465,7 @@ impl App {
             cache: facts.cache,
             message,
             tool,
-            corgi,
+            supervisor,
             scratch,
         }
     }
@@ -788,7 +788,7 @@ impl App {
             KeyCode::Char('p') => self.begin_prompt(),
             KeyCode::Char('n') => self.begin_new_agent(),
             KeyCode::Char('t') => self.begin_scratch_agent(),
-            KeyCode::Char('c') => self.begin_corgi(),
+            KeyCode::Char('c') => self.begin_supervisor(),
             KeyCode::Char('f') | KeyCode::Enter => self.focus_selected(),
             KeyCode::Char('m') => self.begin_merge_worktree(),
             KeyCode::Char('x') => self.begin_close_workspace(),
@@ -800,7 +800,7 @@ impl App {
 }
 
 /// Keeps related worktree sessions together, each project led by its
-/// corgi, and the scratch sessions after every project. Within a project
+/// supervisor, and the scratch sessions after every project. Within a project
 /// the rest follow their live state, the ones needing attention first:
 /// blocked, working, done, idle, then unknown. Agents sharing a state are
 /// ordered by when they entered it, the most recent first, using Herdr's
@@ -819,7 +819,7 @@ fn sort_agents(agents: &mut [DashboardAgent]) {
                     .to_lowercase()
                     .cmp(&right.project_group.to_lowercase())
             })
-            .then_with(|| right.corgi.cmp(&left.corgi))
+            .then_with(|| right.supervisor.cmp(&left.supervisor))
             .then_with(|| state_rank(left.info.state).cmp(&state_rank(right.info.state)))
             .then_with(|| right.info.state_change_seq.cmp(&left.info.state_change_seq))
             .then_with(|| {
@@ -853,7 +853,7 @@ pub fn run() -> Result<()> {
     let compact = env::args().any(|arg| arg == "--compact");
     let client = HerdrClient::from_env().context("Corgi must run inside a Herdr plugin pane")?;
     let mut app = App::new(client, compact);
-    app.corgi_waker = Some(CorgiWaker::default());
+    app.supervisor_waker = Some(SupervisorWaker::default());
     app.motion = Motion::animated();
     app.refresh();
 
@@ -944,12 +944,12 @@ mod tests {
                 CORGI_PROJECT_MAIN_ROLE, CORGI_PROJECT_MAIN_TAB_TOKEN, CORGI_WORKSPACE_ROLE_TOKEN,
             },
         },
-        corgi::CORGI_TOKEN,
         herdr::{PaneInfo, SessionSnapshot},
         model::{
             AgentInfo, AgentSession, AgentState, DashboardAgent, WorkspaceInfo,
             WorkspaceWorktreeInfo,
         },
+        supervisor::SUPERVISOR_TOKEN,
         test_support::test_app,
     };
 
@@ -963,7 +963,7 @@ mod tests {
         name: &str,
         group: &str,
         state: AgentState,
-        corgi: bool,
+        supervisor: bool,
         scratch: bool,
     ) -> DashboardAgent {
         DashboardAgent {
@@ -974,7 +974,7 @@ mod tests {
                 ..AgentInfo::default()
             },
             project_group: group.into(),
-            corgi,
+            supervisor,
             scratch,
             ..DashboardAgent::default()
         }
@@ -986,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn agents_in_a_project_follow_the_corgi_by_state_then_name() {
+    fn agents_in_a_project_follow_the_supervisor_by_state_then_name() {
         let agents = vec![
             sortable_agent("unknown", "a", "corgi", AgentState::Unknown, false, false),
             sortable_agent("idle", "a", "corgi", AgentState::Idle, false, false),
@@ -1399,7 +1399,7 @@ mod tests {
         assert_eq!(agent.info.pane_id, "w-scratch:p1");
         assert_eq!(agent.project_group, "Scratch");
         assert!(agent.scratch);
-        assert!(!agent.corgi);
+        assert!(!agent.supervisor);
         assert!(agent.worktree_checkout.is_none());
         assert_eq!(agent.model, None);
         assert_eq!(agent.context_percent, None);
@@ -1598,7 +1598,7 @@ mod tests {
     }
 
     #[test]
-    fn the_marked_corgi_leads_its_project_wherever_its_pane_is() {
+    fn the_marked_supervisor_leads_its_project_wherever_its_pane_is() {
         let mut app = test_app();
         let main = WorkspaceInfo {
             workspace_id: "w-main".into(),
@@ -1635,13 +1635,13 @@ mod tests {
                     tab_id: tab.into(),
                     cwd: Some(cwd.into()),
                     name: Some(name.into()),
-                    // A busy corgi with a task title of its own still leads.
+                    // A busy supervisor with a task title of its own still leads.
                     state: AgentState::Working,
                     title: Some("Reviewing the ledger".into()),
                     tokens: if marker.is_empty() {
                         BTreeMap::new()
                     } else {
-                        BTreeMap::from([(CORGI_TOKEN.into(), marker.into())])
+                        BTreeMap::from([(SUPERVISOR_TOKEN.into(), marker.into())])
                     },
                     agent_session: Some(AgentSession {
                         value: format!("{pane}-session"),
@@ -1680,7 +1680,7 @@ mod tests {
                     "beaver",
                     "corgi-old",
                 ),
-                // The marked corgi, moved out of the root tab.
+                // The marked supervisor, moved out of the root tab.
                 agent(
                     "p-corgi",
                     "w-main",
@@ -1698,7 +1698,7 @@ mod tests {
                 .iter()
                 .map(|agent| (
                     agent.info.pane_id.as_str(),
-                    agent.corgi,
+                    agent.supervisor,
                     agent.project.as_str(),
                     agent.task.as_str(),
                 ))
@@ -1711,7 +1711,7 @@ mod tests {
             ]
         );
         assert!(
-            super::launch::corgi_plan(
+            super::launch::supervisor_plan(
                 &app,
                 "/projects/corgi",
                 crate::harness::Harness::Codex,
@@ -1720,7 +1720,7 @@ mod tests {
                 String::new()
             )
             .is_err(),
-            "a renamed corgi prevents a duplicate launch"
+            "a renamed supervisor prevents a duplicate launch"
         );
     }
 

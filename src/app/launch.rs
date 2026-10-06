@@ -1,5 +1,5 @@
 //! The launch sequence every new agent goes through: the plan, its checkout
-//! or tab, starting the CLI, and the corgi's launch plan; and the
+//! or tab, starting the CLI, and the supervisor's launch plan; and the
 //! dashboard's background job that runs it, with the panel that follows it.
 
 use std::{
@@ -13,7 +13,6 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
-    corgi::{self, CORGI_TOKEN},
     git::trust_root,
     harness::Harness,
     herdr::{CreatedWorkspace, HerdrClient, HerdrError, StartedAgent, WorktreeSource},
@@ -21,6 +20,7 @@ use crate::{
     model::{AgentInfo, DashboardAgent},
     paths::{dir_name, is_home},
     projects::{is_created_project, record_created_project},
+    supervisor::{self, SUPERVISOR_TOKEN},
     time::unix_now,
 };
 
@@ -41,7 +41,7 @@ use super::{
 /// The label of a scratch agent's workspace, numbered from the second on.
 const SCRATCH_LABEL: &str = "scratch";
 /// Why the home directory gets no corgi.
-pub(super) const CORGI_HOME_REFUSAL: &str = "The home directory is not a project, so it has no corgi; t in the dashboard starts a scratch agent there";
+pub(super) const SUPERVISOR_HOME_REFUSAL: &str = "The home directory is not a project, so it has no supervisor; t in the dashboard starts a scratch agent there";
 const AGENT_START_ATTEMPTS: usize = 40;
 const AGENT_START_RETRY_DELAY: Duration = Duration::from_millis(250);
 /// How long the panel of a started agent stays up to say so, over its check
@@ -79,10 +79,10 @@ pub(super) struct LaunchPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Role {
     Worker,
-    /// The project's corgi: its pane is marked so the dashboard recognizes
+    /// The project's supervisor: its pane is marked so the dashboard recognizes
     /// it wherever it goes.
-    Corgi {
-        /// The pane of a corgi that handed over and exited, where its
+    Supervisor {
+        /// The pane of a supervisor that handed over and exited, where its
         /// successor starts instead of in a new or found pane.
         handover_pane: Option<String>,
     },
@@ -138,11 +138,11 @@ pub(super) fn launch_steps(plan: &LaunchPlan) -> Vec<String> {
         "Create a scratch workspace"
     } else if matches!(
         plan.role,
-        Role::Corgi {
+        Role::Supervisor {
             handover_pane: Some(_)
         }
     ) {
-        "Take over the corgi's pane"
+        "Take over the supervisor's pane"
     } else {
         match plan.checkout {
             Checkout::Worktree => "Create a worktree",
@@ -154,23 +154,23 @@ pub(super) fn launch_steps(plan: &LaunchPlan) -> Vec<String> {
         checkout.to_string(),
         format!("Start {}{}", plan.harness, model_suffix(&plan.model)),
     ];
-    if !plan.prompt.trim().is_empty() || matches!(plan.role, Role::Corgi { .. }) {
+    if !plan.prompt.trim().is_empty() || matches!(plan.role, Role::Supervisor { .. }) {
         steps.push("Send the first prompt".into());
     }
     steps
 }
 
 impl App {
-    /// The corgi key: starts the corgi of the selected agent's project,
+    /// The supervisor key: starts the supervisor of the selected agent's project,
     /// its repository's primary checkout, or focuses it when it already runs.
-    pub(super) fn begin_corgi(&mut self) {
+    pub(super) fn begin_supervisor(&mut self) {
         let Some(root) = self
             .selected_agent()
             .map(|agent| agent.project_root.clone())
             .filter(|root| !root.is_empty())
         else {
             self.set_status(
-                "Select an agent to start the corgi of its project",
+                "Select an agent to start the supervisor of its project",
                 Some(Duration::from_secs(5)),
             );
             return;
@@ -178,21 +178,21 @@ impl App {
         if let Some(index) = self
             .agents
             .iter()
-            .position(|agent| agent.corgi && agent.project_root == root)
+            .position(|agent| agent.supervisor && agent.project_root == root)
         {
             let focused = format!(
                 "Focused {}'s corgi, {}",
-                dir_name(&root).unwrap_or(corgi::UNNAMED_PROJECT),
+                dir_name(&root).unwrap_or(supervisor::UNNAMED_PROJECT),
                 self.agents[index].info.display_name()
             );
             self.select(index);
             self.focus_selected_saying(focused);
             return;
         }
-        let saved = corgi::state_dir(&root)
+        let saved = supervisor::state_dir(&root)
             .ok()
-            .and_then(|dir| corgi::saved_launch(&dir));
-        match dashboard_corgi_plan(self, &root, saved, default_harness) {
+            .and_then(|dir| supervisor::saved_launch(&dir));
+        match dashboard_supervisor_plan(self, &root, saved, default_harness) {
             Ok(plan) => self.start_new_agent(plan),
             Err(error) => self.set_status(format!("{error:#}"), Some(Duration::from_secs(8))),
         }
@@ -325,7 +325,7 @@ impl App {
     }
 }
 
-/// The agent CLI's arguments for `plan`, before a corgi's own.
+/// The agent CLI's arguments for `plan`, before a supervisor's own.
 pub(super) fn launch_args(plan: &LaunchPlan) -> Vec<String> {
     let mut args = plan.harness.launch_args(&plan.model, &plan.effort);
     args.extend(plan.extra_args.iter().cloned());
@@ -400,22 +400,22 @@ pub(super) fn launch_agent(
     } = plan;
     let scratch = is_home(project);
     anyhow::ensure!(
-        !(scratch && matches!(role, Role::Corgi { .. })),
-        "{CORGI_HOME_REFUSAL}"
+        !(scratch && matches!(role, Role::Supervisor { .. })),
+        "{SUPERVISOR_HOME_REFUSAL}"
     );
     if *new_project && !scratch {
         create_project(project, progress)?;
     }
-    let mut corgi_root = None;
+    let mut supervisor_root = None;
     let (pane_id, location) = if scratch {
         // The home directory is never a project: every checkout is the
         // directory itself, in a workspace of the agent's own.
         create_scratch_workspace(client, project, name, progress)?
-    } else if let Role::Corgi {
+    } else if let Role::Supervisor {
         handover_pane: Some(pane_id),
     } = role
     {
-        corgi_root = Some(project.to_string_lossy().into_owned());
+        supervisor_root = Some(project.to_string_lossy().into_owned());
         (pane_id.clone(), "in the pane it took over".to_string())
     } else {
         match checkout {
@@ -426,12 +426,12 @@ pub(super) fn launch_agent(
             }
             Checkout::Directory => create_directory_agent_tab(client, project, name, progress)?,
             Checkout::ProjectRoot => {
-                // A corgi is started wherever its project workspace has
+                // A supervisor is started wherever its project workspace has
                 // room; a worker asked into the root tab gets that or nothing.
-                let corgi = matches!(role, Role::Corgi { .. });
+                let supervisor = matches!(role, Role::Supervisor { .. });
                 let (pane_id, location, root) =
-                    project_root_pane(client, project, name, corgi, progress)?;
-                corgi_root = Some(root);
+                    project_root_pane(client, project, name, supervisor, progress)?;
+                supervisor_root = Some(root);
                 (pane_id, location)
             }
         }
@@ -455,20 +455,24 @@ pub(super) fn launch_agent(
         effort_suffix(harness, effort)
     ));
     let mut args = launch_args(plan);
-    let prompt = if let Role::Corgi { handover_pane } = role {
-        let root = corgi_root
+    let prompt = if let Role::Supervisor { handover_pane } = role {
+        let root = supervisor_root
             .as_deref()
-            .context("a corgi starts in its project's root tab")?;
-        let installed = client.plugin_root(corgi::PLUGIN_ID).ok().flatten();
-        let corgi_bin = corgi::corgi_bin(installed.as_deref())?;
-        let prepared = corgi::prepare(root, &corgi_bin)?;
+            .context("a supervisor starts in its project's root tab")?;
+        let installed = client.plugin_root(supervisor::PLUGIN_ID).ok().flatten();
+        let corgi_bin = supervisor::corgi_bin(installed.as_deref())?;
+        let prepared = supervisor::prepare(root, &corgi_bin)?;
         if let Some(warning) = &prepared.warning {
             progress.report(warning.clone());
         }
-        args.extend(harness.corgi_args(&prepared.role_file, &prepared.role, &prepared.state_dir));
-        corgi::save_launch(
+        args.extend(harness.supervisor_args(
+            &prepared.role_file,
+            &prepared.role,
             &prepared.state_dir,
-            &corgi::Launch {
+        ));
+        supervisor::save_launch(
+            &prepared.state_dir,
+            &supervisor::Launch {
                 kind: harness.kind().to_string(),
                 model: model.clone(),
                 effort: effort.clone(),
@@ -476,10 +480,10 @@ pub(super) fn launch_agent(
             },
         )?;
         if handover_pane.is_some() {
-            let archive = corgi::handover_archive(&prepared.state_dir, unix_now());
-            corgi::takeover_prompt(root, &prepared.state_dir, &archive)
+            let archive = supervisor::handover_archive(&prepared.state_dir, unix_now());
+            supervisor::takeover_prompt(root, &prepared.state_dir, &archive)
         } else {
-            corgi::first_prompt(root, &prepared.state_dir, prompt)
+            supervisor::first_prompt(root, &prepared.state_dir, prompt)
         }
     } else {
         prompt.clone()
@@ -498,7 +502,7 @@ pub(super) fn launch_agent(
         &started.agent,
         &prompt,
         name,
-        matches!(role, Role::Corgi { .. }),
+        matches!(role, Role::Supervisor { .. }),
         progress,
     )?;
     Ok(LaunchedAgent {
@@ -507,25 +511,25 @@ pub(super) fn launch_agent(
     })
 }
 
-/// Mark a new or replacement corgi before prompting, then bind any native
+/// Mark a new or replacement supervisor before prompting, then bind any native
 /// identity first revealed in the prompt acknowledgement.
 fn prompt_launched_agent(
     client: &HerdrClient,
     started: &AgentInfo,
     prompt: &str,
     name: &str,
-    is_corgi: bool,
+    is_supervisor: bool,
     progress: &mut dyn Progress,
 ) -> Result<()> {
-    if is_corgi {
+    if is_supervisor {
         markers::mark_pane(
             client,
             &started.pane_id,
             name,
             markers::session_of(started),
-            &[(CORGI_TOKEN, name)],
+            &[(SUPERVISOR_TOKEN, name)],
         )
-        .with_context(|| format!("mark {name} as its project's corgi"))?;
+        .with_context(|| format!("mark {name} as its project's supervisor"))?;
     }
     progress.step(2);
     progress.report(format!("Sending first prompt to {name}…"));
@@ -539,18 +543,19 @@ fn prompt_launched_agent(
             // Herdr may first expose the session in its prompt acknowledgement,
             // after a naming plugin has already changed the presentation name.
             // The name marker above covers the interval before acceptance.
-            if is_corgi && let Some(session) = corgi::native_session(accepted) {
+            if is_supervisor && let Some(session) = supervisor::native_session(accepted) {
                 anyhow::ensure!(
                     accepted.pane_id == started.pane_id
-                        && corgi::native_session(started).is_none_or(|before| before == session),
-                    "the corgi's session changed while sending its first prompt"
+                        && supervisor::native_session(started)
+                            .is_none_or(|before| before == session),
+                    "the supervisor's session changed while sending its first prompt"
                 );
                 markers::mark_pane(
                     client,
                     &accepted.pane_id,
                     accepted.name.as_deref().unwrap_or(name),
                     Some(session),
-                    &[(CORGI_TOKEN, name)],
+                    &[(SUPERVISOR_TOKEN, name)],
                 )?;
             }
             Ok(())
@@ -581,11 +586,11 @@ fn effort_suffix(harness: &Harness, effort: &str) -> String {
 }
 
 /// Creates the directory of a new project and records it as one Corgi made.
-/// It stays a plain directory until the project's corgi makes it a
+/// It stays a plain directory until the project's supervisor makes it a
 /// repository.
 fn create_project(project: &Path, progress: &mut dyn Progress) -> Result<()> {
     progress.report(format!("Creating project {}…", project.display()));
-    // The directory stays plain: the project's corgi makes it a repository,
+    // The directory stays plain: the project's supervisor makes it a repository,
     // shaped by the first request, before any worker needs a worktree.
     fs::create_dir_all(project)
         .with_context(|| format!("create project directory {}", project.display()))?;
@@ -767,7 +772,7 @@ fn project_root_pane(
 ) -> Result<(String, String, String)> {
     progress.report(format!("Resolving the project directory for {name}…"));
     // A directory outside Git still gets a project workspace, found again by
-    // its recorded directory once the corgi has made it a repository.
+    // its recorded directory once the supervisor has made it a repository.
     let root = project_root_of(client, project)?;
     progress.project(&root);
     let main = if open_tab {
@@ -922,23 +927,27 @@ fn restore_dashboard_focus(client: &HerdrClient, pane_id: Option<&str>) -> Resul
     }
 }
 
-/// The harness of the corgi in `pane_id`, the `HERDR_PANE_ID` Herdr gives
+/// The harness of the supervisor in `pane_id`, the `HERDR_PANE_ID` Herdr gives
 /// every process in a pane, if that pane holds one: the kind Herdr detected
 /// running there.
-pub(super) fn calling_corgi_harness(app: &App, pane_id: Option<&str>) -> Option<Harness> {
+pub(super) fn calling_supervisor_harness(app: &App, pane_id: Option<&str>) -> Option<Harness> {
     let pane_id = pane_id?;
     app.agents
         .iter()
-        .find(|agent| agent.corgi && agent.info.pane_id == pane_id)
+        .find(|agent| agent.supervisor && agent.info.pane_id == pane_id)
         .and_then(|agent| agent.info.agent.as_deref())
         .map(Harness::from_typed)
         .filter(|harness| !harness.kind().is_empty())
 }
 
-/// Whether a new agent in `project` is its corgi: the first agent of a new
+/// Whether a new agent in `project` is its supervisor: the first agent of a new
 /// project, or of a project none of whose workspaces has an agent session.
 /// The home directory is never a project, so an agent there never is.
-pub(super) fn starts_corgi(new_project: bool, project: &str, agents: &[DashboardAgent]) -> bool {
+pub(super) fn starts_supervisor(
+    new_project: bool,
+    project: &str,
+    agents: &[DashboardAgent],
+) -> bool {
     let project = project.trim().trim_end_matches('/');
     !project.is_empty()
         && !is_home(project)
@@ -948,23 +957,26 @@ pub(super) fn starts_corgi(new_project: bool, project: &str, agents: &[Dashboard
                 .any(|agent| agent.project_root.trim_end_matches('/') == project))
 }
 
-/// Why a corgi cannot start on `harness`.
-pub(super) fn corgi_harness_error(harness: &Harness) -> String {
-    format!("A corgi runs on {}, not {harness}", Harness::corgi_kinds())
+/// Why a supervisor cannot start on `harness`.
+pub(super) fn supervisor_harness_error(harness: &Harness) -> String {
+    format!(
+        "A supervisor runs on {}, not {harness}",
+        Harness::supervisor_kinds()
+    )
 }
 
 /// The launch the dashboard's corgi key starts for `root`: the harness,
-/// model, effort and arguments its corgi was last launched with, `saved`,
-/// else the new-agent form's preset harness (or the first a corgi runs on)
-/// with the harness's own defaults. It has no task, so the corgi greets
+/// model, effort and arguments its supervisor was last launched with, `saved`,
+/// else the new-agent form's preset harness (or the first a supervisor runs on)
+/// with the harness's own defaults. It has no task, so the supervisor greets
 /// with the state of the project.
-pub(super) fn dashboard_corgi_plan(
+pub(super) fn dashboard_supervisor_plan(
     app: &App,
     root: &str,
-    saved: Option<corgi::Launch>,
+    saved: Option<supervisor::Launch>,
     preset: impl FnOnce() -> Harness,
 ) -> Result<LaunchPlan> {
-    let saved = saved.filter(|launch| Harness::from_kind(&launch.kind).supports_corgi());
+    let saved = saved.filter(|launch| Harness::from_kind(&launch.kind).supports_supervisor());
     let (harness, model, effort, extra_args) = match saved {
         Some(launch) => (
             Harness::from_kind(&launch.kind),
@@ -974,19 +986,19 @@ pub(super) fn dashboard_corgi_plan(
         ),
         None => {
             let harness = Some(preset())
-                .filter(Harness::supports_corgi)
-                .unwrap_or_else(|| Harness::CORGI_HARNESSES[0].clone());
+                .filter(Harness::supports_supervisor)
+                .unwrap_or_else(|| Harness::SUPERVISOR_HARNESSES[0].clone());
             (harness, String::new(), String::new(), Vec::new())
         }
     };
-    let mut plan = corgi_plan(app, root, harness, model, effort, String::new())?;
+    let mut plan = supervisor_plan(app, root, harness, model, effort, String::new())?;
     plan.extra_args = extra_args;
     Ok(plan)
 }
 
 /// The launch of `root`'s corgi on `harness`, refused while one is already
 /// running.
-pub(super) fn corgi_plan(
+pub(super) fn supervisor_plan(
     app: &App,
     root: &str,
     harness: Harness,
@@ -994,21 +1006,21 @@ pub(super) fn corgi_plan(
     effort: String,
     task: String,
 ) -> Result<LaunchPlan> {
-    anyhow::ensure!(!is_home(root), "{CORGI_HOME_REFUSAL}");
+    anyhow::ensure!(!is_home(root), "{SUPERVISOR_HOME_REFUSAL}");
     if let Some(running) = app
         .agents
         .iter()
-        .find(|agent| agent.corgi && agent.project_root == root)
+        .find(|agent| agent.supervisor && agent.project_root == root)
     {
         bail!(
             "{}'s corgi is already running as {}",
-            dir_name(root).unwrap_or(corgi::UNNAMED_PROJECT),
+            dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT),
             running.info.display_name()
         );
     }
     let name = sanitize_agent_name(&format!(
         "corgi-{}",
-        dir_name(root).unwrap_or(corgi::UNNAMED_PROJECT)
+        dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT)
     ));
     anyhow::ensure!(
         !app.agents
@@ -1026,7 +1038,7 @@ pub(super) fn corgi_plan(
         new_project: false,
         checkout: Checkout::ProjectRoot,
         extra_args: Vec::new(),
-        role: Role::Corgi {
+        role: Role::Supervisor {
             handover_pane: None,
         },
         request_id: None,
@@ -1058,37 +1070,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_a_new_project_or_one_without_sessions_starts_its_corgi() {
-        let agent = |root: &str, corgi: bool| DashboardAgent {
+    fn only_a_new_project_or_one_without_sessions_starts_its_supervisor() {
+        let agent = |root: &str, supervisor: bool| DashboardAgent {
             project_root: root.into(),
-            corgi,
+            supervisor,
             ..DashboardAgent::default()
         };
         let agents = [agent("/repos/corgi", true), agent("/repos/weather", false)];
 
-        // A project with a corgi, or with only workers, gets a worker.
-        assert!(!starts_corgi(false, "/repos/corgi", &agents));
-        assert!(!starts_corgi(false, "/repos/weather/", &agents));
+        // A project with a supervisor, or with only workers, gets a worker.
+        assert!(!starts_supervisor(false, "/repos/corgi", &agents));
+        assert!(!starts_supervisor(false, "/repos/weather/", &agents));
         // A project nobody works in, or a new one, starts its corgi.
-        assert!(starts_corgi(false, "/repos/copy", &agents));
-        assert!(starts_corgi(true, "/repos/brand-new", &agents));
-        assert!(!starts_corgi(false, "  ", &agents));
+        assert!(starts_supervisor(false, "/repos/copy", &agents));
+        assert!(starts_supervisor(true, "/repos/brand-new", &agents));
+        assert!(!starts_supervisor(false, "  ", &agents));
     }
 
     #[test]
-    fn the_home_directory_never_starts_a_corgi() {
+    fn the_home_directory_never_starts_a_supervisor() {
         let Some(home) = crate::paths::home() else {
             return;
         };
         let home = home.to_string_lossy().into_owned();
         // No agent works there, and it is not even new: still no corgi.
-        assert!(!starts_corgi(false, &home, &[]));
-        assert!(!starts_corgi(true, &format!("{home}/"), &[]));
-        assert!(!starts_corgi(false, "~", &[]));
+        assert!(!starts_supervisor(false, &home, &[]));
+        assert!(!starts_supervisor(true, &format!("{home}/"), &[]));
+        assert!(!starts_supervisor(false, "~", &[]));
         // Its subdirectories are projects like any other.
-        assert!(starts_corgi(false, &format!("{home}/repos/corgi"), &[]));
+        assert!(starts_supervisor(
+            false,
+            &format!("{home}/repos/corgi"),
+            &[]
+        ));
 
-        let refused = corgi_plan(
+        let refused = supervisor_plan(
             &test_app(),
             &home,
             Harness::Claude,
@@ -1097,7 +1113,7 @@ mod tests {
             "".into(),
         )
         .err()
-        .expect("the home directory has no corgi");
+        .expect("the home directory has no supervisor");
         assert!(refused.to_string().contains("not a project"), "{refused}");
     }
 
@@ -1112,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn new_and_replacement_corgis_are_marked_before_the_prompt_and_bound_after_renaming() {
+    fn new_and_replacement_supervisors_are_marked_before_the_prompt_and_bound_after_renaming() {
         for session_known in [false, true] {
             let (socket, server) = fake_herdr("corgi-first-prompt", move |listener| {
                 let mut marker = "session:previous-occupant".to_string();
@@ -1126,7 +1142,7 @@ mod tests {
                         assert_eq!(request["method"], method);
                         let result = match method {
                             "pane.report_metadata" => {
-                                marker = request["params"]["tokens"][CORGI_TOKEN]
+                                marker = request["params"]["tokens"][SUPERVISOR_TOKEN]
                                     .as_str()
                                     .unwrap()
                                     .to_string();
@@ -1149,7 +1165,7 @@ mod tests {
                             }
                             _ => {
                                 assert_eq!(marker, "session:launch-session");
-                                json!({"type": "pane_read", "read": {"text": "Start your corgi session"}})
+                                json!({"type": "pane_read", "read": {"text": "Start your supervisor session"}})
                             }
                         };
                         json!({"result": result})
@@ -1169,7 +1185,7 @@ mod tests {
             prompt_launched_agent(
                 &client,
                 &started,
-                "Start your corgi session",
+                "Start your supervisor session",
                 "corgi-m-ta-sverige",
                 true,
                 &mut Silent,
@@ -1291,14 +1307,14 @@ mod tests {
             requests[3]["tokens"][CORGI_REQUEST_TOKEN],
             "20261002-w-retry"
         );
-        assert_eq!(requests[3]["tokens"][CORGI_TOKEN], Value::Null);
+        assert_eq!(requests[3]["tokens"][SUPERVISOR_TOKEN], Value::Null);
         assert_eq!(requests[4]["pane_id"], "w9:p1", "then agent.start");
     }
 
     #[test]
-    fn a_corgi_launch_is_named_after_its_project_and_refused_while_one_runs() {
+    fn a_supervisor_launch_is_named_after_its_project_and_refused_while_one_runs() {
         let mut app = test_app();
-        let plan = corgi_plan(
+        let plan = supervisor_plan(
             &app,
             "/repos/weather",
             Harness::Codex,
@@ -1306,13 +1322,13 @@ mod tests {
             "high".into(),
             "Hi".into(),
         )
-        .expect("no corgi runs yet");
+        .expect("no supervisor runs yet");
         assert_eq!(plan.name, "corgi-weather");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!(plan.model, "gpt-5-codex");
         assert_eq!(plan.effort, "high");
         assert_eq!(plan.checkout, Checkout::ProjectRoot);
-        assert!(matches!(plan.role, Role::Corgi { .. }));
+        assert!(matches!(plan.role, Role::Supervisor { .. }));
 
         app.agents = vec![DashboardAgent {
             info: AgentInfo {
@@ -1320,10 +1336,10 @@ mod tests {
                 ..AgentInfo::default()
             },
             project_root: "/repos/weather".into(),
-            corgi: true,
+            supervisor: true,
             ..DashboardAgent::default()
         }];
-        let refused = corgi_plan(
+        let refused = supervisor_plan(
             &app,
             "/repos/weather",
             Harness::Claude,
@@ -1332,15 +1348,15 @@ mod tests {
             "".into(),
         )
         .err()
-        .expect("a corgi already runs");
+        .expect("a supervisor already runs");
         assert!(
             refused
                 .to_string()
                 .contains("already running as corgi-weather")
         );
-        // Another project's corgi is no reason to refuse.
+        // Another project's supervisor is no reason to refuse.
         assert!(
-            corgi_plan(
+            supervisor_plan(
                 &app,
                 "/repos/corgi",
                 Harness::Claude,
@@ -1353,32 +1369,32 @@ mod tests {
     }
 
     #[test]
-    fn a_spawn_is_a_corgis_only_from_that_corgis_pane() {
+    fn a_spawn_is_a_supervisors_only_from_that_supervisors_pane() {
         let mut app = test_app();
-        let agent = |pane_id: &str, name: &str, kind: &str, corgi: bool| DashboardAgent {
+        let agent = |pane_id: &str, name: &str, kind: &str, supervisor: bool| DashboardAgent {
             info: AgentInfo {
                 pane_id: pane_id.into(),
                 name: Some(name.into()),
                 agent: Some(kind.into()),
                 ..AgentInfo::default()
             },
-            corgi,
+            supervisor,
             ..DashboardAgent::default()
         };
         app.agents = vec![
             agent("w1:p1", "corgi-weather", "codex", true),
             agent("w2:p1", "w-forecast", "claude", false),
-            // A corgi whose harness Herdr has not detected names none.
+            // A supervisor whose harness Herdr has not detected names none.
             agent("w3:p1", "corgi-corgi", " ", true),
         ];
         assert_eq!(
-            calling_corgi_harness(&app, Some("w1:p1")),
+            calling_supervisor_harness(&app, Some("w1:p1")),
             Some(Harness::Codex)
         );
-        assert!(calling_corgi_harness(&app, Some("w2:p1")).is_none());
-        assert!(calling_corgi_harness(&app, Some("w3:p1")).is_none());
-        assert!(calling_corgi_harness(&app, Some("w9:p1")).is_none());
-        assert!(calling_corgi_harness(&app, None).is_none());
+        assert!(calling_supervisor_harness(&app, Some("w2:p1")).is_none());
+        assert!(calling_supervisor_harness(&app, Some("w3:p1")).is_none());
+        assert!(calling_supervisor_harness(&app, Some("w9:p1")).is_none());
+        assert!(calling_supervisor_harness(&app, None).is_none());
     }
 
     #[test]
@@ -1458,7 +1474,7 @@ mod tests {
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
 
-        // Once the corgi has made the directory a repository, Herdr still
+        // Once the supervisor has made the directory a repository, Herdr still
         // reports no Git details for that workspace; the recorded directory
         // is what finds it for the first worktree.
         let workspace = WorkspaceInfo {
@@ -1542,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corgi_reuses_the_agentless_root_tab_of_its_project_workspace() {
+    fn a_supervisor_reuses_the_agentless_root_tab_of_its_project_workspace() {
         let (socket_path, server) = root_tab_herdr(
             "root-reuse",
             None,
@@ -1566,7 +1582,7 @@ mod tests {
     }
 
     #[test]
-    fn a_corgi_opens_a_new_tab_beside_a_root_tab_that_runs_an_agent() {
+    fn a_supervisor_opens_a_new_tab_beside_a_root_tab_that_runs_an_agent() {
         let (socket_path, server) = root_tab_herdr(
             "root-busy",
             Some("mine"),
@@ -1623,11 +1639,11 @@ mod tests {
     }
 
     #[test]
-    fn the_corgi_key_launches_as_last_time_else_on_the_form_presets() {
+    fn the_supervisor_key_launches_as_last_time_else_on_the_form_presets() {
         let app = test_app();
         let root = "/repos/weather";
         // Nothing saved: the form's preset harness and its own defaults.
-        let plan = dashboard_corgi_plan(&app, root, None, || Harness::Codex).expect("plan");
+        let plan = dashboard_supervisor_plan(&app, root, None, || Harness::Codex).expect("plan");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!((plan.model.as_str(), plan.effort.as_str()), ("", ""));
         assert_eq!(plan.prompt, "");
@@ -1635,21 +1651,22 @@ mod tests {
         assert_eq!(plan.project, Path::new(root));
         assert!(matches!(
             plan.role,
-            Role::Corgi {
+            Role::Supervisor {
                 handover_pane: None
             }
         ));
-        // A preset no corgi runs on falls back to the first that does.
-        let plan = dashboard_corgi_plan(&app, root, None, || Harness::OpenCode).expect("plan");
-        assert_eq!(plan.harness, Harness::CORGI_HARNESSES[0]);
+        // A preset no supervisor runs on falls back to the first that does.
+        let plan = dashboard_supervisor_plan(&app, root, None, || Harness::OpenCode).expect("plan");
+        assert_eq!(plan.harness, Harness::SUPERVISOR_HARNESSES[0]);
         // The last launch wins over the preset.
-        let saved = corgi::Launch {
+        let saved = supervisor::Launch {
             kind: "codex".into(),
             model: "gpt-5-codex".into(),
             effort: "high".into(),
             extra_args: vec!["--search".into()],
         };
-        let plan = dashboard_corgi_plan(&app, root, Some(saved), || Harness::Claude).expect("plan");
+        let plan =
+            dashboard_supervisor_plan(&app, root, Some(saved), || Harness::Claude).expect("plan");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!(plan.model, "gpt-5-codex");
         assert_eq!(plan.effort, "high");
@@ -1657,8 +1674,8 @@ mod tests {
     }
 
     #[test]
-    fn the_corgi_key_starts_the_selected_projects_corgi_or_focuses_the_running_one() {
-        // A name no developer's own corgi state directory has.
+    fn the_supervisor_key_starts_the_selected_projects_supervisor_or_focuses_the_running_one() {
+        // A name no developer's own supervisor state directory has.
         let root = "/repos/corgi-key-test";
         let worker = DashboardAgent {
             info: AgentInfo {
@@ -1689,7 +1706,7 @@ mod tests {
             !app.launch_job.is_running()
         });
 
-        // With the corgi running, the key selects and focuses it, walking
+        // With the supervisor running, the key selects and focuses it, walking
         // to its workspace and tab first as Enter does, and starts nothing.
         let (socket_path, server) = fake_herdr("corgi-key-focus", |listener| {
             let mut requests = Vec::new();
@@ -1723,7 +1740,7 @@ mod tests {
                     ..AgentInfo::default()
                 },
                 project_root: root.into(),
-                corgi: true,
+                supervisor: true,
                 ..DashboardAgent::default()
             },
             worker,

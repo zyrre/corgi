@@ -39,7 +39,7 @@ const HERD_WIDTH: u16 = 15;
 // its bottom rule half a row below their baseline — out by the same half on
 // both sides, so it reads as bracketing the letters rather than as misaligned.
 const HERD_HEIGHT: u16 = 7;
-// The corgi sits in the header's top-left corner with the wordmark directly
+// The supervisor sits in the header's top-left corner with the wordmark directly
 // beside it, so the mascot and the letters read as one lockup. The art's
 // blank first pixel row already holds it one pixel clear of the top edge,
 // which is half a terminal row, so it is drawn flush against it.
@@ -50,11 +50,11 @@ const CORGI_GAP: u16 = 2;
 const CARD_GAP: u16 = 1;
 // Leave an extra blank column after the I before the header cards begin.
 const WORDMARK_CARD_GAP: u16 = CARD_GAP + 1;
-// The corgi and wordmark form the brand lockup; the herd and one card per
+// The supervisor and wordmark form the brand lockup; the herd and one card per
 // detected subscription follow it when the whole row fits.
 const HEADER_BRAND_WIDTH: u16 = CORGI_WIDTH + CORGI_GAP + WORDMARK_WIDTH;
 // The header is as tall as its cards, which is also room enough for the
-// corgi and the wordmark beside them.
+// supervisor and the wordmark beside them.
 pub(super) const HEADER_HEIGHT: u16 = HERD_HEIGHT;
 const _: () = assert!(CORGI_ROWS <= HEADER_HEIGHT && WORDMARK.len() as u16 <= HEADER_HEIGHT);
 
@@ -125,14 +125,14 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         MUTED
     };
-    // The corgi hugs the top-left corner and only appears when the header is
+    // The supervisor hugs the top-left corner and only appears when the header is
     // tall enough to hold it and wide enough to leave room for the band.
     let show_corgi = area.height >= CORGI_ROWS
         && area.width >= HEADER_BRAND_WIDTH + WORDMARK_CARD_GAP + header_cards_width(app);
     if show_corgi {
         draw_corgi(frame, Rect::new(area.x, area.y, CORGI_WIDTH, CORGI_ROWS));
     }
-    // The letters start right after the corgi and the cards follow them.
+    // The letters start right after the supervisor and the cards follow them.
     let wordmark_x = if show_corgi {
         area.x + CORGI_WIDTH + CORGI_GAP
     } else {
@@ -290,7 +290,7 @@ const CORGI_PIXELS: [&str; 14] = [
 ];
 const CORGI_ROWS: u16 = CORGI_PIXELS.len() as u16 / 2;
 const CORGI_WIDTH: u16 = CORGI_PIXELS[0].len() as u16;
-// Like the vendor colors, the coat is fixed rather than themed: a corgi in
+// Like the vendor colors, the coat is fixed rather than themed: a supervisor in
 // the theme's accent shade would no longer read as a corgi.
 const CORGI_COAT: Color = Color::Indexed(208);
 const CORGI_INNER_EAR: Color = Color::Indexed(166);
@@ -351,7 +351,7 @@ fn draw_wordmark(frame: &mut Frame<'_>, area: Rect) {
     );
 }
 
-/// Paints the corgi straight into the frame's cells: the art never changes,
+/// Paints the supervisor straight into the frame's cells: the art never changes,
 /// so there is nothing to build for it on every frame.
 fn draw_corgi(frame: &mut Frame<'_>, area: Rect) {
     let buffer = frame.buffer_mut();
@@ -549,7 +549,7 @@ mod tests {
         );
         assert!(
             (WORDMARK.len() as u16) < CORGI_ROWS,
-            "the wordmark stays shorter than the corgi beside it"
+            "the wordmark stays shorter than the supervisor beside it"
         );
     }
 
@@ -579,7 +579,7 @@ mod tests {
     /// The dashboard's header, as the cells of a 130-column screen and the
     /// column and row the herd card's top-left corner is drawn at.
     fn rendered_header(app: &mut App) -> (Buffer, u16, u16) {
-        // One working, one done, one done a corgi tagged ready to merge,
+        // One working, one done, one done a supervisor tagged ready to merge,
         // and one in a state Corgi cannot tell.
         app.agents = vec![DashboardAgent::default(); 4];
         app.agents[0].info.state = AgentState::Working;
@@ -587,8 +587,8 @@ mod tests {
         app.agents[2].info.state = AgentState::Done;
         app.agents[2].info.state_change_seq = 9;
         app.agents[2].info.tokens.insert(
-            crate::corgi::MERGE_TOKEN.into(),
-            crate::corgi::merge_tag_value(AgentState::Done, 9),
+            crate::supervisor::MERGE_TOKEN.into(),
+            crate::supervisor::merge_tag_value(AgentState::Done, 9),
         );
         let mut terminal = test_terminal(130, 24);
         terminal
@@ -618,12 +618,12 @@ mod tests {
             xs.map(|x| buffer[(x, y)].symbol()).collect()
         };
 
-        // The corgi fills the top-left corner flush to the top edge, and its
+        // The supervisor fills the top-left corner flush to the top edge, and its
         // blank first pixel row leaves one pixel of clearance above the ears.
-        let is_corgi =
+        let is_supervisor =
             |x: u16, y: u16| [CORGI_COAT, CORGI_WHITE, CORGI_DARK].contains(&buffer[(x, y)].fg);
         let corgi_rows: Vec<u16> = (0..9)
-            .filter(|&y| (0..CORGI_WIDTH).any(|x| is_corgi(x, y)))
+            .filter(|&y| (0..CORGI_WIDTH).any(|x| is_supervisor(x, y)))
             .collect();
         assert_eq!(corgi_rows, (0..CORGI_ROWS).collect::<Vec<_>>());
         assert_eq!(buffer[(1, 0)].symbol(), "▄");
@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn a_provider_without_a_card_states_its_reason_in_the_top_right_corner() {
         let mut app = test_app();
-        // One working, one done, one done a corgi tagged ready to merge,
+        // One working, one done, one done a supervisor tagged ready to merge,
         // and one in a state Corgi cannot tell.
         app.agents = vec![DashboardAgent::default(); 4];
         app.agents[0].info.state = AgentState::Working;
@@ -973,8 +973,8 @@ mod tests {
         app.agents[2].info.state = AgentState::Done;
         app.agents[2].info.state_change_seq = 9;
         app.agents[2].info.tokens.insert(
-            crate::corgi::MERGE_TOKEN.into(),
-            crate::corgi::merge_tag_value(AgentState::Done, 9),
+            crate::supervisor::MERGE_TOKEN.into(),
+            crate::supervisor::merge_tag_value(AgentState::Done, 9),
         );
         app.usage = vec![
             UsageSlot {

@@ -29,12 +29,12 @@ use crate::{
     app::{
         App, Checkout, MergePhase, MergeWorktreeForm, NewAgentForm, NewField, Overlay, UsageSlot,
     },
-    corgi,
     defaults::HarnessDefaults,
     model::{
         Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, PromptCache, PromptCacheKind,
     },
     motion::{CONTENT, Motion, OPEN},
+    supervisor,
     test_support::{test_app, test_terminal},
     time::unix_now,
     ui::draw,
@@ -45,7 +45,7 @@ use crate::{
 // monospace face advances by about the cell width, and every glyph is placed
 // at its own cell anyway, so a face that runs a little wider or narrower
 // still keeps the columns in line. A cell is twice as tall as it is wide, so
-// the half-block pixels of the corgi and the wordmark come out square.
+// the half-block pixels of the supervisor and the wordmark come out square.
 const CELL_WIDTH: u32 = 9;
 const CELL_HEIGHT: u32 = 18;
 const FONT_SIZE: u32 = 15;
@@ -179,7 +179,7 @@ fn screen(app: &mut App) -> Terminal<TestBackend> {
 }
 
 /// The hero: the header over the webshop and weather projects as the
-/// dashboard opens them, each a collapsed card of its corgi and a sum of
+/// dashboard opens them, each a collapsed card of its supervisor and a sum of
 /// its workers, the blocked one named, in a terminal window just tall enough
 /// for them.
 fn hero() -> String {
@@ -220,7 +220,7 @@ fn settle(terminal: &mut Terminal<TestBackend>, app: &mut App) {
     draw_at(terminal, app, 3_000);
 }
 
-/// The corgi and the wordmark on their own, cut from the header with no
+/// The supervisor and the wordmark on their own, cut from the header with no
 /// window around them, for the top of the README.
 fn logo() -> String {
     let mut terminal = screen(&mut dashboard());
@@ -363,8 +363,8 @@ struct Agent {
     worktree: Option<&'static str>,
     message: (ActivityKind, &'static str),
     tool: (ActivityKind, &'static str),
-    corgi: bool,
-    /// Its corgi tagged it ready to merge.
+    supervisor: bool,
+    /// Its supervisor tagged it ready to merge.
     merge: bool,
 }
 
@@ -381,8 +381,8 @@ impl Agent {
                     .merge
                     .then(|| {
                         (
-                            corgi::MERGE_TOKEN.to_string(),
-                            corgi::merge_tag_value(self.state, 1),
+                            supervisor::MERGE_TOKEN.to_string(),
+                            supervisor::merge_tag_value(self.state, 1),
                         )
                     })
                     .into_iter()
@@ -393,7 +393,7 @@ impl Agent {
             project: self.project.into(),
             project_root,
             worktree_label: self.worktree.map(str::to_string),
-            task: if self.corgi { "corgi" } else { self.task }.into(),
+            task: if self.supervisor { "corgi" } else { self.task }.into(),
             model: Some(self.model.into()),
             effort: self.effort.map(str::to_string),
             context_percent: Some(self.context),
@@ -404,7 +404,7 @@ impl Agent {
             }),
             message: activity(self.message),
             tool: activity(self.tool),
-            corgi: self.corgi,
+            supervisor: self.supervisor,
             ..DashboardAgent::default()
         }
     }
@@ -418,7 +418,7 @@ fn activity((kind, text): (ActivityKind, &str)) -> Activity {
 }
 
 /// The herd every dashboard screenshot shows, already in the dashboard's
-/// order: each project's corgi first, then blocked, working, done and idle.
+/// order: each project's supervisor first, then blocked, working, done and idle.
 /// Every countdown sits in the middle of its minute, so a second passing
 /// while the shot is drawn never changes what it reads.
 fn herd() -> Vec<Agent> {
@@ -446,7 +446,7 @@ fn herd() -> Vec<Agent> {
                 "git -C ~/.herdr/worktrees/webshop/worktree-order-pages-2d5a log --oneline main..HEAD \
                  && pnpm --dir ~/.herdr/worktrees/webshop/worktree-order-pages-2d5a test -- orders",
             ),
-            corgi: true,
+            supervisor: true,
             merge: false,
         },
         Agent {
@@ -461,7 +461,7 @@ fn herd() -> Vec<Agent> {
             worktree: Some("checkout-retry-4b1e"),
             message: (Question, "Allow Bash: npm run test:e2e -- checkout?"),
             tool: (Command, "npm run test:e2e -- checkout"),
-            corgi: false,
+            supervisor: false,
             merge: false,
         },
         Agent {
@@ -479,7 +479,7 @@ fn herd() -> Vec<Agent> {
                 "The badge re-renders on every cart event; debouncing the store subscription should stop the flicker.",
             ),
             tool: (Tool, "Edit src/components/CartBadge.tsx"),
-            corgi: false,
+            supervisor: false,
             merge: false,
         },
         Agent {
@@ -497,7 +497,7 @@ fn herd() -> Vec<Agent> {
                 "Pagination is in: 20 orders a page with a stable cursor, and tests for the first and last page.",
             ),
             tool: (Command, "pnpm test -- orders"),
-            corgi: false,
+            supervisor: false,
             merge: true,
         },
         Agent {
@@ -516,7 +516,7 @@ fn herd() -> Vec<Agent> {
                  to merge; the hourly chart reuses the daily view's colours and still needs its smoke test.",
             ),
             tool: (Command, "corgi tag w-api-cache merge"),
-            corgi: true,
+            supervisor: true,
             merge: false,
         },
         Agent {
@@ -534,7 +534,7 @@ fn herd() -> Vec<Agent> {
                 "Use the same colours as the daily view, and keep it readable at 320px.",
             ),
             tool: (Command, "npm run storybook -- --smoke-test"),
-            corgi: false,
+            supervisor: false,
             merge: false,
         },
         Agent {
@@ -552,7 +552,7 @@ fn herd() -> Vec<Agent> {
                 "Responses are cached for ten minutes, and a stale entry is refreshed in the background.",
             ),
             tool: (Tool, "Read src/api/client.ts"),
-            corgi: false,
+            supervisor: false,
             merge: true,
         },
         Agent {
@@ -570,7 +570,7 @@ fn herd() -> Vec<Agent> {
                 "Export is done. Want front matter with the tags as well?",
             ),
             tool: (Command, "git log --oneline -3"),
-            corgi: false,
+            supervisor: false,
             merge: false,
         },
     ]
