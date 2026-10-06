@@ -68,7 +68,7 @@ pub(crate) enum MergePhase {
 /// Whether a conflicted merge can be handed to the project's supervisor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConflictHelp {
-    /// The project's supervisor, by name, which `c` asks.
+    /// The project's supervisor, by name, which `s` asks.
     Supervisor(String),
     /// The project has no running supervisor.
     NoSupervisor,
@@ -384,7 +384,7 @@ impl App {
                     help: ConflictHelp::Supervisor(_),
                     ..
                 }),
-                KeyCode::Char('c'),
+                KeyCode::Char('s'),
             ) => self.ask_supervisor_about_conflict(),
             _ => {}
         }
@@ -792,7 +792,7 @@ mod tests {
         );
         assert!(merge_in_progress(&repo));
 
-        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('c'))));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
         assert!(matches!(app.overlay, Overlay::None), "{:?}", app.overlay);
         assert!(!merge_in_progress(&repo));
         ensure_git_clean(&repo, "primary checkout").expect("abort leaves the checkout clean");
@@ -831,7 +831,7 @@ mod tests {
                 ..
             })
         ));
-        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('c'))));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
         assert!(app.overlay.merge_worktree_form().is_some());
         assert!(
             merge_in_progress(&repo),
@@ -880,7 +880,7 @@ mod tests {
         // The user finished the merge by hand behind the popup's back.
         git_test(&repo, &["checkout", "--theirs", "status.txt"]);
         git_test(&repo, &["commit", "-am", "resolved by hand"]);
-        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('c'))));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
         assert!(
             matches!(
                 app.overlay.merge_worktree_form().map(|form| &form.phase),

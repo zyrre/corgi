@@ -1088,7 +1088,7 @@ mod tests {
     }
 
     /// A session an older Corgi started as the project's Steward carries its
-    /// marker under the old key, and is still the project's corgi.
+    /// marker under the old key, and is still the project's supervisor.
     #[test]
     fn a_session_marked_as_a_steward_by_an_older_corgi_is_the_supervisor() {
         let mut agent = AgentInfo {
@@ -1199,6 +1199,11 @@ mod tests {
     /// Where an older Corgi left a project's memory.
     #[derive(Debug, Clone, Copy)]
     enum Left {
+        /// In `corgis/`, by a Corgi that only ever knew the corgi.
+        Corgis,
+        /// In `corgis/`, with the links at `handler/` and `steward/` that
+        /// the moves from there left behind.
+        CorgisAfterRenames,
         /// In `handler/`, by a Corgi that only ever knew the Project handler.
         Handler,
         /// In `handler/`, with the link at `steward/` that the move from
@@ -1210,19 +1215,34 @@ mod tests {
 
     #[test]
     fn an_older_corgi_s_memory_arrives_whole_at_a_fresh_start_and_at_a_handover() {
-        for left in [Left::Handler, Left::HandlerAfterSteward, Left::Steward] {
+        for left in [
+            Left::Corgis,
+            Left::CorgisAfterRenames,
+            Left::Handler,
+            Left::HandlerAfterSteward,
+            Left::Steward,
+        ] {
             for handover in [false, true] {
                 let base = StateBase::new(&format!("state-e2e-{left:?}-{handover}"));
                 let (dir, old) = state_dirs_in(&base.0, "/repos/weather");
-                let (handler, steward) = (&old[0], &old[1]);
+                let (corgis, handler, steward) = (&old[0], &old[1], &old[2]);
                 let real = match left {
+                    Left::Corgis | Left::CorgisAfterRenames => corgis,
                     Left::Handler | Left::HandlerAfterSteward => handler,
                     Left::Steward => steward,
                 };
                 let before = populated_old_dir(real);
-                if let Left::HandlerAfterSteward = left {
-                    fs::create_dir_all(steward.parent().unwrap()).unwrap();
-                    std::os::unix::fs::symlink(handler, steward).unwrap();
+                let link_old = |from: &Path, to: &Path| {
+                    fs::create_dir_all(from.parent().unwrap()).unwrap();
+                    std::os::unix::fs::symlink(to, from).unwrap();
+                };
+                match left {
+                    Left::CorgisAfterRenames => {
+                        link_old(handler, corgis);
+                        link_old(steward, handler);
+                    }
+                    Left::HandlerAfterSteward => link_old(steward, handler),
+                    _ => {}
                 }
 
                 // Until a session starts, the dashboard reads the old
@@ -1250,6 +1270,8 @@ mod tests {
                     .filter(|old| fs::symlink_metadata(old).is_ok())
                     .collect();
                 let expected = match left {
+                    Left::Corgis => vec![corgis],
+                    Left::CorgisAfterRenames => vec![corgis, handler, steward],
                     Left::Handler => vec![handler],
                     Left::HandlerAfterSteward => vec![handler, steward],
                     Left::Steward => vec![steward],
@@ -1346,37 +1368,37 @@ mod tests {
         // about them left them: the more recent one, which that Corgi used,
         // is moved, and the other one is warned about.
         let (dir, old) = state_dirs_in(&base.0, "/repos/both");
-        let (handler, steward) = (&old[0], &old[1]);
-        for (path, text) in [(handler, "# handler\n"), (steward, "# steward\n")] {
+        let (corgis, handler) = (&old[0], &old[1]);
+        for (path, text) in [(corgis, "# corgis\n"), (handler, "# handler\n")] {
             fs::create_dir_all(path).unwrap();
             fs::write(path.join("decisions.md"), text).unwrap();
         }
-        assert_eq!(current_state_dir(dir.clone(), &old), *handler);
+        assert_eq!(current_state_dir(dir.clone(), &old), *corgis);
         let prepared = prepare_at(&base.0, "/repos/both", corgi_bin).unwrap();
         assert_eq!(prepared.state_dir, dir);
         let warning = prepared.warning.expect("a warning");
-        assert_eq!(conflict(&dir, steward), Some(warning));
-        assert!(link(handler) && !link(steward));
+        assert_eq!(conflict(&dir, handler), Some(warning));
+        assert!(link(corgis) && !link(handler));
         assert_eq!(
             fs::read_to_string(dir.join("decisions.md")).unwrap(),
-            "# handler\n"
+            "# corgis\n"
         );
         assert_eq!(
-            fs::read_to_string(steward.join("decisions.md")).unwrap(),
-            "# steward\n"
+            fs::read_to_string(handler.join("decisions.md")).unwrap(),
+            "# handler\n"
         );
 
         // A link at an old path to the new directory: migrated already, so
         // it is followed, kept, and not warned about.
         let (dir, old) = state_dirs_in(&base.0, "/repos/linked");
-        let handler = &old[0];
+        let corgis = &old[0];
         fs::create_dir_all(&dir).unwrap();
-        fs::create_dir_all(handler.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(&dir, handler).unwrap();
+        fs::create_dir_all(corgis.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&dir, corgis).unwrap();
         assert_eq!(current_state_dir(dir.clone(), &old), dir);
         let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin).unwrap();
         assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
-        assert!(link(handler) && handler.canonicalize().unwrap() == dir);
+        assert!(link(corgis) && corgis.canonicalize().unwrap() == dir);
 
         // The same link once the new directory is gone points at nothing:
         // a fresh start, and the link, kept, resolves again.
@@ -1384,7 +1406,7 @@ mod tests {
         assert_eq!(current_state_dir(dir.clone(), &old), dir);
         let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin).unwrap();
         assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
-        assert!(link(handler) && handler.canonicalize().unwrap() == dir);
+        assert!(link(corgis) && corgis.canonicalize().unwrap() == dir);
 
         // A link at an old path to a directory elsewhere, as a user may keep
         // it: it stays, and the new path links to the same directory.

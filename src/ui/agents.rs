@@ -1245,7 +1245,7 @@ mod tests {
     /// working and a finished worker; a project without a supervisor; and a
     /// scratch session.
     fn carded_herd() -> Vec<DashboardAgent> {
-        let mut supervisor = member("webshop", "corgi", AgentState::Idle, true);
+        let mut supervisor = member("webshop", "Supervisor", AgentState::Idle, true);
         supervisor.message = Activity {
             kind: ActivityKind::Message,
             text: "word ".repeat(60),
@@ -1293,7 +1293,10 @@ mod tests {
         assert!(screen[top].ends_with("╮ │"), "{}", screen[top]);
         // The supervisor's identity row, then its message wrapped to two rows
         // and cut, then its tool.
-        assert!(screen[top + 1].contains("IDLE  · corgi"), "{screen:#?}");
+        assert!(
+            screen[top + 1].contains("IDLE  · Supervisor"),
+            "{screen:#?}"
+        );
         assert!(screen[top + 1].contains(SELECTION_BAR));
         assert!(screen[top + 2].contains("› word word"));
         assert!(screen[top + 3].trim_end_matches([' ', '│']).ends_with('…'));
@@ -1383,8 +1386,8 @@ mod tests {
             .draw(|frame| draw(frame, &mut app))
             .expect("draw dashboard");
         // Selected: the supervisor's task is bold, in the wordmark's color.
-        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
-        assert!(modifier_of(&terminal, "corgi ·").contains(Modifier::BOLD));
+        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
+        assert!(modifier_of(&terminal, "Supervisor ·").contains(Modifier::BOLD));
 
         // A worker folded into a collapsed card selects as the card, so the
         // supervisor must be expanded with a worker picked to see it unselected.
@@ -1394,8 +1397,8 @@ mod tests {
             .draw(|frame| draw(frame, &mut app))
             .expect("draw dashboard");
         // Unselected: still the wordmark's color, but no longer bold.
-        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
-        assert!(!modifier_of(&terminal, "corgi ·").contains(Modifier::BOLD));
+        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
+        assert!(!modifier_of(&terminal, "Supervisor ·").contains(Modifier::BOLD));
     }
 
     #[test]
@@ -1424,8 +1427,8 @@ mod tests {
         let expanded = rendered_screen(&mut app, 100, 40);
         let supervisor = expanded
             .iter()
-            .position(|row| row.contains("corgi"))
-            .expect("corgi");
+            .position(|row| row.contains("Supervisor"))
+            .expect("supervisor");
         for row in &expanded[supervisor..supervisor + 4] {
             assert!(has_rail(row), "{row}");
         }
@@ -1457,7 +1460,7 @@ mod tests {
         let screen = rendered_screen(&mut app, 100, 30);
         let identity = screen
             .iter()
-            .position(|row| row.contains("corgi"))
+            .position(|row| row.contains("Supervisor"))
             .expect("identity");
         // The identity row, the newest turn, the gap after it and the older
         // turn, up to the card's bottom.
@@ -1491,7 +1494,7 @@ mod tests {
             .expect("draw dashboard");
         assert_eq!(color_of(&terminal, "webshop"), SUCCESS);
         assert_eq!(color_of(&terminal, "▌"), SUCCESS);
-        assert_eq!(color_of(&terminal, "corgi ·"), SUCCESS);
+        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
         // Workers' tasks keep their own color.
         assert_eq!(color_of(&terminal, "Export as Markdown"), TEXT);
     }
@@ -1521,8 +1524,8 @@ mod tests {
 
         let supervisor = screen
             .iter()
-            .position(|row| row.contains("IDLE  · corgi"))
-            .expect("corgi");
+            .position(|row| row.contains("IDLE  · Supervisor"))
+            .expect("supervisor");
         // Each worker's three rows, in the list's order, inside the card.
         // The supervisor's message wraps to two rows, then its tool and a gap.
         let blocked = supervisor + 5;
@@ -1632,7 +1635,7 @@ mod tests {
         // The card's top and the supervisor's identity row stay where they were.
         let identity = expanded
             .iter()
-            .position(|row| row.contains("corgi"))
+            .position(|row| row.contains("Supervisor"))
             .expect("identity");
         assert_eq!(collapsed[..=identity], expanded[..=identity]);
         // Its turns follow inside the card, and the card closes under them.
@@ -1648,7 +1651,7 @@ mod tests {
             .flat_map(|index| {
                 let project = format!("project-{index:02}");
                 [
-                    member(&project, "corgi", AgentState::Idle, true),
+                    member(&project, "Supervisor", AgentState::Idle, true),
                     member(&project, "A worker", AgentState::Working, false),
                 ]
             })
@@ -1744,7 +1747,7 @@ mod tests {
                 ));
             }
         }
-        agents.push(member("delta", "corgi", AgentState::Idle, true));
+        agents.push(member("delta", "Supervisor", AgentState::Idle, true));
         agents.push(member("delta", "delta task 1", AgentState::Idle, false));
         agents.push(member("delta", "delta task 2", AgentState::Idle, false));
         for index in 0..3 {
@@ -1768,7 +1771,7 @@ mod tests {
                 ("alpha", "alpha task 0"),
                 ("bravo", "bravo task 0"),
                 ("charlie", "charlie task 0"),
-                ("delta", "corgi"),
+                ("delta", "Supervisor"),
                 ("Scratch", "Scratch task 0"),
             ] {
                 if let Some(row) = screen.iter().position(|row| row.contains(first)) {

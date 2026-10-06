@@ -215,7 +215,7 @@ pub(crate) fn merge_dialog_lines<'a>(
                         Style::default().fg(MUTED),
                     ));
                     vec![
-                        ("c", "abort merge and ask the supervisor to fix", SUCCESS),
+                        ("s", "abort merge and ask the supervisor to fix", SUCCESS),
                         ("Esc", "resolve by hand", WARNING),
                     ]
                 }
@@ -402,7 +402,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains(" c  abort merge and ask the supervisor to fix"),
+            rendered.contains(" s  abort merge and ask the supervisor to fix"),
             "{rendered}"
         );
 
@@ -418,7 +418,7 @@ mod tests {
         assert!(rendered.contains("1 conflicted file"), "{rendered}");
         assert!(rendered.contains("No supervisor is running"), "{rendered}");
         assert!(rendered.contains("git merge --continue"), "{rendered}");
-        assert!(!rendered.contains("corgi to fix"), "{rendered}");
+        assert!(!rendered.contains("supervisor to fix"), "{rendered}");
     }
 
     #[test]

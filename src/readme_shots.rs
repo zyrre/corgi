@@ -393,7 +393,12 @@ impl Agent {
             project: self.project.into(),
             project_root,
             worktree_label: self.worktree.map(str::to_string),
-            task: if self.supervisor { "corgi" } else { self.task }.into(),
+            task: if self.supervisor {
+                "Supervisor"
+            } else {
+                self.task
+            }
+            .into(),
             model: Some(self.model.into()),
             effort: self.effort.map(str::to_string),
             context_percent: Some(self.context),

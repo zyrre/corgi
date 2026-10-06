@@ -789,7 +789,7 @@ impl App {
             KeyCode::Char('p') => self.begin_prompt(),
             KeyCode::Char('n') => self.begin_new_agent(),
             KeyCode::Char('t') => self.begin_scratch_agent(),
-            KeyCode::Char('c') => self.begin_supervisor(),
+            KeyCode::Char('s') => self.begin_supervisor(),
             KeyCode::Char('f') | KeyCode::Enter => self.focus_selected(),
             KeyCode::Char('m') => self.begin_merge_worktree(),
             KeyCode::Char('x') => self.begin_close_workspace(),

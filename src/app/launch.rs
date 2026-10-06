@@ -181,7 +181,7 @@ impl App {
             .position(|agent| agent.supervisor && agent.project_root == root)
         {
             let focused = format!(
-                "Focused {}'s corgi, {}",
+                "Focused {}'s supervisor, {}",
                 dir_name(&root).unwrap_or(supervisor::UNNAMED_PROJECT),
                 self.agents[index].info.display_name()
             );
@@ -1013,7 +1013,7 @@ pub(super) fn supervisor_plan(
         .find(|agent| agent.supervisor && agent.project_root == root)
     {
         bail!(
-            "{}'s corgi is already running as {}",
+            "{}'s supervisor is already running as {}",
             dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT),
             running.info.display_name()
         );
@@ -1691,13 +1691,13 @@ mod tests {
         };
 
         let mut app = test_app();
-        press(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
         assert!(matches!(app.overlay, Overlay::None));
         assert!(app.status.contains("Select an agent"), "{}", app.status);
 
         // Only a worker runs: the key starts the launch at once, no form.
         app.agents = vec![worker.clone()];
-        press(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
         assert!(
             app.overlay
                 .new_agent_launch()
@@ -1749,7 +1749,7 @@ mod tests {
             worker,
         ];
         app.selected = 1;
-        press(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+        press(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
         let requests = server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
         assert_eq!(
@@ -1765,7 +1765,7 @@ mod tests {
         assert_eq!(app.selected, 0);
         assert_eq!(
             app.status,
-            "Focused corgi-key-test's corgi, supervisor-corgi-key-test"
+            "Focused corgi-key-test's supervisor, supervisor-corgi-key-test"
         );
     }
 

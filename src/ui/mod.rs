@@ -98,10 +98,10 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "j/k select · space collapse · u/d scroll · p prompt · m merge · enter/f focus · x close agent · q close"
         }
         (false, true) => {
-            "j/k select · →/← project · space session · p prompt · n new · t scratch · c corgi · m merge · enter focus · x close · q close"
+            "j/k select · →/← project · space session · p prompt · n new · t scratch · s supervisor · m merge · enter focus · x close · q close"
         }
         (false, false) => {
-            "j/k select · →/← expand/collapse project · space session · p prompt · n new agent · t scratch · c corgi · m merge · enter/f focus · x close agent · r refresh · q close"
+            "j/k select · →/← expand/collapse project · space session · p prompt · n new agent · t scratch · s supervisor · m merge · enter/f focus · x close agent · r refresh · q close"
         }
     };
     let line = Line::from(vec![

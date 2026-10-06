@@ -11,13 +11,13 @@ Herdr session
   ├─ coding-agent panes
   └─ Corgi plugin pane
        ├─ session.snapshot ── agent identity, state, project/task metadata
-       ├─ agent.read ──────── visible terminal activity, and a corgi's input box
-       ├─ agent.prompt ────── prompt an existing agent, and wake a project's corgi
+       ├─ agent.read ──────── visible terminal activity, and a supervisor's input box
+       ├─ agent.prompt ────── prompt an existing agent, and wake a project's supervisor
        ├─ agent.focus ─────── focus an existing agent pane
        ├─ workspace.close ─── close a plain or unused Corgi project workspace
        ├─ tab.create/close ── open or close a shared-checkout agent's tab
        ├─ worktree.remove ─── delete a worktree checkout and close its workspace
-       ├─ *.report_metadata ─ mark Corgi's project workspaces and the corgi's pane,
+       ├─ *.report_metadata ─ mark Corgi's project workspaces and the supervisor's pane,
        │                      and put those marks back after a Herdr restart
        ├─ agent.send_keys ─── answer the folder-trust question of a project Corgi created
        ├─ git merge + push ── merge and push a reviewed worktree branch in the primary checkout
@@ -33,7 +33,7 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ created-projects ─── the projects Corgi created, whose folder trust it answers
   ├─ expanded-projects ── the projects whose dashboard card is expanded, one
   │                        heading per line; missing or unreadable is all collapsed
-  ├─ wake/<socket>.lock ─ held by the one dashboard that wakes corgis
+  ├─ wake/<socket>.lock ─ held by the one dashboard that wakes supervisors
   ├─ wake/<socket>.seen.json ─ what that dashboard last saw of each agent it
   │                        follows (pane, run of state changes, transitions), for the next one;
   │                        replaced whole through a temporary file and a rename
@@ -48,9 +48,10 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   │                        when it was fetched, and the last fetch's error;
   │                        replaced whole through a temporary file and a rename
   ├─ usage/<provider>.lock ─ held by the one process fetching a new reading
-  └─ corgis/<project>/ ─ the corgi's files, written by Corgi at launch and by
-                          the corgi: ROLE.md, launch.json, decisions.md, ledger.jsonl,
-                          briefs/, handover.md while one is under way, handovers/;
+  └─ supervisors/<project>/ ─ the supervisor's files, written by Corgi at launch
+                          and by the supervisor: ROLE.md, launch.json,
+                          decisions.md, ledger.jsonl, briefs/, handover.md
+                          while one is under way, handovers/;
                           and by Corgi only (`src/inbox.rs`, under inbox.lock):
                           inbox.jsonl, and inbox-reports/ for long reports
 
@@ -68,14 +69,14 @@ Optional Omarchy widget
   ├─ herdr agent focus ─────── reveal a selected agent
   └─ herdr plugin pane open/focus ── launch or reveal the full dashboard
 
-Headless launch and the corgi
+Headless launch and the supervisor
   ├─ corgi spawn ──── the new-agent form's launch sequence, task on stdin, result as JSON
-  ├─ corgi start ──── the same launch into the project's root tab, as its corgi
+  ├─ corgi supervisor the same launch into the project's root tab, as its supervisor
   ├─ corgi fleet ──── a project's agents as tab-separated rows
-  ├─ corgi digest ─── the corgi's memory, bounded, joined with the fleet
+  ├─ corgi digest ─── the supervisor's memory, bounded, joined with the fleet
   ├─ corgi report ─── an agent's report: kept in an inbox, else its newest message
-  ├─ corgi notify ─── add an item to a corgi's inbox, text on stdin
-  ├─ corgi inbox ──── a corgi's undelivered inbox items, bounded
+  ├─ corgi notify ─── add an item to a supervisor's inbox, text on stdin
+  ├─ corgi inbox ──── a supervisor's undelivered inbox items, bounded
   └─ corgi tag ────── tag an agent ready to merge (pane token), or clear it
 ```
 
@@ -110,7 +111,7 @@ synchronized with Herdr.
   title, the CLI lookup (`CORGI_CODEX_BIN` or `CORGI_CLAUDE_BIN`, else `PATH`,
   else the usual per-user and package-manager directories, because Herdr runs
   plugin panes with a minimal `PATH`), the model, effort, folder-trust and
-  corgi arguments, the offline model lists and model discovery, the exit
+  supervisor arguments, the offline model lists and model discovery, the exit
   command, the session file Corgi reads, and the form's order. It also reads
   Claude Code's settings from `CLAUDE_CONFIG_DIR`, then `~/.claude`, for
   everything that needs them. The rest of Corgi parses a kind once, where it
@@ -192,8 +193,8 @@ synchronized with Herdr.
   name goes under the parent directory most known projects share. The launch
   creates the directory, records it in `created-projects`
   (`CORGI_CREATED_PROJECTS_FILE` overrides it), and starts the project's
-  corgi in the new project workspace's root tab; the directory stays plain
-  until the corgi makes it a repository. A picked project first becomes the
+  supervisor in the new project workspace's root tab; the directory stays plain
+  until the supervisor makes it a repository. A picked project first becomes the
   `cwd` of `worktree.list`, which Herdr resolves to the repository itself.
 - `src/git.rs` runs the few plain Git commands Corgi needs: a checkout's
   branch, whether it is clean, the commits a merge would bring, and the main
@@ -208,14 +209,14 @@ submodules are split by flow, each adding methods to the one `App`.
   usage and Codex thread-name jobs, key dispatch, and the terminal loop.
   `App::headless` is the same app for the command-line and Omarchy paths,
   which own no dashboard pane. `sort_agents` orders each project's rows:
-  corgi, then state, then the most recent `state_change_seq` first. That
+  supervisor, then state, then the most recent `state_change_seq` first. That
   counter is one sequence for the whole Herdr session, not per agent, so it
   compares across panes and the dashboard keeps no ordering state of its own.
 - `cards.rs` is the project cards: which runs of the sorted list are a card
-  (led by a corgi, not scratch), `CardMemory`, the expanded projects saved
+  (led by a supervisor, not scratch), `CardMemory`, the expanded projects saved
   in `expanded-projects`, and the selection stops, which skip the workers
   folded into a collapsed card. `→` and `←` expand and collapse the selected
-  card; `←` from a worker row selects its corgi. A refresh keeps the
+  card; `←` from a worker row selects its supervisor. A refresh keeps the
   selection on its stop, its row of the list, rather than on an agent index.
 - `rows.rs` derives what a row shows from Herdr's metadata and the session
   facts: the project and its heading (`repo/checkout` for a linked worktree),
@@ -233,7 +234,7 @@ submodules are split by flow, each adding methods to the one `App`.
   is `CORGI_DEFAULT_AGENT`, else the first installed CLI; the default project
   is the selected agent's repository, else the most recently used one. For a
   new project, or one with no agent session, the form launches the project's
-  corgi instead of a worker. It validates and builds a `LaunchPlan`, which
+  supervisor instead of a worker. It validates and builds a `LaunchPlan`, which
   `launch.rs` runs. The `t` key opens the same form for the home directory, a
   scratch agent, whose task may be left empty.
 - `catalog.rs` holds the per-harness model catalogs behind the Model row, and
@@ -245,7 +246,7 @@ submodules are split by flow, each adding methods to the one `App`.
   and a failed refresh keeps it.
 - `launch.rs` is the checkout/create/start/prompt sequence. It is one
   function behind the dashboard form, the Omarchy popup, `corgi spawn`, and a
-  corgi's handover, so there is a single way to launch an agent. A selected
+  supervisor's handover, so there is a single way to launch an agent. A selected
   model reaches the CLI as `--model` in the `agent.start` arguments, and a
   selected effort level as a `-c model_reasoning_effort` override for Codex
   or `--effort` for Claude Code; defaults send neither. New agents default to
@@ -255,22 +256,22 @@ submodules are split by flow, each adding methods to the one `App`.
   root, then passes that explicit workspace ID to `worktree.create`; Herdr
   picks a unique branch and path. This intentionally keeps workers
   independent of the Corgi dashboard's own workspace. The shared-directory
-  option creates a separate tab in the same project workspace, and a corgi
+  option creates a separate tab in the same project workspace, and a supervisor
   starts in its root tab, or in a new tab of that workspace when an agent
   already runs in the root tab or it was split (a worker sent there by
-  `corgi spawn --checkout root` is refused instead). The dashboard's `c` key
-  builds the same `corgi_plan` as `corgi start` for the selected agent's
-  project, taking the harness, model and effort from the corgi's
+  `corgi spawn --checkout root` is refused instead). The dashboard's `s` key
+  builds the same `supervisor_plan` as `corgi supervisor` for the selected agent's
+  project, taking the harness, model and effort from the supervisor's
   `launch.json`, else the form's presets, with no task; when the project's
-  corgi already runs, the key selects and focuses it as Enter does.
+  supervisor already runs, the key selects and focuses it as Enter does.
   The home directory itself (compared canonically, so `~` and `$HOME/` match;
-  never its subdirectories) is never a project: `starts_corgi` and
-  `corgi_plan` refuse it, and whatever the checkout, an agent there gets a
+  never its subdirectories) is never a project: `starts_supervisor` and
+  `supervisor_plan` refuse it, and whatever the checkout, an agent there gets a
   plain workspace labelled `scratch` (`scratch 2` and on when that is taken),
   marked with the agent-workspace role so closing it closes the workspace. It
   never creates or looks up a project workspace, and is not remembered as a
   project. Its row has `scratch` set: it is grouped under Scratch after every
-  project, left out of the form's project list, and ignored by the corgi
+  project, left out of the form's project list, and ignored by the supervisor
   waker and handover. A launch with no task, which only a scratch agent can
   have from the form, skips the first prompt and leaves an interactive
   session. From the dashboard the launch runs as a background
@@ -281,22 +282,22 @@ submodules are split by flow, each adding methods to the one `App`.
 - `first_prompt.rs` delivers a new agent's first prompt, confirms it arrived,
   and waits out a question the agent opens on.
 - `project_main.rs` is the Corgi-owned, agentless project workspace of each
-  repository: found, created, relabelled `<project> corgi`, and retired once
+  repository: found, created, relabelled `<project> supervisor`, and retired once
   unused. Corgi's project workspace is explicitly metadata-marked; it never
   claims an existing workspace based on a matching label. The mark names the
   project by a fixed-length FNV-1a digest of its root, because Herdr cuts long
   token values short; the root itself is written too when it fits, and a
   workspace marked before digests is still found by it.
-  A corgi launched beside agent sessions already running in its project
+  A supervisor launched beside agent sessions already running in its project
   (`corgi_project_main`, used only from `launch.rs`'s `Checkout::ProjectRoot`
-  path for a `Role::Corgi`) may instead adopt Herdr's own root workspace for
+  path for a `Role::Supervisor`) may instead adopt Herdr's own root workspace for
   the repository: the lowest-numbered workspace in `workspace.list`'s sidebar
   order whose checkout is the repository's primary one. `HerdrClient::list_workspaces`
   exists because that order is `workspace.list`'s alone — a session snapshot's
   `workspaces` happen to come back the same way, but nothing promises it, so
   finding the order itself always asks `workspace.list`. Adoption applies only
   when that root is not already Corgi's and holds no agent in any pane;
-  otherwise the launch falls back to today's lookup and creation. A corgi for
+  otherwise the launch falls back to today's lookup and creation. A supervisor for
   a new project, or for one with no other sessions yet, never adopts. Once
   adopted, an older Corgi project-main of the same repository is closed if
   it is now unused, and both it and the adopted workspace can satisfy the
@@ -306,7 +307,7 @@ submodules are split by flow, each adding methods to the one `App`.
   A project can end up with two Corgi project workspaces when a launch ran
   while Herdr had lost Corgi's marks (see "Herdr restarts" below) and created
   a second one. `project_main_workspace` then prefers the one the project's
-  corgi runs in, in any tab, and otherwise takes the first in snapshot
+  supervisor runs in, in any tab, and otherwise takes the first in snapshot
   order; every lookup (launch, close, merge, cleanup) goes through it.
 - `close.rs` closes an agent: its worktree and checkout, its tab in a project
   workspace, or its whole workspace, then retires the project workspace when
@@ -323,13 +324,13 @@ submodules are split by flow, each adding methods to the one `App`.
   merge of an agent's clean worktree branch into the branch already checked
   out in the repository's primary checkout, then a push through that branch's
   configured upstream, or, when the user hands a conflicted merge to the
-  corgi, the `git merge --abort` of that merge. The agent never
+  supervisor, the `git merge --abort` of that merge. The agent never
   performs the merge, and Corgi never changes the user's checked-out branch.
-- `waker.rs` is `CorgiWaker`, which wakes corgis through their inboxes,
+- `waker.rs` is `SupervisorWaker`, which wakes supervisors through their inboxes,
   puts the merge-conflict handoff in them, and hands them over, as
-  described below; `draft.rs` tells it whether a corgi's input box holds
+  described below; `draft.rs` tells it whether a supervisor's input box holds
   the user's draft.
-- `cli.rs` is `corgi spawn`, `corgi start`, `corgi fleet`,
+- `cli.rs` is `corgi spawn`, `corgi supervisor`, `corgi fleet`,
   `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
   `corgi tag`. The
   digest's parsing and caps are pure functions in `src/digest.rs`.
@@ -343,14 +344,14 @@ A Herdr restart or live handoff (`herdr update --handoff`) restores panes and
 workspaces under the same IDs, but without the metadata tokens clients set.
 Herdr v0.9.0 builds restored panes with empty tokens, and a handoff carries
 none. Everything Corgi recognises by its tokens would silently stop: the
-corgi would count as a worker (no wakes, no handovers, `corgi fleet` says
+supervisor would count as a worker (no wakes, no handovers, `corgi fleet` says
 `worker`), project workspaces would not be found (the next launch creates a
-second `<project> corgi` workspace), and agent workspaces would lose their
+second `<project> supervisor` workspace), and agent workspaces would lose their
 role. So Corgi keeps its own record and puts the tokens back.
 
 - Every token Corgi sets is reported to Herdr and then written to
   `$XDG_STATE_HOME/corgi/markers/<socket>.json`, keyed by the Herdr socket
-  like the wake lock: the corgi marker, handover and baseline tokens, and
+  like the wake lock: the supervisor marker, handover and baseline tokens, and
   a spawned worker's `corgi_request` id, by pane ID, with the Herdr name of the agent they were set for and its
   native session (Herdr's `agent_session`) once
   known; the project-main and agent-workspace marks by workspace ID, with
@@ -378,40 +379,40 @@ role. So Corgi keeps its own record and puts the tokens back.
   checkout, has its entry dropped and nothing put back. A pane whose agent
   Herdr has not detected again yet, or whose session it does not know yet,
   is left for a later refresh. What is put back goes into the refresh's own
-  snapshot too, so that same refresh already shows the corgi and wakes it,
+  snapshot too, so that same refresh already shows the supervisor and wakes it,
   and a status line says how many marks came back.
 - A worker's `corgi_request` token has no identity in its value, unlike
-  the corgi's `session:` marker. While Herdr has it and no session is
+  the supervisor's `session:` marker. While Herdr has it and no session is
   recorded for the pane, the agent in the pane is taken to be the one it was
   set for and its session is recorded; from then on the same rules apply as
-  to the corgi's marks, so a later session in the pane does not inherit
-  the id. Workers never get a corgi marker from reconciliation.
-- A corgi's merge tag (`corgi_merge`, see "Ready to merge") is recorded
+  to the supervisor's marks, so a later session in the pane does not inherit
+  the id. Workers never get a supervisor marker from reconciliation.
+- A supervisor's merge tag (`corgi_merge`, see "Ready to merge") is recorded
   and put back like the request id. `corgi tag` and the clears report only
   that one key, so a worker's request id beside it is left alone; the
-  launch's and the corgi's own full mark sets clear it, as they clear every
+  launch's and the supervisor's own full mark sets clear it, as they clear every
   Corgi pane token they leave out.
-- A corgi launched and lost in a restart before any dashboard saw its
+- A supervisor launched and lost in a restart before any dashboard saw its
   session is not re-marked: without a recorded session there is nothing to
   confirm the pane still holds it. The dashboard records the session at the
   first refresh after the launch.
 - Herdr's plugin-pane records are Herdr's own and not part of this; the
   `open` action copes with losing them (`scripts/herdr-corgi-dashboard`).
 
-### The corgi
+### The supervisor
 
-- `src/corgi.rs` holds what makes a session a project's corgi: the role
-  from `corgi/ROLE.md`, embedded in the binary and written into the
-  project's corgi directory with the path of the Corgi binary that launches
+- `src/supervisor.rs` holds what makes a session a project's supervisor: the role
+  from `supervisor/ROLE.md`, embedded in the binary and written into the
+  project's supervisor directory with the path of the Corgi binary that launches
   it; that directory's files; the first prompt; and the pure state machines
-  behind waking and handover. A corgi runs on Claude Code, the default, or
+  behind waking and handover. A supervisor runs on Claude Code, the default, or
   Codex, which `Harness` gives the role arguments of.
   Claude Code appends the role file to its system prompt.
   Codex takes the role inline as `-c developer_instructions`, which adds to
   its own instructions (`model_instructions_file` would replace them), and
-  runs the corgi in its workspace-write sandbox with network access, which
+  runs the supervisor in its workspace-write sandbox with network access, which
   is what lets `herdr` and `corgi` reach Herdr's Unix socket, and the state
-  directory as an extra writable root. The launch marks the corgi's pane with a
+  directory as an extra writable root. The launch marks the supervisor's pane with a
   `corgi_handler` token holding `session:<native agent_session value>`, so
   presentation renames preserve its role and later sessions in the pane do
   not inherit it. Before Herdr exposes the session, the launch name marks
@@ -424,28 +425,35 @@ role. So Corgi keeps its own record and puts the tokens back.
   marker back on the same session (see "Herdr restarts").
   The role names the installed plugin's release build (`plugin.list` gives
   its root) unless `CORGI_BIN` chooses another.
-- The role was called the Steward, then the Project handler, before it
-  became the corgi, and what an older Corgi left behind keeps working. The
-  pane marker kept the key it had as the Project handler, `corgi_handler`,
-  since every Corgi build in a Herdr session reads the marks on its panes,
-  and a new key would hide the corgi from an installed dashboard not yet
-  rebuilt or another worktree's build. A pane marked with the Steward's
-  `corgi_steward` token is the corgi's, and the next write of its marks
+- The role was called the Steward, then the Project handler, then the
+  corgi, before it became the supervisor, and what an older Corgi left
+  behind keeps working. The pane marker kept the key it had as the Project
+  handler, `corgi_handler`, since every Corgi build in a Herdr session reads
+  the marks on its panes, and a new key would hide the supervisor from an
+  installed dashboard not yet rebuilt or another worktree's build; its
+  other pane tokens (`corgi_handover`, `corgi_baseline`, `corgi_merge`) keep
+  their keys for the same reason. A pane marked with the Steward's
+  `corgi_steward` token is the supervisor's, and the next write of its marks
   moves the marker to `corgi_handler`, in Herdr and in Corgi's record. A
-  project workspace still labelled `<project> handler` or `<project>
-  steward` is relabelled, `corgi handler` and `corgi steward` still start
-  the corgi, `CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN` are still read, and
-  the role tells `[handler]` and `[steward]` prompts on a worker's screen as
-  its own.
-- The corgi's memory moves with it, and nothing in it is overwritten,
-  merged or deleted. Until the next corgi session starts, a project whose
-  state is still in `handler/<project>`, or `steward/<project>` when it
-  never moved from there, is read there. The launch of that session
-  (`corgi::prepare`, at a fresh start and at a handover alike) moves the
-  directory to `corgis/<project>` with a single rename and leaves a link to
+  project workspace still labelled `<project> corgi`, `<project> handler` or
+  `<project> steward` is relabelled `<project> supervisor`; `corgi start`,
+  `corgi handler` and `corgi steward` (unlisted) still start the
+  supervisor; `CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN` are still read;
+  and the role tells `[corgi]`, `[handler]` and `[steward]` prompts on a
+  worker's screen as its own. The dashboard's own lines start with
+  `[Corgi]`, the app's name, so they are never taken for the supervisor's
+  `[supervisor]`; `corgi notify` turns a leading `[corgi]`, as a script
+  written for an older Corgi adds it, into `[Corgi]`.
+- The supervisor's memory moves with it, and nothing in it is overwritten,
+  merged or deleted. Until the next supervisor session starts, a project whose
+  state is still in `corgis/<project>`, or `handler/<project>` or
+  `steward/<project>` when it never moved from there, is read there. The launch of that session
+  (`supervisor::prepare`, at a fresh start and at a handover alike) moves the
+  directory to `supervisors/<project>` with a single rename and leaves a link to
   it at the old path, so a session an older Corgi started and an older
-  Corgi binary keep reading and writing the same files; the link the
-  previous rename left at `steward/<project>` leads there through it. The
+  Corgi binary keep reading and writing the same files; the links the
+  previous renames left at `handler/<project>` and `steward/<project>` lead
+  there through it. The
   move waits for a launch, rather than the dashboard's first look, because
   a handover asks the old session to exit before its successor is
   prepared: no running session, whose harness may have resolved the old
@@ -454,19 +462,19 @@ role. So Corgi keeps its own record and puts the tokens back.
   the new directory means the move is done, and one to a directory
   elsewhere gets a second link to the same directory at the new path.
   When the new path and an old one hold directories of their own, Corgi
-  uses `corgis/<project>` and warns, naming both, so the older history is
-  not overlooked: in the launch's progress (stderr for `corgi start`), on
-  stderr for a corgi's `corgi spawn`, and once per project in the
+  uses `supervisors/<project>` and warns, naming both, so the older history is
+  not overlooked: in the launch's progress (stderr for `corgi supervisor`), on
+  stderr for a supervisor's `corgi spawn`, and once per project in the
   dashboard's status line.
-- `corgi spawn` recognizes a corgi caller by its pane: `HERDR_PANE_ID`
-  must be the pane of an agent carrying the corgi marker. Without
+- `corgi spawn` recognizes a supervisor caller by its pane: `HERDR_PANE_ID`
+  must be the pane of an agent carrying the supervisor marker. Without
   `--harness`, such a spawn starts the worker on the kind Herdr detected in
-  the corgi's pane, rather than on the form's default.
-- The dashboard wakes corgis from its own refresh (`app/waker.rs`);
-  nothing else runs for it. Every agent of a project with a running corgi
-  counts, except the corgi, whoever started it, and so does one the corgi
+  the supervisor's pane, rather than on the form's default.
+- The dashboard wakes supervisors from its own refresh (`app/waker.rs`);
+  nothing else runs for it. Every agent of a project with a running supervisor
+  counts, except the supervisor, whoever started it, and so does one the supervisor
   spawned (it carries a `corgi_request` token) while the project has no
-  running corgi, so the next corgi hears of it. `corgi::Transitions` reduces each agent's
+  running supervisor, so the next supervisor hears of it. `supervisor::Transitions` reduces each agent's
   state from refresh to refresh to wakes: nothing until the agent has been
   seen working, so neither the states found at a first start nor a question
   a new agent opens on is news; after that, each time it rests (done or
@@ -478,27 +486,27 @@ role. So Corgi keeps its own record and puts the tokens back.
   process, and the next dashboard to refresh takes it over. Every interactive
   dashboard (the tab, the popup, a preview) tries for the lock; the Omarchy
   reader and the command-line tools never wake.
-- Every wake goes through the corgi's inbox (`src/inbox.rs`),
+- Every wake goes through the supervisor's inbox (`src/inbox.rs`),
   `inbox.jsonl` in its state directory, so none is lost or sent twice when
   a dashboard closes, crashes, restarts or hands the lock over. It is
   append-only JSON lines, written only through that module under
   `inbox.lock`: items (`id`, `ts`, `project`, `source`, `kind` of `wake`,
   `conflict` or `note`, `agent`, `state`, for a wake the agent's `pane` and
-  `change` (its `state_change_seq`), a coalescing `key`, the `[corgi]`
+  `change` (its `state_change_seq`), a coalescing `key`, the `[Corgi]`
   `text`, `own`, and the agent's report inline or as `report_file`), and
   records naming the ids delivered. An item no record names is
   undelivered, and an id is added only once. Readers take no lock and skip
   a last line still being written; a writer that finds the last line cut
   short (a killed writer, a full disk) ends it with a newline before its
-  own. The dashboard reads each corgi's inbox at each refresh. Past 256 KB,
+  own. The dashboard reads each supervisor's inbox at each refresh. Past 256 KB,
   a write rewrites the file with every undelivered item and the newest 100
   delivered ones, and removes the dropped items' report files. The
   dashboard adds wakes and the merge-conflict handoff in process (any
-  interactive dashboard may hand a conflict to the corgi, since the leader
+  interactive dashboard may hand a conflict to the supervisor, since the leader
   delivers it), and `corgi notify` adds anything else (a script's or a
   hook's line) through the same code. Projects of the same directory name
   share a state directory, so each item names its project root, and a
-  corgi gets only its own project's items.
+  supervisor gets only its own project's items.
 - A wake's id names the agent, its pane, the run of state changes it is
   in, its `state_change_seq` and the state, and an item whose id the inbox
   already has is not added again. Herdr restores a pane's id and agent
@@ -511,9 +519,9 @@ role. So Corgi keeps its own record and puts the tokens back.
   when it changed. A dashboard that takes the lock starts from that record
   rather than from what it sees, so whatever changed while no dashboard led
   is news: a worker that was working at the last save and is done now wakes
-  its corgi once. An agent of the same name in another pane is another
+  its supervisor once. An agent of the same name in another pane is another
   agent. An agent the record does not have, and that rests now, wakes
-  nobody, except one the corgi spawned that is done, or idle with a report
+  nobody, except one the supervisor spawned that is done, or idle with a report
   from its transcript (a screen alone may be one that never started): it
   came and finished while no dashboard ran, and is reported once. Without
   any record, as at the first start, everything found is a baseline. When
@@ -524,21 +532,21 @@ role. So Corgi keeps its own record and puts the tokens back.
   newest thing said in its transcript, else its screen), goes into the item:
   inline up to 4 KB, else in `inbox-reports/<id>.md`. A wake's line names
   the agent, its state, and the command to run next. When it goes out for
-  one of the corgi's own workers with an inline report, and the prompt's
+  one of the supervisor's own workers with an inline report, and the prompt's
   reports stay within 12 KB, the line says the report follows instead,
   and the report, each line quoted with `> ` so that none passes for a
-  `[corgi]` line of the dashboard's, and a closing `[corgi] End of
+  `[Corgi]` line of the dashboard's, and a closing `[Corgi] End of
   <agent>'s report.` line go with it.
-- Delivery reads the corgi's undelivered items and sends them as one
-  `agent.prompt` once the corgi is neither working nor blocked, so they
+- Delivery reads the supervisor's undelivered items and sends them as one
+  `agent.prompt` once the supervisor is neither working nor blocked, so they
   arrive after its turn, the newest item of each key only (a newer wake for
   an agent replaces an unsent one, though one without a report does not
   replace one with a report), then records all of them delivered. When
   that record cannot be written, the dashboard does not type those items
   in again, and tries the record again at each refresh.
-  They also wait while the corgi's input box
+  They also wait while the supervisor's input box
   holds a draft, so they are never typed into what the user is writing.
-  Just before sending, the dashboard reads the corgi's visible screen with
+  Just before sending, the dashboard reads the supervisor's visible screen with
   its styling and finds the box: for Claude Code, the line starting with `❯`
   directly below a horizontal rule, down to the next rule; for Codex, the
   last line starting with `›`, down to the next blank line. Any text in it
@@ -549,24 +557,24 @@ role. So Corgi keeps its own record and puts the tokens back.
   recent keystrokes. A screen that cannot be read, a box not on it, or a
   harness whose box Corgi does not know counts as no draft, so the items
   go out as before rather than waiting for good. The inbox belongs to the
-  project rather than to one corgi session, so the items a corgi that is
-  handing over did not get go to the corgi that takes over from it, and
-  those of a project without a running corgi wait for the next one. The
+  project rather than to one supervisor session, so the items a supervisor that is
+  handing over did not get go to the supervisor that takes over from it, and
+  those of a project without a running supervisor wait for the next one. The
   delivery uses no harness feature: typing into the box is the one way that
   starts a turn on every harness.
 - `corgi inbox <project>` prints the project's undelivered items, oldest
   first, the newest 20 at most, each with its report while about 16 KB of
   reports last, else the command that prints it; `--delivered` adds the
   newest 10 delivered ones. Printing marks nothing delivered, since the
-  dashboard's typing is what reaches the corgi; `--take` records the
-  printed items delivered, for a corgi that acts on them itself, so they
-  are not typed in again. The role tells a corgi that is handing over to
+  dashboard's typing is what reaches the supervisor; `--take` records the
+  printed items delivered, for a supervisor that acts on them itself, so they
+  are not typed in again. The role tells a supervisor that is handing over to
   leave them to its successor.
-- The same dashboard hands a corgi over to a fresh session once its
+- The same dashboard hands a supervisor over to a fresh session once its
   context is half full, since compaction would lose what only its
-  conversation holds (`corgi::Handover`, once per harness session). A
-  corgi that is idle or done, never working or blocked, at 50% or more
-  gets one `[corgi]` line asking it to write `handover.md` in its state
+  conversation holds (`supervisor::Handover`, once per harness session). A
+  supervisor that is idle or done, never working or blocked, at 50% or more
+  gets one `[Corgi]` line asking it to write `handover.md` in its state
   directory and end its turn, held like a wake while its input box holds a
   draft and asked at a later refresh; the request is recorded as a
   `corgi_handover` pane token (`<unix seconds> <session>`), so a dashboard
@@ -578,33 +586,33 @@ role. So Corgi keeps its own record and puts the tokens back.
   fail it), a background thread types the harness's own exit command
   (`/exit` for Claude Code, `/quit` for Codex), which leaves the old
   transcript on disk and the pane at its shell, waits for Herdr to clear
-  the agent, and runs the usual corgi launch in that same pane under the
+  the agent, and runs the usual supervisor launch in that same pane under the
   same name: the role is prepared again, the marker set again, and the
   first prompt has the new session do the start-of-session reading, then
   read the note and move it to `handovers/<YYYYMMDD-HHMMSS>.md`. It starts
   on the harness, model, effort, and extra arguments the launch recorded in
-  `launch.json`, or the harness's defaults without one. A corgi seen at
+  `launch.json`, or the harness's defaults without one. A supervisor seen at
   work after its note was found (a turn the user sent from the draft that
   held the replacement) has a stale note: once that turn is over it gets
-  another `[corgi]` line asking it to bring the note up to date and end its
+  another `[Corgi]` line asking it to bring the note up to date and end its
   turn, held like any request while there is a draft, and it is replaced
   only once a note newer than that request exists. Wakes for the project
   wait from the request until the successor's first turn is over, and one
-  queued while no corgi was visible still reaches it. A turn that ends
+  queued while no supervisor was visible still reaches it. A turn that ends
   without a note (or without an updated one), or a request not taken up
-  within two minutes, leaves the corgi in place with a status line, and
+  within two minutes, leaves the supervisor in place with a status line, and
   it is asked again only after a later turn of its own.
   `CORGI_DEBUG_HANDOVER_PERCENT` lowers the threshold for
   a debug run; it is not a setting.
-- A second trigger hands over a corgi whose prompt cache is about to go
+- A second trigger hands over a supervisor whose prompt cache is about to go
   cold, since its next turn would otherwise re-read the whole conversation
   uncached, while a fresh session is small enough to wake cold cheaply. It
-  fires, with its own `[corgi]` wording and status line and otherwise the
+  fires, with its own `[Corgi]` wording and status line and otherwise the
   same request, note check, exit, relaunch, and once-per-session rule, when
-  the corgi has rested (idle or done) for 50 minutes on Claude Code (one
+  the supervisor has rested (idle or done) for 50 minutes on Claude Code (one
   hour cache) or 25 on Codex (about thirty minutes), no other agent of its
   project is working or blocked (the dashboard cannot tell which of them
-  the corgi dispatched, so all count), and its context in tokens is at
+  the supervisor dispatched, so all count), and its context in tokens is at
   least twice its baseline. The baseline is the context at the first
   refresh that finds the session resting with one: the end of its first
   turn (the start-of-session reading, or the note read) when the dashboard
@@ -615,7 +623,7 @@ role. So Corgi keeps its own record and puts the tokens back.
   dashboard that restarts or takes over the wake lock. The rest is timed
   from the first refresh that saw it, so such a dashboard starts that clock
   again and may ask late, never early. A session that only did its start-up
-  never qualifies, and a corgi on a harness whose session file Corgi
+  never qualifies, and a supervisor on a harness whose session file Corgi
   cannot read is never handed over for idleness. The 50% trigger goes first
   when both hold. `CORGI_DEBUG_HANDOVER_IDLE_SECS` sets the idle time for
   a debug run on any harness; it is not a setting.
@@ -638,10 +646,10 @@ role. So Corgi keeps its own record and puts the tokens back.
 
 ### Drawing and shared pieces
 
-- `src/ui/` renders the Ratatui dashboard. A project led by its corgi is
+- `src/ui/` renders the Ratatui dashboard. A project led by its supervisor is
   a card, drawn as list items whose lines carry the card's border: collapsed,
-  one item of the corgi's rows, a divider, and the sum of its workers;
-  expanded, the corgi's item with the card top, then one item per worker,
+  one item of the supervisor's rows, a divider, and the sum of its workers;
+  expanded, the supervisor's item with the card top, then one item per worker,
   the last closing the card. Other projects' headings lead the item of their
   first session, and each project's gap closes its last item, so the list,
   which scrolls by whole items, never shows a first session with its heading
@@ -772,7 +780,7 @@ minutes and red in its last minute; once cold it reads, for example,
 `⚠ 182k re-read`. A Codex estimate reads `≈ 18m cache`, then
 `⚠ cache may be cold`.
 
-Every project with an agent session gets a heading, its corgi first. Within
+Every project with an agent session gets a heading, its supervisor first. Within
 a state, agents Herdr reports no order between are alphabetical. Scratch
 sessions are ordered the same way under Scratch. A row moves only when its own
 agent changes state, and the selection stays on the same row. Agents in
@@ -782,15 +790,15 @@ named after the repository.
 
 ### Project cards
 
-A project whose corgi runs is a card with the project as its title. The
-corgi stands apart from its workers in the same color as the pixel CORGI
+A project whose supervisor runs is a card with the project as its title. The
+supervisor stands apart from its workers in the same color as the pixel CORGI
 wordmark at the top of the dashboard, so it follows the active theme the
-way the wordmark does: the card's title, the corgi's task, which is its
-name, and a `▌` rail in the last column of the gutter on every corgi row,
-which runs on down the corgi's turns when its session is expanded. Selecting
-the corgi's row turns its task bold, the same cue a worker's row gets. The
+way the wordmark does: the card's title, the supervisor's task, which is its
+name, and a `▌` rail in the last column of the gutter on every supervisor row,
+which runs on down the supervisor's turns when its session is expanded. Selecting
+the supervisor's row turns its task bold, the same cue a worker's row gets. The
 selection bar keeps its columns in front of the rail. The
-dashboard opens every card collapsed: the corgi's identity row, its message
+dashboard opens every card collapsed: the supervisor's identity row, its message
 and tool rows wrapped to two rows each and then cut with `…`, a divider, and
 a footer such as `3 workers   ▲ 1 blocked   ● 1 working   ✓ 1 done` (only the
 states present, in the list's state order, with workers tagged ready to merge
@@ -799,22 +807,22 @@ right.
 Each blocked worker gets a footer line of its own, `▲ blocked: <task> —
 <what it waits on>`: the question on its screen, or `waiting for your
 input`. A collapsed card is one stop for the selection and acts as its
-corgi for every key. `→` expands it: the footer goes, and each worker's
-three rows follow the corgi inside the card, which closes with
+supervisor for every key. `→` expands it: the footer goes, and each worker's
+three rows follow the supervisor inside the card, which closes with
 `← collapse`. `←` collapses it again from any of its rows. The choice is
 kept per project heading in `expanded-projects` in the state directory.
-Projects without a corgi and scratch sessions keep plain rows under a
+Projects without a supervisor and scratch sessions keep plain rows under a
 heading.
 
 ### Ready to merge
 
-When a corgi recommends the user merge a worker, after its clean-merge
+When a supervisor recommends the user merge a worker, after its clean-merge
 check, it runs `corgi tag NAME merge --project <root>`. The command finds
 NAME (a Herdr name or pane ID) among the project's agents and refuses one
 that is not done or idle, or whose checkout (its linked worktree, else its
 cwd) has no commits ahead of the branch checked out in the primary checkout,
-the branch `m` merges into. It also refuses while the corgi still has
-questions open about the agent: when the newest line of the corgi's
+the branch `m` merges into. It also refuses while the supervisor still has
+questions open about the agent: when the newest line of the supervisor's
 `ledger.jsonl` (newest per `id`, as the digest reads it) whose `agent` is
 NAME has status `needs-answer` or a non-empty `questions` array
 (`digest::open_questions`), it names those questions. No ledger, no entry
@@ -825,7 +833,7 @@ was tagged, through `markers::tag_pane`, so the tag survives dashboard and
 Herdr restarts like Corgi's other marks. `corgi tag NAME --clear` removes
 it, and `corgi fleet` ends each row with a TAG column, `merge` or `-`.
 
-A tag applies (`corgi::merge_tag`) while its agent rests where it was
+A tag applies (`supervisor::merge_tag`) while its agent rests where it was
 tagged: done or idle at the same state change, or idle at any after being
 tagged done, which is how Herdr shows a done agent the user has looked at.
 Working or blocked, done at another state change, or idle at another one
@@ -888,8 +896,8 @@ stays open, says why, and moves to the row that needs a value.
   updates the effort hint, since effort can be set per model.
 - **Effort** offers `low`, `medium`, `high`, `xhigh` and `max`.
 - **The first agent of a project**, new or with no agent session in any of
-  its workspaces, is its corgi, with the task as its first request; the
-  form says so in its title and above the keys. A corgi runs only on Claude
+  its workspaces, is its supervisor, with the task as its first request; the
+  form says so in its title and above the keys. A supervisor runs only on Claude
   Code or Codex, so any other harness makes the form ask for one of them.
 
 ### Projects
@@ -916,7 +924,7 @@ repository known without running anything in it, open a workspace for it:
 repository. Herdr picks a fresh `worktree/<name>` branch from `HEAD` and
 checks it out under its `worktrees.directory`
 (`~/.herdr/worktrees/<repo>/<branch-slug>` by default). Every worktree is
-grouped below the project's `<project> corgi` workspace, so closing or
+grouped below the project's `<project> supervisor` workspace, so closing or
 restarting the dashboard cannot close workers. A label a user chose for that
 workspace is kept; only the bare repository name an older Corgi used is
 relabelled. With the Checkout row on "Project directory as is", the agent
@@ -925,7 +933,7 @@ other agents alone. A directory outside a Git work tree always uses the plain
 directory, and the status line says so.
 
 `t` opens the form preset for `~`; a scratch session gets a plain `scratch`
-workspace, never a worktree or a corgi.
+workspace, never a worktree or a supervisor.
 
 `x` on a worktree agent runs Herdr's `worktree remove`: it stops the panes,
 closes the workspace, and deletes the checkout. A checkout with uncommitted
@@ -946,19 +954,19 @@ finished popup offers `x` to close it, or keeps it open.
 A merge that stops on conflicts leaves the primary checkout mid-merge, and
 the popup lists the conflicted files (`git diff --name-only
 --diff-filter=U`; the job's `MergeError::Conflicts`). Esc leaves them there
-to resolve by hand. When the project has a running corgi and this
-dashboard is the one that wakes corgis, `c` instead runs `git merge
+to resolve by hand. When the project has a running supervisor and this
+dashboard is the one that wakes supervisors, `s` instead runs `git merge
 --abort`, checks the checkout clean again (a failure stays in the popup as
-an error), and queues one `[corgi]` line for the corgi on `CorgiWaker`
-(`corgi::merge_conflict_message`) naming the worker, its task, branch and
+an error), and queues one `[Corgi]` line for the supervisor on `SupervisorWaker`
+(`supervisor::merge_conflict_message`) naming the worker, its task, branch and
 worktree, the base branch and the files. It goes out with the wakes, between
-the corgi's turns, and the corgi has the worker merge the base branch
+the supervisor's turns, and the supervisor has the worker merge the base branch
 into its own branch and resolve the conflict there; the user then merges
-again. Without a corgi the popup says so; a dashboard that does not wake
-corgis, and the Omarchy popup, do not offer the key, since only the waker
-can hold the message for a corgi mid-turn.
+again. Without a supervisor the popup says so; a dashboard that does not wake
+supervisors, and the Omarchy popup, do not offer the key, since only the waker
+can hold the message for a supervisor mid-turn.
 
-### `corgi spawn` and `corgi start`
+### `corgi spawn` and `corgi supervisor`
 
 `corgi spawn` runs inside Herdr, on the session's injected socket, and reads
 the task from stdin or `--task-file`, so a long brief needs no quoting:
@@ -976,7 +984,7 @@ name not already in use. Progress goes to stderr; on success stdout is one
 JSON object with the agent's `name`, `pane_id`, `workspace_id`, `tab_id`,
 `cwd` and `location`, ready for `herdr agent prompt`, `wait` and `read`.
 
-`--request-id ID` makes a retried spawn safe. A corgi passes its brief
+`--request-id ID` makes a retried spawn safe. A supervisor passes its brief
 id. The id is 1 to 80 (Herdr's metadata value limit) ASCII letters, digits,
 `.`, `_` or `-`, kept verbatim as the worker pane's `corgi_request` token,
 which the launch sets as soon as the pane exists and before the agent
@@ -995,25 +1003,25 @@ agent that was closed does not block a retry, and a pane left behind with
 the token but no agent in it does not count. A spawn without an id takes
 no lock and checks nothing.
 
-`corgi start <project>` starts the corgi of the project, which greets
+`corgi supervisor <project>` starts the supervisor of the project, which greets
 with the project's state; with a request on stdin it takes that up instead,
-and `--harness codex` starts it on Codex. The corgi lists its workers with
+and `--harness codex` starts it on Codex. The supervisor lists its workers with
 `corgi fleet` and reads each final report with `corgi report`. For a
 running agent, that prints the report the dashboard kept in its project's
 inbox when the agent last stopped, if the item is of the agent's pane and
 its current `state_change_seq`; otherwise (another agent of the same name,
 or one that has said more since) the agent's newest message, or its
 screen. For an agent whose pane is gone, it prints the newest report kept
-for that name in any corgi's inbox.
+for that name in any supervisor's inbox.
 `corgi fleet`, `corgi digest` and `corgi report` end with one line on
 stderr, `N undelivered inbox items: run corgi inbox <project>`, when the
-corgi of their project (for `report`, the current directory's) has missed
+supervisor of their project (for `report`, the current directory's) has missed
 items: any undelivered while no dashboard holds the wake lock (the command
 tries it for a moment), else only those undelivered for five minutes, so
-a corgi notices a wake that did not reach it at its next command, but is
+a supervisor notices a wake that did not reach it at its next command, but is
 not drawn into the wakes that only wait for its turn to end.
 
-A corgi starts its session with `corgi digest <project>` instead of
+A supervisor starts its session with `corgi digest <project>` instead of
 reading its state files raw, since `decisions.md` and `ledger.jsonl` only
 grow. The digest only reads, and prints, in order: the project, its base
 branch and short HEAD; `handover.md` whole if it exists, else the "Open
@@ -1030,7 +1038,7 @@ is warned about. `corgi digest --decision "<words>"` prints every entry,
 superseded or not, whose heading contains all the words.
 
 `corgi digest --search "<words>"` (`src/digest/search.rs`) looks in all of
-the memory, since a test showed a corgi answering "don't know" to every
+the memory, since a test showed a supervisor answering "don't know" to every
 question about older history with the digest alone: decision entries
 (superseded ones marked), the newest ledger line of each id, and the
 paragraphs and list items of briefs and archived handover notes. A word hits
@@ -1041,9 +1049,9 @@ date (a handover note's in full, since a stale note misled the test's
 answers) and up to three lines of context, and the output stops near 5 KB
 with a line counting the hits left out. No index: the files are small enough
 to read on each search. Like `fleet`, it
-needs Herdr to resolve the project and its agents. `corgi handler` and
-`corgi steward`, the command's names before the renames, still work but
-are not listed.
+needs Herdr to resolve the project and its agents. `corgi start`, `corgi
+handler` and `corgi steward`, the names of `corgi supervisor` before the
+renames, still work but are not listed.
 
 ### Plan usage
 
@@ -1064,7 +1072,7 @@ such as an expired login. To check the Claude reader by hand:
 | `CORGI_DEFAULT_AGENT` | The harness the form presets, instead of the first of `codex` or `claude` found |
 | `CORGI_CODEX_BIN`, `CORGI_CLAUDE_BIN` | Where that CLI is, when it is outside `PATH` and the usual install directories (`~/.local/bin`, `/opt/homebrew/bin`, npm, bun, nvm, cargo, volta) |
 | `CORGI_PROJECTS_FILE` | Where the remembered projects are kept |
-| `CORGI_BIN` | The Corgi binary a corgi's commands call, such as a development build (`CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN`, its names before the renames, are still read) |
+| `CORGI_BIN` | The Corgi binary a supervisor's commands call, such as a development build (`CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN`, its names before the renames, are still read) |
 | `XDG_STATE_HOME` | Where Corgi keeps its state (`~/.local/state` by default) |
 
 ### Data and privacy
