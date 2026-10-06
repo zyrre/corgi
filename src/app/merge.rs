@@ -65,15 +65,15 @@ pub(crate) enum MergePhase {
     },
 }
 
-/// Whether a conflicted merge can be handed to the project's corgi.
+/// Whether a conflicted merge can be handed to the project's supervisor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConflictHelp {
     /// The project's supervisor, by name, which `c` asks.
     Supervisor(String),
-    /// The project has no running corgi.
+    /// The project has no running supervisor.
     NoSupervisor,
     /// This dashboard has no inbox to write to (it is the Omarchy popup),
-    /// so it does not hand conflicts to a corgi.
+    /// so it does not hand conflicts to a supervisor.
     Unavailable,
 }
 
@@ -779,7 +779,7 @@ mod tests {
         let mut app = conflicted_dashboard(
             &form,
             vec![
-                project_agent("corgi-corgi", &repo, true),
+                project_agent("supervisor-corgi", &repo, true),
                 project_agent("w-reviewed-agent", &repo, false),
             ],
         );
@@ -787,7 +787,7 @@ mod tests {
             app.overlay.merge_worktree_form().map(|form| &form.phase),
             Some(&MergePhase::Conflicted {
                 files: vec!["status.txt".into()],
-                help: ConflictHelp::Supervisor("corgi-corgi".into()),
+                help: ConflictHelp::Supervisor("supervisor-corgi".into()),
             })
         );
         assert!(merge_in_progress(&repo));
@@ -797,12 +797,16 @@ mod tests {
         assert!(!merge_in_progress(&repo));
         ensure_git_clean(&repo, "primary checkout").expect("abort leaves the checkout clean");
         assert!(worktree.exists(), "the worktree stays open");
-        assert!(app.status.contains("asked corgi-corgi"), "{}", app.status);
+        assert!(
+            app.status.contains("asked supervisor-corgi"),
+            "{}",
+            app.status
+        );
         let pending = app.supervisor_waker.as_ref().unwrap().pending_for(&root);
         assert_eq!(
             pending,
             [format!(
-                "[corgi] The user's merge of w-reviewed-agent (task \"Make the status file say agent\"), \
+                "[Corgi] The user's merge of w-reviewed-agent (task \"Make the status file say agent\"), \
                  branch worktree/reviewed-agent in worktree {}, into main conflicted in: status.txt. \
                  Corgi aborted it, so the primary checkout is clean. Have w-reviewed-agent merge main \
                  into its own branch, resolve the conflicts there, rerun its checks and report; the \
@@ -848,7 +852,8 @@ mod tests {
     fn esc_on_a_conflicted_merge_leaves_it_to_resolve_by_hand() {
         let (repo, worktree, form) = conflicting_merge("merge-conflict-esc");
         let root = repo.to_string_lossy().into_owned();
-        let mut app = conflicted_dashboard(&form, vec![project_agent("corgi-corgi", &repo, true)]);
+        let mut app =
+            conflicted_dashboard(&form, vec![project_agent("supervisor-corgi", &repo, true)]);
         assert!(!app.handle_key(KeyEvent::from(KeyCode::Esc)));
         assert!(matches!(app.overlay, Overlay::None));
         assert!(
@@ -870,7 +875,8 @@ mod tests {
     fn a_failed_abort_is_reported_in_the_popup_and_asks_no_one() {
         let (repo, worktree, form) = conflicting_merge("merge-conflict-abort");
         let root = repo.to_string_lossy().into_owned();
-        let mut app = conflicted_dashboard(&form, vec![project_agent("corgi-corgi", &repo, true)]);
+        let mut app =
+            conflicted_dashboard(&form, vec![project_agent("supervisor-corgi", &repo, true)]);
         // The user finished the merge by hand behind the popup's back.
         git_test(&repo, &["checkout", "--theirs", "status.txt"]);
         git_test(&repo, &["commit", "-am", "resolved by hand"]);

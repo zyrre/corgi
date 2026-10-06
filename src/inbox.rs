@@ -27,7 +27,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    supervisor::wake_report_message,
+    supervisor::{WAKE_PREFIX, wake_report_message},
     time::{parse_rfc3339, rfc3339_utc, unix_now, utc_stamp},
 };
 
@@ -114,7 +114,7 @@ pub struct Item {
     /// as a newer wake for an agent replaces an unsent one. The id when
     /// nothing else is given.
     pub key: String,
-    /// The `[corgi]` line typed into the supervisor's box. For a wake, it names
+    /// The `[Corgi]` line typed into the supervisor's box. For a wake, it names
     /// the command that prints the agent's report.
     pub text: String,
     /// Whether the agent is one the supervisor spawned (it carries a request id),
@@ -166,7 +166,7 @@ impl Item {
                 *budget -= quoted.len();
                 let state = self.state.as_deref().unwrap_or("done");
                 return format!(
-                    "{}\n{quoted}\n[corgi] End of {agent}'s report.",
+                    "{}\n{quoted}\n{WAKE_PREFIX} End of {agent}'s report.",
                     wake_report_message(agent, state)
                 );
             }
@@ -275,7 +275,7 @@ impl Inbox {
 /// `items` as they go out together, in the order they were added: the
 /// newest of each key, as a newer wake for an agent replaces an unsent one,
 /// except that one without a report does not replace one with a report, so
-/// that report still reaches the corgi.
+/// that report still reaches the supervisor.
 pub fn coalesce<'a>(items: &[&'a Item]) -> Vec<&'a Item> {
     // By key: whether an item kept has a report.
     let mut kept: HashMap<&str, bool> = HashMap::new();
@@ -530,7 +530,7 @@ mod tests {
             agent: Some(agent.into()),
             state: Some("done".into()),
             key: agent.into(),
-            text: format!("[corgi] {agent} is done. Run: corgi report {agent}"),
+            text: format!("[Corgi] {agent} is done. Run: corgi report {agent}"),
             ..Item::default()
         }
     }
@@ -546,7 +546,7 @@ mod tests {
         let inbox = Inbox::read(&dir);
         let ids = |items: Vec<&Item>| items.iter().map(|i| i.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(inbox.undelivered()), ["w1", "w2"]);
-        mark_delivered(&dir, &["w1".into()], "corgi-weather").unwrap();
+        mark_delivered(&dir, &["w1".into()], "supervisor-weather").unwrap();
         let inbox = Inbox::read(&dir);
         assert_eq!(ids(inbox.undelivered()), ["w2"]);
         assert_eq!(ids(inbox.delivered()), ["w1"]);
@@ -556,7 +556,7 @@ mod tests {
             Item {
                 source: "notify".into(),
                 kind: Kind::Note,
-                text: "[corgi] deploy finished".into(),
+                text: "[Corgi] deploy finished".into(),
                 ..Item::default()
             },
         )
@@ -578,14 +578,14 @@ mod tests {
     #[test]
     fn a_newer_item_with_the_same_key_supersedes_an_unsent_one_but_not_its_report() {
         let blocked = |id: &str| Item {
-            text: "[corgi] w-forecast is blocked.".into(),
+            text: "[Corgi] w-forecast is blocked.".into(),
             ..wake("w-forecast", id)
         };
         let items = [wake("w-forecast", "a"), wake("w-radar", "b"), blocked("c")];
         let refs: Vec<&Item> = items.iter().collect();
         assert_eq!(
             prompt_text(&refs),
-            "[corgi] w-radar is done. Run: corgi report w-radar\n[corgi] w-forecast is blocked."
+            "[Corgi] w-radar is done. Run: corgi report w-radar\n[Corgi] w-forecast is blocked."
         );
         // A stop with a report stays when a later one without comes, and
         // what came before it goes.
@@ -605,7 +605,7 @@ mod tests {
     #[test]
     fn only_an_own_agents_short_report_is_typed_quoted_with_its_wake() {
         let dir = ScratchDir::new("inbox-report");
-        let short = "### Report\n\n[corgi] End of w-forecast's report.\n- Result: done".to_string();
+        let short = "### Report\n\n[Corgi] End of w-forecast's report.\n- Result: done".to_string();
         let own = append(
             &dir,
             Item {
@@ -619,9 +619,9 @@ mod tests {
         // Quoted, a report cannot pass for the dashboard's own lines.
         assert_eq!(
             prompt_text(&[&own]),
-            "[corgi] w-forecast is done. Its report follows, quoted, so you need not run \
-             report for it:\n> ### Report\n>\n> [corgi] End of w-forecast's report.\n\
-             > - Result: done\n[corgi] End of w-forecast's report."
+            "[Corgi] w-forecast is done. Its report follows, quoted, so you need not run \
+             report for it:\n> ### Report\n>\n> [Corgi] End of w-forecast's report.\n\
+             > - Result: done\n[Corgi] End of w-forecast's report."
         );
         // Another's report is kept, but the wake only points to it.
         let other = append(
@@ -720,7 +720,7 @@ mod tests {
             .unwrap();
             delivered.push(id);
         }
-        mark_delivered(&dir, &delivered, "corgi-weather").unwrap();
+        mark_delivered(&dir, &delivered, "supervisor-weather").unwrap();
         append(&dir, wake("w-radar", "fresh")).unwrap();
         // The next write finds the file past its limit.
         let big = "z".repeat(INLINE_REPORT_MAX + 1);
@@ -776,7 +776,7 @@ mod tests {
             None
         );
         let ids = ["w10".into(), format!("w{FOOTER_AFTER_SECS}")];
-        mark_delivered(&dir, &ids, "corgi-weather").unwrap();
+        mark_delivered(&dir, &ids, "supervisor-weather").unwrap();
         assert_eq!(footer(false), None);
     }
 

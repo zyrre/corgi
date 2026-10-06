@@ -1,4 +1,4 @@
-//! The command-line tools: `corgi spawn`, `corgi start`, `corgi fleet`,
+//! The command-line tools: `corgi spawn`, `corgi supervisor`, `corgi fleet`,
 //! `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
 //! `corgi tag`.
 
@@ -14,6 +14,7 @@ use crate::{
     inbox::{self, Inbox, Item, Kind},
     paths::{corgi_state_dir, expand_home, is_home},
     session::SessionReader,
+    supervisor::{OLD_WAKE_PREFIX, WAKE_PREFIX},
 };
 
 use super::{
@@ -39,7 +40,7 @@ JSON. The task is read from stdin, or from --task-file, never from arguments.
 Options:
   --project PATH     Project directory (default: the current directory)
   --harness KIND     Agent CLI, as Herdr names it (default: the calling
-                     corgi's own, else as in the form)
+                     supervisor's own, else as in the form)
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max (Codex and Claude Code)
   --checkout MODE    worktree (default), directory, or root: the project
@@ -230,7 +231,7 @@ pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_j
         "model": agent.model.as_deref().unwrap_or_default(),
         "effort": agent.effort.as_deref().unwrap_or_default(),
         "checkout": checkout.value(),
-        "corgi": agent.supervisor,
+        "supervisor": agent.supervisor,
         "location": format!(
             "already running in {} ({})",
             info.cwd(),
@@ -241,7 +242,7 @@ pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_j
 }
 
 /// The harness `corgi spawn` starts: the one asked for, else the calling
-/// corgi's own, else the default the new-agent form would preset.
+/// supervisor's own, else the default the new-agent form would preset.
 fn spawn_harness(
     requested: Option<Harness>,
     supervisor: Option<Harness>,
@@ -261,26 +262,27 @@ fn calling_supervisor_state_conflict(app: &App, pane_id: Option<&str>) -> Option
         .and_then(|agent| crate::supervisor::state_dir_conflict(&agent.project_root))
 }
 
-pub const START_USAGE: &str = "\
-Usage: corgi start [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
+pub const SUPERVISOR_USAGE: &str = "\
+Usage: corgi supervisor [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
 
 Starts the supervisor of PROJECT (default: the project containing the current
-directory), the agent that herds its workers, in the root tab of its Corgi
-workspace, and prints it as JSON. A task on stdin or in --task-file becomes its first request; without
-one the supervisor greets you with the state of the project.
+directory), the agent that directs its workers, in the root tab of its Corgi
+workspace, and prints it as JSON. A task on stdin or in --task-file becomes
+its first request; without one the supervisor greets you with the state of
+the project.
 
 Options:
   --harness KIND     claude (default) or codex
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max
-  --name NAME        Agent name (default: corgi-<project>)
+  --name NAME        Agent name (default: supervisor-<project>)
   --task-file PATH   Read the first request from PATH
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
-/// `corgi start`: launches a project's supervisor, the way the new-agent form
-/// does for a project with no agent sessions.
-pub fn start_command(args: &[String]) -> Result<()> {
+/// `corgi supervisor`: launches a project's supervisor, the way the new-agent
+/// form does for a project with no agent sessions.
+pub fn supervisor_command(args: &[String]) -> Result<()> {
     let (positional, args) = match args.first() {
         Some(first) if !first.starts_with('-') => (Some(first.as_str()), &args[1..]),
         _ => (None, args),
@@ -316,7 +318,7 @@ Usage: corgi fleet [PROJECT]
 
 Lists the agents of PROJECT (default: the project containing the current
 directory), one tab-separated row each under a header line:
-NAME, ROLE (corgi or worker), STATE, TASK, MODEL, CTX, CWD and TAG, which is
+NAME, ROLE (supervisor or worker), STATE, TASK, MODEL, CTX, CWD and TAG, which is
 merge for an agent a supervisor tagged ready to merge (corgi tag) that still rests
 where it was tagged, else -. When the project's supervisor has missed inbox items,
 a line on stderr says so.";
@@ -346,7 +348,11 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 field(agent.info.display_name()),
-                if agent.supervisor { "corgi" } else { "worker" },
+                if agent.supervisor {
+                    "supervisor"
+                } else {
+                    "worker"
+                },
                 agent.info.state.label().to_lowercase(),
                 field(&agent.task),
                 field(agent.model.as_deref().unwrap_or("-")),
@@ -500,7 +506,7 @@ fn commits_ahead(checkout: &std::path::Path, base: &str) -> Result<usize> {
 pub const DIGEST_USAGE: &str = "\
 Usage: corgi digest [PROJECT] [--decision WORDS | --search WORDS]
 
-Prints a bounded digest of the memory of PROJECT's corgi (default: the
+Prints a bounded digest of the memory of PROJECT's supervisor (default: the
 project containing the current directory), for the start of a supervisor's
 session: the base branch, the handover note if there is one (else the open
 threads of the newest archived one), open ledger work joined with the
@@ -759,11 +765,12 @@ Usage: corgi notify [PROJECT] [OPTIONS] < text
 
 Adds an item to the inbox of the supervisor of PROJECT (default: the project
 containing the current directory), the one way anything but the dashboard
-reaches a corgi. The Corgi dashboard that wakes supervisors types it into the
-supervisor's input box once the supervisor is between turns and its box holds no
-draft, together with any other undelivered items, and records it delivered;
-it survives the dashboard closing or restarting meanwhile. The text is read
-from stdin, and gets a leading [corgi] when it has none. Prints the item's
+reaches a supervisor. The Corgi dashboard that wakes supervisors types it
+into the supervisor's input box once the supervisor is between turns and its
+box holds no draft, together with any other undelivered items, and records
+it delivered; it survives the dashboard closing or restarting meanwhile. The
+text is read from stdin, and gets a leading [Corgi] when it has none (a
+leading [corgi], as Corgi wrote it before, becomes [Corgi]). Prints the item's
 id and inbox as JSON.
 
 Options:
@@ -774,7 +781,7 @@ Options:
                       newest goes out (default: the item's own id)
   --source NAME       Who adds it (default: notify)
   --report-file PATH  The agent's report, kept with the item, which
-                      supervisor report NAME then prints";
+                      corgi report NAME then prints";
 
 /// `corgi notify`: adds an item to a supervisor's inbox through the same code the
 /// dashboard uses, for scripts and hooks.
@@ -828,12 +835,17 @@ pub fn notify(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// `text` as a line a supervisor tells from the user's: it starts with `[corgi]`.
+/// `text` as a line a supervisor tells from the user's: it starts with
+/// [`WAKE_PREFIX`], which replaces the `[corgi]` Corgi wrote before the
+/// supervisor was given its name, so that a script written for it still
+/// reads as Corgi's.
 fn notify_text(text: &str) -> String {
-    if text.starts_with("[corgi]") {
+    if text.starts_with(WAKE_PREFIX) {
         text.to_string()
+    } else if let Some(rest) = text.strip_prefix(OLD_WAKE_PREFIX) {
+        format!("{WAKE_PREFIX}{rest}")
     } else {
-        format!("[corgi] {text}")
+        format!("{WAKE_PREFIX} {text}")
     }
 }
 
@@ -1091,7 +1103,7 @@ fn run_launch(client: HerdrClient, mut app: App, plan: LaunchPlan) -> Result<ser
         "model": plan.model,
         "effort": plan.effort,
         "checkout": plan.checkout.value(),
-        "corgi": matches!(plan.role, Role::Supervisor { .. }),
+        "supervisor": matches!(plan.role, Role::Supervisor { .. }),
         "location": launched.location,
     }))
 }
@@ -1112,7 +1124,7 @@ mod tests {
             return;
         }
         // Refused before stdin is read or Herdr is asked anything.
-        let refused = start_command(&["~".to_string()]).expect_err("no supervisor for ~");
+        let refused = supervisor_command(&["~".to_string()]).expect_err("no supervisor for ~");
         assert!(refused.to_string().contains("not a project"), "{refused}");
     }
 
@@ -1226,8 +1238,10 @@ mod tests {
 
     #[test]
     fn a_notified_line_is_marked_as_corgis() {
-        assert_eq!(notify_text("deploy done"), "[corgi] deploy done");
-        assert_eq!(notify_text("[corgi] deploy done"), "[corgi] deploy done");
+        assert_eq!(notify_text("deploy done"), "[Corgi] deploy done");
+        assert_eq!(notify_text("[Corgi] deploy done"), "[Corgi] deploy done");
+        // A script that adds the prefix Corgi used before the rename.
+        assert_eq!(notify_text("[corgi] deploy done"), "[Corgi] deploy done");
     }
 
     #[test]
@@ -1239,13 +1253,13 @@ mod tests {
             agent: Some(agent.into()),
             state: Some("done".into()),
             key: agent.into(),
-            text: format!("[corgi] {agent} is done."),
+            text: format!("[Corgi] {agent} is done."),
             own: true,
             report,
             ..Item::default()
         };
         inbox::append(&dir, wake("w-old", "a", Some("old report".into()))).unwrap();
-        inbox::mark_delivered(&dir, &["a".into()], "corgi-weather").unwrap();
+        inbox::mark_delivered(&dir, &["a".into()], "supervisor-weather").unwrap();
         inbox::append(
             &dir,
             wake("w-forecast", "b", Some("forecast report".into())),
@@ -1257,11 +1271,11 @@ mod tests {
         let (text, shown) = inbox_text(&read, &dir, "", false);
         assert!(text.starts_with("2 undelivered item(s) in "), "{text}");
         assert!(
-            text.contains("[corgi] w-forecast is done.\nforecast report\n"),
+            text.contains("[Corgi] w-forecast is done.\nforecast report\n"),
             "{text}"
         );
         assert!(
-            text.contains("[corgi] w-radar is done.\n(report: run "),
+            text.contains("[Corgi] w-radar is done.\n(report: run "),
             "{text}"
         );
         assert!(!text.contains("old report"), "{text}");
@@ -1269,7 +1283,7 @@ mod tests {
         let (text, _) = inbox_text(&read, &dir, "", true);
         assert!(text.contains("Newest delivered (1 in all):"), "{text}");
         assert!(
-            text.contains("[corgi] w-old is done.\n(report: run "),
+            text.contains("[Corgi] w-old is done.\n(report: run "),
             "{text}"
         );
         // Printing marked nothing.
@@ -1318,7 +1332,7 @@ mod tests {
                 &dir,
                 Item {
                     agent: Some(format!("w-{n}")),
-                    text: format!("[corgi] w-{n} is done."),
+                    text: format!("[Corgi] w-{n} is done."),
                     report: Some("r".repeat(inbox::INLINE_REPORT_MAX)),
                     ..Item::default()
                 },
@@ -1361,7 +1375,7 @@ mod tests {
         let args = ["--request-id".to_string(), "a b".to_string()];
         assert!(parse_spawn_options(&args).is_err());
         let args = ["--request-id".to_string(), "20261002-corgi".to_string()];
-        let refused = start_command(&args).expect_err("no request id for a supervisor");
+        let refused = supervisor_command(&args).expect_err("no request id for a supervisor");
         assert!(refused.to_string().contains("for corgi spawn"), "{refused}");
     }
 }

@@ -386,7 +386,7 @@ mod tests {
             commits: Vec::new(),
             phase: MergePhase::Conflicted {
                 files: vec!["src/ui/dialogs.rs".into(), "README.md".into()],
-                help: ConflictHelp::Supervisor("corgi-corgi".into()),
+                help: ConflictHelp::Supervisor("supervisor-corgi".into()),
             },
         });
         let mut terminal = test_terminal(120, 40);

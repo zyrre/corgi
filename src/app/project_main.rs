@@ -328,28 +328,28 @@ pub(super) fn project_root_digest(root: &str) -> String {
     format!("fnv1a64:{hash:016x}")
 }
 
-/// The label of a project's Corgi workspace: `<project> corgi`, since that
+/// The label of a project's Corgi workspace: `<project> supervisor`, since that
 /// workspace's root tab is where the project's supervisor lives. It sets the
 /// workspace apart from worker workspaces and from plain workspaces that
 /// share the project's name.
 fn project_workspace_label(project_root: &str) -> String {
     format!(
-        "{} corgi",
+        "{} supervisor",
         dir_name(project_root).unwrap_or(supervisor::UNNAMED_PROJECT)
     )
 }
 
 /// The label a project workspace should change to, if it still carries a
-/// label Corgi used to give it: the bare project name, `<project> handler`
-/// from while the supervisor was the Project handler, or `<project> steward`
-/// from before that, when it was the Steward. Any other label was chosen by
-/// the user and is kept.
+/// label Corgi used to give it: the bare project name, `<project> corgi` from
+/// while the supervisor was called the corgi, `<project> handler` from while
+/// it was the Project handler, or `<project> steward` from before that, when
+/// it was the Steward. Any other label was chosen by the user and is kept.
 fn project_main_relabel(workspace: &WorkspaceInfo) -> Option<String> {
     let root = project_main_root(workspace)?;
     let project = dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT);
     let label = workspace.label.trim();
     (label == project
-        || ["handler", "steward"]
+        || ["corgi", "handler", "steward"]
             .iter()
             .any(|old| label == format!("{project} {old}")))
     .then(|| project_workspace_label(root))
@@ -656,7 +656,7 @@ mod tests {
     fn marked(tokens: &[(&str, &str)]) -> WorkspaceInfo {
         WorkspaceInfo {
             workspace_id: "w9".into(),
-            label: "long-project corgi".into(),
+            label: "long-project supervisor".into(),
             tokens: tokens
                 .iter()
                 .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
@@ -846,7 +846,7 @@ mod tests {
             .expect("Corgi main workspace");
         assert_eq!(discovered.workspace_id, "w-main");
         assert_eq!(discovered.root_tab_id, "w-main:t1");
-        assert_eq!(project_workspace_label(project_root), "corgi corgi");
+        assert_eq!(project_workspace_label(project_root), "corgi supervisor");
     }
     #[test]
     fn a_project_main_with_an_old_label_is_relabelled_and_no_other() {
@@ -863,17 +863,23 @@ mod tests {
         };
 
         // The bare project name, and the labels an older Corgi gave it while
-        // the supervisor was the Project handler and, before that, the Steward.
-        for old in ["weather", "weather handler", "weather steward"] {
+        // the supervisor was the corgi, the Project handler and, before that,
+        // the Steward.
+        for old in [
+            "weather",
+            "weather corgi",
+            "weather handler",
+            "weather steward",
+        ] {
             assert_eq!(
                 project_main_relabel(&main(old, CORGI_PROJECT_MAIN_ROLE, false)).as_deref(),
-                Some("weather corgi"),
+                Some("weather supervisor"),
                 "{old}"
             );
         }
         // Already current, renamed by the user, or not Corgi's project main.
         for workspace in [
-            main("weather corgi", CORGI_PROJECT_MAIN_ROLE, false),
+            main("weather supervisor", CORGI_PROJECT_MAIN_ROLE, false),
             main("my weather", CORGI_PROJECT_MAIN_ROLE, false),
             main("weather", CORGI_AGENT_WORKSPACE_ROLE, true),
             main("weather", "", false),
@@ -1193,7 +1199,7 @@ mod tests {
                         }
                         "workspace.rename" => {
                             assert_eq!(request["params"]["workspace_id"], "wR");
-                            assert_eq!(request["params"]["label"], "webshop-backend corgi");
+                            assert_eq!(request["params"]["label"], "webshop-backend supervisor");
                             json!({ "type": "workspace_renamed" })
                         }
                         _ => unreachable!(),
@@ -1210,7 +1216,7 @@ mod tests {
 
         assert_eq!(main.workspace_id, "wR");
         assert_eq!(main.root_tab_id, "wR:t1");
-        assert_eq!(main.label, "webshop-backend corgi");
+        assert_eq!(main.label, "webshop-backend supervisor");
     }
 
     #[test]
@@ -1254,7 +1260,7 @@ mod tests {
                             assert_eq!(request["params"]["cwd"], root);
                             json!({
                                 "type": "workspace_created",
-                                "workspace": { "workspace_id": "wNew", "label": "webshop-backend corgi" },
+                                "workspace": { "workspace_id": "wNew", "label": "webshop-backend supervisor" },
                                 "tab": { "tab_id": "wNew:t1" },
                                 "root_pane": { "pane_id": "wNew:p1" }
                             })
@@ -1305,7 +1311,7 @@ mod tests {
                         }
                         "workspace.rename" => {
                             assert_eq!(request["params"]["workspace_id"], "wR");
-                            assert_eq!(request["params"]["label"], "webshop-backend corgi");
+                            assert_eq!(request["params"]["label"], "webshop-backend supervisor");
                             json!({ "type": "workspace_renamed" })
                         }
                         "workspace.list" => json!({
@@ -1327,7 +1333,7 @@ mod tests {
 
         // No new mark, and no adoption: the fake answers nothing else.
         assert_eq!(main.workspace_id, "wR");
-        assert_eq!(main.label, "webshop-backend corgi");
+        assert_eq!(main.label, "webshop-backend supervisor");
     }
 
     #[test]
@@ -1354,7 +1360,7 @@ mod tests {
                             // repository, the kind adoption should retire.
                             snapshot["workspaces"].as_array_mut().unwrap().push(json!({
                                 "workspace_id": "wOld",
-                                "label": "webshop-backend corgi",
+                                "label": "webshop-backend supervisor",
                                 "tokens": {
                                     CORGI_WORKSPACE_ROLE_TOKEN: CORGI_PROJECT_MAIN_ROLE,
                                     CORGI_PROJECT_MAIN_TAB_TOKEN: "wOld:t1"
@@ -1377,7 +1383,7 @@ mod tests {
                             assert_eq!(request["params"]["workspace_id"], "wOld");
                             json!({
                                 "type": "workspace_closed",
-                                "workspace": { "workspace_id": "wOld", "label": "webshop-backend corgi" }
+                                "workspace": { "workspace_id": "wOld", "label": "webshop-backend supervisor" }
                             })
                         }
                         _ => unreachable!(),
@@ -1411,7 +1417,7 @@ mod duplicate_tests {
     fn main_json(id: &str) -> Value {
         json!({
             "workspace_id": id,
-            "label": "corgi corgi",
+            "label": "corgi supervisor",
             "tokens": {
                 CORGI_WORKSPACE_ROLE_TOKEN: CORGI_PROJECT_MAIN_ROLE,
                 CORGI_PROJECT_MAIN_TAB_TOKEN: format!("{id}:t1"),
@@ -1433,8 +1439,12 @@ mod duplicate_tests {
         let supervisor = AgentInfo {
             pane_id: "w70:p2".into(),
             workspace_id: "w70".into(),
-            name: Some("corgi-corgi".into()),
-            tokens: [(supervisor::SUPERVISOR_TOKEN.into(), "corgi-corgi".into())].into(),
+            name: Some("supervisor-corgi".into()),
+            tokens: [(
+                supervisor::SUPERVISOR_TOKEN.into(),
+                "supervisor-corgi".into(),
+            )]
+            .into(),
             ..AgentInfo::default()
         };
         let worker = AgentInfo {
@@ -1475,9 +1485,9 @@ mod duplicate_tests {
                     "agents": [
                         {
                             "pane_id": "w70:p1", "workspace_id": "w70", "tab_id": "w70:t1",
-                            "agent": "claude", "name": "corgi-corgi",
+                            "agent": "claude", "name": "supervisor-corgi",
                             "agent_session": { "value": "s1" },
-                            "tokens": { "corgi_handler": "corgi-corgi" }
+                            "tokens": { "corgi_handler": "supervisor-corgi" }
                         },
                         {
                             "pane_id": "w90:p1", "workspace_id": "w90", "tab_id": "w90:t1",
@@ -1496,7 +1506,10 @@ mod duplicate_tests {
 
         let mut app = test_app();
         app.client = HerdrClient::from_socket_path(&socket_path);
-        assert_eq!(app.retire_duplicate_project_mains(ROOT), ["corgi corgi"]);
+        assert_eq!(
+            app.retire_duplicate_project_mains(ROOT),
+            ["corgi supervisor"]
+        );
 
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");

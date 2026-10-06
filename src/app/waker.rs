@@ -126,7 +126,7 @@ struct Stop<'a> {
     since: u64,
 }
 
-/// What a handover at one refresh asks the dashboard to do for one corgi.
+/// What a handover at one refresh asks the dashboard to do for one supervisor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct HandoverAction {
     /// `None` when there is only a new baseline to keep on the pane.
@@ -162,7 +162,7 @@ impl SupervisorWaker {
         wake_lock_path(client.socket_path()).is_some_and(|lock| self.lead(&lock))
     }
 
-    /// Whether `root`'s corgi is handing over, so wakes for it wait for the
+    /// Whether `root`'s supervisor is handing over, so wakes for it wait for the
     /// supervisor that takes over.
     fn handing_over(&self, root: &str) -> bool {
         self.handovers
@@ -178,7 +178,7 @@ impl SupervisorWaker {
         waker
     }
 
-    /// The state directory holding the inbox of `root`'s corgi.
+    /// The state directory holding the inbox of `root`'s supervisor.
     fn inbox_dir(&self, root: &str) -> Option<PathBuf> {
         match &self.base {
             Some(base) => Some(base.join(dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT))),
@@ -350,7 +350,7 @@ impl SupervisorWaker {
         Ok(())
     }
 
-    /// The lines waiting for `root`'s corgi, each as it goes out alone.
+    /// The lines waiting for `root`'s supervisor, each as it goes out alone.
     #[cfg(test)]
     pub(super) fn pending_for(&self, root: &str) -> Vec<String> {
         let dir = self.inbox_dir(root).expect("inbox dir");
@@ -364,7 +364,7 @@ impl SupervisorWaker {
     /// Advances each supervisor's handover by one refresh, with `percent` as
     /// the threshold and `idle_secs` giving each harness's idle time, and
     /// returns what to do about it. `note_since(root, at)` says whether
-    /// `root`'s corgi wrote its note since `at`, and `drafting(corgi)`
+    /// `root`'s supervisor wrote its note since `at`, and `drafting(supervisor)`
     /// whether the user is writing in its input box, which holds a due
     /// request, or the replacement, back for a later refresh.
     fn hand_over(
@@ -386,7 +386,7 @@ impl SupervisorWaker {
             .collect();
         let mut actions = Vec::new();
         // The home directory is never a project, so nothing there is
-        // handed over as its corgi.
+        // handed over as its supervisor.
         for agent in agents
             .iter()
             .filter(|agent| agent.supervisor && !agent.scratch)
@@ -527,7 +527,7 @@ impl SupervisorWaker {
     /// Takes one refresh's agents: tells each project's supervisor about its
     /// agents that stopped since the last one, and hands supervisors whose
     /// handover is due over to fresh sessions, when this dashboard is
-    /// the one that wakes corgis. Returns the status line to show, if any.
+    /// the one that wakes supervisors. Returns the status line to show, if any.
     fn tick(
         &mut self,
         client: &HerdrClient,
@@ -693,7 +693,7 @@ fn captured_report(
     .filter(|report| !report.text.trim().is_empty())
 }
 
-/// Whether the user is writing in `corgi`'s input box, so that nothing is
+/// Whether the user is writing in `supervisor`'s input box, so that nothing is
 /// typed into their draft. A screen that cannot be read, or a harness whose
 /// box Corgi does not know, counts as no draft: the text goes out as it did
 /// before this check, rather than waiting for good.
@@ -704,7 +704,7 @@ fn holds_draft(client: &HerdrClient, supervisor: &DashboardAgent) -> bool {
     screen_holds_draft(screen, &supervisor.info.harness())
 }
 
-/// Whether `screen`, as read from a `harness` corgi's pane, shows a draft.
+/// Whether `screen`, as read from a `harness` supervisor's pane, shows a draft.
 fn screen_holds_draft(screen: Result<String>, harness: &Harness) -> bool {
     screen
         .ok()
@@ -835,7 +835,7 @@ pub(super) fn wake_lock_held(socket: &Path) -> bool {
 impl App {
     /// Tells each project's supervisor about its agents that stopped since the
     /// last refresh, and hands supervisors whose handover is due over to
-    /// fresh sessions, when this dashboard is the one that wakes corgis.
+    /// fresh sessions, when this dashboard is the one that wakes supervisors.
     pub(super) fn wake_supervisors(&mut self) {
         let Some(waker) = self.supervisor_waker.as_mut() else {
             return;
@@ -899,7 +899,7 @@ mod tests {
         };
         let agents = |supervisor: AgentState, worker: AgentState, other: AgentState| {
             vec![
-                project_agent("corgi-weather", "/repos/weather", true, supervisor),
+                project_agent("supervisor-weather", "/repos/weather", true, supervisor),
                 project_agent("w-forecast", "/repos/weather", false, worker),
                 project_agent("w-elsewhere", "/repos/corgi", false, other),
             ]
@@ -914,7 +914,7 @@ mod tests {
         refresh(&mut waker, &agents(Idle, Idle, Idle));
         assert_eq!(
             *sent.borrow(),
-            ["corgi-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
+            ["supervisor-weather: [Corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
         );
         // The supervisor's own turns, and another project's agents, wake nobody.
         refresh(&mut waker, &agents(Working, Idle, Working));
@@ -970,7 +970,7 @@ mod tests {
     }
 
     fn weather_supervisor(state: AgentState) -> DashboardAgent {
-        project_agent("corgi-weather", "/repos/weather", true, state)
+        project_agent("supervisor-weather", "/repos/weather", true, state)
     }
 
     #[test]
@@ -994,9 +994,9 @@ mod tests {
         assert_eq!(
             wake_refresh(&mut second, &done, Some(report), false),
             [
-                "corgi-weather: [corgi] w-forecast is done. Its report follows, quoted, so you \
+                "supervisor-weather: [Corgi] w-forecast is done. Its report follows, quoted, so you \
                  need not run report for it:\n> ### Report\n> - Result: done\n\
-                 [corgi] End of w-forecast's report."
+                 [Corgi] End of w-forecast's report."
             ]
         );
         assert!(wake_refresh(&mut second, &done, Some(report), false).is_empty());
@@ -1026,7 +1026,7 @@ mod tests {
         // Not the supervisor's own worker: the line points at the report.
         assert_eq!(
             wake_refresh(&mut second, &agents(Done, 2), None, false),
-            ["corgi-weather: [corgi] w-radar is done. Run: /opt/corgi report w-radar"]
+            ["supervisor-weather: [Corgi] w-radar is done. Run: /opt/corgi report w-radar"]
         );
         assert!(wake_refresh(&mut second, &agents(Done, 2), None, false).is_empty());
         let inbox = Inbox::read(&scratch.join("weather"));
@@ -1108,11 +1108,11 @@ mod tests {
         assert_eq!(
             second.pending_for("/repos/weather"),
             [
-                "[corgi] w-new is done. Its report follows, quoted, so you need not run report \
-                 for it:\n> short report\n[corgi] End of w-new's report."
+                "[Corgi] w-new is done. Its report follows, quoted, so you need not run report \
+                 for it:\n> short report\n[Corgi] End of w-new's report."
                     .to_string(),
-                "[corgi] w-screen is done. Its report follows, quoted, so you need not run \
-                 report for it:\n> $ claude\n[corgi] End of w-screen's report."
+                "[Corgi] w-screen is done. Its report follows, quoted, so you need not run \
+                 report for it:\n> $ claude\n[Corgi] End of w-screen's report."
                     .to_string()
             ]
         );
@@ -1147,8 +1147,8 @@ mod tests {
         assert_eq!(
             wake_refresh(&mut waker, &agents, None, false),
             [
-                "corgi-weather: [corgi] w-radar is done. Its report follows, quoted, so you need \
-              not run report for it:\n> radar report\n[corgi] End of w-radar's report."
+                "supervisor-weather: [Corgi] w-radar is done. Its report follows, quoted, so you need \
+              not run report for it:\n> radar report\n[Corgi] End of w-radar's report."
             ]
         );
     }
@@ -1168,7 +1168,7 @@ mod tests {
         wake_refresh(&mut waker, &agents(Working, 1), None, false);
         assert_eq!(
             wake_refresh(&mut waker, &agents(Done, 2), Some(&long), false),
-            ["corgi-weather: [corgi] w-radar is done. Run: /opt/corgi report w-radar"]
+            ["supervisor-weather: [Corgi] w-radar is done. Run: /opt/corgi report w-radar"]
         );
         let dir = scratch.join("weather");
         let inbox = Inbox::read(&dir);
@@ -1189,7 +1189,7 @@ mod tests {
                 project: "/repos/weather".into(),
                 source: "notify".into(),
                 kind: Kind::Note,
-                text: "[corgi] The nightly build failed.".into(),
+                text: "[Corgi] The nightly build failed.".into(),
                 ..Item::default()
             },
         )
@@ -1206,7 +1206,7 @@ mod tests {
         );
         assert_eq!(
             wake_refresh(&mut waker, &[weather_supervisor(Idle)], None, false),
-            ["corgi-weather: [corgi] The nightly build failed."]
+            ["supervisor-weather: [Corgi] The nightly build failed."]
         );
         assert!(wake_refresh(&mut waker, &[weather_supervisor(Idle)], None, false).is_empty());
     }
@@ -1216,7 +1216,7 @@ mod tests {
         let scratch = ScratchDir::new("waker");
         use AgentState::{Done, Idle, Working};
         let root = "/repos/weather";
-        let mut owner = project_agent("corgi-weather", root, false, Idle);
+        let mut owner = project_agent("supervisor-weather", root, false, Idle);
         owner.info.agent_session = Some(crate::model::AgentSession {
             value: "s1".into(),
             ..Default::default()
@@ -1339,7 +1339,8 @@ mod tests {
             let mut waker = SupervisorWaker::in_dir(&scratch);
             let mut sent = Vec::new();
             let mut refresh = |worker, shown: Result<String>| {
-                let mut supervisor = project_agent("corgi-weather", "/repos/weather", true, Done);
+                let mut supervisor =
+                    project_agent("supervisor-weather", "/repos/weather", true, Done);
                 supervisor.info.agent = Some(harness.into());
                 let agents = [
                     supervisor,
@@ -1369,7 +1370,7 @@ mod tests {
             assert_eq!(refresh(Done, screen(empty)), 1, "sent once");
             assert_eq!(
                 sent,
-                ["[corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
+                ["[Corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
             );
         }
     }
@@ -1388,8 +1389,12 @@ mod tests {
     fn a_handover_request_waits_while_the_user_writes_in_the_supervisors_input_box() {
         let scratch = ScratchDir::new("waker");
         use crate::supervisor::{HandoverStep::Ask, Trigger::Full};
-        let mut supervisor =
-            project_agent("corgi-weather", "/repos/weather", true, AgentState::Idle);
+        let mut supervisor = project_agent(
+            "supervisor-weather",
+            "/repos/weather",
+            true,
+            AgentState::Idle,
+        );
         supervisor.info.agent_session = Some(crate::model::AgentSession {
             value: "s1".into(),
             ..Default::default()
@@ -1429,7 +1434,7 @@ mod tests {
             .map_err(anyhow::Error::from)
         };
         let supervisor = |state, change| {
-            let mut agent = project_agent("corgi-weather", "/repos/weather", true, state);
+            let mut agent = project_agent("supervisor-weather", "/repos/weather", true, state);
             agent.info.agent = Some("claude".into());
             agent.info.state_change_seq = change;
             agent.info.agent_session = Some(crate::model::AgentSession {
@@ -1517,10 +1522,10 @@ mod tests {
                     value: session.into(),
                     ..Default::default()
                 }),
-                ..project_agent("corgi-weather", root, true, state).info
+                ..project_agent("supervisor-weather", root, true, state).info
             },
             context_percent: Some(percent),
-            ..project_agent("corgi-weather", root, true, state)
+            ..project_agent("supervisor-weather", root, true, state)
         };
         let worker = |name: &str, state, change| DashboardAgent {
             info: AgentInfo {
@@ -1564,7 +1569,7 @@ mod tests {
             &[supervisor("s1", Done, 3, 72), forecast(Done, 2)],
             true,
         );
-        // The old corgi has exited, and another worker stops in the gap.
+        // The old supervisor has exited, and another worker stops in the gap.
         refresh(
             &mut waker,
             &[forecast(Done, 2), worker("w-radar", Working, 1)],
@@ -1594,15 +1599,15 @@ mod tests {
         assert_eq!(
             steps,
             [
-                ("corgi-weather".to_string(), Ask(1_000, Full(50))),
-                ("corgi-weather".to_string(), Replace)
+                ("supervisor-weather".to_string(), Ask(1_000, Full(50))),
+                ("supervisor-weather".to_string(), Replace)
             ]
         );
         assert_eq!(
             sent,
             [
-                "corgi-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast\n\
-              [corgi] w-radar is done. Run: /opt/corgi report w-radar"
+                "supervisor-weather: [Corgi] w-forecast is done. Run: /opt/corgi report w-forecast\n\
+              [Corgi] w-radar is done. Run: /opt/corgi report w-radar"
             ]
         );
     }
@@ -1621,7 +1626,7 @@ mod tests {
         let mut sent = Vec::new();
         let mut steps = Vec::new();
         let agents = |state, change, worker| {
-            let mut supervisor = project_agent("corgi-weather", root, true, state);
+            let mut supervisor = project_agent("supervisor-weather", root, true, state);
             supervisor.info.state_change_seq = change;
             supervisor.info.agent_session = Some(crate::model::AgentSession {
                 value: "s1".into(),
@@ -1653,7 +1658,7 @@ mod tests {
         assert_eq!(steps, [Ask(1_000, Full(50)), NoNote]);
         assert_eq!(
             sent,
-            ["corgi-weather: [corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
+            ["supervisor-weather: [Corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
         );
     }
 
@@ -1664,7 +1669,7 @@ mod tests {
         use AgentState::{Done, Idle as Resting, Working};
         let root = "/repos/weather";
         let supervisor = |state, change, tokens, baseline: Option<&str>| {
-            let mut agent = project_agent("corgi-weather", root, true, state);
+            let mut agent = project_agent("supervisor-weather", root, true, state);
             agent.info.agent = Some("codex".into());
             agent.info.state_change_seq = change;
             agent.info.agent_session = Some(crate::model::AgentSession {
@@ -1724,7 +1729,7 @@ mod tests {
             baseline: None,
             token: None,
             root: "/repos/weather".into(),
-            name: "corgi-weather".into(),
+            name: "supervisor-weather".into(),
             pane_id: "w9:p1".into(),
             session: "019a-thread".into(),
             harness: Harness::Codex,
@@ -1739,7 +1744,7 @@ mod tests {
                 extra_args: vec!["--search".into()],
             },
         );
-        assert_eq!(plan.name, "corgi-weather");
+        assert_eq!(plan.name, "supervisor-weather");
         assert_eq!(
             plan.role,
             Role::Supervisor {
@@ -1831,7 +1836,7 @@ mod tests {
         wake_refresh(&mut after, &agents(Working, 2), None, false);
         assert_eq!(
             wake_refresh(&mut after, &agents(Done, 3), None, false),
-            ["corgi-weather: [corgi] w-radar is done. Run: /opt/corgi report w-radar"],
+            ["supervisor-weather: [Corgi] w-radar is done. Run: /opt/corgi report w-radar"],
             "the second stop never reaches the supervisor"
         );
     }
@@ -1861,14 +1866,14 @@ mod tests {
         fs::remove_file(scratch.join("weather")).unwrap();
         assert_eq!(
             wake_refresh(&mut waker, &agents(Done, 2), None, false),
-            ["corgi-weather: [corgi] w-radar is done. Run: /opt/corgi report w-radar"],
+            ["supervisor-weather: [Corgi] w-radar is done. Run: /opt/corgi report w-radar"],
             "the stop is lost for good"
         );
     }
 
     /// Two projects with the same directory name share one state directory,
     /// so one inbox; delivery types every item of that inbox into whichever
-    /// corgi comes first, and records them delivered. On main the queue was
+    /// supervisor comes first, and records them delivered. On main the queue was
     /// keyed by the full project root.
     #[test]
     fn a_wake_reaches_the_supervisor_of_its_own_project_when_two_share_a_name() {
@@ -1887,13 +1892,13 @@ mod tests {
         wake_refresh(&mut waker, &agents(Working, 1), None, false);
         assert_eq!(
             wake_refresh(&mut waker, &agents(Done, 2), None, false),
-            ["corgi-oss-web: [corgi] w-oss is done. Run: /opt/corgi report w-oss"]
+            ["corgi-oss-web: [Corgi] w-oss is done. Run: /opt/corgi report w-oss"]
         );
     }
 
     /// Nothing bounds the one prompt typed into the supervisor's box: every own
     /// worker's report up to 4 KB each goes inline. Eight workers stopping
-    /// during one long corgi turn (or one dashboard downtime) make a ~33 KB
+    /// during one long supervisor turn (or one dashboard downtime) make a ~33 KB
     /// agent.prompt. `corgi inbox` caps itself at 16 KB of reports.
     #[test]
     fn the_typed_prompt_stays_within_a_budget() {

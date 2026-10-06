@@ -63,8 +63,9 @@ mod rows;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub use cli::{
-    DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, REPORT_USAGE, SPAWN_USAGE, START_USAGE,
-    TAG_USAGE, digest, fleet, inbox_command, notify, report, spawn, start_command, tag_command,
+    DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, REPORT_USAGE, SPAWN_USAGE,
+    SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify, report, spawn,
+    supervisor_command, tag_command,
 };
 use rows::{
     NO_TOOL_YET, SCRATCH_GROUP, agent_project, agent_worktree, checkout_label, codex_thread_id,
@@ -103,9 +104,9 @@ const CODEX_TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 /// stable identity even when the launcher moves the dashboard to a new
 /// workspace, which changes its pane ID.
 const DASHBOARD_PANE_LABEL: &str = "Corgi";
-/// What the dashboard calls a project's corgi. There is one per project, so
-/// the project heading says whose it is.
-const SUPERVISOR_NAME: &str = "corgi";
+/// What the dashboard calls a project's supervisor: its role, capitalised as
+/// a label. There is one per project, so the project heading says whose it is.
+const SUPERVISOR_NAME: &str = "Supervisor";
 
 type UsageResult = (Provider, Option<CachedUsage>);
 
@@ -1602,7 +1603,7 @@ mod tests {
         let mut app = test_app();
         let main = WorkspaceInfo {
             workspace_id: "w-main".into(),
-            label: "corgi corgi".into(),
+            label: "corgi supervisor".into(),
             tokens: BTreeMap::from([
                 (
                     CORGI_WORKSPACE_ROLE_TOKEN.into(),
@@ -1662,7 +1663,7 @@ mod tests {
                     "alpha",
                     "",
                 ),
-                // A worker in the root tab is not the corgi...
+                // A worker in the root tab is not the supervisor...
                 agent(
                     "p-root",
                     "w-main",
@@ -1686,7 +1687,7 @@ mod tests {
                     "w-main",
                     "w-main:t2",
                     "/projects/corgi",
-                    "start-your-corgi-session-for-m",
+                    "start-your-supervisor-session-for-m",
                     "session:p-corgi-session",
                 ),
             ],
@@ -1704,7 +1705,7 @@ mod tests {
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                ("p-corgi", true, "corgi", "corgi"),
+                ("p-corgi", true, "Supervisor", "Supervisor"),
                 ("p-root", false, "corgi", "Reviewing the ledger"),
                 ("p-alpha", false, "corgi/alpha", "Reviewing the ledger"),
                 ("p-reused", false, "corgi", "Reviewing the ledger"),

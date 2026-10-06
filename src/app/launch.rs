@@ -40,7 +40,7 @@ use super::{
 
 /// The label of a scratch agent's workspace, numbered from the second on.
 const SCRATCH_LABEL: &str = "scratch";
-/// Why the home directory gets no corgi.
+/// Why the home directory gets no supervisor.
 pub(super) const SUPERVISOR_HOME_REFUSAL: &str = "The home directory is not a project, so it has no supervisor; t in the dashboard starts a scratch agent there";
 const AGENT_START_ATTEMPTS: usize = 40;
 const AGENT_START_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -965,7 +965,7 @@ pub(super) fn supervisor_harness_error(harness: &Harness) -> String {
     )
 }
 
-/// The launch the dashboard's corgi key starts for `root`: the harness,
+/// The launch the dashboard's supervisor key starts for `root`: the harness,
 /// model, effort and arguments its supervisor was last launched with, `saved`,
 /// else the new-agent form's preset harness (or the first a supervisor runs on)
 /// with the harness's own defaults. It has no task, so the supervisor greets
@@ -996,7 +996,7 @@ pub(super) fn dashboard_supervisor_plan(
     Ok(plan)
 }
 
-/// The launch of `root`'s corgi on `harness`, refused while one is already
+/// The launch of `root`'s supervisor on `harness`, refused while one is already
 /// running.
 pub(super) fn supervisor_plan(
     app: &App,
@@ -1019,7 +1019,7 @@ pub(super) fn supervisor_plan(
         );
     }
     let name = sanitize_agent_name(&format!(
-        "corgi-{}",
+        "supervisor-{}",
         dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT)
     ));
     anyhow::ensure!(
@@ -1081,7 +1081,7 @@ mod tests {
         // A project with a supervisor, or with only workers, gets a worker.
         assert!(!starts_supervisor(false, "/repos/corgi", &agents));
         assert!(!starts_supervisor(false, "/repos/weather/", &agents));
-        // A project nobody works in, or a new one, starts its corgi.
+        // A project nobody works in, or a new one, starts its supervisor.
         assert!(starts_supervisor(false, "/repos/copy", &agents));
         assert!(starts_supervisor(true, "/repos/brand-new", &agents));
         assert!(!starts_supervisor(false, "  ", &agents));
@@ -1093,7 +1093,7 @@ mod tests {
             return;
         };
         let home = home.to_string_lossy().into_owned();
-        // No agent works there, and it is not even new: still no corgi.
+        // No agent works there, and it is not even new: still no supervisor.
         assert!(!starts_supervisor(false, &home, &[]));
         assert!(!starts_supervisor(true, &format!("{home}/"), &[]));
         assert!(!starts_supervisor(false, "~", &[]));
@@ -1119,7 +1119,7 @@ mod tests {
 
     #[test]
     fn scratch_workspaces_are_numbered_from_the_second() {
-        assert_eq!(scratch_label(["corgi corgi"].into_iter()), "scratch");
+        assert_eq!(scratch_label(["corgi supervisor"].into_iter()), "scratch");
         assert_eq!(scratch_label(["scratch"].into_iter()), "scratch 2");
         assert_eq!(
             scratch_label(["scratch", "scratch 3", "scratch 2"].into_iter()),
@@ -1154,12 +1154,12 @@ mod tests {
                                     if session_known {
                                         "session:launch-session"
                                     } else {
-                                        "corgi-m-ta-sverige"
+                                        "supervisor-m-ta-sverige"
                                     }
                                 );
                                 json!({"type": "agent_prompted", "agent": {
                                     "pane_id": "w9:p1", "workspace_id": "w9", "tab_id": "w9:t1",
-                                    "name": "start-your-corgi-session-for-m",
+                                    "name": "start-your-supervisor-session-for-m",
                                     "agent_session": {"value": "launch-session"}
                                 }})
                             }
@@ -1175,7 +1175,7 @@ mod tests {
             let client = HerdrClient::from_socket_path(&socket);
             let started = AgentInfo {
                 pane_id: "w9:p1".into(),
-                name: Some("corgi-m-ta-sverige".into()),
+                name: Some("supervisor-m-ta-sverige".into()),
                 agent_session: session_known.then(|| crate::model::AgentSession {
                     value: "launch-session".into(),
                     ..Default::default()
@@ -1186,7 +1186,7 @@ mod tests {
                 &client,
                 &started,
                 "Start your supervisor session",
-                "corgi-m-ta-sverige",
+                "supervisor-m-ta-sverige",
                 true,
                 &mut Silent,
             )
@@ -1323,7 +1323,7 @@ mod tests {
             "Hi".into(),
         )
         .expect("no supervisor runs yet");
-        assert_eq!(plan.name, "corgi-weather");
+        assert_eq!(plan.name, "supervisor-weather");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!(plan.model, "gpt-5-codex");
         assert_eq!(plan.effort, "high");
@@ -1332,7 +1332,7 @@ mod tests {
 
         app.agents = vec![DashboardAgent {
             info: AgentInfo {
-                name: Some("corgi-weather".into()),
+                name: Some("supervisor-weather".into()),
                 ..AgentInfo::default()
             },
             project_root: "/repos/weather".into(),
@@ -1352,7 +1352,7 @@ mod tests {
         assert!(
             refused
                 .to_string()
-                .contains("already running as corgi-weather")
+                .contains("already running as supervisor-weather")
         );
         // Another project's supervisor is no reason to refuse.
         assert!(
@@ -1382,10 +1382,10 @@ mod tests {
             ..DashboardAgent::default()
         };
         app.agents = vec![
-            agent("w1:p1", "corgi-weather", "codex", true),
+            agent("w1:p1", "supervisor-weather", "codex", true),
             agent("w2:p1", "w-forecast", "claude", false),
             // A supervisor whose harness Herdr has not detected names none.
-            agent("w3:p1", "corgi-corgi", " ", true),
+            agent("w3:p1", "supervisor-corgi", " ", true),
         ];
         assert_eq!(
             calling_supervisor_harness(&app, Some("w1:p1")),
@@ -1434,10 +1434,13 @@ mod tests {
                         }),
                         "workspace.create" => {
                             assert_eq!(request["params"]["cwd"], "/tmp/corgi-plain-project");
-                            assert_eq!(request["params"]["label"], "corgi-plain-project corgi");
+                            assert_eq!(
+                                request["params"]["label"],
+                                "corgi-plain-project supervisor"
+                            );
                             json!({ "result": {
                                 "type": "workspace_created",
-                                "workspace": { "workspace_id": "w9", "label": "corgi-plain-project corgi" },
+                                "workspace": { "workspace_id": "w9", "label": "corgi-plain-project supervisor" },
                                 "tab": { "tab_id": "w9:t1" },
                                 "root_pane": { "pane_id": "w9:p1" }
                             }})
@@ -1463,14 +1466,14 @@ mod tests {
         let (pane_id, location, root) = project_root_pane(
             &client,
             Path::new("/tmp/corgi-plain-project"),
-            "corgi-corgi-plain-project",
+            "supervisor-corgi-plain-project",
             true,
             &mut Silent,
         )
         .expect("start in the plain project's root tab");
         assert_eq!(pane_id, "w9:p1");
         assert_eq!(root, "/tmp/corgi-plain-project");
-        assert!(location.contains("corgi-plain-project corgi"));
+        assert!(location.contains("corgi-plain-project supervisor"));
         server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
 
@@ -1479,7 +1482,7 @@ mod tests {
         // is what finds it for the first worktree.
         let workspace = WorkspaceInfo {
             workspace_id: "w9".into(),
-            label: "corgi-plain-project corgi".into(),
+            label: "corgi-plain-project supervisor".into(),
             tokens: BTreeMap::from([
                 (
                     CORGI_WORKSPACE_ROLE_TOKEN.into(),
@@ -1539,7 +1542,7 @@ mod tests {
                             json!({ "result": { "type": "session_snapshot", "snapshot": {
                                 "workspaces": [{
                                     "workspace_id": "w9",
-                                    "label": "corgi-root-reuse corgi",
+                                    "label": "corgi-root-reuse supervisor",
                                     "tokens": {
                                         "corgi_workspace_role": "project-main",
                                         "corgi_project_main_tab": "w9:t1",
@@ -1568,7 +1571,7 @@ mod tests {
         let (pane_id, location, root) = project_root_pane(
             &client,
             Path::new("/tmp/corgi-root-reuse"),
-            "corgi-corgi-root-reuse",
+            "supervisor-corgi-root-reuse",
             true,
             &mut Silent,
         )
@@ -1578,7 +1581,7 @@ mod tests {
         fs::remove_file(socket_path).expect("remove fake socket");
         assert_eq!(pane_id, "w9:p1");
         assert_eq!(root, "/tmp/corgi-root-reuse");
-        assert_eq!(location, "in the corgi-root-reuse corgi project tab");
+        assert_eq!(location, "in the corgi-root-reuse supervisor project tab");
     }
 
     #[test]
@@ -1597,7 +1600,7 @@ mod tests {
         let (pane_id, location, root) = project_root_pane(
             &client,
             Path::new("/tmp/corgi-root-reuse"),
-            "corgi-corgi-root-reuse",
+            "supervisor-corgi-root-reuse",
             true,
             &mut Silent,
         )
@@ -1610,7 +1613,7 @@ mod tests {
         let tab = &requests[3]["params"];
         assert_eq!(tab["workspace_id"], "w9");
         assert_eq!(tab["cwd"], "/tmp/corgi-root-reuse");
-        assert_eq!(tab["label"], "corgi-corgi-root-reuse");
+        assert_eq!(tab["label"], "supervisor-corgi-root-reuse");
         assert_eq!(tab["focus"], false);
     }
 
@@ -1698,7 +1701,7 @@ mod tests {
         assert!(
             app.overlay
                 .new_agent_launch()
-                .is_some_and(|launch| launch.name == "corgi-corgi-key-test"),
+                .is_some_and(|launch| launch.name == "supervisor-corgi-key-test"),
             "{:?}",
             app.overlay.new_agent_launch()
         );
@@ -1733,7 +1736,7 @@ mod tests {
         app.agents = vec![
             DashboardAgent {
                 info: AgentInfo {
-                    name: Some("corgi-corgi-key-test".into()),
+                    name: Some("supervisor-corgi-key-test".into()),
                     pane_id: "w2:p1".into(),
                     workspace_id: "w2".into(),
                     tab_id: "w2:t3".into(),
@@ -1762,7 +1765,7 @@ mod tests {
         assert_eq!(app.selected, 0);
         assert_eq!(
             app.status,
-            "Focused corgi-key-test's corgi, corgi-corgi-key-test"
+            "Focused corgi-key-test's corgi, supervisor-corgi-key-test"
         );
     }
 

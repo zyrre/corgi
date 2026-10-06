@@ -362,6 +362,10 @@ pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> 
 /// `[supervisor]` the supervisor starts its own prompts to workers with.
 pub const WAKE_PREFIX: &str = "[Corgi]";
 
+/// What [`WAKE_PREFIX`] was while the supervisor was called the corgi, still
+/// on items an older Corgi left in an inbox.
+pub const OLD_WAKE_PREFIX: &str = "[corgi]";
+
 /// Context usage, in percent of the window, from which a supervisor is handed
 /// over to a fresh session.
 const HANDOVER_PERCENT: u8 = 50;
@@ -530,7 +534,7 @@ pub fn merge_tag(info: &AgentInfo) -> MergeTag {
 }
 
 /// Native identity belongs to the live agent. A status-line `session` token
-/// can survive pane reuse, so it must never establish corgi ownership.
+/// can survive pane reuse, so it must never establish supervisor ownership.
 pub fn native_session(info: &AgentInfo) -> Option<&str> {
     info.agent_session
         .as_ref()
@@ -547,7 +551,7 @@ pub fn marker(name: &str, session: Option<&str>) -> String {
 
 /// Whether `info` is a project's supervisor: the agent Corgi launched as one and
 /// marked, wherever its pane has since moved. Sitting in the project's root
-/// tab does not make an agent the corgi.
+/// tab does not make an agent the supervisor.
 pub fn is_supervisor(info: &AgentInfo) -> bool {
     let Some(marker) = supervisor_marker(&info.tokens) else {
         return false;
@@ -629,7 +633,7 @@ pub fn wake_report_message(worker: &str, state: &str) -> String {
 /// rest, so a sweeping conflict stays one readable line.
 const CONFLICT_FILES_NAMED: usize = 20;
 
-/// What the user's merge of a worker's branch ran into, for its corgi.
+/// What the user's merge of a worker's branch ran into, for its supervisor.
 pub struct MergeConflict<'a> {
     /// The worker's agent name, as the supervisor's ledger has it.
     pub worker: &'a str,
@@ -1050,7 +1054,7 @@ mod tests {
     #[test]
     fn supervisor_identity_survives_renaming_but_not_pane_reuse() {
         let mut agent = AgentInfo {
-            name: Some("corgi-m-ta-sverige".into()),
+            name: Some("supervisor-m-ta-sverige".into()),
             agent_session: Some(crate::model::AgentSession {
                 value: "original-session".into(),
                 ..Default::default()
@@ -1063,7 +1067,7 @@ mod tests {
             ..Default::default()
         };
         assert!(is_supervisor(&agent));
-        agent.name = Some("start-your-corgi-session-for-m".into());
+        agent.name = Some("start-your-supervisor-session-for-m".into());
         assert!(is_supervisor(&agent));
         // Neither an old bridge token nor the old name can override native identity.
         agent
@@ -1071,7 +1075,7 @@ mod tests {
             .insert("session".into(), "original-session".into());
         agent.agent_session.as_mut().unwrap().value = "replacement-session".into();
         assert!(!is_supervisor(&agent));
-        agent.name = Some("corgi-m-ta-sverige".into());
+        agent.name = Some("supervisor-m-ta-sverige".into());
         assert!(!is_supervisor(&agent));
         agent.agent_session = None;
         assert!(!is_supervisor(&agent));
@@ -1413,8 +1417,8 @@ mod tests {
     #[test]
     fn legacy_and_pre_prompt_markers_require_the_launch_name() {
         let mut agent = AgentInfo {
-            name: Some("corgi-corgi".into()),
-            tokens: [(SUPERVISOR_TOKEN.into(), marker("corgi-corgi", None))].into(),
+            name: Some("supervisor-corgi".into()),
+            tokens: [(SUPERVISOR_TOKEN.into(), marker("supervisor-corgi", None))].into(),
             ..Default::default()
         };
         assert!(is_supervisor(&agent));
@@ -1496,15 +1500,15 @@ mod tests {
         let corgi_bin = Path::new("/opt/corgi/corgi");
         assert_eq!(
             wake_message(corgi_bin, "w-x", Done),
-            "[corgi] w-x is done. Run: /opt/corgi/corgi report w-x"
+            "[Corgi] w-x is done. Run: /opt/corgi/corgi report w-x"
         );
         assert_eq!(
             wake_message(corgi_bin, "w-x", Idle),
-            "[corgi] w-x is idle. Run: /opt/corgi/corgi report w-x"
+            "[Corgi] w-x is idle. Run: /opt/corgi/corgi report w-x"
         );
         assert_eq!(
             wake_message(corgi_bin, "w-x", Blocked),
-            "[corgi] w-x is blocked. Run: herdr agent read w-x --source recent --lines 120"
+            "[Corgi] w-x is blocked. Run: herdr agent read w-x --source recent --lines 120"
         );
     }
 
@@ -1998,7 +2002,7 @@ mod tests {
         );
         let request = handover_request(Path::new("/state"), Trigger::Idle(50));
         assert!(request.starts_with(
-            "[corgi] You have been idle for 50 minutes and your prompt cache is about to \
+            "[Corgi] You have been idle for 50 minutes and your prompt cache is about to \
              expire, so a fresh supervisor session takes over from you. Write /state/handover.md"
         ));
     }
@@ -2208,11 +2212,11 @@ mod tests {
         ));
         assert!(prompt.contains("Skip the greeting"));
         let request = handover_request(state, Trigger::Full(50));
-        assert!(request.starts_with("[corgi] Your context is past 50%"));
+        assert!(request.starts_with("[Corgi] Your context is past 50%"));
         assert!(request.contains("Write /state/supervisors/weather/handover.md"));
         assert_eq!(
             handover_request(state, Trigger::Update),
-            "[corgi] You worked after writing your handover note; bring \
+            "[Corgi] You worked after writing your handover note; bring \
              /state/supervisors/weather/handover.md up to date with what happened since you \
              wrote it, then end your turn."
         );
@@ -2237,7 +2241,7 @@ mod tests {
         for section in [
             "Open threads with the user",
             "Proposed plans not yet approved",
-            "`[corgi]` prompts since each worker's last wake",
+            "`[supervisor]` prompts since each worker's last wake",
             "Promises to the user",
         ] {
             assert!(role.contains(section), "{section}");
@@ -2246,7 +2250,7 @@ mod tests {
 
     #[test]
     fn a_launch_is_recorded_for_the_successor_on_the_same_harness() {
-        let dir = env::temp_dir().join(format!("corgi-corgi-launch-{}", std::process::id()));
+        let dir = env::temp_dir().join(format!("supervisor-corgi-launch-{}", std::process::id()));
         fs::create_dir_all(&dir).expect("create state dir");
         assert_eq!(launch_of(&dir, &Harness::Codex).kind, "codex");
         let launch = Launch {

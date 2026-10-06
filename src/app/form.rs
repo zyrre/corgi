@@ -576,7 +576,7 @@ impl App {
         }
     }
 
-    /// What the filled-in form launches: a worker, or the project's corgi.
+    /// What the filled-in form launches: a worker, or the project's supervisor.
     /// A value still missing or invalid is pointed out in the form instead.
     fn new_agent_plan(&mut self) -> Option<LaunchPlan> {
         let form = self.overlay.new_agent_form_mut()?;
@@ -1070,7 +1070,7 @@ mod tests {
         assert_eq!((form.model.as_str(), form.effort.as_str()), ("", ""));
         assert!(form.list.is_none());
         assert!(form.is_scratch());
-        // Even with only a scratch agent there, it starts no corgi.
+        // Even with only a scratch agent there, it starts no supervisor.
         assert!(!app.new_agent_starts_supervisor());
 
         // An empty task is no slip: the agent starts as a session to type in.

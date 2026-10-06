@@ -790,7 +790,7 @@ mod tests {
     /// worker in a Corgi worktree workspace.
     fn marked_session() -> Value {
         let corgi_tokens = json!({
-            "corgi_handler": "corgi-corgi",
+            "corgi_handler": "supervisor-corgi",
             "corgi_handover": format!("1790000000 {SESSION}"),
             "corgi_baseline": format!("200000 {SESSION}"),
             "session": SESSION,
@@ -801,7 +801,7 @@ mod tests {
             "workspaces": [
                 {
                     "workspace_id": "w70",
-                    "label": "corgi-markers corgi",
+                    "label": "corgi-markers supervisor",
                     "tokens": {
                         "corgi_workspace_role": "project-main",
                         "corgi_project_main_tab": "w70:t1",
@@ -835,7 +835,7 @@ mod tests {
             "agents": [
                 {
                     "pane_id": "w70:p1", "workspace_id": "w70", "tab_id": "w70:t1",
-                    "agent": "claude", "name": "corgi-corgi", "agent_status": "working",
+                    "agent": "claude", "name": "supervisor-corgi", "agent_status": "working",
                     "cwd": ROOT,
                     "agent_session": { "agent": "claude", "kind": "id", "value": SESSION },
                     "tokens": corgi_tokens
@@ -908,7 +908,10 @@ mod tests {
         let mut dashboard = leading_dashboard(herdr.client(&record), &scratch);
 
         dashboard.refresh();
-        assert_eq!(roles(&dashboard), ["steward-corgi corgi", "w-brave worker"]);
+        assert_eq!(
+            roles(&dashboard),
+            ["steward-corgi supervisor", "w-brave worker"]
+        );
         for list in ["agents", "panes"] {
             let tokens = herdr.tokens(list, "pane_id", "w70:p1");
             assert_eq!(tokens[SUPERVISOR_TOKEN], json!(marker), "{list}");
@@ -950,7 +953,10 @@ mod tests {
             herdr.tokens("workspaces", "workspace_id", "w70"),
             herdr.tokens("workspaces", "workspace_id", "w8Z"),
         ];
-        assert_eq!(roles(&dashboard), ["corgi-corgi corgi", "w-brave worker"]);
+        assert_eq!(
+            roles(&dashboard),
+            ["supervisor-corgi supervisor", "w-brave worker"]
+        );
 
         herdr.restart();
         let mut fleet = test_app();
@@ -958,7 +964,7 @@ mod tests {
         fleet.refresh();
         assert_eq!(
             roles(&fleet),
-            ["corgi-corgi worker", "w-brave worker"],
+            ["supervisor-corgi worker", "w-brave worker"],
             "without its marks the supervisor is a worker"
         );
 
@@ -976,13 +982,19 @@ mod tests {
             before[0],
             "the pane has them too"
         );
-        // The refresh that put them back already sees the corgi.
-        assert_eq!(roles(&dashboard), ["corgi-corgi corgi", "w-brave worker"]);
+        // The refresh that put them back already sees the supervisor.
+        assert_eq!(
+            roles(&dashboard),
+            ["supervisor-corgi supervisor", "w-brave worker"]
+        );
         assert_eq!(herdr.reports().len(), 4);
 
         // And so does `corgi fleet`.
         fleet.refresh();
-        assert_eq!(roles(&fleet), ["corgi-corgi corgi", "w-brave worker"]);
+        assert_eq!(
+            roles(&fleet),
+            ["supervisor-corgi supervisor", "w-brave worker"]
+        );
 
         // A later refresh finds everything in place and writes nothing.
         dashboard.refresh();
@@ -1017,9 +1029,9 @@ mod tests {
 
     fn supervisor_marks(session: Option<&str>) -> PaneMarks {
         PaneMarks {
-            agent: "corgi-corgi".into(),
+            agent: "supervisor-corgi".into(),
             session: session.map(str::to_string),
-            tokens: owned(&[(SUPERVISOR_TOKEN, "corgi-corgi")]),
+            tokens: owned(&[(SUPERVISOR_TOKEN, "supervisor-corgi")]),
         }
     }
 
@@ -1042,7 +1054,7 @@ mod tests {
         for agent in [
             // The same name on a new session, as after a handover Corgi did
             // not record, or a resumed conversation.
-            supervisor_agent("w70:p1", "corgi-corgi", Some("new-session"), &[]),
+            supervisor_agent("w70:p1", "supervisor-corgi", Some("new-session"), &[]),
             // Another agent altogether.
             supervisor_agent("w70:p1", "w-other", Some("another-session"), &[]),
         ] {
@@ -1061,7 +1073,7 @@ mod tests {
     fn a_pane_waits_while_herdr_has_not_found_its_agent_or_session_again() {
         for agents in [
             vec![],
-            vec![supervisor_agent("w70:p1", "corgi-corgi", None, &[])],
+            vec![supervisor_agent("w70:p1", "supervisor-corgi", None, &[])],
         ] {
             let mut record = record_with_supervisor(Some(SESSION));
             let snapshot = SessionSnapshot {
@@ -1080,11 +1092,16 @@ mod tests {
 
     #[test]
     fn a_marked_pane_is_recorded_only_while_its_supervisor_is_in_it() {
-        let marker = [(SUPERVISOR_TOKEN, "corgi-corgi")];
+        let marker = [(SUPERVISOR_TOKEN, "supervisor-corgi")];
         // A supervisor whose session is not known yet keeps the one recorded.
         let mut record = record_with_supervisor(Some(SESSION));
         let snapshot = SessionSnapshot {
-            agents: vec![supervisor_agent("w70:p1", "corgi-corgi", None, &marker)],
+            agents: vec![supervisor_agent(
+                "w70:p1",
+                "supervisor-corgi",
+                None,
+                &marker,
+            )],
             ..SessionSnapshot::default()
         };
         assert_eq!(reconcile(&mut record, &snapshot), []);
@@ -1112,7 +1129,7 @@ mod tests {
         let snapshot = SessionSnapshot {
             agents: vec![supervisor_agent(
                 "w70:p1",
-                "corgi-corgi",
+                "supervisor-corgi",
                 Some("new-session"),
                 &newer,
             )],
@@ -1131,7 +1148,7 @@ mod tests {
         assert_eq!(
             record.panes["w70:p1"],
             PaneMarks {
-                agent: "corgi-corgi".into(),
+                agent: "supervisor-corgi".into(),
                 session: Some("new-session".into()),
                 tokens: owned(&newer),
             }
@@ -1144,7 +1161,7 @@ mod tests {
 
     #[test]
     fn legacy_markers_migrate_by_recorded_session_even_after_a_rename() {
-        for live in [vec![], vec![(SUPERVISOR_TOKEN, "corgi-corgi")]] {
+        for live in [vec![], vec![(SUPERVISOR_TOKEN, "supervisor-corgi")]] {
             let mut record = record_with_supervisor(Some(SESSION));
             let snapshot = SessionSnapshot {
                 agents: vec![supervisor_agent(
@@ -1176,10 +1193,10 @@ mod tests {
         let snapshot = SessionSnapshot {
             agents: vec![supervisor_agent(
                 "w70:p1",
-                "corgi-corgi",
+                "supervisor-corgi",
                 Some("new-session"),
                 &[
-                    (SUPERVISOR_TOKEN, "corgi-corgi"),
+                    (SUPERVISOR_TOKEN, "supervisor-corgi"),
                     (BASELINE_TOKEN, "1000 old-session"),
                 ],
             )],
@@ -1203,7 +1220,7 @@ mod tests {
     #[test]
     fn rejected_ownership_clears_live_tokens_with_null_patches() {
         for marker in [
-            "corgi-corgi".to_string(),
+            "supervisor-corgi".to_string(),
             supervisor::marker("", Some(SESSION)),
         ] {
             let scratch = ScratchDir::new("markers-live-clear");
@@ -1295,9 +1312,9 @@ mod tests {
         let mut snapshot = SessionSnapshot {
             agents: vec![supervisor_agent(
                 "w70:p1",
-                "corgi-corgi",
+                "supervisor-corgi",
                 Some("new-session"),
-                &[(SUPERVISOR_TOKEN, "corgi-corgi")],
+                &[(SUPERVISOR_TOKEN, "supervisor-corgi")],
             )],
             ..Default::default()
         };
@@ -1310,10 +1327,15 @@ mod tests {
 
     #[test]
     fn legacy_markers_need_a_matching_name_or_a_known_session() {
-        let marker = [(SUPERVISOR_TOKEN, "corgi-corgi")];
+        let marker = [(SUPERVISOR_TOKEN, "supervisor-corgi")];
         let mut record = Record::default();
         let mut snapshot = SessionSnapshot {
-            agents: vec![supervisor_agent("w70:p1", "corgi-corgi", None, &marker)],
+            agents: vec![supervisor_agent(
+                "w70:p1",
+                "supervisor-corgi",
+                None,
+                &marker,
+            )],
             ..Default::default()
         };
         assert!(reconcile(&mut record, &snapshot).is_empty());
@@ -1447,8 +1469,8 @@ mod tests {
         let record = scratch.join("markers").join("herdr.json");
         let herdr = StatefulHerdr::new("markers-mark", marked_session());
         let client = herdr.client(&record);
-        let marker = [(SUPERVISOR_TOKEN, "corgi-corgi")];
-        mark_pane(&client, "w70:p1", "corgi-corgi", None, &marker).expect("mark pane");
+        let marker = [(SUPERVISOR_TOKEN, "supervisor-corgi")];
+        mark_pane(&client, "w70:p1", "supervisor-corgi", None, &marker).expect("mark pane");
         let role = [(CORGI_WORKSPACE_ROLE_TOKEN, "agent-workspace")];
         mark_workspace(&client, "w8Z", Some("/wt/corgi-markers/brave-stone"), &role)
             .expect("mark workspace");
@@ -1469,13 +1491,13 @@ mod tests {
         );
         assert_eq!(
             herdr.tokens("agents", "pane_id", "w70:p1")["corgi_handler"],
-            "corgi-corgi"
+            "supervisor-corgi"
         );
         assert_eq!(
             herdr.reports()[0]["params"]["tokens"],
             // The pre-rename marker key is cleared too.
             json!({
-                "corgi_handler": "corgi-corgi", "corgi_steward": null,
+                "corgi_handler": "supervisor-corgi", "corgi_steward": null,
                 "corgi_handover": null, "corgi_baseline": null,
                 "corgi_request": null, "corgi_merge": null
             })
@@ -1551,7 +1573,10 @@ mod tests {
         assert!(worker_tokens().get(SUPERVISOR_TOKEN).is_none());
         fleet.refresh();
         assert!(requested_agent(&fleet, ROOT, ID).is_some());
-        assert_eq!(roles(&fleet), ["corgi-corgi corgi", "w-brave worker"]);
+        assert_eq!(
+            roles(&fleet),
+            ["supervisor-corgi supervisor", "w-brave worker"]
+        );
     }
 
     /// Another session in a tagged pane, as when the worker exited and
@@ -1666,7 +1691,7 @@ mod tests {
     /// request id, in Herdr and in the record, shows in `corgi fleet`, comes
     /// back after a Herdr restart, outlives the user looking at the worker,
     /// and goes once the worker works again, cleared by the dashboard that
-    /// wakes corgis.
+    /// wakes supervisors.
     #[test]
     fn a_merge_tag_lasts_until_its_worker_works_again() {
         let scratch = ScratchDir::new("markers-tag");
@@ -1839,10 +1864,11 @@ mod tests {
             "{refused}"
         );
         let supervisor = TagOptions {
-            name: "corgi-corgi".into(),
+            name: "supervisor-corgi".into(),
             ..tag(true)
         };
-        let refused = tag_agent(&client, &app, &root, &supervisor).expect_err("a working corgi");
+        let refused =
+            tag_agent(&client, &app, &root, &supervisor).expect_err("a working supervisor");
         assert!(refused.to_string().contains("is working"), "{refused}");
         let elsewhere = tag_agent(&client, &app, "/repos/elsewhere", &tag(true))
             .expect_err("another project's agent");

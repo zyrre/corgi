@@ -459,7 +459,7 @@ mod tests {
                 "workspaces": [
                     {
                         "workspace_id": "w-main",
-                        "label": "corgi corgi",
+                        "label": "corgi supervisor",
                         "tokens": {
                             CORGI_WORKSPACE_ROLE_TOKEN: CORGI_PROJECT_MAIN_ROLE,
                             CORGI_PROJECT_MAIN_TAB_TOKEN: "w-main:t1",
@@ -503,14 +503,14 @@ mod tests {
                     },
                     {
                         "agent": "claude",
-                        "name": "corgi-corgi",
+                        "name": "supervisor-corgi",
                         "agent_status": "idle",
                         "agent_session": { "agent": "claude", "value": "corgi-bar-test-corgi" },
                         "pane_id": "w-main:p1",
                         "workspace_id": "w-main",
                         "tab_id": "w-main:t1",
                         "cwd": "/repos/corgi",
-                        "tokens": { SUPERVISOR_TOKEN: "corgi-corgi" }
+                        "tokens": { SUPERVISOR_TOKEN: "supervisor-corgi" }
                     }
                 ],
                 "panes": []
@@ -599,10 +599,10 @@ mod tests {
                         "message": "Ready",
                         "message_kind": "ready",
                         "model": null,
-                        "name": "corgi",
+                        "name": "Supervisor",
                         "pane_id": "w-main:p1",
                         "project_group": "corgi",
-                        "task": "corgi",
+                        "task": "Supervisor",
                         "tool": "No command yet",
                         "tool_kind": "ready"
                     },

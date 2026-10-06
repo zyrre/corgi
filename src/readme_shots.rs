@@ -745,7 +745,7 @@ fn expanded() -> App {
     app
 }
 
-/// The new-agent form opened with `n` on the webshop corgi, the task typed
+/// The new-agent form opened with `n` on the webshop supervisor, the task typed
 /// and every other row on its preset.
 fn new_agent_form() -> App {
     let mut app = dashboard();

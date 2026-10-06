@@ -118,7 +118,7 @@ impl App {
     }
 
     /// The agents the selection can stop on, in list order: every row that
-    /// is drawn. A collapsed card is one stop, its corgi.
+    /// is drawn. A collapsed card is one stop, its supervisor.
     pub(crate) fn selection_stops(&self) -> Vec<usize> {
         let mut stops = Vec::with_capacity(self.agents.len());
         for run in project_runs(&self.agents) {
@@ -178,7 +178,7 @@ impl App {
     }
 
     /// `←`: collapses the selected project's card back into its summary, and
-    /// moves the selection from a worker row to the corgi.
+    /// moves the selection from a worker row to the supervisor.
     pub(super) fn collapse_card(&mut self) {
         let Some(run) = self.card_of(self.selected) else {
             return;
@@ -218,7 +218,7 @@ mod tests {
         }
     }
 
-    /// A corgi project of three, a project without one, and a scratch
+    /// A supervised project of three, a project without one, and a scratch
     /// session, in the dashboard's order.
     fn herd() -> Vec<DashboardAgent> {
         vec![

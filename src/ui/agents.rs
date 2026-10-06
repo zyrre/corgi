@@ -405,7 +405,7 @@ fn card_top(project: &str, area_width: u16) -> Line<'static> {
     ])
 }
 
-/// The rule between a card's corgi and the sum of its workers, joined to
+/// The rule between a card's supervisor and the sum of its workers, joined to
 /// the card's sides.
 fn card_divider(area_width: u16) -> Line<'static> {
     let inner = card_inner_width(area_width);
@@ -1241,7 +1241,7 @@ mod tests {
         }
     }
 
-    /// A corgi project whose supervisor talks at length, with a blocked, a
+    /// A project whose supervisor talks at length, with a blocked, a
     /// working and a finished worker; a project without a supervisor; and a
     /// scratch session.
     fn carded_herd() -> Vec<DashboardAgent> {
