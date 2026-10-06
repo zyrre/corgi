@@ -186,6 +186,9 @@ pub struct LedgerEntry {
     pub branch: String,
     pub summary: String,
     pub outcome: String,
+    /// The supervisor's questions to the user about this work, still unanswered,
+    /// such as `Q2: Keep the old flag?`.
+    pub questions: Vec<String>,
     /// The line of `ledger.jsonl` this newest line is on, counting from 1.
     pub line: usize,
 }
@@ -222,6 +225,16 @@ pub fn parse_ledger(text: &str) -> Vec<LedgerEntry> {
             branch: field("branch"),
             summary: field("summary"),
             outcome: field("outcome"),
+            questions: match object.get("questions") {
+                Some(serde_json::Value::Array(items)) => items
+                    .iter()
+                    .map(|item| match item {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
             line: line_number + 1,
         };
         match by_id.get(&id) {
@@ -234,6 +247,19 @@ pub fn parse_ledger(text: &str) -> Vec<LedgerEntry> {
     }
     entries.sort_by_key(|(line_number, _)| *line_number);
     entries.into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// The questions the newest ledger entry of `agent` leaves open, or `None`
+/// when it leaves none: its status is `needs-answer` or its `questions` are
+/// not empty. An agent without an entry, such as one the user started, has
+/// none. An entry with status `needs-answer` but no questions listed gives
+/// an empty list.
+pub fn open_questions(ledger: &str, agent: &str) -> Option<Vec<String>> {
+    let entry = parse_ledger(ledger)
+        .into_iter()
+        .filter(|entry| entry.agent == agent)
+        .max_by_key(|entry| entry.line)?;
+    (entry.status == "needs-answer" || !entry.questions.is_empty()).then_some(entry.questions)
 }
 
 /// A running agent of the project, as `corgi fleet` shows it.
@@ -585,6 +611,37 @@ not json
         assert!(found[0].contains("Decision: tabs"));
         assert_eq!(matching_decisions(&decisions, "use").len(), 2);
         assert!(matching_decisions(&decisions, "use rust").is_empty());
+    }
+
+    #[test]
+    fn open_questions_follow_the_agents_newest_ledger_line() {
+        let dispatched = r#"{"id":"a","agent":"w-a","status":"dispatched","summary":"A"}"#;
+        let asked = r#"{"id":"a","agent":"w-a","status":"needs-answer","questions":["Q2: Keep the flag?","Q3: Rename it?"]}"#;
+        let answered = r#"{"id":"a","agent":"w-a","status":"reported","questions":[]}"#;
+        let listed =
+            r#"{"id":"a","agent":"w-a","status":"reported","questions":["Q4: Which default?"]}"#;
+        let bare = r#"{"id":"a","agent":"w-a","status":"needs-answer"}"#;
+        let other = r#"{"id":"b","agent":"w-b","status":"needs-answer","questions":["Q1: B?"]}"#;
+
+        assert_eq!(
+            open_questions(&format!("{dispatched}\n{asked}"), "w-a"),
+            Some(vec!["Q2: Keep the flag?".into(), "Q3: Rename it?".into()])
+        );
+        assert_eq!(
+            open_questions(listed, "w-a"),
+            Some(vec!["Q4: Which default?".into()])
+        );
+        assert_eq!(open_questions(bare, "w-a"), Some(Vec::new()));
+        // A newer line that clears the questions answers them.
+        assert_eq!(open_questions(&format!("{asked}\n{answered}"), "w-a"), None);
+        // Another agent's questions, no entry, no ledger, or a broken one.
+        assert_eq!(
+            open_questions(&format!("{dispatched}\n{other}"), "w-a"),
+            None
+        );
+        assert_eq!(open_questions(other, "w-a"), None);
+        assert_eq!(open_questions("", "w-a"), None);
+        assert_eq!(open_questions("not json\n{", "w-a"), None);
     }
 
     fn input<'a>(decisions: &'a str, ledger: &'a str, fleet: &'a [LiveAgent]) -> DigestInput<'a> {
