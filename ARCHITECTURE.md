@@ -813,7 +813,13 @@ check, it runs `corgi tag NAME merge --project <root>`. The command finds
 NAME (a Herdr name or pane ID) among the project's agents and refuses one
 that is not done or idle, or whose checkout (its linked worktree, else its
 cwd) has no commits ahead of the branch checked out in the primary checkout,
-the branch `m` merges into. It sets the pane token `corgi_merge` to
+the branch `m` merges into. It also refuses while the corgi still has
+questions open about the agent: when the newest line of the corgi's
+`ledger.jsonl` (newest per `id`, as the digest reads it) whose `agent` is
+NAME has status `needs-answer` or a non-empty `questions` array
+(`digest::open_questions`), it names those questions. No ledger, no entry
+for NAME (an agent the user started), or a ledger it cannot read lets the
+tag through; `--clear` is never refused. It sets the pane token `corgi_merge` to
 `<state> <state_change_seq>`, the agent's state and Herdr's counter when it
 was tagged, through `markers::tag_pane`, so the tag survives dashboard and
 Herdr restarts like Corgi's other marks. `corgi tag NAME --clear` removes
