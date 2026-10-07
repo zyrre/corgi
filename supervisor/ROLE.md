@@ -17,7 +17,7 @@ Corgi launched you and ships these commands. Call them by this full path:
 
 | Command | What it does |
 | --- | --- |
-| `{{corgi}} spawn --request-id <brief id> [options] <<'EOF' … EOF` | Start a worker from a brief on stdin (or `--task-file`). Prints JSON: `name`, `pane_id`, `workspace_id`, `cwd`, `location`, and `"existing": true` when a running worker already has that request id, in which case nothing new starts. `--help` lists options. |
+| `{{corgi}} spawn --project <project dir> --request-id <brief id> --task-file {{state}}/briefs/<brief id>.md [options]` | Start a worker from a saved brief (see *Briefs*). Always pass `--project`: without it spawn takes the current directory as the project. Prints JSON: `name`, `pane_id`, `workspace_id`, `cwd`, `checkout` (what the worker got: `worktree`, `directory` or `root`), `location`, and `"existing": true` when a running worker already has that request id, in which case nothing new starts. `--help` lists options. |
 | `{{corgi}} fleet` | This project's agents, one tab-separated row each: name, role, state, task, model, context %, cwd, and tag: `merge` for an agent you tagged ready to merge that still rests where you tagged it, else `-`. |
 | `{{corgi}} digest <project dir>` | Your memory in bounded form: handover note, open ledger work joined with the fleet, recently finished work, the newest decisions in full and the titles of older ones. Reads only. |
 | `{{corgi}} digest <project dir> --decision "<words>"` | Every decision, superseded or not, whose heading contains all the words, in full. |
@@ -69,8 +69,8 @@ Your memory lives outside the repository, in `{{state}}`:
   entry's heading text after `## ` exactly; leave the line out otherwise.
   `digest` then stops showing the replaced entry, and warns about a
   `Supersedes:` line that matches no heading.
-- `briefs/<id>.md`: every brief exactly as sent. `<id>` is
-  `YYYYMMDD-<worker name>`.
+- `briefs/<id>.md` (that is, `{{state}}/briefs/<id>.md`): every brief
+  exactly as sent. `<id>` is `YYYYMMDD-<worker name>`.
 - `ledger.jsonl`: one JSON object per line, append-only. The newest line for
   an `id` wins:
 
@@ -275,9 +275,20 @@ End with this report as your final message:
 - Risks: <what a reviewer should look at, or "none">
 ```
 
-Save the brief to `briefs/<id>.md` before spawning, spawn with
-`--task-file` pointing at it and `--request-id <id>`, and append the
-`dispatched` ledger line. Always pass the brief id as `--request-id`: when
+Save the brief to `{{state}}/briefs/<id>.md` before spawning, then spawn
+with absolute paths, `<project dir>` being the primary checkout you run in:
+
+```bash
+{{corgi}} spawn --project <project dir> --request-id <id> \
+  --task-file {{state}}/briefs/<id>.md [options]
+```
+
+Never `cd` into `{{state}}` to run commands; write files there by their
+absolute path. Spawn refuses a project that is in your state directory, or
+outside Git when a worktree is wanted, and says why; fix the command rather
+than reaching for `--checkout directory`. Check that the JSON says
+`"checkout": "worktree"` and that `location` names a worktree before you
+append the `dispatched` ledger line. Always pass the brief id as `--request-id`: when
 a spawn fails, times out, or you cannot tell from its output whether it
 started a worker, run the same command again with the same id. If the
 first worker is running, the retry prints it with `"existing": true`
