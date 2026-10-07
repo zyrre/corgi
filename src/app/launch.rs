@@ -93,6 +93,10 @@ pub(super) enum Role {
 pub(super) struct LaunchedAgent {
     pub(super) agent: AgentInfo,
     pub(super) location: String,
+    /// The checkout the agent got, which is not the one asked for when a
+    /// worktree fell back to a directory outside Git, or for a scratch agent,
+    /// which always runs in the home directory itself.
+    pub(super) checkout: Checkout,
 }
 
 /// The new-agent popup stays visible while this state is present. Progress is
@@ -407,24 +411,38 @@ pub(super) fn launch_agent(
         create_project(project, progress)?;
     }
     let mut supervisor_root = None;
-    let (pane_id, location) = if scratch {
+    let (pane_id, location, checkout) = if scratch {
         // The home directory is never a project: every checkout is the
         // directory itself, in a workspace of the agent's own.
-        create_scratch_workspace(client, project, name, progress)?
+        let (pane_id, location) = create_scratch_workspace(client, project, name, progress)?;
+        (pane_id, location, Checkout::Directory)
     } else if let Role::Supervisor {
         handover_pane: Some(pane_id),
     } = role
     {
         supervisor_root = Some(project.to_string_lossy().into_owned());
-        (pane_id.clone(), "in the pane it took over".to_string())
+        (
+            pane_id.clone(),
+            "in the pane it took over".to_string(),
+            Checkout::ProjectRoot,
+        )
     } else {
         match checkout {
             Checkout::Worktree => {
-                let (created, location) =
+                let (created, location, worktree) =
                     create_worktree_workspace(client, project, name, progress)?;
-                (created.root_pane_id, location)
+                let checkout = if worktree {
+                    Checkout::Worktree
+                } else {
+                    Checkout::Directory
+                };
+                (created.root_pane_id, location, checkout)
             }
-            Checkout::Directory => create_directory_agent_tab(client, project, name, progress)?,
+            Checkout::Directory => {
+                let (pane_id, location) =
+                    create_directory_agent_tab(client, project, name, progress)?;
+                (pane_id, location, Checkout::Directory)
+            }
             Checkout::ProjectRoot => {
                 // A supervisor is started wherever its project workspace has
                 // room; a worker asked into the root tab gets that or nothing.
@@ -432,7 +450,7 @@ pub(super) fn launch_agent(
                 let (pane_id, location, root) =
                     project_root_pane(client, project, name, supervisor, progress)?;
                 supervisor_root = Some(root);
-                (pane_id, location)
+                (pane_id, location, Checkout::ProjectRoot)
             }
         }
     };
@@ -495,6 +513,7 @@ pub(super) fn launch_agent(
         return Ok(LaunchedAgent {
             agent: started.agent,
             location,
+            checkout,
         });
     }
     prompt_launched_agent(
@@ -508,6 +527,7 @@ pub(super) fn launch_agent(
     Ok(LaunchedAgent {
         agent: started.agent,
         location,
+        checkout,
     })
 }
 
@@ -672,14 +692,14 @@ fn scratch_label<'a>(taken: impl Iterator<Item = &'a str>) -> String {
 /// `project` may itself be a linked worktree: Herdr resolves it to the
 /// repository's primary checkout first, because it only creates worktrees from
 /// there. Directories outside any Git work tree fall back to a plain workspace
-/// so non-Git projects still work. Returns the workspace and a description of
-/// where the agent runs for the status line.
+/// so non-Git projects still work. Returns the workspace, a description of
+/// where the agent runs for the status line, and whether it is a worktree.
 fn create_worktree_workspace(
     client: &HerdrClient,
     project: &Path,
     name: &str,
     progress: &mut dyn Progress,
-) -> Result<(CreatedWorkspace, String)> {
+) -> Result<(CreatedWorkspace, String, bool)> {
     progress.report(format!("Resolving the Git repository for {name}…"));
     let Some(source) = resolve_repo(client, project)? else {
         let created = create_plain_workspace(client, project, None, name, progress)?;
@@ -689,6 +709,7 @@ fn create_worktree_workspace(
                 "in {} (not a Git repository, no worktree)",
                 project.display()
             ),
+            false,
         ));
     };
     progress.project(&source.repo_root);
@@ -720,6 +741,7 @@ fn create_worktree_workspace(
     Ok((
         created,
         format!("in {} worktree {branch}", source.repo_name),
+        true,
     ))
 }
 
@@ -1284,6 +1306,8 @@ mod tests {
             "{}",
             launched.location
         );
+        // Asked for a worktree, it got the home directory as is.
+        assert_eq!(launched.checkout, Checkout::Directory);
         assert_eq!(requests[1]["cwd"], home.to_string_lossy().as_ref());
         assert_eq!(requests[1]["label"], "scratch 2");
         assert_eq!(requests[2]["workspace_id"], "w9");

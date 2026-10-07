@@ -2,7 +2,10 @@
 //! `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
 //! `corgi tag`.
 
-use std::{env, fs, io, path::PathBuf};
+use std::{
+    env, fs, io,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 
@@ -44,7 +47,13 @@ Options:
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max (Codex and Claude Code)
   --checkout MODE    worktree (default), directory, or root: the project
-                     workspace's own root tab in the primary checkout
+                     workspace's own root tab in the primary checkout. A
+                     worktree is refused, before anything starts, for a
+                     project outside a Git work tree (pass --project, or
+                     --checkout directory to run there without one), and
+                     every mode for a directory in Corgi's state directory,
+                     such as a supervisor's; the home directory still starts
+                     a scratch agent
   --name NAME        Agent name (default: taken from the project)
   --task-file PATH   Read the task from PATH instead of stdin
   --request-id ID    Make a retry safe: when a running agent of the project
@@ -142,9 +151,20 @@ fn valid_request_id(id: String) -> Result<String> {
 /// started agent to stdout as one JSON object.
 pub fn spawn(args: &[String]) -> Result<()> {
     let options = parse_spawn_options(args)?;
+    let project = existing_project_dir(options.project.as_deref())?;
+    // Refused before stdin is read, Herdr is asked anything, or a retry's
+    // request id is looked up: a refused spawn starts nothing, so a retry
+    // that is refused again misses no worker.
+    if let Some(refusal) = spawn_project_refusal(
+        &project,
+        options.checkout,
+        in_git_work_tree(&project),
+        corgi_state_dir().as_deref(),
+    ) {
+        bail!(refusal);
+    }
     let prompt = read_task(options.task_file.as_deref(), true)?;
     anyhow::ensure!(!prompt.is_empty(), "the task is empty\n\n{SPAWN_USAGE}");
-    let project = existing_project_dir(options.project.as_deref())?;
 
     let client = HerdrClient::from_env()?;
     // With a request id, the project's spawn lock is held until this spawn
@@ -195,6 +215,49 @@ pub fn spawn(args: &[String]) -> Result<()> {
         request_id: options.request_id.clone(),
     };
     print_launch(&run_launch(client, app, plan)?)
+}
+
+/// Why `corgi spawn` must not start a worker in `project` with `checkout`,
+/// telling the caller how to fix the command, or `None` when it may. A worker
+/// never belongs in Corgi's state directory `state_dir` (a supervisor that
+/// ran spawn from its own would get one there), and a worktree needs a Git
+/// work tree: the new-agent form falls back to a plain workspace outside Git,
+/// spawn does not. The home directory is the scratch agent's and allowed.
+fn spawn_project_refusal(
+    project: &Path,
+    checkout: Checkout,
+    in_git: bool,
+    state_dir: Option<&Path>,
+) -> Option<String> {
+    if is_home(project) {
+        return None;
+    }
+    let shown = project.display();
+    if state_dir.is_some_and(|state| is_within(project, state)) {
+        return Some(format!(
+            "{shown} is in Corgi's state directory (it looks like a supervisor's), where no \
+             worker belongs with any --checkout; pass --project <project dir> rather than \
+             running spawn from there"
+        ));
+    }
+    (checkout == Checkout::Worktree && !in_git).then(|| {
+        format!(
+            "{shown} is not a Git repository, so it can have no worktree; pass --project \
+             <project dir>, or --checkout directory to run in it without a worktree"
+        )
+    })
+}
+
+/// Whether `path` is `dir` or inside it, compared through symlinks when both
+/// exist.
+fn is_within(path: &Path, dir: &Path) -> bool {
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    canonical(path).starts_with(canonical(dir))
+}
+
+/// Whether `dir` is inside a Git work tree, as Git itself says.
+fn in_git_work_tree(dir: &Path) -> bool {
+    git_output(dir, &["rev-parse", "--is-inside-work-tree"]).is_ok_and(|out| out.trim() == "true")
 }
 
 /// The running agent of the project at `root` that a spawn with request id
@@ -1122,7 +1185,7 @@ fn run_launch(client: HerdrClient, mut app: App, plan: LaunchPlan) -> Result<ser
         "kind": plan.harness.kind(),
         "model": plan.model,
         "effort": plan.effort,
-        "checkout": plan.checkout.value(),
+        "checkout": launched.checkout.value(),
         "supervisor": matches!(plan.role, Role::Supervisor { .. }),
         "location": launched.location,
     }))
@@ -1146,6 +1209,87 @@ mod tests {
         // Refused before stdin is read or Herdr is asked anything.
         let refused = supervisor_command(&["~".to_string()]).expect_err("no supervisor for ~");
         assert!(refused.to_string().contains("not a project"), "{refused}");
+    }
+
+    #[test]
+    fn spawn_refuses_a_worktree_outside_git_and_any_worker_in_a_state_dir() {
+        let dir = crate::test_support::ScratchDir::new("cli-spawn-refusal");
+        let repo = dir.join("repo");
+        let plain = dir.join("plain");
+        let state = dir.join("state/corgi");
+        let supervisor = state.join("supervisor/web");
+        for path in [&repo, &plain, &supervisor] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let git = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(git.success());
+        assert!(in_git_work_tree(&repo));
+        assert!(!in_git_work_tree(&plain));
+
+        let refusal = |project: &Path, checkout: Checkout| {
+            spawn_project_refusal(project, checkout, in_git_work_tree(project), Some(&state))
+        };
+        // A Git repository gets a worktree, as before.
+        assert_eq!(refusal(&repo, Checkout::Worktree), None);
+        // A directory outside Git is refused a worktree, with the fix...
+        let refused = refusal(&plain, Checkout::Worktree).expect("no worktree outside Git");
+        assert!(refused.contains("is not a Git repository"), "{refused}");
+        assert!(
+            refused.contains("pass --project <project dir>"),
+            "{refused}"
+        );
+        assert!(refused.contains("--checkout directory"), "{refused}");
+        // ...but may be run in as is, or in its root tab.
+        assert_eq!(refusal(&plain, Checkout::Directory), None);
+        assert_eq!(refusal(&plain, Checkout::ProjectRoot), None);
+        // A supervisor's state directory, or the state directory itself, is
+        // refused with every checkout, even one that is a Git repository.
+        for checkout in [
+            Checkout::Worktree,
+            Checkout::Directory,
+            Checkout::ProjectRoot,
+        ] {
+            for project in [&supervisor, &state] {
+                let refused = refusal(project, checkout).expect("no worker in a state dir");
+                assert!(refused.contains("state directory"), "{refused}");
+                assert!(
+                    refused.contains("pass --project <project dir>"),
+                    "{refused}"
+                );
+            }
+            assert!(spawn_project_refusal(&repo, checkout, true, Some(&repo)).is_some());
+        }
+        // Without a state directory, only Git matters.
+        assert_eq!(
+            spawn_project_refusal(&supervisor, Checkout::Directory, false, None),
+            None
+        );
+        // The home directory starts a scratch agent, whatever it is.
+        if let Some(home) = crate::paths::home().filter(|home| home.is_dir()) {
+            for checkout in [Checkout::Worktree, Checkout::Directory] {
+                assert_eq!(
+                    spawn_project_refusal(&home, checkout, false, Some(&home)),
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spawn_refuses_a_state_dir_before_reading_the_task_or_asking_herdr() {
+        let Some(state) = corgi_state_dir().filter(|state| state.is_dir()) else {
+            return;
+        };
+        let args = [
+            "--project".to_string(),
+            state.to_string_lossy().into_owned(),
+        ];
+        let refused = spawn(&args).expect_err("no worker in the state directory");
+        assert!(refused.to_string().contains("state directory"), "{refused}");
     }
 
     #[test]

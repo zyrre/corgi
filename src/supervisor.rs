@@ -1540,7 +1540,10 @@ mod tests {
             Path::new("/opt/corgi/corgi"),
             Path::new("/state/supervisors/corgi"),
         );
-        assert!(role.contains("`/opt/corgi/corgi spawn"));
+        assert!(role.contains(
+            "`/opt/corgi/corgi spawn --project <project dir> --request-id <brief id> \
+             --task-file /state/supervisors/corgi/briefs/<brief id>.md"
+        ));
         assert!(role.contains("`/opt/corgi/corgi fleet`"));
         assert!(role.contains("Run `/opt/corgi/corgi digest <project dir>`"));
         assert!(role.contains("`/opt/corgi/corgi digest <project dir> --decision"));
