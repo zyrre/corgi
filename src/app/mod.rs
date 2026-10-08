@@ -21,15 +21,12 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::{
-    activity::{command_from_screen, message_from_screen, message_from_state},
-    herdr::{HerdrClient, ReadSource, SessionSnapshot},
+    herdr::HerdrClient,
     job::Job,
-    model::{Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, WorkspaceInfo},
+    model::{Activity, AgentState, DashboardAgent, WorkspaceInfo},
     motion::Motion,
-    paths::is_home,
     projects::ProjectMemory,
     session::SessionReader,
-    supervisor::{self, is_supervisor},
     ui,
     usage::{PlanUsage, Provider, installed_providers, read_codex_thread_titles},
     usage_cache::{CachedUsage, shared_plan_usage},
@@ -67,26 +64,23 @@ pub use cli::{
     SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify, report, spawn,
     supervisor_command, tag_command,
 };
-use rows::{
-    NO_TOOL_YET, SCRATCH_GROUP, agent_project, agent_worktree, checkout_label, codex_thread_id,
-    has_herdr_agent_session, has_real_agent_session, is_corgi_scratch_codex, project_group,
-    reported_context_percent, reported_effort, reported_model, task_summary,
-};
+use rows::codex_thread_id;
 
-// The launch sequence, the project workspace Corgi owns, the record of the
-// marks Corgi sets in Herdr, the supervisor waker and the draft check it makes
-// before typing into a supervisor's pane.
+// The periodic refresh, the launch sequence, the project workspace Corgi
+// owns, the record of the marks Corgi sets in Herdr, the supervisor waker and
+// the draft check it makes before typing into a supervisor's pane.
 mod draft;
 mod first_prompt;
 mod launch;
 mod markers;
 mod progress;
 mod project_main;
+mod refresh;
 mod waker;
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
 use progress::JobReport;
-use project_main::relabel_project_mains;
-use waker::SupervisorWaker;
+use refresh::{QUIT_WAIT, RefreshState, Refreshed, refresh_log_path};
+use waker::{Inboxes, SupervisorWaker};
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(850);
 /// How old a plan-usage reading may be before one Corgi process on the
@@ -159,15 +153,27 @@ pub(crate) struct App {
     /// view stays put while the selection moves inside it and scrolls only
     /// when the selection passes one of its edges. The renderer clamps it.
     pub(crate) agent_list_offset: usize,
-    /// When each kind of refresh last started; `None` makes it due now.
+    /// The pane whose turns `transcript` holds, if any.
+    transcript_pane: Option<String>,
+    /// When the last snapshot refresh finished; `None` makes it due now.
     last_refresh: Option<Instant>,
+    /// Whether an action asked for a snapshot refresh since the last one
+    /// started.
+    refresh_requested: bool,
+    /// When each other kind of refresh last started; `None` makes it due now.
     last_usage_refresh: Option<Instant>,
     last_codex_task_refresh: Option<Instant>,
-    /// The message and tool rows shown for each pane at the last refresh, so a
-    /// failed read keeps its rows rather than blanking them.
-    cached_rows: HashMap<String, (Activity, Activity)>,
-    /// Reads the model and context usage each agent CLI records for itself.
-    sessions: SessionReader,
+    /// What the snapshot refresh carries from one to the next; `None` while
+    /// a refresh has it in the background, or after one panicked with it.
+    refresh_state: Option<RefreshState>,
+    refresh_job: Job<Refreshed>,
+    /// Where the snapshot refreshes log how long they took; only the
+    /// interactive dashboard logs them.
+    refresh_log: Option<std::path::PathBuf>,
+    /// Reads the expanded transcript when a key opens or moves it. The
+    /// refresh reads it again with its own reader, so a key never waits for
+    /// a refresh to bring its reader back.
+    transcripts: SessionReader,
     /// Generated task names that Codex persists for its threads, keyed by the
     /// same session identity Herdr supplies for the pane.
     codex_task_titles: HashMap<String, String>,
@@ -179,12 +185,9 @@ pub(crate) struct App {
     /// The model catalogs and harness configurations behind the new-agent
     /// form's selectors.
     model_catalogs: ModelCatalogs,
-    /// Wakes supervisors about their projects' agents; only the interactive
-    /// dashboard has one.
-    supervisor_waker: Option<SupervisorWaker>,
-    /// The project roots whose state directories this dashboard has checked
-    /// for pre-rename state left beside them, so each is warned about once.
-    state_dirs_checked: HashSet<String>,
+    /// The supervisors' inboxes, when this is the interactive dashboard,
+    /// whose refresh has a waker that delivers them.
+    inboxes: Option<Inboxes>,
     status_hold_until: Option<Instant>,
 }
 
@@ -243,19 +246,22 @@ impl App {
             transcript_scroll: 0,
             transcript_page: 1,
             agent_list_offset: 0,
+            transcript_pane: None,
             last_refresh: None,
+            refresh_requested: false,
             last_usage_refresh: None,
             last_codex_task_refresh: None,
-            cached_rows: HashMap::new(),
-            sessions: SessionReader::default(),
+            refresh_state: Some(RefreshState::default()),
+            refresh_job: Job::default(),
+            refresh_log: None,
+            transcripts: SessionReader::default(),
             codex_task_titles: HashMap::new(),
             launch_job: Job::default(),
             usage_job: Job::default(),
             codex_task_job: Job::default(),
             merge_job: Job::default(),
             model_catalogs: ModelCatalogs::default(),
-            supervisor_waker: None,
-            state_dirs_checked: HashSet::new(),
+            inboxes: None,
             status_hold_until: None,
         }
     }
@@ -283,197 +289,16 @@ impl App {
         self.status_hold_until = hold.map(|hold| Instant::now() + hold);
     }
 
-    /// Tells the user, once per project, when the state a project's supervisor
-    /// had before the rename sits beside its current state directory instead
-    /// of having been moved into it, so that history is not overlooked. Only
-    /// the interactive dashboard, the one with a waker, checks.
-    fn warn_about_old_state_dirs(&mut self) {
-        if self.supervisor_waker.is_none() {
-            return;
-        }
-        let roots: Vec<String> = self
-            .agents
-            .iter()
-            .filter(|agent| agent.supervisor)
-            .map(|agent| agent.project_root.clone())
-            .filter(|root| !self.state_dirs_checked.contains(root))
-            .collect();
-        let mut warnings = Vec::new();
-        for root in roots {
-            warnings.extend(supervisor::state_dir_conflict(&root));
-            self.state_dirs_checked.insert(root);
-        }
-        if !warnings.is_empty() {
-            self.set_status(warnings.join("  "), Some(Duration::from_secs(60)));
-        }
-    }
-
-    /// Makes the next pass of the dashboard loop take a fresh snapshot.
-    fn request_refresh(&mut self) {
-        self.last_refresh = None;
-    }
-
-    /// Whether the dashboard loop is due for a fresh snapshot.
-    fn refresh_due(&self) -> bool {
-        is_due(self.last_refresh, REFRESH_INTERVAL)
-    }
-
-    fn refresh(&mut self) {
-        self.last_refresh = Some(Instant::now());
-        match self.client.snapshot() {
-            Ok(mut snapshot) => {
-                self.connected = true;
-                // The dashboard that wakes supervisors is the one that puts back
-                // the marks a Herdr restart lost, before anything reads them,
-                // and that clears the merge tags their agents worked past.
-                if self
-                    .supervisor_waker
-                    .as_mut()
-                    .is_some_and(|waker| waker.leads(&self.client))
-                {
-                    self.restore_markers(&mut snapshot);
-                    self.clear_stale_merge_tags(&mut snapshot);
-                }
-                relabel_project_mains(&self.client, &mut snapshot.workspaces);
-                self.install_snapshot(snapshot);
-                self.warn_about_old_state_dirs();
-                self.wake_supervisors();
-                let status_held = self
-                    .status_hold_until
-                    .is_some_and(|deadline| Instant::now() < deadline);
-                if !status_held && !self.status.starts_with("Starting ") {
-                    self.status_hold_until = None;
-                    self.status = format!(
-                        "{} agent{}",
-                        self.agents.len(),
-                        if self.agents.len() == 1 { "" } else { "s" }
-                    );
-                }
-            }
-            Err(error) => {
-                self.connected = false;
-                self.status = format!("Herdr unavailable: {error:#}");
-            }
-        }
-    }
-
-    fn install_snapshot(&mut self, snapshot: SessionSnapshot) {
-        let workspaces: HashMap<&str, &WorkspaceInfo> = snapshot
-            .workspaces
-            .iter()
-            .map(|workspace| (workspace.workspace_id.as_str(), workspace))
-            .collect();
-        let dashboard_pane_ids = self.dashboard_pane_ids(&snapshot.panes);
-        let client = self.client.clone();
-
-        let mut agents: Vec<_> = snapshot
-            .agents
-            .into_iter()
-            // Herdr's detector can briefly identify Corgi's own terminal as
-            // an agent while the pane starts. Never render the dashboard as a
-            // managed agent, including after its launcher has moved it and
-            // changed the original HERDR_PANE_ID.
-            .filter(|info| {
-                !dashboard_pane_ids.contains(info.pane_id.as_str())
-                    && (has_real_agent_session(info)
-                        || (is_corgi_scratch_codex(
-                            info,
-                            workspaces.get(info.workspace_id.as_str()).copied(),
-                        ) && client
-                            .has_foreground_codex(&info.pane_id, info.cwd())
-                            .unwrap_or(false)))
-            })
-            .map(|info| {
-                let workspace = workspaces.get(info.workspace_id.as_str()).copied();
-                self.dashboard_agent(info, workspace)
-            })
-            .collect();
-        sort_agents(&mut agents);
-        // The selection stays on its row of the list, which is a whole card
-        // for a collapsed project, rather than on its index into the agents.
-        let row = self.selected_stop();
-        self.agents = agents;
-        self.select_stop(row);
-        self.forget_gone_sessions();
-        self.refresh_codex_task_titles();
-        self.note_open_projects(&snapshot.workspaces);
-        self.workspaces = snapshot.workspaces;
-        self.clamp_selection();
-    }
-
-    /// One agent's dashboard row: where it works, what it is doing, and what
-    /// its session says about itself.
-    fn dashboard_agent(
-        &mut self,
-        info: AgentInfo,
-        workspace: Option<&WorkspaceInfo>,
-    ) -> DashboardAgent {
-        let project = agent_project(&info, workspace);
-        let worktree = agent_worktree(&info, workspace);
-        let project_root = worktree
-            .map(|worktree| worktree.repo_root.as_str())
-            .filter(|root| !root.is_empty())
-            .unwrap_or_else(|| info.cwd())
-            .to_string();
-        let scratch = is_home(&project_root);
-        let project_group = if scratch {
-            SCRATCH_GROUP.to_string()
-        } else {
-            project_group(&info, workspace, &project)
-        };
-        let worktree_checkout = worktree
-            .filter(|worktree| worktree.is_linked_worktree)
-            .map(|worktree| worktree.checkout_path.clone());
-        let worktree_label = worktree_checkout
-            .as_deref()
-            .and_then(checkout_label)
-            .map(str::to_string);
-        // The agent CLI's own session file is authoritative; a status-line
-        // bridge that reports pane metadata is only a fallback for sessions
-        // whose file cannot be read.
-        let facts = self.sessions.facts(&info);
-        let task = task_summary(
-            &info,
-            workspace,
-            &project,
-            self.codex_task_title(&info),
-            facts.task.as_deref(),
-        );
-        let model = facts.model.or_else(|| reported_model(&info));
-        let effort = facts.effort.or_else(|| reported_effort(&info));
-        let context_percent = facts
-            .context_percent
-            .or_else(|| reported_context_percent(&info));
-        let (message, tool) = self.conversation_rows(&info, facts.message, facts.tool);
-        let supervisor = is_supervisor(&info);
-        let (project, task) = if supervisor {
-            (SUPERVISOR_NAME.to_string(), SUPERVISOR_NAME.to_string())
-        } else {
-            (project, task)
-        };
-        DashboardAgent {
-            info,
-            project_group,
-            project,
-            project_root,
-            worktree_checkout,
-            worktree_label,
-            task,
-            model,
-            effort,
-            context_percent,
-            context_tokens: facts.context_tokens,
-            cache: facts.cache,
-            message,
-            tool,
-            supervisor,
-            scratch,
-        }
+    /// Makes this the interactive dashboard, which wakes supervisors with
+    /// `waker` and lets the merge popup add to their inboxes.
+    fn wake_with(&mut self, waker: SupervisorWaker) {
+        self.inboxes = Some(waker.inboxes());
+        self.refresh_state().waker = Some(waker);
     }
 
     /// Drops what is remembered about sessions no longer on the dashboard.
     fn forget_gone_sessions(&mut self) {
-        self.sessions
+        self.transcripts
             .retain(self.agents.iter().map(|agent| &agent.info));
         let live_codex_sessions: HashSet<_> = self
             .agents
@@ -498,89 +323,6 @@ impl App {
         }
     }
 
-    /// Keeps the selection on the list after agents went away, and the
-    /// expanded transcript on the session now selected.
-    fn clamp_selection(&mut self) {
-        if self.agents.is_empty() {
-            self.selected = 0;
-        } else {
-            self.selected = self.selected.min(self.agents.len() - 1);
-        }
-        if self.expanded {
-            if self.agents.is_empty() {
-                // The session being read is gone; there is nothing to zoom in
-                // on, so fall back to the list rather than an empty panel.
-                self.expanded = false;
-                self.transcript = Default::default();
-                self.transcript_scroll = 0;
-            } else {
-                self.load_transcript();
-            }
-        }
-    }
-
-    /// The two rows under an agent's status line: the newest thing said in the
-    /// session, and the tool call it is running or last ran.
-    ///
-    /// The transcript is the source of both. The terminal fills in whatever it
-    /// lacks, and is also asked while the agent is blocked, because permission
-    /// prompts and other questions the CLI itself asks never reach the
-    /// transcript. When nothing new can be read, the rows from the previous
-    /// refresh stay, and before anything was ever read the state speaks.
-    fn conversation_rows(
-        &mut self,
-        info: &AgentInfo,
-        message: Option<Activity>,
-        tool: Option<Activity>,
-    ) -> (Activity, Activity) {
-        // Without an identity, a reused pane cannot safely inherit the
-        // previous occupant's conversation when a terminal read fails. Corgi's
-        // own marks can outlive the agent in a pane, so only Herdr's counts.
-        let previous = self
-            .cached_rows
-            .remove(&info.pane_id)
-            .filter(|_| has_herdr_agent_session(info));
-        let (mut message, mut tool) = (message, tool);
-        let blocked = info.state == AgentState::Blocked;
-        if (message.is_none() || tool.is_none() || blocked)
-            && let Some(screen) = self.read_screen(info)
-        {
-            let asked = message_from_screen(info.kind(), &screen);
-            if blocked
-                && asked
-                    .as_ref()
-                    .is_some_and(|asked| asked.kind == ActivityKind::Question)
-            {
-                message = asked;
-            } else {
-                message = message.or(asked);
-            }
-            tool = tool.or_else(|| command_from_screen(&screen));
-        }
-        let (previous_message, previous_tool) = previous.unzip();
-        let message = message
-            .or(previous_message)
-            .unwrap_or_else(|| message_from_state(info.state));
-        let tool = tool.or(previous_tool).unwrap_or_else(|| Activity {
-            kind: ActivityKind::Ready,
-            text: NO_TOOL_YET.into(),
-        });
-        self.cached_rows
-            .insert(info.pane_id.clone(), (message.clone(), tool.clone()));
-        (message, tool)
-    }
-
-    fn read_screen(&self, info: &AgentInfo) -> Option<String> {
-        self.client
-            .read_agent(&info.pane_id, ReadSource::Detection, Some(64))
-            .or_else(|_| {
-                self.client
-                    .read_agent(&info.pane_id, ReadSource::Visible, Some(64))
-            })
-            .ok()
-            .map(|read| read.text)
-    }
-
     fn selected_agent(&self) -> Option<&DashboardAgent> {
         self.agents.get(self.selected)
     }
@@ -601,6 +343,7 @@ impl App {
         if self.expanded {
             self.expanded = false;
             self.transcript = Default::default();
+            self.transcript_pane = None;
             self.transcript_scroll = 0;
             self.status = "Collapsed".into();
             return;
@@ -619,15 +362,18 @@ impl App {
         }
     }
 
-    /// Re-reads the selected session's latest turns. The reader caches by file
-    /// length, so a session that has not written anything since the last
-    /// refresh costs nothing here.
+    /// Reads the selected session's latest turns, for a key that opened the
+    /// expanded view or moved it to another session; each refresh reads them
+    /// again in the background. The reader caches by file length, so a
+    /// session that has not written anything since costs little here.
     fn load_transcript(&mut self) {
         let Some(agent) = self.agents.get(self.selected) else {
             self.transcript = Default::default();
+            self.transcript_pane = None;
             return;
         };
-        self.transcript = self.sessions.transcript(&agent.info);
+        self.transcript = self.transcripts.transcript(&agent.info);
+        self.transcript_pane = Some(agent.info.pane_id.clone());
     }
 
     /// Scrolls the expanded transcript by whole screens. The renderer knows
@@ -729,12 +475,6 @@ impl App {
             self.codex_task_titles.extend(titles);
             self.request_refresh();
         }
-    }
-
-    fn codex_task_title(&self, info: &AgentInfo) -> Option<&str> {
-        codex_thread_id(info)
-            .and_then(|session_id| self.codex_task_titles.get(session_id))
-            .map(String::as_str)
     }
 
     fn focus_selected(&mut self) {
@@ -855,9 +595,9 @@ pub fn run() -> Result<()> {
     let compact = env::args().any(|arg| arg == "--compact");
     let client = HerdrClient::from_env().context("Corgi must run inside a Herdr plugin pane")?;
     let mut app = App::new(client, compact);
-    app.supervisor_waker = Some(SupervisorWaker::default());
+    app.wake_with(SupervisorWaker::default());
+    app.refresh_log = refresh_log_path();
     app.motion = Motion::animated();
-    app.refresh();
 
     let mut terminal = init_terminal()?;
     let result = run_loop(&mut terminal, &mut app);
@@ -868,18 +608,7 @@ pub fn run() -> Result<()> {
 fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
     loop {
         let frame_started = Instant::now();
-        app.poll_launch();
-        app.poll_plan_usage();
-        app.poll_codex_task_titles();
-        app.poll_model_catalogs();
-        app.poll_merge();
-        app.close_started_launch();
-        app.refresh_plan_usage();
-        // A snapshot waits for a popup to stop moving, at most half a
-        // second, so the refresh's round trips never stall an animation.
-        if app.refresh_due() && !app.launch_job.is_running() && !app.motion.is_moving() {
-            app.refresh();
-        }
+        app.tick();
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Fast while a popup moves, and the usual cadence otherwise, so an
         // idle dashboard costs no more than it did before popups moved.
@@ -899,8 +628,27 @@ fn run_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) ->
             && let Event::Key(key) = event::read()?
             && app.handle_key(key)
         {
+            // A wake being typed into a supervisor's box is let finish.
+            app.wait_for_refresh(Some(QUIT_WAIT));
             return Ok(());
         }
+    }
+}
+
+impl App {
+    /// One pass of the dashboard loop before it draws: puts in place what the
+    /// background jobs finished, and starts those that are due. Nothing here
+    /// waits on Herdr or the disk.
+    fn tick(&mut self) {
+        self.poll_refresh();
+        self.poll_launch();
+        self.poll_plan_usage();
+        self.poll_codex_task_titles();
+        self.poll_model_catalogs();
+        self.poll_merge();
+        self.close_started_launch();
+        self.refresh_plan_usage();
+        self.start_refresh();
     }
 }
 
@@ -956,9 +704,11 @@ mod tests {
     };
 
     use super::{
+        rows::{NO_TOOL_YET, has_real_agent_session},
         test_helpers::{poll_until, press},
         *,
     };
+    use crate::{activity::message_from_state, model::ActivityKind};
 
     fn sortable_agent(
         pane_id: &str,
@@ -1446,7 +1196,9 @@ mod tests {
             state: AgentState::Idle,
             ..AgentInfo::default()
         };
-        app.cached_rows.insert(
+        let client = app.client.clone();
+        let state = app.refresh_state();
+        state.cached_rows.insert(
             info.pane_id.clone(),
             (
                 Activity {
@@ -1459,7 +1211,7 @@ mod tests {
                 },
             ),
         );
-        let (message, tool) = app.conversation_rows(&info, None, None);
+        let (message, tool) = state.conversation_rows(&client, &info, None, None);
         assert_eq!(message, message_from_state(AgentState::Idle));
         assert_eq!(tool.text, NO_TOOL_YET);
     }

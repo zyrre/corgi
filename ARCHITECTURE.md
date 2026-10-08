@@ -80,9 +80,11 @@ Headless launch and the supervisor
   └─ corgi tag ────── tag an agent ready to merge (pane token), or clear it
 ```
 
-The dashboard refreshes from Herdr roughly once per second, except while a
-launch runs, and redraws about every 80 ms, so spinners move and keys answer
-between snapshots; while a popup opens, closes or plays an outcome it draws
+The dashboard refreshes from Herdr in the background, 850 ms after the last
+refresh finished or at once when an action asks for one, never while a
+launch runs and never two at a time, and redraws about every 80 ms, so
+spinners move and keys answer however long a refresh takes (see
+`app/refresh.rs` below); while a popup opens, closes or plays an outcome it draws
 at about 60 frames a second, and drops back to 80 ms once nothing moves (see
 "Popup motion" below). Plan usage is read once a minute per machine rather than
 per process (see `src/usage_cache.rs` below) and Codex thread names every few
@@ -205,8 +207,33 @@ synchronized with Herdr.
 `src/app/` owns the dashboard's state and every flow that changes Herdr. Its
 submodules are split by flow, each adding methods to the one `App`.
 
-- `mod.rs` is `App`: refresh, selection, the expanded transcript, the plan
+- `mod.rs` is `App`: selection, the expanded transcript, the plan
   usage and Codex thread-name jobs, key dispatch, and the terminal loop.
+- `refresh.rs` is the periodic refresh: Herdr's snapshot, the marks put back
+  and the stale merge tags cleared, the project workspaces relabelled, each
+  agent's row from its session file, its screen and, for an unidentified
+  scratch Codex, its pane's processes, the expanded transcript, the
+  state-directory warnings, and the supervisors' wakes. The interactive
+  dashboard runs all of it as a background `Job`. What it carries from one
+  refresh to the next (the session reader and its caches, the rows kept for
+  failed reads, the waker) is moved into the job and handed back with its
+  result, so the UI thread and the job share nothing behind a lock; the UI
+  loop's next pass puts the rows in place, the selection on its row, and
+  takes the state back. Keys during a refresh act on the rows last applied.
+  At most one refresh is in flight: the next is due 850 ms after the last
+  finished, or at once after an action asked for one, also one asked for
+  while a refresh ran, so a slow Herdr means fewer refreshes, never
+  overlapping ones. A panicked refresh shows a short status and takes its
+  state with it; the next starts from a new one, a waker that takes the lock
+  and the record up again included. Quitting waits up to two seconds for a
+  refresh in flight, so a wake being typed is not cut off. The thread lives
+  in the dashboard's process and never outlives it. Each refresh appends
+  how long it took, in all and per step (Herdr's snapshot, marks and
+  relabelling, rows, wakes), to `refresh.log` in Corgi's state directory,
+  which is moved to `refresh.log.old` past 256 KB. The command-line tools
+  and the Omarchy reader run the same refresh in place. The expanded
+  transcript a key opens or moves to is read on the UI thread with a reader
+  of its own, as before; the refresh rereads it with its own.
   `App::headless` is the same app for the command-line and Omarchy paths,
   which own no dashboard pane. `sort_agents` orders each project's rows:
   supervisor, then state, then the most recent `state_change_seq` first. That
@@ -470,8 +497,8 @@ role. So Corgi keeps its own record and puts the tokens back.
   must be the pane of an agent carrying the supervisor marker. Without
   `--harness`, such a spawn starts the worker on the kind Herdr detected in
   the supervisor's pane, rather than on the form's default.
-- The dashboard wakes supervisors from its own refresh (`app/waker.rs`);
-  nothing else runs for it. Every agent of a project with a running supervisor
+- The dashboard wakes supervisors from its own refresh (`app/waker.rs`),
+  on the refresh's background thread; nothing else runs for it. Every agent of a project with a running supervisor
   counts, except the supervisor, whoever started it, and so does one the supervisor
   spawned (it carries a `corgi_request` token) while the project has no
   running supervisor, so the next supervisor hears of it. `supervisor::Transitions` reduces each agent's
@@ -718,8 +745,9 @@ role. So Corgi keeps its own record and puts the tokens back.
   draw and write, since writing to the terminal takes a good part of that;
   otherwise the usual 80 ms after drawing, cut short only to land on the
   spinner's next frame or the caret's next turn, so an idle dashboard draws
-  no more often than before. A snapshot refresh waits for motion to stop, at
-  most half a second, so its round trips to Herdr never stall a frame. The caret is the real
+  no more often than before. A snapshot refresh runs in the background and
+  so never stalls a frame, and putting its rows in place is cheap enough not
+  to wait for motion to stop. The caret is the real
   terminal cursor, shown and hidden on Corgi's clock; the dashboard asks the
   terminal for a steady bar cursor and gives back the user's shape on exit.
   A dashboard without an animated `Motion` (tests, the headless paths) shows

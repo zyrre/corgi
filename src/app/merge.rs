@@ -265,7 +265,7 @@ impl App {
         };
         match project_supervisor(&self.agents, &form.project_root) {
             // The inbox keeps the message for whichever dashboard delivers.
-            _ if self.supervisor_waker.is_none() => ConflictHelp::Unavailable,
+            _ if self.inboxes.is_none() => ConflictHelp::Unavailable,
             Some(supervisor) => ConflictHelp::Supervisor(supervisor),
             None => ConflictHelp::NoSupervisor,
         }
@@ -320,8 +320,8 @@ impl App {
             "Merge aborted; asked {supervisor} to have {} merge {} into its branch",
             form.agent, form.target_branch
         );
-        if let Some(waker) = self.supervisor_waker.as_mut()
-            && let Err(error) = waker.notify(item)
+        if let Some(inboxes) = &self.inboxes
+            && let Err(error) = inboxes.notify(item)
         {
             status = format!("Merge aborted, but {supervisor} could not be told: {error:#}");
         }
@@ -761,7 +761,7 @@ mod tests {
         let mut waker =
             SupervisorWaker::in_dir(&form.project_root.join(".git").join("corgi-state"));
         assert!(waker.lead(&form.project_root.join(".git").join("corgi-wake.lock")));
-        app.supervisor_waker = Some(waker);
+        app.wake_with(waker);
         app.agents = agents;
         let mut running = form.clone();
         running.phase = MergePhase::Running(1);
@@ -802,7 +802,7 @@ mod tests {
             "{}",
             app.status
         );
-        let pending = app.supervisor_waker.as_ref().unwrap().pending_for(&root);
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
         assert_eq!(
             pending,
             [format!(
@@ -837,13 +837,7 @@ mod tests {
             merge_in_progress(&repo),
             "c does nothing without a supervisor"
         );
-        assert!(
-            app.supervisor_waker
-                .as_ref()
-                .unwrap()
-                .pending_for(&root)
-                .is_empty()
-        );
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
 
         remove_conflicting_merge(repo, worktree);
     }
@@ -860,13 +854,7 @@ mod tests {
             merge_in_progress(&repo),
             "the primary checkout stays mid-merge"
         );
-        assert!(
-            app.supervisor_waker
-                .as_ref()
-                .unwrap()
-                .pending_for(&root)
-                .is_empty()
-        );
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
 
         remove_conflicting_merge(repo, worktree);
     }
@@ -889,13 +877,7 @@ mod tests {
             "{:?}",
             app.overlay
         );
-        assert!(
-            app.supervisor_waker
-                .as_ref()
-                .unwrap()
-                .pending_for(&root)
-                .is_empty()
-        );
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
 
         remove_conflicting_merge(repo, worktree);
     }

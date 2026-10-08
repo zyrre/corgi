@@ -26,7 +26,7 @@ use crate::{
 };
 
 use super::{
-    App, draft,
+    draft,
     form::Checkout,
     launch::{CORGI_REQUEST_TOKEN, LaunchPlan, Role, launch_agent},
     markers,
@@ -52,10 +52,9 @@ pub(super) struct SupervisorWaker {
     lock: Option<fs::File>,
     /// The Corgi binary the wake messages name.
     corgi_bin: Option<PathBuf>,
-    /// The directory holding a directory per project, for its inbox, and the
-    /// record of the agents followed, in place of Corgi's state directory,
-    /// so that a test never touches the developer's own state.
-    base: Option<PathBuf>,
+    /// The supervisors' inboxes, whose base directory, when a test sets one,
+    /// also holds the record of the agents followed.
+    inboxes: Inboxes,
     /// The Herdr socket, which names the record of the agents followed.
     socket: Option<PathBuf>,
     /// Each agent followed, by the name its messages use.
@@ -75,6 +74,49 @@ pub(super) struct SupervisorWaker {
     /// Replacements running in the background, by project root, each ending
     /// with its status line or error.
     replacements: Vec<(String, Job<Result<String>>)>,
+}
+
+/// The supervisors' inboxes, a directory per project. The waker delivers
+/// what is in them; the merge popup adds to one while a refresh may be
+/// delivering from it in the background, which is safe because every write
+/// to an inbox holds its lock.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Inboxes {
+    /// The directory holding a directory per project, in place of Corgi's
+    /// state directory, so that a test never touches the developer's own
+    /// state.
+    base: Option<PathBuf>,
+}
+
+impl Inboxes {
+    /// The state directory holding the inbox of `root`'s supervisor.
+    fn dir(&self, root: &str) -> Option<PathBuf> {
+        match &self.base {
+            Some(base) => Some(base.join(dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT))),
+            None => supervisor::state_dir(root).ok(),
+        }
+    }
+
+    /// Adds `item` to the inbox of the supervisor of its project, to go out at a
+    /// refresh once the supervisor is between turns.
+    pub(super) fn notify(&self, item: Item) -> Result<()> {
+        let dir = self
+            .dir(&item.project)
+            .context("Corgi has no state directory")?;
+        inbox::append(&dir, item)?;
+        Ok(())
+    }
+
+    /// The lines waiting for `root`'s supervisor, each as it goes out alone.
+    #[cfg(test)]
+    pub(super) fn pending_for(&self, root: &str) -> Vec<String> {
+        let dir = self.dir(root).expect("inbox dir");
+        Inbox::read(&dir)
+            .undelivered_for(root)
+            .into_iter()
+            .map(|item| inbox::prompt_text(&[item]))
+            .collect()
+    }
 }
 
 /// One agent the waker follows, as kept in its record.
@@ -170,25 +212,37 @@ impl SupervisorWaker {
             .is_some_and(supervisor::Handover::in_progress)
     }
 
+    /// A waker that delivers from `inboxes`, picking up from the record the
+    /// dashboard that led before left. A refresh that panicked lost its
+    /// waker, and the next one starts again with this.
+    pub(super) fn with_inboxes(inboxes: Inboxes) -> Self {
+        let mut waker = Self::default();
+        waker.inboxes = inboxes;
+        waker
+    }
+
     /// A waker that keeps its inboxes and record under `base`.
     #[cfg(test)]
     pub(super) fn in_dir(base: &Path) -> Self {
-        let mut waker = Self::default();
-        waker.base = Some(base.to_path_buf());
-        waker
+        Self::with_inboxes(Inboxes {
+            base: Some(base.to_path_buf()),
+        })
+    }
+
+    /// The inboxes this waker delivers from, for adding to them while it is
+    /// away in a refresh.
+    pub(super) fn inboxes(&self) -> Inboxes {
+        self.inboxes.clone()
     }
 
     /// The state directory holding the inbox of `root`'s supervisor.
     fn inbox_dir(&self, root: &str) -> Option<PathBuf> {
-        match &self.base {
-            Some(base) => Some(base.join(dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT))),
-            None => supervisor::state_dir(root).ok(),
-        }
+        self.inboxes.dir(root)
     }
 
     /// The record of the agents followed: `wake/<socket>.seen.json`.
     fn record_file(&self) -> Option<PathBuf> {
-        match &self.base {
+        match &self.inboxes.base {
             Some(base) => Some(base.join("seen.json")),
             None => socket_state_file("wake", self.socket.as_deref()?, "seen.json"),
         }
@@ -343,22 +397,13 @@ impl SupervisorWaker {
     /// Adds `item` to the inbox of the supervisor of its project, to go out at a
     /// refresh once the supervisor is between turns.
     pub(super) fn notify(&self, item: Item) -> Result<()> {
-        let dir = self
-            .inbox_dir(&item.project)
-            .context("Corgi has no state directory")?;
-        inbox::append(&dir, item)?;
-        Ok(())
+        self.inboxes.notify(item)
     }
 
     /// The lines waiting for `root`'s supervisor, each as it goes out alone.
     #[cfg(test)]
     pub(super) fn pending_for(&self, root: &str) -> Vec<String> {
-        let dir = self.inbox_dir(root).expect("inbox dir");
-        Inbox::read(&dir)
-            .undelivered_for(root)
-            .into_iter()
-            .map(|item| inbox::prompt_text(&[item]))
-            .collect()
+        self.inboxes.pending_for(root)
     }
 
     /// Advances each supervisor's handover by one refresh, with `percent` as
@@ -832,20 +877,18 @@ pub(super) fn wake_lock_held(socket: &Path) -> bool {
     }
 }
 
-impl App {
-    /// Tells each project's supervisor about its agents that stopped since the
-    /// last refresh, and hands supervisors whose handover is due over to
-    /// fresh sessions, when this dashboard is the one that wakes supervisors.
-    pub(super) fn wake_supervisors(&mut self) {
-        let Some(waker) = self.supervisor_waker.as_mut() else {
-            return;
-        };
-        let (client, sessions) = (&self.client, &mut self.sessions);
-        let report = |agent: &DashboardAgent| captured_report(sessions, client, agent);
-        if let Some(status) = waker.tick(client, &self.agents, report) {
-            self.set_status(status, Some(Duration::from_secs(15)));
-        }
-    }
+/// Tells each project's supervisor about its `agents` that stopped since the
+/// last refresh, and hands supervisors whose handover is due over to fresh
+/// sessions, when this dashboard is the one that wakes supervisors. Reports
+/// are read with `sessions`. Returns the status line to show, if any.
+pub(super) fn wake_supervisors(
+    waker: &mut SupervisorWaker,
+    client: &HerdrClient,
+    sessions: &mut SessionReader,
+    agents: &[DashboardAgent],
+) -> Option<String> {
+    let report = |agent: &DashboardAgent| captured_report(sessions, client, agent);
+    waker.tick(client, agents, report)
 }
 
 #[cfg(test)]
