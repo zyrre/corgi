@@ -508,19 +508,29 @@ pub(super) fn project_root_of(client: &HerdrClient, project: &Path) -> Result<St
     ))
 }
 
+/// The panes among `panes` that are a Corgi dashboard: the one Herdr started
+/// in `dashboard_pane_id`, and any labelled like one, since the launcher may
+/// have moved that dashboard and changed its pane ID.
+pub(super) fn dashboard_pane_ids<'a>(
+    dashboard_pane_id: Option<&str>,
+    panes: &'a [PaneInfo],
+) -> HashSet<&'a str> {
+    panes
+        .iter()
+        .filter(|pane| {
+            dashboard_pane_id == Some(pane.pane_id.as_str())
+                || pane.label.as_deref() == Some(DASHBOARD_PANE_LABEL)
+        })
+        .map(|pane| pane.pane_id.as_str())
+        .collect()
+}
+
 impl App {
     /// The panes among `panes` that are a Corgi dashboard: this one, and any
     /// labelled like one, since the launcher may have moved this dashboard
     /// and changed its pane ID.
     pub(super) fn dashboard_pane_ids<'a>(&self, panes: &'a [PaneInfo]) -> HashSet<&'a str> {
-        panes
-            .iter()
-            .filter(|pane| {
-                self.dashboard_pane_id.as_deref() == Some(pane.pane_id.as_str())
-                    || pane.label.as_deref() == Some(DASHBOARD_PANE_LABEL)
-            })
-            .map(|pane| pane.pane_id.as_str())
-            .collect()
+        dashboard_pane_ids(self.dashboard_pane_id.as_deref(), panes)
     }
 
     /// The workspaces the dashboard's supervisors run in, for

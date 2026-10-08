@@ -18,7 +18,6 @@ use std::{
     fs,
     io::Write,
     path::Path,
-    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -33,7 +32,6 @@ use crate::{
 };
 
 use super::{
-    App,
     launch::CORGI_REQUEST_TOKEN,
     project_main::{
         CORGI_METADATA_SOURCE, CORGI_PROJECT_MAIN_TAB_TOKEN, CORGI_PROJECT_ROOT_HASH_TOKEN,
@@ -494,109 +492,92 @@ fn pane_patch(tokens: &Tokens) -> Vec<(&str, Option<&str>)> {
         .collect()
 }
 
-impl App {
-    /// Puts back the tokens Corgi set that Herdr lost, as after a restart or
-    /// live handoff, and keeps the record in step with `snapshot`. What is
-    /// put back goes into `snapshot` too, so the refresh that found the loss
-    /// already sees the supervisor and the project workspaces again. Only the
-    /// dashboard that wakes supervisors calls this, so one process writes.
-    pub(super) fn restore_markers(&mut self, snapshot: &mut SessionSnapshot) {
-        let Some(path) = self.client.marker_record() else {
-            return;
-        };
-        let Ok(restores) = update(path, |record| reconcile(record, snapshot)) else {
-            return;
-        };
-        let mut restored = 0;
-        for restore in restores {
-            match restore {
-                Restore::Pane(pane_id, tokens) => {
-                    let reported = self
-                        .client
-                        .report_pane_metadata(&pane_id, CORGI_METADATA_SOURCE, &pane_patch(&tokens))
-                        .is_ok();
-                    if !reported && !tokens.is_empty() {
-                        continue;
-                    }
-                    // Rejected ownership must also be hidden from this
-                    // refresh's waker even if clearing live metadata failed.
-                    for agent in snapshot.agents.iter_mut().filter(|a| a.pane_id == pane_id) {
-                        agent
-                            .tokens
-                            .retain(|key, _| !PANE_TOKENS.contains(&key.as_str()));
-                        agent.tokens.extend(tokens.clone());
-                    }
-                    for pane in snapshot.panes.iter_mut().filter(|p| p.pane_id == pane_id) {
-                        pane.tokens
-                            .retain(|key, _| !PANE_TOKENS.contains(&key.as_str()));
-                        pane.tokens.extend(tokens.clone());
-                    }
-                    if !reported {
-                        continue;
-                    }
+/// Puts back the tokens Corgi set that Herdr lost, as after a restart or live
+/// handoff, and keeps the record in step with `snapshot`. What is put back
+/// goes into `snapshot` too, so the refresh that found the loss already sees
+/// the supervisor and the project workspaces again. Only the dashboard that
+/// wakes supervisors calls this, so one process writes. Returns the status
+/// line to show when anything was put back.
+pub(super) fn restore_markers(
+    client: &HerdrClient,
+    snapshot: &mut SessionSnapshot,
+) -> Option<String> {
+    let path = client.marker_record()?;
+    let restores = update(path, |record| reconcile(record, snapshot)).ok()?;
+    let mut restored = 0;
+    for restore in restores {
+        match restore {
+            Restore::Pane(pane_id, tokens) => {
+                let reported = client
+                    .report_pane_metadata(&pane_id, CORGI_METADATA_SOURCE, &pane_patch(&tokens))
+                    .is_ok();
+                if !reported && !tokens.is_empty() {
+                    continue;
                 }
-                Restore::Workspace(workspace_id, tokens) => {
-                    if self
-                        .client
-                        .report_workspace_metadata(
-                            &workspace_id,
-                            CORGI_METADATA_SOURCE,
-                            &pairs(&tokens),
-                        )
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    for workspace in snapshot
-                        .workspaces
-                        .iter_mut()
-                        .filter(|w| w.workspace_id == workspace_id)
-                    {
-                        workspace.tokens.extend(tokens.clone());
-                    }
+                // Rejected ownership must also be hidden from this
+                // refresh's waker even if clearing live metadata failed.
+                for agent in snapshot.agents.iter_mut().filter(|a| a.pane_id == pane_id) {
+                    agent
+                        .tokens
+                        .retain(|key, _| !PANE_TOKENS.contains(&key.as_str()));
+                    agent.tokens.extend(tokens.clone());
+                }
+                for pane in snapshot.panes.iter_mut().filter(|p| p.pane_id == pane_id) {
+                    pane.tokens
+                        .retain(|key, _| !PANE_TOKENS.contains(&key.as_str()));
+                    pane.tokens.extend(tokens.clone());
+                }
+                if !reported {
+                    continue;
                 }
             }
-            restored += 1;
-        }
-        if restored > 0 {
-            self.set_status(
-                format!("Reconciled {restored} of Corgi's pane and workspace marks"),
-                Some(Duration::from_secs(15)),
-            );
-        }
-    }
-
-    /// Clears the merge tags in `snapshot` that no longer apply, because
-    /// their agent has worked since it was tagged, in Herdr, the record and
-    /// `snapshot` itself. A stale tag is never shown even before it is
-    /// cleared, so a clear that fails costs nothing but a retry on the next
-    /// refresh. Only the dashboard that wakes supervisors calls this; clearing
-    /// twice would be harmless.
-    pub(super) fn clear_stale_merge_tags(&mut self, snapshot: &mut SessionSnapshot) {
-        for agent in snapshot
-            .agents
-            .iter_mut()
-            .filter(|agent| supervisor::merge_tag(agent) == supervisor::MergeTag::Stale)
-        {
-            let name = agent.name.clone().unwrap_or_default();
-            let session = session_of(agent).map(str::to_string);
-            if tag_pane(
-                &self.client,
-                &agent.pane_id,
-                &name,
-                session.as_deref(),
-                None,
-            )
-            .is_ok()
-            {
-                agent.tokens.remove(MERGE_TOKEN);
-                for pane in snapshot
-                    .panes
-                    .iter_mut()
-                    .filter(|pane| pane.pane_id == agent.pane_id)
+            Restore::Workspace(workspace_id, tokens) => {
+                if client
+                    .report_workspace_metadata(
+                        &workspace_id,
+                        CORGI_METADATA_SOURCE,
+                        &pairs(&tokens),
+                    )
+                    .is_err()
                 {
-                    pane.tokens.remove(MERGE_TOKEN);
+                    continue;
                 }
+                for workspace in snapshot
+                    .workspaces
+                    .iter_mut()
+                    .filter(|w| w.workspace_id == workspace_id)
+                {
+                    workspace.tokens.extend(tokens.clone());
+                }
+            }
+        }
+        restored += 1;
+    }
+    (restored > 0).then(|| format!("Reconciled {restored} of Corgi's pane and workspace marks"))
+}
+
+/// Clears the merge tags in `snapshot` that no longer apply, because
+/// their agent has worked since it was tagged, in Herdr, the record and
+/// `snapshot` itself. A stale tag is never shown even before it is
+/// cleared, so a clear that fails costs nothing but a retry on the next
+/// refresh. Only the dashboard that wakes supervisors calls this; clearing
+/// twice would be harmless.
+pub(super) fn clear_stale_merge_tags(client: &HerdrClient, snapshot: &mut SessionSnapshot) {
+    for agent in snapshot
+        .agents
+        .iter_mut()
+        .filter(|agent| supervisor::merge_tag(agent) == supervisor::MergeTag::Stale)
+    {
+        let name = agent.name.clone().unwrap_or_default();
+        let session = session_of(agent).map(str::to_string);
+        if tag_pane(client, &agent.pane_id, &name, session.as_deref(), None).is_ok() {
+            agent.tokens.remove(MERGE_TOKEN);
+            for pane in snapshot
+                .panes
+                .iter_mut()
+                .filter(|pane| pane.pane_id == agent.pane_id)
+            {
+                pane.tokens.remove(MERGE_TOKEN);
             }
         }
     }
@@ -613,12 +594,14 @@ mod tests {
             atomic::{AtomicBool, Ordering},
         },
         thread,
+        time::Duration,
     };
 
     use serde_json::{Value, json};
 
     use crate::{
         app::{
+            App,
             cli::{TagOptions, fleet_rows, requested_agent, tag_agent},
             merge::{MergePhase, MergeWorktreeForm},
             overlay::Overlay,
@@ -857,7 +840,7 @@ mod tests {
         app.client = client;
         let mut waker = SupervisorWaker::in_dir(scratch);
         assert!(waker.lead(&scratch.join("wake.lock")));
-        app.supervisor_waker = Some(waker);
+        app.wake_with(waker);
         app
     }
 
@@ -1246,7 +1229,7 @@ mod tests {
             let mut app = test_app();
             app.client = herdr.client(&path);
             let mut snapshot = app.client.snapshot().unwrap();
-            app.restore_markers(&mut snapshot);
+            restore_markers(&app.client, &mut snapshot);
             assert!(!supervisor::is_supervisor(&snapshot.agents[0]));
             assert_eq!(herdr.reports().len(), 1);
             assert_eq!(
@@ -1274,7 +1257,7 @@ mod tests {
             // Read independently from Herdr, not the locally edited snapshot.
             let mut fresh = app.client.snapshot().unwrap();
             assert!(!supervisor::is_supervisor(&fresh.agents[0]));
-            app.restore_markers(&mut fresh);
+            restore_markers(&app.client, &mut fresh);
             assert!(read(&path).panes.is_empty());
             assert_eq!(
                 herdr.reports().len(),
@@ -1318,7 +1301,7 @@ mod tests {
             )],
             ..Default::default()
         };
-        app.restore_markers(&mut snapshot);
+        restore_markers(&app.client, &mut snapshot);
         assert!(!supervisor::is_supervisor(&snapshot.agents[0]));
         assert_eq!(read(&path), record_with_supervisor(Some(SESSION)));
         server.join().unwrap();
