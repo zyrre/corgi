@@ -12,8 +12,9 @@ use crate::{
     supervisor,
 };
 
-use super::project_main::{
-    CORGI_AGENT_WORKSPACE_ROLE, CORGI_WORKSPACE_ROLE_TOKEN, project_main_root,
+use super::{
+    launch::CORGI_REQUEST_TOKEN,
+    project_main::{CORGI_AGENT_WORKSPACE_ROLE, CORGI_WORKSPACE_ROLE_TOKEN, project_main_root},
 };
 
 /// The heading of the agents running in the home directory, which is never a
@@ -23,14 +24,31 @@ pub(super) const SCRATCH_GROUP: &str = "Scratch";
 const NO_TASK_SUMMARY: &str = "No task yet";
 /// Shown in the tool row until the agent has run its first command or tool.
 pub(super) const NO_TOOL_YET: &str = "No command yet";
+/// The session ID a status-line bridge reports for a pane.
+pub(super) const STATUS_LINE_SESSION_TOKEN: &str = "session";
+
 /// Herdr's detector may identify a pane from its visible terminal content
 /// without there being an agent session attached to it. A non-empty identity
 /// admits it directly; unidentified scratch Codex panes need live process
 /// evidence as well as Corgi's workspace provenance.
-pub(super) fn has_real_agent_session(info: &AgentInfo) -> bool {
+pub(super) fn has_herdr_agent_session(info: &AgentInfo) -> bool {
     info.agent_session
         .as_ref()
         .is_some_and(|session| !session.value.trim().is_empty())
+}
+
+/// Whether `info` is an agent rather than a terminal Herdr's detector took
+/// for one: Herdr gave it a session, or Corgi's own marks show one runs there,
+/// the request id of the spawn that started it or the session its status-line
+/// bridge reports. Herdr does not always attach a session to an agent it
+/// lists, and such a worker must still be shown and still wake its supervisor.
+pub(super) fn has_real_agent_session(info: &AgentInfo) -> bool {
+    has_herdr_agent_session(info)
+        || info.tokens.contains_key(CORGI_REQUEST_TOKEN)
+        || info
+            .tokens
+            .get(STATUS_LINE_SESSION_TOKEN)
+            .is_some_and(|session| !session.trim().is_empty())
 }
 
 /// Workspace metadata alone survives pane reuse and cannot prove an agent is
@@ -256,6 +274,41 @@ mod tests {
     use crate::model::{AgentInfo, WorkspaceInfo, WorkspaceWorktreeInfo};
 
     use super::*;
+
+    #[test]
+    fn an_agent_is_real_with_herdrs_session_or_corgis_marks_but_not_without() {
+        let with = |tokens: &[(&str, &str)]| AgentInfo {
+            tokens: tokens
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+            ..AgentInfo::default()
+        };
+        let herdr = AgentInfo {
+            agent_session: Some(crate::model::AgentSession {
+                value: "herdr-session".into(),
+                ..Default::default()
+            }),
+            ..AgentInfo::default()
+        };
+        assert!(has_real_agent_session(&herdr) && has_herdr_agent_session(&herdr));
+
+        let requested = with(&[(CORGI_REQUEST_TOKEN, "20261008-w-morning-1008")]);
+        assert!(has_real_agent_session(&requested));
+        assert!(!has_herdr_agent_session(&requested));
+
+        let bridged = with(&[(STATUS_LINE_SESSION_TOKEN, "f44d6b29")]);
+        assert!(has_real_agent_session(&bridged));
+        assert!(!has_herdr_agent_session(&bridged));
+
+        // What Herdr's detector alone took for an agent.
+        assert!(!has_real_agent_session(&with(&[])));
+        assert!(!has_real_agent_session(&with(&[("task", "a title")])));
+        assert!(!has_real_agent_session(&with(&[(
+            STATUS_LINE_SESSION_TOKEN,
+            " "
+        )])));
+    }
 
     #[test]
     fn unidentified_scratch_candidates_require_corgi_plain_workspace_and_codex_at_home() {
