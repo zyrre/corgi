@@ -69,8 +69,8 @@ pub use cli::{
 };
 use rows::{
     NO_TOOL_YET, SCRATCH_GROUP, agent_project, agent_worktree, checkout_label, codex_thread_id,
-    has_real_agent_session, is_corgi_scratch_codex, project_group, reported_context_percent,
-    reported_effort, reported_model, task_summary,
+    has_herdr_agent_session, has_real_agent_session, is_corgi_scratch_codex, project_group,
+    reported_context_percent, reported_effort, reported_model, task_summary,
 };
 
 // The launch sequence, the project workspace Corgi owns, the record of the
@@ -534,11 +534,12 @@ impl App {
         tool: Option<Activity>,
     ) -> (Activity, Activity) {
         // Without an identity, a reused pane cannot safely inherit the
-        // previous occupant's conversation when a terminal read fails.
+        // previous occupant's conversation when a terminal read fails. Corgi's
+        // own marks can outlive the agent in a pane, so only Herdr's counts.
         let previous = self
             .cached_rows
             .remove(&info.pane_id)
-            .filter(|_| has_real_agent_session(info));
+            .filter(|_| has_herdr_agent_session(info));
         let (mut message, mut tool) = (message, tool);
         let blocked = info.state == AgentState::Blocked;
         if (message.is_none() || tool.is_none() || blocked)

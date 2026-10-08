@@ -19,7 +19,7 @@ use crate::{
     session::SessionReader,
 };
 
-use super::{progress::Progress, rows::has_real_agent_session};
+use super::{progress::Progress, rows::has_herdr_agent_session};
 
 const FIRST_PROMPT_ATTEMPTS: usize = 30;
 const FIRST_PROMPT_RETRY_DELAY: Duration = Duration::from_millis(300);
@@ -229,7 +229,10 @@ fn first_prompt_visible(client: &HerdrClient, pane_id: &str, prompt: &str) -> bo
     else {
         return false;
     };
-    if !has_real_agent_session(agent) {
+    // Only Herdr's own session names the transcript to look in. Corgi marks
+    // its workers before their first prompt, and without that session the
+    // reader would fall back to any transcript in the same directory.
+    if !has_herdr_agent_session(agent) {
         return false;
     }
     SessionReader::default().facts(agent).task.as_deref()
@@ -413,7 +416,7 @@ mod tests {
             "corgi-scratch-test",
             &mut Recorded::default(),
             |agent| {
-                assert!(!has_real_agent_session(agent));
+                assert!(!has_herdr_agent_session(agent));
                 assert_eq!(agent.state, AgentState::Working);
                 accepted += 1;
                 Ok(())
