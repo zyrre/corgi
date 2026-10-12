@@ -22,6 +22,9 @@ cargo test
 cargo build --release
 ```
 
+On macOS the default `$TMPDIR` makes the fake Herdr socket path in
+`src/test_support.rs` exceed `SUN_LEN`, so run `TMPDIR=/tmp cargo test` there.
+
 To show worktree changes interactively without replacing the stable
 `prefix+d` plugin registration, launch that worktree's release binary in a
 dedicated Herdr preview workspace. Every temporary preview must use the exact
