@@ -15,9 +15,11 @@ use crate::{
     harness::Harness,
     herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS, ReadSource},
     inbox::{self, Inbox, Item, Kind},
+    model::{PromptCache, PromptCacheKind, cache_countdown, compact_tokens},
     paths::{corgi_state_dir, expand_home, is_home},
     session::SessionReader,
     supervisor::{OLD_WAKE_PREFIX, WAKE_PREFIX},
+    time::unix_now,
 };
 
 use super::{
@@ -381,10 +383,14 @@ Usage: corgi fleet [PROJECT]
 
 Lists the agents of PROJECT (default: the project containing the current
 directory), one tab-separated row each under a header line:
-NAME, ROLE (supervisor or worker), STATE, TASK, MODEL, CTX, CWD and TAG, which is
-merge for an agent a supervisor tagged ready to merge (corgi tag) that still rests
-where it was tagged, else -. When the project's supervisor has missed inbox items,
-a line on stderr says so.";
+NAME, ROLE (supervisor or worker), STATE, TASK, MODEL, CTX, CACHE, CWD and TAG.
+CACHE is the agent's prompt cache: warm 42m while it holds, with the time left;
+cold 180k once it has lapsed, with the context tokens the next prompt re-reads
+at the full input price; warm? and cold? when the lifetime is only estimated
+(Codex), so the cache may outlive it; - when unknown. TAG is merge for an agent
+a supervisor tagged ready to merge (corgi tag) that still rests where it was
+tagged, else -. When the project's supervisor has missed inbox items, a line on
+stderr says so.";
 
 /// `corgi fleet`: one tab-separated row per agent of a project (default: the
 /// project containing the current directory), for a supervisor to read.
@@ -393,7 +399,7 @@ pub fn fleet(args: &[String]) -> Result<()> {
     let project = existing_project_dir(args.first().map(String::as_str))?;
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    println!("NAME\tROLE\tSTATE\tTASK\tMODEL\tCTX\tCWD\tTAG");
+    println!("NAME\tROLE\tSTATE\tTASK\tMODEL\tCTX\tCACHE\tCWD\tTAG");
     for row in fleet_rows(&app, &root) {
         println!("{row}");
     }
@@ -404,12 +410,13 @@ pub fn fleet(args: &[String]) -> Result<()> {
 /// The rows `corgi fleet` prints for the agents of the project at `root`.
 pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
     let field = |text: &str| text.replace(['\t', '\n'], " ");
+    let now = unix_now();
     app.agents
         .iter()
         .filter(|agent| agent.project_root == root)
         .map(|agent| {
             format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 field(agent.info.display_name()),
                 if agent.supervisor {
                     "supervisor"
@@ -422,11 +429,29 @@ pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
                 agent
                     .context_percent
                     .map_or_else(|| "-".to_string(), |percent| format!("{percent}%")),
+                agent
+                    .cache
+                    .map_or_else(|| "-".to_string(), |cache| fleet_cache(&cache, now)),
                 field(agent.info.cwd()),
                 if agent.ready_to_merge() { "merge" } else { "-" },
             )
         })
         .collect()
+}
+
+/// The CACHE column of `corgi fleet`: the status bar's cache field in plain
+/// words for an agent to read. A `?` marks an estimated lifetime, which the
+/// cache may outlive, so neither warm nor cold is certain.
+fn fleet_cache(cache: &PromptCache, now: u64) -> String {
+    let mark = if cache.kind == PromptCacheKind::Estimated {
+        "?"
+    } else {
+        ""
+    };
+    match cache.remaining(now) {
+        0 => format!("cold{mark} {}", compact_tokens(cache.tokens)),
+        remaining => format!("warm{mark} {}", cache_countdown(remaining)),
+    }
 }
 
 pub const TAG_USAGE: &str = "\
@@ -1200,6 +1225,27 @@ fn print_launch(started: &serde_json::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fleet_shows_whether_a_prompt_cache_is_warm_or_what_it_costs_cold() {
+        const NOW: u64 = 1_800_000_000;
+        let cache = |expires_at: u64, kind: PromptCacheKind| PromptCache {
+            expires_at,
+            tokens: 180_000,
+            kind,
+        };
+        let row = |cache: Option<PromptCache>| {
+            cache.map_or_else(|| "-".to_string(), |cache| fleet_cache(&cache, NOW))
+        };
+        use PromptCacheKind::{Estimated, Exact};
+
+        assert_eq!(row(Some(cache(NOW + 42 * 60, Exact))), "warm 42m");
+        assert_eq!(row(Some(cache(NOW + 30, Exact))), "warm 30s");
+        assert_eq!(row(Some(cache(NOW, Exact))), "cold 180k");
+        assert_eq!(row(Some(cache(NOW + 2 * 3_600, Estimated))), "warm? 2h");
+        assert_eq!(row(Some(cache(NOW - 1, Estimated))), "cold? 180k");
+        assert_eq!(row(None), "-");
+    }
 
     #[test]
     fn corgi_corgi_refuses_the_home_directory() {
