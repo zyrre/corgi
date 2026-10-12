@@ -5,7 +5,7 @@ use ratatui::{
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::model::{DashboardAgent, PromptCache, PromptCacheKind};
+use crate::model::{DashboardAgent, PromptCache, PromptCacheKind, cache_countdown, compact_tokens};
 
 use super::agents::FIELD_SEPARATOR;
 use super::{ACCENT, DANGER, MUTED, SUCCESS, WARNING, bold};
@@ -126,30 +126,6 @@ fn cache_field(cache: &PromptCache, now: u64) -> Span<'static> {
         format!("{prefix}{} cache", cache_countdown(remaining)),
         Style::default().fg(color),
     )
-}
-
-/// Seconds left on a prompt cache, at the precision that matters for it: hours
-/// only when at least an hour is left, minutes otherwise, and seconds when the
-/// cache is about to lapse, so the field visibly counts down at the end.
-fn cache_countdown(remaining: u64) -> String {
-    if remaining >= 3_600 {
-        format!("{}h", remaining / 3_600)
-    } else if remaining >= 60 {
-        format!("{}m", remaining / 60)
-    } else {
-        format!("{remaining}s")
-    }
-}
-
-/// A token count short enough for a row field: `40k`, `1.2M`.
-fn compact_tokens(tokens: u64) -> String {
-    if tokens >= 1_000_000 {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
-    } else if tokens >= 1_000 {
-        format!("{}k", tokens.div_ceil(1_000))
-    } else {
-        tokens.to_string()
-    }
 }
 
 /// How full a context window is, as a color: green while there is room,

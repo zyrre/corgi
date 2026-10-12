@@ -807,6 +807,11 @@ The prompt-cache countdown (`⏱ 52m cache`) turns yellow in its last five
 minutes and red in its last minute; once cold it reads, for example,
 `⚠ 182k re-read`. A Codex estimate reads `≈ 18m cache`, then
 `⚠ cache may be cold`.
+`corgi fleet` shows the same reading in plain words in its CACHE column, for
+a supervisor weighing a follow-up against a fresh worker: `warm 52m`,
+`cold 182k`, `warm? 18m` and `cold? 182k` for a Codex estimate, `-` when
+unknown. Both format through `cache_countdown` and `compact_tokens` in
+`src/model.rs`.
 
 Every project with an agent session gets a heading, its supervisor first. Within
 a state, agents Herdr reports no order between are alphabetical. Scratch

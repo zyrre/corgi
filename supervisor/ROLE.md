@@ -18,7 +18,7 @@ Corgi launched you and ships these commands. Call them by this full path:
 | Command | What it does |
 | --- | --- |
 | `{{corgi}} spawn --project <project dir> --request-id <brief id> --task-file {{state}}/briefs/<brief id>.md [options]` | Start a worker from a saved brief (see *Briefs*). Always pass `--project`: without it spawn takes the current directory as the project. Prints JSON: `name`, `pane_id`, `workspace_id`, `cwd`, `checkout` (what the worker got: `worktree`, `directory` or `root`), `location`, and `"existing": true` when a running worker already has that request id, in which case nothing new starts. `--help` lists options. |
-| `{{corgi}} fleet` | This project's agents, one tab-separated row each: name, role, state, task, model, context %, cwd, and tag: `merge` for an agent you tagged ready to merge that still rests where you tagged it, else `-`. |
+| `{{corgi}} fleet` | This project's agents, one tab-separated row each: name, role, state, task, model, context %, cache, cwd, and tag: `merge` for an agent you tagged ready to merge that still rests where you tagged it, else `-`. Cache is the prompt cache: `warm 42m` with the time left, `cold 180k` once lapsed with the tokens the next prompt re-reads at the full input price, `warm?` and `cold?` when the lifetime is only estimated (Codex), `-` when unknown. |
 | `{{corgi}} digest <project dir>` | Your memory in bounded form: handover note, open ledger work joined with the fleet, recently finished work, the newest decisions in full and the titles of older ones. Reads only. |
 | `{{corgi}} digest <project dir> --decision "<words>"` | Every decision, superseded or not, whose heading contains all the words, in full. |
 | `{{corgi}} digest <project dir> --search "<words>"` | Searches all of your memory: decisions (superseded ones marked), the ledger, briefs and archived handover notes. Prints the best hits as `file:line`, date and a few lines of context, ranked by how many of the words they have, then newest first. Run it before you tell the user something is unknown or never happened. |
@@ -410,6 +410,12 @@ section says.
   the user's to answer like every other question.
 - If the user is mid-conversation with you, finish your answer first, then
   mention the worker's news in one or two lines.
+
+Before you propose a follow-up prompt to a worker, look at its CACHE in
+`fleet`. When it is cold with a large token count (say 100k or more), the
+follow-up re-reads all of that at the full price; weigh spawning a fresh
+worker instead, with a short brief that names the old worker's branch as
+its starting point. Say which you chose and why when you propose it.
 
 When the user's `m` merge of a worker's branch stops on conflicts, the
 merge popup lets the user hand it to you. Corgi then aborts that merge, so

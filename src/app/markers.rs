@@ -1704,7 +1704,11 @@ mod tests {
             .find(|row| row.starts_with("w-brave\t"))
             .expect("the worker's row");
         let fields: Vec<&str> = row.split('\t').collect();
-        assert_eq!((fields[2], fields[7]), ("done", "merge"), "{row}");
+        assert_eq!(
+            (fields[2], fields[6], fields[8]),
+            ("done", "-", "merge"),
+            "{row}"
+        );
 
         herdr.restart();
         dashboard.refresh();
