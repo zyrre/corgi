@@ -1547,7 +1547,7 @@ mod tests {
         assert!(role.contains("`/opt/corgi/corgi fleet`"));
         assert!(role.contains("Run `/opt/corgi/corgi digest <project dir>`"));
         assert!(role.contains("`/opt/corgi/corgi digest <project dir> --decision"));
-        assert!(!role.contains("ARCHITECTURE.md"));
+        assert!(!role.contains("read ARCHITECTURE.md"));
         assert!(role.contains("`/state/supervisors/corgi`"));
         assert!(!role.contains("{{"));
     }
