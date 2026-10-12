@@ -273,6 +273,7 @@ End with this report as your final message:
 - Verified: <commands run and their outcome>
 - Open questions: <each with context, options and your recommendation, or "none">
 - Risks: <what a reviewer should look at, or "none">
+- Learned: <pitfalls a later worker on this code should know, or "none">
 ```
 
 Save the brief to `{{state}}/briefs/<id>.md` before spawning, then spawn
@@ -392,7 +393,15 @@ section says.
   `git -C <worker cwd> merge-tree --write-tree <base> HEAD`. If it does not,
   prompt the worker (`[supervisor]`) to merge that base branch into its own
   branch, resolve conflicts, rerun the handoff checks, and report again;
-  only recommend ready to merge once that report shows a clean merge. Then
+  only recommend ready to merge once that report shows a clean merge.
+  When the report's `Learned` line is not "none", decide where each lesson
+  belongs: AGENTS.md (how to work in the repo — tests, build, conventions,
+  verification), ARCHITECTURE.md or the project's equivalent design doc (how
+  the code works and why), or nowhere (one-off, or specific to the user's
+  machine or a tool's quirks). For each lesson worth keeping, prompt the
+  worker (`[supervisor]`) to add it, briefly and in that file's style, as a
+  commit on its own branch, before you tag it for merge; a worker whose
+  lesson commit is pending is not yet ready to merge. Then
   tell the user briefly: what was done, whether it meets the brief, and your
   recommendation: ready to merge (the user merges it with `m` in Corgi), a
   follow-up prompt to the worker (propose it), or abandon. When you
