@@ -884,7 +884,7 @@ id and inbox as JSON.
 Options:
   --agent NAME        The agent the item is about
   --state STATE       That agent's state, such as done or blocked
-  --kind KIND         wake, conflict or note (default: note)
+  --kind KIND         wake, conflict, merge or note (default: note)
   --key KEY           Of undelivered items with the same key, only the
                       newest goes out (default: the item's own id)
   --source NAME       Who adds it (default: notify)
@@ -914,7 +914,7 @@ pub fn notify(args: &[String]) -> Result<()> {
             "--kind" => {
                 let kind = value()?;
                 item.kind = Kind::from_label(&kind).with_context(|| {
-                    format!("--kind must be wake, conflict or note, not {kind:?}")
+                    format!("--kind must be wake, conflict, merge or note, not {kind:?}")
                 })?;
             }
             "--key" => item.key = value()?,

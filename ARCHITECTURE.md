@@ -354,7 +354,7 @@ submodules are split by flow, each adding methods to the one `App`.
   supervisor, the `git merge --abort` of that merge. The agent never
   performs the merge, and Corgi never changes the user's checked-out branch.
 - `waker.rs` is `SupervisorWaker`, which wakes supervisors through their inboxes,
-  puts the merge-conflict handoff in them, and hands them over, as
+  puts the merge and merge-conflict lines in them, and hands them over, as
   described below; `draft.rs` tells it whether a supervisor's input box holds
   the user's draft.
 - `cli.rs` is `corgi spawn`, `corgi supervisor`, `corgi fleet`,
@@ -518,7 +518,7 @@ role. So Corgi keeps its own record and puts the tokens back.
   a dashboard closes, crashes, restarts or hands the lock over. It is
   append-only JSON lines, written only through that module under
   `inbox.lock`: items (`id`, `ts`, `project`, `source`, `kind` of `wake`,
-  `conflict` or `note`, `agent`, `state`, for a wake the agent's `pane` and
+  `conflict`, `merge` or `note`, `agent`, `state`, for a wake the agent's `pane` and
   `change` (its `state_change_seq`), a coalescing `key`, the `[Corgi]`
   `text`, `own`, and the agent's report inline or as `report_file`), and
   records naming the ids delivered. An item no record names is
@@ -528,9 +528,9 @@ role. So Corgi keeps its own record and puts the tokens back.
   own. The dashboard reads each supervisor's inbox at each refresh. Past 256 KB,
   a write rewrites the file with every undelivered item and the newest 100
   delivered ones, and removes the dropped items' report files. The
-  dashboard adds wakes and the merge-conflict handoff in process (any
-  interactive dashboard may hand a conflict to the supervisor, since the leader
-  delivers it), and `corgi notify` adds anything else (a script's or a
+  dashboard adds wakes, the merge-conflict handoff and the merge line in
+  process (any interactive dashboard may add the last two, since the leader
+  delivers them), and `corgi notify` adds anything else (a script's or a
   hook's line) through the same code. Projects of the same directory name
   share a state directory, so each item names its project root, and a
   supervisor gets only its own project's items.
@@ -878,6 +878,20 @@ tagged done that worked, finished and was looked at while no dashboard ran;
 it still shows MERGE until it works again. A merge with `m` clears the
 merged worker's tag too, also when only its push failed, since the branch
 is merged by then.
+
+A merge with `m` that succeeds, push included, also tells the project's
+supervisor (`App::tell_supervisor_about_merge`): one inbox item of kind
+`merge`, keyed `<agent> merged`, naming the agent, its task, branch, base
+branch and the short hash of the base's HEAD after the merge, which the
+merge job reads before pushing. It goes in whether or not a supervisor runs
+now, to be delivered when one does, but only for a project with a running
+supervisor or a `ROLE.md` in its state directory (`Inboxes::has_supervisor`),
+so a project that never had one gets no inbox. A failed, conflicted or
+cancelled merge sends nothing, and neither does the Omarchy popup, which has
+no inbox. A push that failed and is retried with Enter merges nothing new
+and sends the line then. The supervisor marks a worker in its ledger
+`merged` and re-checks the other workers tagged MERGE against the moved
+base.
 
 A worker whose tag applies shows a magenta ` MERGE ` badge instead of
 ` DONE ` or ` IDLE `; a busy one shows its real state. Magenta is the one

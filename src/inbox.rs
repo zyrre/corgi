@@ -1,7 +1,8 @@
-//! A supervisor's inbox: every wake, merge-conflict line and note meant for a
-//! project's supervisor, kept in `inbox.jsonl` in its state directory so that
-//! none is lost when the dashboard that types them into the supervisor's input
-//! box closes, restarts, or another dashboard takes over the wake lock.
+//! A supervisor's inbox: every wake, merge line, merge-conflict line and note
+//! meant for a project's supervisor, kept in `inbox.jsonl` in its state
+//! directory so that none is lost when the dashboard that types them into the
+//! supervisor's input box closes, restarts, or another dashboard takes over
+//! the wake lock.
 //!
 //! The file is append-only JSON lines of two kinds: an item, and a record
 //! that items were delivered. An item no record names is undelivered, and an
@@ -64,6 +65,8 @@ pub enum Kind {
     Wake,
     /// The user's merge of a worker's branch conflicted.
     Conflict,
+    /// The user merged an agent's branch.
+    Merge,
     /// Anything else, such as a line a script added with `corgi notify`.
     Note,
 }
@@ -73,12 +76,13 @@ impl Kind {
         match self {
             Self::Wake => "wake",
             Self::Conflict => "conflict",
+            Self::Merge => "merge",
             Self::Note => "note",
         }
     }
 
     pub fn from_label(label: &str) -> Option<Self> {
-        [Self::Wake, Self::Conflict, Self::Note]
+        [Self::Wake, Self::Conflict, Self::Merge, Self::Note]
             .into_iter()
             .find(|kind| kind.label() == label)
     }
