@@ -15,7 +15,7 @@ use crate::{
     git::{ensure_git_clean, git_current_branch, git_failure_detail, git_output, worktree_commits},
     job::{Job, Update},
     model::DashboardAgent,
-    supervisor::{self, MergeConflict},
+    supervisor::{self, MergeConflict, MergeLanded},
 };
 
 use super::{
@@ -188,8 +188,9 @@ impl App {
                 )),
             };
             match result {
-                Ok(()) => {
+                Ok(commit) => {
                     self.clear_merged_tag();
+                    self.tell_supervisor_about_merge(&commit);
                     if let Some(form) = self.overlay.merge_worktree_form_mut() {
                         form.phase = MergePhase::Succeeded;
                         self.status = format!(
@@ -253,6 +254,45 @@ impl App {
         );
         if cleared.is_ok() {
             agent.info.tokens.remove(supervisor::MERGE_TOKEN);
+        }
+    }
+
+    /// Adds a line to the inbox of the project's supervisor saying that the
+    /// open merge dialog's branch was merged into its base at `commit`, so the
+    /// supervisor records it and goes on with what waited on it. It is kept
+    /// for the supervisor's next turn when none runs now, and not written for
+    /// a project that never had one, nor from a dashboard without an inbox.
+    fn tell_supervisor_about_merge(&mut self, commit: &str) {
+        let (Some(form), Some(inboxes)) = (self.overlay.merge_worktree_form(), &self.inboxes)
+        else {
+            return;
+        };
+        let project = form.project_root.to_string_lossy().into_owned();
+        if project_supervisor(&self.agents, &form.project_root).is_none()
+            && !inboxes.has_supervisor(&project)
+        {
+            return;
+        }
+        let item = crate::inbox::Item {
+            project,
+            source: "merge".into(),
+            kind: crate::inbox::Kind::Merge,
+            agent: Some(form.agent.clone()),
+            key: format!("{} merged", form.agent),
+            text: supervisor::merge_landed_message(&MergeLanded {
+                worker: &form.agent,
+                task: &form.task,
+                branch: &form.source_branch,
+                base: &form.target_branch,
+                commit,
+            }),
+            ..Default::default()
+        };
+        if let Err(error) = inboxes.notify(item) {
+            self.set_status(
+                format!("Merged, but the supervisor could not be told: {error:#}"),
+                Some(Duration::from_secs(15)),
+            );
         }
     }
 
@@ -433,7 +473,7 @@ fn prepare_worktree_merge(
 }
 
 /// Runs the merge job for `form`, telling conflicts from other failures.
-fn run_merge(form: &MergeWorktreeForm, progress: &mut dyn Progress) -> Result<(), MergeError> {
+fn run_merge(form: &MergeWorktreeForm, progress: &mut dyn Progress) -> Result<String, MergeError> {
     merge_worktree_branch(form, progress).map_err(|error| match error.downcast::<Conflicts>() {
         Ok(conflicts) => MergeError::Conflicts(conflicts.files),
         Err(error) => MergeError::Failed(format!("{error:#}")),
@@ -442,8 +482,10 @@ fn run_merge(form: &MergeWorktreeForm, progress: &mut dyn Progress) -> Result<()
 
 /// Revalidates the reviewed merge immediately before changing Git state. This
 /// catches an agent resuming work, a user switching branches, or local edits
-/// made while the confirmation dialog was open.
-fn merge_worktree_branch(form: &MergeWorktreeForm, progress: &mut dyn Progress) -> Result<()> {
+/// made while the confirmation dialog was open. Returns the short hash of the
+/// commit the target branch points at after the merge, or nothing when Git
+/// could not tell it.
+fn merge_worktree_branch(form: &MergeWorktreeForm, progress: &mut dyn Progress) -> Result<String> {
     progress.step(0);
     progress.report("Checking both worktrees…".into());
     let (source_branch, target_branch) =
@@ -486,6 +528,10 @@ fn merge_worktree_branch(form: &MergeWorktreeForm, progress: &mut dyn Progress) 
         );
     }
 
+    let commit = git_output(&form.project_root, &["rev-parse", "--short", "HEAD"])
+        .map(|hash| hash.trim().to_string())
+        .unwrap_or_default();
+
     progress.step(2);
     progress.report(format!("Pushing {}…", form.target_branch));
     let output = Command::new("git")
@@ -500,7 +546,7 @@ fn merge_worktree_branch(form: &MergeWorktreeForm, progress: &mut dyn Progress) 
             git_failure_detail(&output)
         );
     }
-    Ok(())
+    Ok(commit)
 }
 
 #[cfg(test)]
@@ -772,6 +818,180 @@ mod tests {
         app
     }
 
+    /// A repository with a bare remote and an agent worktree whose branch
+    /// merges cleanly into `main`. Returns the repository, the worktree, the
+    /// remote, and the form for that merge.
+    fn mergeable_repo(label: &str) -> (PathBuf, PathBuf, PathBuf, MergeWorktreeForm) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let repo = std::env::temp_dir().join(format!("corgi-{label}-{nonce}"));
+        let worktree = std::env::temp_dir().join(format!("corgi-{label}-worktree-{nonce}"));
+        let remote = std::env::temp_dir().join(format!("corgi-{label}-remote-{nonce}"));
+        fs::create_dir_all(&repo).expect("create test repository");
+        fs::create_dir_all(&remote).expect("create test remote");
+        git_test(&remote, &["init", "--bare"]);
+        git_test(&repo, &["init"]);
+        git_test(&repo, &["config", "user.name", "Corgi test"]);
+        git_test(&repo, &["config", "user.email", "corgi@example.test"]);
+        fs::write(repo.join("status.txt"), "base\n").expect("write initial file");
+        git_test(&repo, &["add", "status.txt"]);
+        git_test(&repo, &["commit", "-m", "initial"]);
+        git_test(&repo, &["branch", "-M", "main"]);
+        git_test(
+            &repo,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git_test(&repo, &["push", "--set-upstream", "origin", "main"]);
+        git_test(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "worktree/reviewed-agent",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        fs::write(worktree.join("status.txt"), "agent\n").expect("write agent change");
+        git_test(&worktree, &["commit", "-am", "agent result"]);
+        let form = MergeWorktreeForm {
+            label: "corgi/reviewed-agent".into(),
+            workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
+            project_root: repo.clone(),
+            worktree_checkout: worktree.clone(),
+            source_branch: "worktree/reviewed-agent".into(),
+            target_branch: "main".into(),
+            task: "Make the status\nfile say agent".into(),
+            commits: Vec::new(),
+            phase: MergePhase::Confirm,
+        };
+        (repo, worktree, remote, form)
+    }
+
+    fn remove_mergeable_repo(repo: PathBuf, worktree: PathBuf, remote: PathBuf) {
+        remove_conflicting_merge(repo, worktree);
+        fs::remove_dir_all(remote).expect("remove test remote");
+    }
+
+    /// The state directory the test dashboard keeps `repo`'s inbox in, with
+    /// a supervisor's role written to it as a launch writes it.
+    fn prepare_supervisor_state(repo: &Path) {
+        let dir = repo
+            .join(".git")
+            .join("corgi-state")
+            .join(repo.file_name().unwrap());
+        fs::create_dir_all(&dir).expect("create state dir");
+        fs::write(dir.join(supervisor::ROLE_FILE), "role").expect("write role");
+    }
+
+    #[test]
+    fn a_merge_tells_the_running_project_supervisor_once() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-landed");
+        let root = repo.to_string_lossy().into_owned();
+        let app = conflicted_dashboard(
+            &form,
+            vec![
+                project_agent("supervisor-corgi", &repo, true),
+                project_agent("w-reviewed-agent", &repo, false),
+            ],
+        );
+        assert_eq!(
+            app.overlay.merge_worktree_form().map(|form| &form.phase),
+            Some(&MergePhase::Succeeded)
+        );
+        let commit = git_test_stdout(&repo, &["rev-parse", "--short", "main"]);
+        assert_eq!(
+            app.inboxes.as_ref().unwrap().pending_for(&root),
+            [format!(
+                "[Corgi] The user merged w-reviewed-agent (task \"Make the status file say \
+                 agent\"), branch worktree/reviewed-agent, into main at {commit}."
+            )]
+        );
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_merge_is_kept_for_a_supervisor_that_is_not_running() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-landed-queued");
+        let root = repo.to_string_lossy().into_owned();
+        prepare_supervisor_state(&repo);
+        let app =
+            conflicted_dashboard(&form, vec![project_agent("w-reviewed-agent", &repo, false)]);
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(pending[0].starts_with("[Corgi] The user merged w-reviewed-agent"));
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_merge_in_a_project_that_never_had_a_supervisor_tells_no_one() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-landed-alone");
+        let root = repo.to_string_lossy().into_owned();
+        let app =
+            conflicted_dashboard(&form, vec![project_agent("w-reviewed-agent", &repo, false)]);
+        assert_eq!(
+            app.overlay.merge_worktree_form().map(|form| &form.phase),
+            Some(&MergePhase::Succeeded)
+        );
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_merge_from_the_popup_without_an_inbox_writes_nothing() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-landed-popup");
+        prepare_supervisor_state(&repo);
+        let mut app = test_app();
+        app.agents = vec![project_agent("supervisor-corgi", &repo, true)];
+        let mut running = form.clone();
+        running.phase = MergePhase::Running(1);
+        app.overlay = Overlay::merge(running);
+        let job_form = form.clone();
+        app.merge_job = Job::spawn(move |_| run_merge(&job_form, &mut Silent));
+        poll_until(&mut app, App::poll_merge, |app| !app.merge_job.is_running());
+        assert_eq!(
+            app.overlay.merge_worktree_form().map(|form| &form.phase),
+            Some(&MergePhase::Succeeded)
+        );
+        let state = repo
+            .join(".git")
+            .join("corgi-state")
+            .join(repo.file_name().unwrap());
+        assert!(!state.join(crate::inbox::INBOX_FILE).exists());
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_merge_tells_no_one() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-landed-failed");
+        let root = repo.to_string_lossy().into_owned();
+        // The push has nowhere to go.
+        fs::remove_dir_all(&remote).expect("remove test remote");
+        let mut app =
+            conflicted_dashboard(&form, vec![project_agent("supervisor-corgi", &repo, true)]);
+        assert!(matches!(
+            app.overlay.merge_worktree_form().map(|form| &form.phase),
+            Some(MergePhase::Failed(_))
+        ));
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
+
+        // Esc on the confirmation runs nothing.
+        app.overlay = Overlay::merge(form);
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Esc)));
+        assert!(app.overlay.merge_worktree_form().is_none());
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
+
+        fs::create_dir_all(&remote).expect("recreate remote path");
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
     #[test]
     fn a_conflicted_merge_offers_to_hand_it_to_the_project_supervisor() {
         let (repo, worktree, form) = conflicting_merge("merge-conflict-corgi");
@@ -791,6 +1011,10 @@ mod tests {
             })
         );
         assert!(merge_in_progress(&repo));
+        assert!(
+            app.inboxes.as_ref().unwrap().pending_for(&root).is_empty(),
+            "a conflict is not a merge"
+        );
 
         assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
         assert!(matches!(app.overlay, Overlay::None), "{:?}", app.overlay);

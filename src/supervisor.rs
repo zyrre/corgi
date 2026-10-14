@@ -169,6 +169,10 @@ fn move_state_dir(dir: &Path, old: &Path) -> Result<Option<String>> {
     }))
 }
 
+/// The role as written for a supervisor's launch, in its state directory.
+/// Once written, the project has a supervisor that the inbox can reach.
+pub const ROLE_FILE: &str = "ROLE.md";
+
 /// What a project is called, in its state directory, its workspace label and
 /// the supervisor's name, when its root has no directory name of its own.
 pub const UNNAMED_PROJECT: &str = "project";
@@ -260,7 +264,7 @@ fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Resul
     if !ledger.exists() {
         fs::write(&ledger, "").with_context(|| format!("create {}", ledger.display()))?;
     }
-    let role_file = state_dir.join("ROLE.md");
+    let role_file = state_dir.join(ROLE_FILE);
     let role = role(corgi_bin, &state_dir);
     fs::write(&role_file, &role).with_context(|| format!("write {}", role_file.display()))?;
     Ok(Prepared {
@@ -658,12 +662,7 @@ pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
         base,
         files,
     } = conflict;
-    let task = task.split_whitespace().collect::<Vec<_>>().join(" ");
-    let task = if task.is_empty() {
-        String::new()
-    } else {
-        format!(" (task \"{task}\")")
-    };
+    let task = task_clause(task);
     let mut named = files
         .iter()
         .take(CONFLICT_FILES_NAMED)
@@ -680,6 +679,49 @@ pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
          there, rerun its checks and report; the user then merges again with m.",
         worktree.display()
     )
+}
+
+/// `task` on one line as the clause a merge message names it in, or nothing
+/// when it is empty.
+fn task_clause(task: &str) -> String {
+    let task = task.split_whitespace().collect::<Vec<_>>().join(" ");
+    if task.is_empty() {
+        String::new()
+    } else {
+        format!(" (task \"{task}\")")
+    }
+}
+
+/// A merge of an agent's branch the user made with `m`, for its project's
+/// supervisor.
+pub struct MergeLanded<'a> {
+    /// The agent's name, as the supervisor's ledger has it if it dispatched it.
+    pub worker: &'a str,
+    /// What the agent was asked to do; empty when unknown.
+    pub task: &'a str,
+    pub branch: &'a str,
+    /// The branch checked out in the primary checkout, merged into.
+    pub base: &'a str,
+    /// The commit `base` points at after the merge; empty when unknown.
+    pub commit: &'a str,
+}
+
+/// The line that tells a supervisor that the user merged an agent's branch.
+pub fn merge_landed_message(merge: &MergeLanded<'_>) -> String {
+    let MergeLanded {
+        worker,
+        task,
+        branch,
+        base,
+        commit,
+    } = merge;
+    let task = task_clause(task);
+    let at = if commit.is_empty() {
+        String::new()
+    } else {
+        format!(" at {commit}")
+    };
+    format!("{WAKE_PREFIX} The user merged {worker}{task}, branch {branch}, into {base}{at}.")
 }
 
 /// What a wake is about. Done and idle are one: the agent has stopped, and
@@ -1550,6 +1592,31 @@ mod tests {
         assert!(!role.contains("read ARCHITECTURE.md"));
         assert!(role.contains("`/state/supervisors/corgi`"));
         assert!(!role.contains("{{"));
+    }
+
+    #[test]
+    fn a_landed_merge_is_one_line_the_role_says_how_to_handle() {
+        let merged = |task, commit| {
+            merge_landed_message(&MergeLanded {
+                worker: "w-fleet-cache",
+                task,
+                branch: "worktree/silver-river-fa87",
+                base: "main",
+                commit,
+            })
+        };
+        assert_eq!(
+            merged("Cache the\nfleet  rows", "06d069d"),
+            "[Corgi] The user merged w-fleet-cache (task \"Cache the fleet rows\"), \
+             branch worktree/silver-river-fa87, into main at 06d069d."
+        );
+        assert_eq!(
+            merged("", ""),
+            "[Corgi] The user merged w-fleet-cache, branch worktree/silver-river-fa87, into main."
+        );
+        assert!(ROLE.contains("[Corgi] The user merged w-fleet-json"));
+        assert!(ROLE.contains("append a ledger line with status `merged`"));
+        assert!(ROLE.contains("clear its tag and have\nit merge the base branch"));
     }
 
     #[test]

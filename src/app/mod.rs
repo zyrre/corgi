@@ -181,7 +181,7 @@ pub(crate) struct App {
     launch_job: Job<Result<String>, JobReport>,
     usage_job: Job<Vec<UsageResult>>,
     codex_task_job: Job<Result<HashMap<String, String>, String>>,
-    merge_job: Job<Result<(), merge::MergeError>, JobReport>,
+    merge_job: Job<Result<String, merge::MergeError>, JobReport>,
     /// The model catalogs and harness configurations behind the new-agent
     /// form's selectors.
     model_catalogs: ModelCatalogs,

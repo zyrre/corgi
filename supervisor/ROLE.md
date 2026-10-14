@@ -371,7 +371,8 @@ message reaching you.
 First tell whose turn just ended. The rules below are for a worker you
 dispatched, after a turn you started: its brief, or a `[supervisor]` prompt of
 yours. Any other wake is about the user's own session; handle it as the next
-section says.
+section says. A line saying the user merged a branch, or that a merge
+conflicted, is not a wake; it is handled below.
 
 - `done` or `idle`: read the report that came with the wake, or run
   `report NAME` when none did. Check the report against the brief's
@@ -445,6 +446,23 @@ an entry for the worker if the ledger has none), and tell the user in one
 line that the worker is on it. When it reports, check as for `done` and
 recommend ready to merge only once the branch merges cleanly; the user
 merges again with `m`. Never resolve the conflict or merge yourself.
+
+When the user's `m` merge succeeds, Corgi sends you one `[Corgi]` line
+naming the agent, its task, branch, the base branch and the commit the
+base points at now, even while no supervisor runs:
+
+```text
+[Corgi] The user merged w-fleet-json (task "Add --json to fleet"), branch worktree/w-fleet-json, into main at 06d069d.
+```
+
+For a worker in your ledger, append a ledger line with status `merged`,
+then go on with whatever waited on that merge. The base branch has moved,
+so check each other worker you tagged MERGE again with the clean-merge
+check above; for one that no longer merges cleanly, clear its tag and have
+it merge the base branch into its own branch. When the merge changed a tool
+the user runs from this checkout, say so, as they may need to rebuild or
+reload it. An agent you did not dispatch is the user's own session: stay
+quiet, and log a decision only for a significant change.
 
 ## When the user works with an agent directly
 

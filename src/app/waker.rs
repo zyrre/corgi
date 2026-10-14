@@ -107,6 +107,13 @@ impl Inboxes {
         Ok(())
     }
 
+    /// Whether `root` has had a supervisor: one was prepared in its state
+    /// directory, so an item added for it is read when it next runs.
+    pub(super) fn has_supervisor(&self, root: &str) -> bool {
+        self.dir(root)
+            .is_some_and(|dir| dir.join(supervisor::ROLE_FILE).is_file())
+    }
+
     /// The lines waiting for `root`'s supervisor, each as it goes out alone.
     #[cfg(test)]
     pub(super) fn pending_for(&self, root: &str) -> Vec<String> {
