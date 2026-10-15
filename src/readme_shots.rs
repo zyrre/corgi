@@ -36,6 +36,7 @@ use crate::{
     motion::{CONTENT, Motion, OPEN, STAMP_DRAW, STAMP_HOLD},
     supervisor,
     test_support::{test_app, test_terminal},
+    theme::{self, Theme},
     time::unix_now,
     ui::draw,
     usage::{PlanUsage, Provider, UsageWindow},
@@ -56,20 +57,18 @@ const FONT_FAMILY: &str = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaV
 const PADDING: u32 = 14;
 const TITLE_BAR: u32 = 30;
 const WINDOW_RADIUS: u32 = 10;
-const WINDOW_EDGE: &str = "#2a2e42";
-const TITLE_TEXT: &str = "#787c99";
+const WINDOW_EDGE: &str = "#313244";
+const TITLE_TEXT: &str = "#7f849c";
 
-// Corgi draws in the terminal's own ANSI colors, so a screenshot has to pick
-// a theme. This is Tokyo Night, Omarchy's default; the default foreground and
-// background are the theme's, and the fixed 256-color cube and grey ramp are
-// xterm's, as every terminal has them.
-const BACKGROUND: &str = "#1a1b26";
-const FOREGROUND: &str = "#a9b1d6";
-const ANSI: [&str; 16] = [
-    "#15161e", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#a9b1d6",
-    "#414868", "#f7768e", "#9ece6a", "#e0af68", "#7aa2f7", "#bb9af7", "#7dcfff", "#c0caf5",
-];
-const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+// Corgi draws in the colors of the terminal it runs in, so a screenshot has
+// to pick a theme, and a fixed one, so the images do not depend on the
+// machine they are drawn on: Catppuccin Mocha in its own RGB. The default
+// foreground and background are the theme's.
+fn shot_theme() -> Theme {
+    Theme::catppuccin(false, true)
+}
+const BACKGROUND: &str = "#1e1e2e";
+const FOREGROUND: &str = "#cdd6f4";
 
 /// The dashboard's size in the screenshots cut from it: wide enough for the
 /// header's whole band of cards, and tall enough for three projects.
@@ -88,7 +87,7 @@ const WINDOW_TITLE: &str = "corgi — herdr";
 // The labels of the row anatomy: their color, which no part of the dashboard
 // uses, so a label never reads as part of the screen, their font, and the
 // rows they stack in above the screen.
-const CALLOUT: &str = "#ff9e64";
+const CALLOUT: &str = "#fab387";
 const CALLOUT_FONT: &str = "-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif";
 const CALLOUT_FONT_SIZE: u32 = 13;
 const CALLOUT_GAP: u32 = 12;
@@ -112,16 +111,18 @@ struct Shot {
 /// Every screenshot, in the order the README shows them.
 fn shots() -> Vec<Shot> {
     let shot = |name, svg| Shot { name, svg };
-    vec![
-        shot("logo", logo()),
-        shot("dashboard", hero()),
-        shot("row-anatomy", row_anatomy()),
-        shot("expanded-session", expanded_session()),
-        shot(
-            "new-agent-form",
-            popup(&mut new_agent_form(), "◆ New agent"),
-        ),
-    ]
+    theme::scoped(shot_theme(), || {
+        vec![
+            shot("logo", logo()),
+            shot("dashboard", hero()),
+            shot("row-anatomy", row_anatomy()),
+            shot("expanded-session", expanded_session()),
+            shot(
+                "new-agent-form",
+                popup(&mut new_agent_form(), "◆ New agent"),
+            ),
+        ]
+    })
 }
 
 /// An animated shot and the file it is written to, `docs/images/<name>.gif`.
@@ -139,10 +140,12 @@ struct Still {
 
 /// Every animated shot.
 fn animations() -> Vec<Animation> {
-    vec![Animation {
-        name: "merge-outcomes",
-        frames: merge_outcomes(),
-    }]
+    theme::scoped(shot_theme(), || {
+        vec![Animation {
+            name: "merge-outcomes",
+            frames: merge_outcomes(),
+        }]
+    })
 }
 
 /// How a shot is framed.
@@ -1231,41 +1234,14 @@ fn shape(symbol: &str, left: u32, top: u32, fill: &str) -> Option<String> {
 /// A cell color in the screenshot's theme. The terminal's default is the
 /// theme's foreground or background, depending on which the cell asks for.
 fn color(color: Color, foreground: bool) -> String {
-    let default = if foreground { FOREGROUND } else { BACKGROUND };
-    let ansi = |index: usize| ANSI[index].to_string();
-    match color {
-        Color::Reset => default.to_string(),
-        Color::Black => ansi(0),
-        Color::Red => ansi(1),
-        Color::Green => ansi(2),
-        Color::Yellow => ansi(3),
-        Color::Blue => ansi(4),
-        Color::Magenta => ansi(5),
-        Color::Cyan => ansi(6),
-        Color::Gray => ansi(7),
-        Color::DarkGray => ansi(8),
-        Color::LightRed => ansi(9),
-        Color::LightGreen => ansi(10),
-        Color::LightYellow => ansi(11),
-        Color::LightBlue => ansi(12),
-        Color::LightMagenta => ansi(13),
-        Color::LightCyan => ansi(14),
-        Color::White => ansi(15),
-        Color::Indexed(index @ 0..=15) => ansi(usize::from(index)),
-        Color::Indexed(index @ 16..=231) => {
-            let cube = index - 16;
-            hex(
-                CUBE_LEVELS[usize::from(cube / 36)],
-                CUBE_LEVELS[usize::from(cube / 6 % 6)],
-                CUBE_LEVELS[usize::from(cube % 6)],
-            )
-        }
-        Color::Indexed(index) => {
-            let grey = 8 + 10 * (index - 232);
-            hex(grey, grey, grey)
-        }
-        Color::Rgb(r, g, b) => hex(r, g, b),
-    }
+    let palette = shot_theme().palette;
+    let default = if foreground {
+        palette.foreground
+    } else {
+        palette.background
+    };
+    let (r, g, b) = shot_theme().rgb(color).unwrap_or(default);
+    hex(r, g, b)
 }
 
 fn hex(r: u8, g: u8, b: u8) -> String {
@@ -1277,6 +1253,9 @@ fn escape(text: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
+
+#[cfg(test)]
+mod theme_preview;
 
 #[cfg(test)]
 mod tests {
@@ -1314,6 +1293,7 @@ mod tests {
         assert_eq!(color(Color::Indexed(16), true), "#000000");
         assert_eq!(color(Color::Indexed(255), true), "#eeeeee");
         assert_eq!(color(Color::Reset, false), BACKGROUND);
+        assert_eq!(color(Color::Reset, true), FOREGROUND);
     }
 
     /// Writes every screenshot to `docs/images/`. Run it with

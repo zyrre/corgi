@@ -13,19 +13,16 @@ use ratatui::{
     widgets::{Clear, Widget},
 };
 
-use crate::motion::{FLASH, Outcome, progress, stamp_content, stamp_drawn, stamp_faded};
-
-use super::{
-    blend::{DIMMED, FADE_FROM, FLASH_WHITE, STAMP_GREEN, SUCCESS_FRAME, mix},
-    dialog_block,
+use crate::{
+    motion::{FLASH, Outcome, progress, stamp_content, stamp_drawn, stamp_faded},
+    theme::{TERMINAL_DEFAULT, mix, roles},
 };
 
-/// How far the dashboard's colors go towards [`DIMMED`] behind a popup.
+use super::dialog_block;
+
+/// How far the dashboard's colors go towards the theme's dimmed shade
+/// behind a popup.
 const DIM_STRENGTH: f32 = 0.8;
-/// The grey a dimmed background fades towards, just above black.
-const DIMMED_BACKGROUND: u8 = 234;
-/// What the terminal's default foreground stands in as while it fades.
-const DEFAULT_FOREGROUND: u8 = 252;
 
 /// Fades every color in `area` `amount` of the way to muted, for the
 /// dashboard behind an open popup. Nothing changes at 0, so a closed popup
@@ -38,6 +35,7 @@ pub(super) fn dim(buffer: &mut Buffer, area: Rect, amount: f32) {
     let area = area.intersection(buffer.area);
     // A screen holds only a few dozen colors, and a popup stays open for
     // many frames, so each is blended once per frame rather than per cell.
+    let roles = roles();
     let mut foregrounds = HashMap::new();
     let mut backgrounds = HashMap::new();
     for y in area.top()..area.bottom() {
@@ -45,11 +43,11 @@ pub(super) fn dim(buffer: &mut Buffer, area: Rect, amount: f32) {
             let cell = &mut buffer[(x, y)];
             cell.fg = *foregrounds
                 .entry(cell.fg)
-                .or_insert_with(|| mix(foreground(cell.fg), Color::Indexed(DIMMED), t));
-            if cell.bg != Color::Reset {
+                .or_insert_with(|| mix(foreground(cell.fg), roles.dimmed, t));
+            if cell.bg != TERMINAL_DEFAULT {
                 cell.bg = *backgrounds
                     .entry(cell.bg)
-                    .or_insert_with(|| mix(cell.bg, Color::Indexed(DIMMED_BACKGROUND), t));
+                    .or_insert_with(|| mix(cell.bg, roles.dimmed_background, t));
             }
         }
     }
@@ -84,12 +82,8 @@ pub(super) fn draw_frame(buffer: &mut Buffer, full: Rect, color: Color, openness
 pub(super) fn frame_color(base: Color, effect: Option<(Outcome, Duration)>) -> Color {
     match effect {
         None => base,
-        Some((Outcome::Success, elapsed)) => {
-            mix(Color::Indexed(SUCCESS_FRAME), base, stamp_faded(elapsed))
-        }
-        Some((Outcome::Failure, elapsed)) => {
-            mix(Color::Indexed(FLASH_WHITE), base, progress(elapsed, FLASH))
-        }
+        Some((Outcome::Success, elapsed)) => mix(roles().success_frame, base, stamp_faded(elapsed)),
+        Some((Outcome::Failure, elapsed)) => mix(roles().flash, base, progress(elapsed, FLASH)),
     }
 }
 
@@ -134,10 +128,11 @@ pub(super) fn stamp(
         let (x, y) = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
         bounds.contains((x, y).into()).then_some((x, y))
     };
+    let roles = roles();
     let clear = |x: u16, y: u16| {
         let mut cell = ratatui::buffer::Cell::default();
         if frame.is_some_and(|frame| frame.contains((x, y).into())) {
-            cell.set_bg(Color::Black);
+            cell.set_bg(roles.popup_fill);
         }
         cell
     };
@@ -152,7 +147,7 @@ pub(super) fn stamp(
         }
     }
     let style = Style::default()
-        .fg(mix(Color::Indexed(STAMP_GREEN), Color::Black, faded))
+        .fg(mix(roles.stamp, roles.popup_fill, faded))
         .add_modifier(Modifier::BOLD);
     let shown = stamp_drawn(elapsed) * (width + 1) as f32;
     for (row, line) in CHECK.iter().enumerate() {
@@ -223,7 +218,7 @@ fn fade_inner(buffer: &mut Buffer, area: Rect, fade: f32) {
 
 /// `color` `fade` of the way in from just above the popup's fill.
 fn faded(color: Color, fade: f32) -> Color {
-    mix(Color::Indexed(FADE_FROM), foreground(color), fade)
+    mix(roles().fade_from, foreground(color), fade)
 }
 
 /// Moves the popup at `area` `columns` sideways, putting back what was
@@ -260,10 +255,10 @@ fn perimeter(area: Rect) -> impl Iterator<Item = (u16, u16)> {
 }
 
 /// A foreground with a color to fade from: the terminal's own default
-/// stands in as a light grey.
+/// stands in as the theme's foreground.
 fn foreground(color: Color) -> Color {
-    if color == Color::Reset {
-        Color::Indexed(DEFAULT_FOREGROUND)
+    if color == TERMINAL_DEFAULT {
+        roles().foreground
     } else {
         color
     }
@@ -284,11 +279,11 @@ mod tests {
         assert_eq!(frame_color(accent, None), accent);
         assert_eq!(
             frame_color(accent, Some((Outcome::Success, ms(0)))),
-            Color::Indexed(SUCCESS_FRAME)
+            roles().success_frame
         );
         assert_eq!(
             frame_color(accent, Some((Outcome::Success, ms(579)))),
-            Color::Indexed(SUCCESS_FRAME)
+            roles().success_frame
         );
         assert!(matches!(
             frame_color(accent, Some((Outcome::Success, ms(700)))),
@@ -300,7 +295,7 @@ mod tests {
         );
         assert_eq!(
             frame_color(Color::Red, Some((Outcome::Failure, ms(0)))),
-            Color::Indexed(FLASH_WHITE)
+            roles().flash
         );
         assert_eq!(
             frame_color(Color::Red, Some((Outcome::Failure, SHAKE.max(FLASH)))),
@@ -347,7 +342,7 @@ mod tests {
         draw_frame(&mut buffer, full, Color::Cyan, 1.0);
         assert_eq!(buffer[(10, 4)].symbol(), "╭");
         assert_eq!(buffer[(29, 11)].symbol(), "╯");
-        assert_eq!(buffer[(15, 6)].bg, Color::Black);
+        assert_eq!(buffer[(15, 6)].bg, roles().popup_fill);
     }
 
     #[test]
@@ -372,9 +367,13 @@ mod tests {
         stamp(&mut buffer, area, ms(40), Some(area), Some(area));
         assert_eq!(row(&buffer, 4), format!("│xxxxx  {:<13}  xxxxxx│", "▀█▄"));
         assert_eq!(row(&buffer, 2), format!("│xxxxx  {:13}  xxxxxx│", ""));
-        assert_eq!(buffer[(8, 4)].fg, Color::Indexed(STAMP_GREEN));
+        assert_eq!(buffer[(8, 4)].fg, roles().stamp);
         assert!(buffer[(8, 4)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(7, 4)].bg, Color::Black, "the margin is the fill");
+        assert_eq!(
+            buffer[(7, 4)].bg,
+            roles().popup_fill,
+            "the margin is the fill"
+        );
         assert_ne!(buffer[(1, 1)].fg, Color::White);
 
         // Drawn and holding: the whole ✓ in the middle, over content almost
@@ -387,7 +386,7 @@ mod tests {
                 format!("│xxxxx  {line}  xxxxxx│")
             );
         }
-        assert_eq!(buffer[(1, 1)].fg, Color::Indexed(FADE_FROM));
+        assert_eq!(buffer[(1, 1)].fg, roles().fade_from);
         assert_eq!(buffer[(3, 0)].fg, Color::Cyan);
 
         // Faded out, the panel is exactly as it was.
@@ -421,7 +420,7 @@ mod tests {
         assert_eq!(row(3), "█▄█▀        ", "the short arm is off the screen");
         assert_eq!(row(4), format!("{:12}", ""));
         assert_eq!(buffer[(0, 1)].bg, Color::Reset);
-        assert_eq!(buffer[(5, 1)].fg, Color::Indexed(STAMP_GREEN));
+        assert_eq!(buffer[(5, 1)].fg, roles().stamp);
     }
 
     #[test]
@@ -449,7 +448,7 @@ mod tests {
         assert_eq!(buffer, settled);
 
         fade_content(&mut buffer, area, 0.0);
-        assert_eq!(buffer[(2, 1)].fg, Color::Indexed(FADE_FROM));
+        assert_eq!(buffer[(2, 1)].fg, roles().fade_from);
         assert_eq!(buffer[(0, 1)].fg, Color::Cyan, "the frame keeps its color");
         assert_eq!(buffer[(7, 0)].fg, Color::Cyan, "the rule keeps its color");
     }

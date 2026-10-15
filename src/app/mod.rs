@@ -683,6 +683,9 @@ impl App {
 
 fn init_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
+    // The terminal answers the color queries on its input, so they are asked
+    // in raw mode and before anything else reads it.
+    crate::theme::install(crate::theme::resolve());
     let mut stdout = io::stdout();
     // A steady caret, because Corgi blinks it itself: shown and hidden on
     // its own clock, and on at once under the user's typing.

@@ -712,13 +712,14 @@ role. So Corgi keeps its own record and puts the tokens back.
   changing height. The expansion is a flag on the list rather than an overlay
   of its own, so prompting, merging, and closing keep working over it.
   Terminal text is always rendered as plain text. `mod.rs` lays out the
-  screen, draws the footer, and holds the palette and dialog helpers;
+  screen, draws the footer, and holds the dialog helpers;
   `header.rs` is the brand and the plan-usage cards; `agents.rs` the agent
   list and the expanded transcript; `status.rs` the fields of an agent's
   status line;
   `new_agent.rs` and `choice_list.rs` the new-agent form and its lists;
   `dialogs.rs` the close and merge dialogs; `prompt.rs` the prompt dialog;
-  `effects.rs` and `blend.rs` the popups' motion, below.
+  `effects.rs` the popups' motion, below. Every color comes from
+  `src/theme/`, below.
   The usage cards, status fields, and dialog lines are also what
   `app/bar.rs` sends the Omarchy widget, so both show the same thing; the
   widget gets a dialog's keys as a line of words, since it draws no keycaps.
@@ -760,10 +761,8 @@ role. So Corgi keeps its own record and puts the tokens back.
   list at once; it is clipped at the screen's edge, never skipped. A popup
   opening while it plays cuts it off. The loop stays at its fast rate until
   it ends, and since every frame is drawn afresh, it leaves nothing behind.
-  Colors beyond the theme's come from the fixed 256-color cube and grey ramp;
-  `blend.rs` mixes them in RGB and snaps back to that palette, stands a theme
-  color in by its xterm default while an effect runs, and ends every effect
-  on the theme color itself. The spinner and the caret blink are pure
+  Effects blend in the theme's RGB (`theme::mix`) and end every effect on
+  the role's color itself. The spinner and the caret blink are pure
   functions of the clock, so a render at a set time is always the same
   frame. After each draw the loop asks `Motion::frame_interval` how long to
   wait for a key: 16 ms while anything moves, less the time the frame took to
@@ -777,6 +776,43 @@ role. So Corgi keeps its own record and puts the tokens back.
   terminal for a steady bar cursor and gives back the user's shape on exit.
   A dashboard without an animated `Motion` (tests, the headless paths) shows
   every effect at its end.
+- Colors. `src/theme/` is the one place a color is written. A `Theme` is a
+  `Palette` (the terminal's foreground, background and sixteen ANSI colors as
+  RGB) and the `Roles` the UI draws with, worked out from it once: accent,
+  muted, success, warning, danger, unknown, merge, text and so on, plus the
+  derived shades (the popup fill, rule, keycaps, focus bar, the dimmed
+  dashboard, what popup content fades in from, the success frame, the flash,
+  and the context ramp). The UI reads them with `theme::roles()`.
+  `theme::resolve` picks the palette once at startup, in raw mode before the
+  first frame: `CORGI_THEME` when set; else the active Omarchy theme's
+  `alacritty.toml` (`~/.local/state/omarchy/current/theme/`, or
+  `~/.config/omarchy/current/theme/` before Omarchy 4), which Omarchy renders
+  for every theme with the whole palette resolved; else the terminal's answer
+  to OSC 10, 11 and 4 (0–15), followed by DA1, whose answer ends the wait,
+  within 100 ms; else Catppuccin, Latte when the reported background or the
+  system (macOS `AppleInterfaceStyle`, the freedesktop portal or GNOME's
+  `color-scheme`) is light, Mocha otherwise. Herdr answers the queries itself,
+  from the palette it read off the terminal it runs in, in well under a
+  millisecond, also when that terminal is at the other end of SSH; a terminal
+  that never answers costs the 100 ms. Whenever the palette is the terminal's
+  own (Omarchy themes the terminal too, and Catppuccin only stands in for one
+  it could not read), roles stay the terminal's ANSI colors (`Color::Cyan`
+  and so on), so they match it exactly and keep following it when Omarchy
+  switches theme under a running dashboard; only shades come from the
+  palette's RGB, 24-bit when `COLORTERM` says so, else snapped to the
+  256-color cube. `CORGI_THEME=catppuccin-mocha|catppuccin-latte` draws every
+  role in Catppuccin's own RGB instead. A light palette swaps what depends on
+  a dark background: body text becomes the terminal's foreground rather than
+  bright white, the popup fill a step off the background rather than black,
+  and the flash dark. Over xterm's defaults, the theme before one is
+  resolved and in tests, the shades come out as the fixed greys and ramp
+  Corgi drew before it had themes. The mascot's colors and the model
+  vendors' are brand colors (`theme::brand`), fixed in every theme. The
+  Omarchy reader (`app/bar.rs`) gives the widget each role's tone name and
+  an RGB shade as its nearest 256-color index, so the widget is unchanged.
+  `src/readme_shots.rs` draws the README images in a fixed Catppuccin Mocha,
+  and its `theme_preview` test writes the dashboard and popups in several
+  themes as ANSI text for `less -R`.
 - `src/choices.rs` is the pure model behind every selector list in the
   new-agent form: the rows, the word filter typed over them, and how typed
   text that names no row is offered (as a value of its own for harness and
@@ -1144,6 +1180,7 @@ such as an expired login. To check the Claude reader by hand:
 | `CORGI_DEFAULT_AGENT` | The harness the form presets, instead of the first of `codex` or `claude` found |
 | `CORGI_CODEX_BIN`, `CORGI_CLAUDE_BIN` | Where that CLI is, when it is outside `PATH` and the usual install directories (`~/.local/bin`, `/opt/homebrew/bin`, npm, bun, nvm, cargo, volta) |
 | `CORGI_PROJECTS_FILE` | Where the remembered projects are kept |
+| `CORGI_THEME` | `catppuccin-mocha` or `catppuccin-latte` draws in Catppuccin's own colors; `terminal` skips the Omarchy theme and asks the terminal for its palette |
 | `CORGI_BIN` | The Corgi binary a supervisor's commands call, such as a development build (`CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN`, its names before the renames, are still read) |
 | `XDG_STATE_HOME` | Where Corgi keeps its state (`~/.local/state` by default) |
 

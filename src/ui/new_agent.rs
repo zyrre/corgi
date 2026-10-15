@@ -19,11 +19,11 @@ use crate::{
 use super::choice_list::draw_choice_list;
 use super::status::model_color;
 use super::{
-    ACCENT, DANGER, DIALOG_FRAME_WIDTH, DialogContent, Drawn, FAILURE_MARK, FOCUS_BAR, LegendKey,
-    MUTED, POPUP_MARK, SUCCESS, SUCCESS_MARK, TEXT, WARNING, bold, centered, dialog_block,
-    dialog_width, draw_message_dialog, indent_left_block, legend_line, legend_width, outcome_line,
-    popup_title, rule_line, step_lines,
+    DIALOG_FRAME_WIDTH, DialogContent, Drawn, FAILURE_MARK, LegendKey, POPUP_MARK, SUCCESS_MARK,
+    bold, centered, dialog_block, dialog_width, draw_message_dialog, indent_left_block,
+    legend_line, legend_width, outcome_line, popup_title, rule_line, step_lines,
 };
+use crate::theme::roles;
 
 // Columns in front of every new-agent form value: the row marker and the
 // label, so the task text and every setting start in the same column.
@@ -46,7 +46,7 @@ fn supervisor_notice(project: &str, new_project: bool, harness: &Harness) -> Lin
         format!("No agent works in {name} yet")
     };
     Line::from(vec![
-        Span::styled("  ✦ ", bold(ACCENT)),
+        Span::styled("  ✦ ", bold(roles().accent)),
         Span::styled(
             if harness.supports_supervisor() {
                 format!("{reason}, so this starts its supervisor on {harness} with your task")
@@ -56,7 +56,7 @@ fn supervisor_notice(project: &str, new_project: bool, harness: &Harness) -> Lin
                     Harness::supervisor_kinds()
                 )
             },
-            Style::default().fg(ACCENT),
+            Style::default().fg(roles().accent),
         ),
     ])
 }
@@ -81,7 +81,7 @@ pub(super) fn draw_new_agent(
     // width as the cursor moves and lists open over the legend.
     let legend_width = fields
         .iter()
-        .map(|field| legend_width(legend_keys(*field), LEGEND_SEPARATOR))
+        .map(|field| legend_width(&legend_keys(*field), LEGEND_SEPARATOR))
         .max()
         .unwrap_or(0) as u16
         + DIALOG_FRAME_WIDTH;
@@ -118,8 +118,8 @@ pub(super) fn draw_new_agent(
     } else {
         "New agent"
     };
-    let panel =
-        dialog_block(&popup_title(POPUP_MARK, title), ACCENT).padding(Padding::horizontal(1));
+    let panel = dialog_block(&popup_title(POPUP_MARK, title), roles().accent)
+        .padding(Padding::horizontal(1));
     let content = panel.inner(popup);
     frame.render_widget(panel, popup);
 
@@ -170,8 +170,8 @@ pub(super) fn draw_new_agent(
     if let Some(error) = &form.error {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("  ⚠ ", bold(DANGER)),
-                Span::styled(error.as_str(), Style::default().fg(DANGER)),
+                Span::styled("  ⚠ ", bold(roles().danger)),
+                Span::styled(error.as_str(), Style::default().fg(roles().danger)),
             ])),
             sections[rule_index - 1],
         );
@@ -186,7 +186,7 @@ pub(super) fn draw_new_agent(
     );
     let drawn = |caret| Drawn {
         area: popup,
-        color: ACCENT,
+        color: roles().accent,
         caret,
     };
 
@@ -224,12 +224,12 @@ pub(super) fn draw_new_agent(
 /// behind it, so the eye finds it before reading anything.
 fn row_prefix(field: NewField, focused: bool) -> Vec<Span<'static>> {
     let (marker, color, modifier) = if focused {
-        ("▸ ", TEXT, Modifier::BOLD)
+        ("▸ ", roles().text, Modifier::BOLD)
     } else {
-        ("  ", MUTED, Modifier::empty())
+        ("  ", roles().muted, Modifier::empty())
     };
     vec![
-        Span::styled(marker, bold(ACCENT)),
+        Span::styled(marker, bold(roles().accent)),
         Span::styled(
             format!(
                 "{:<width$}",
@@ -243,7 +243,7 @@ fn row_prefix(field: NewField, focused: bool) -> Vec<Span<'static>> {
 
 /// A value is bright, and bold on the cursor row.
 fn value_style(focused: bool) -> Style {
-    value_style_in(TEXT, focused)
+    value_style_in(roles().text, focused)
 }
 
 fn value_style_in(color: ratatui::style::Color, focused: bool) -> Style {
@@ -257,7 +257,7 @@ fn value_style_in(color: ratatui::style::Color, focused: bool) -> Style {
 /// The style of a form row's area: the focus bar behind the cursor row.
 fn row_style(focused: bool) -> Style {
     if focused {
-        Style::default().bg(FOCUS_BAR)
+        Style::default().bg(roles().focus_bar)
     } else {
         Style::default()
     }
@@ -284,7 +284,9 @@ fn draw_task_row(frame: &mut Frame<'_>, area: Rect, form: &NewAgentForm, rows: &
                     } else {
                         "What should the agent do first?"
                     },
-                    Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(roles().muted)
+                        .add_modifier(Modifier::ITALIC),
                 ));
             } else {
                 spans.push(Span::styled((*row).to_string(), value_style(focused)));
@@ -309,11 +311,13 @@ fn draw_setting_row(
     let mut spans = row_prefix(field, focused);
     match (&form.list, focused) {
         (Some(list), true) => {
-            spans.push(Span::styled("› ", Style::default().fg(ACCENT)));
+            spans.push(Span::styled("› ", Style::default().fg(roles().accent)));
             if list.filter.is_empty() {
                 spans.push(Span::styled(
                     "type to search",
-                    Style::default().fg(MUTED).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(roles().muted)
+                        .add_modifier(Modifier::ITALIC),
                 ));
             } else {
                 spans.push(Span::styled(list.filter.clone(), value_style(true)));
@@ -325,24 +329,28 @@ fn draw_setting_row(
             // the dashboard's rows name them.
             let color = match field {
                 NewField::Harness | NewField::Model => model_color(&value),
-                _ => TEXT,
+                _ => roles().text,
             };
             spans.push(Span::styled(
                 value,
                 if missing {
-                    bold(WARNING)
+                    bold(roles().warning)
                 } else {
                     value_style_in(color, focused)
                 },
             ));
             spans.push(Span::styled(
                 " ▾",
-                Style::default().fg(if focused { ACCENT } else { MUTED }),
+                Style::default().fg(if focused {
+                    roles().accent
+                } else {
+                    roles().muted
+                }),
             ));
             if !detail.is_empty() {
                 spans.push(Span::styled(
                     format!("  {detail}"),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(roles().muted),
                 ));
             }
         }
@@ -408,7 +416,7 @@ fn new_agent_legend(form: &NewAgentForm) -> Line<'static> {
     if form.list.is_some() {
         return Line::raw("");
     }
-    legend_line(legend_keys(form.field), LEGEND_SEPARATOR)
+    legend_line(&legend_keys(form.field), LEGEND_SEPARATOR)
 }
 
 // The form's legend has its row to itself, so its entries get some air; an
@@ -417,19 +425,20 @@ const LEGEND_SEPARATOR: &str = "  ";
 pub(super) const CHOICE_LEGEND_SEPARATOR: &str = " ";
 
 /// The keys that work on a form row, each with what it does.
-fn legend_keys(field: NewField) -> &'static [LegendKey] {
+fn legend_keys(field: NewField) -> Vec<LegendKey> {
+    let roles = roles();
     match field {
-        NewField::Task => &[
-            ("↵", "create agent", SUCCESS),
-            ("↓ ⇥", "settings", ACCENT),
-            ("Esc", "cancel", WARNING),
+        NewField::Task => vec![
+            ("↵", "create agent", roles.success),
+            ("↓ ⇥", "settings", roles.accent),
+            ("Esc", "cancel", roles.warning),
         ],
-        _ => &[
-            ("↑ ↓ ⇥", "move", ACCENT),
-            ("← →", "change", ACCENT),
-            ("␣ / type", "search", ACCENT),
-            ("↵", "create agent", SUCCESS),
-            ("Esc", "cancel", WARNING),
+        _ => vec![
+            ("↑ ↓ ⇥", "move", roles.accent),
+            ("← →", "change", roles.accent),
+            ("␣ / type", "search", roles.accent),
+            ("↵", "create agent", roles.success),
+            ("Esc", "cancel", roles.warning),
         ],
     }
 }
@@ -452,7 +461,7 @@ pub(super) fn draw_new_agent_launch(
         LaunchState::Running { status, step } => {
             lines.push(Line::styled(
                 format!("Launching {}", launch.name),
-                bold(TEXT),
+                bold(roles().text),
             ));
             lines.push(Line::raw(""));
             if launch.steps.is_empty() {
@@ -460,17 +469,20 @@ pub(super) fn draw_new_agent_launch(
             } else {
                 lines.extend(left(step_lines(&launch.steps, *step, spinner)));
                 lines.push(Line::raw(""));
-                lines.push(Line::styled(status.clone(), Style::default().fg(MUTED)));
+                lines.push(Line::styled(
+                    status.clone(),
+                    Style::default().fg(roles().muted),
+                ));
             }
             lines.push(Line::raw(""));
             lines.push(Line::styled(
                 "Please wait; this window closes when the agent is ready.",
-                Style::default().fg(MUTED),
+                Style::default().fg(roles().muted),
             ));
             DialogContent {
                 mark: POPUP_MARK,
                 title: "Starting new agent",
-                color: ACCENT,
+                color: roles().accent,
                 lines,
                 legend: Vec::new(),
             }
@@ -482,13 +494,16 @@ pub(super) fn draw_new_agent_launch(
                 lines.extend(left(step_lines(&launch.steps, launch.steps.len(), spinner)));
                 lines.push(Line::raw(""));
             }
-            lines.push(Line::styled(message.clone(), Style::default().fg(MUTED)));
+            lines.push(Line::styled(
+                message.clone(),
+                Style::default().fg(roles().muted),
+            ));
             DialogContent {
                 mark: SUCCESS_MARK,
                 title: "New agent started",
-                color: ACCENT,
+                color: roles().accent,
                 lines,
-                legend: vec![("Esc", "close", WARNING)],
+                legend: vec![("Esc", "close", roles().warning)],
             }
         }
         LaunchState::Failed(error) => {
@@ -497,13 +512,16 @@ pub(super) fn draw_new_agent_launch(
                 format!("{} did not start", launch.name),
             ));
             lines.push(Line::raw(""));
-            lines.push(Line::styled(error.clone(), Style::default().fg(MUTED)));
+            lines.push(Line::styled(
+                error.clone(),
+                Style::default().fg(roles().muted),
+            ));
             DialogContent {
                 mark: FAILURE_MARK,
                 title: "New agent failed",
-                color: DANGER,
+                color: roles().danger,
                 lines,
-                legend: vec![("Esc", "close", WARNING)],
+                legend: vec![("Esc", "close", roles().warning)],
             }
         }
     };
@@ -521,7 +539,7 @@ mod tests {
         model::DashboardAgent,
         projects::{Project, ProjectSource, project_choices},
         test_support::{buffer_text, test_app, test_terminal},
-        ui::{choice_list::CHOICE_LIST_KEYS, clip_start, draw_overlay},
+        ui::{choice_list::choice_list_keys, clip_start, draw_overlay},
     };
 
     #[test]
@@ -529,32 +547,32 @@ mod tests {
         for keys in [
             legend_keys(NewField::Task),
             legend_keys(NewField::Model),
-            &CHOICE_LIST_KEYS,
+            choice_list_keys().to_vec(),
         ] {
             for separator in [LEGEND_SEPARATOR, CHOICE_LEGEND_SEPARATOR] {
                 assert_eq!(
-                    legend_width(keys, separator),
-                    legend_line(keys, separator).width()
+                    legend_width(&keys, separator),
+                    legend_line(&keys, separator).width()
                 );
             }
         }
         // Each key is in the color of what it does.
-        let line = legend_line(legend_keys(NewField::Task), LEGEND_SEPARATOR);
+        let line = legend_line(&legend_keys(NewField::Task), LEGEND_SEPARATOR);
         let color = |key: &str| {
             line.spans
                 .iter()
                 .find(|span| span.content.trim() == key)
                 .and_then(|span| span.style.fg)
         };
-        assert_eq!(color("↵"), Some(SUCCESS));
-        assert_eq!(color("Esc"), Some(WARNING));
-        assert_eq!(color("↓ ⇥"), Some(ACCENT));
+        assert_eq!(color("↵"), Some(roles().success));
+        assert_eq!(color("Esc"), Some(roles().warning));
+        assert_eq!(color("↓ ⇥"), Some(roles().accent));
         // And drawn on a keycap.
         assert!(
             line.spans
                 .iter()
                 .filter(|span| span.content.trim() == "Esc")
-                .all(|span| span.style.bg == Some(super::super::KEYCAP))
+                .all(|span| span.style.bg == Some(super::super::roles().keycap))
         );
     }
 

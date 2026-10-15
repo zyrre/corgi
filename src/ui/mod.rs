@@ -11,10 +11,10 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     app::{App, Overlay},
     motion::Outcome,
+    theme::roles,
 };
 
 mod agents;
-mod blend;
 mod choice_list;
 mod dialogs;
 mod effects;
@@ -32,27 +32,11 @@ use new_agent::{draw_new_agent, draw_new_agent_launch};
 use prompt::draw_prompt;
 pub(crate) use status::status_fields;
 
-// ANSI colors come from the terminal, so the dashboard follows the active
-// Omarchy theme instead of carrying a separate fixed-RGB palette.
-const ACCENT: Color = Color::Cyan;
-const MUTED: Color = Color::DarkGray;
-const SUCCESS: Color = Color::Green;
-const WARNING: Color = Color::Yellow;
-const DANGER: Color = Color::Red;
-// A state Corgi cannot tell.
-const UNKNOWN: Color = Color::Magenta;
-// An agent a supervisor tagged ready for the user to merge: magenta, the one
-// semantic color no state the user acts on uses, far from working's cyan in
-// both Tokyo Night themes, with an arrow up towards the base branch.
-const MERGE: Color = Color::Magenta;
+// Every color comes from the theme's roles (see `crate::theme`), so the
+// dashboard follows the terminal's own palette, light or dark. A worker a
+// supervisor tagged ready to merge is marked with an arrow up towards the
+// base branch.
 const MERGE_MARK: &str = "⇡";
-const TEXT: Color = Color::White;
-// The quieter greys of a popup's content, from the fixed ramp so they sit
-// the same on every theme's black fill: the cap a key is drawn on, the rule
-// over the keys, and the bar behind a form's focused row.
-const KEYCAP: Color = Color::Indexed(237);
-const RULE: Color = Color::Indexed(237);
-const FOCUS_BAR: Color = Color::Indexed(236);
 // The marks a popup's title and outcome lines lead with: what the popup is
 // about, and how it ended.
 const POPUP_MARK: &str = "◆";
@@ -111,8 +95,11 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         }
     };
     let line = Line::from(vec![
-        Span::styled(format!(" {} ", app.status), Style::default().fg(ACCENT)),
-        Span::styled(format!("  {keys}"), Style::default().fg(MUTED)),
+        Span::styled(
+            format!(" {} ", app.status),
+            Style::default().fg(roles().accent),
+        ),
+        Span::styled(format!("  {keys}"), Style::default().fg(roles().muted)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -234,10 +221,13 @@ fn legend_line(keys: &[LegendKey], separator: &'static str) -> Line<'static> {
         if index > 0 {
             spans.push(Span::raw(separator));
         }
-        spans.push(Span::styled(format!(" {key} "), bold(*color).bg(KEYCAP)));
+        spans.push(Span::styled(
+            format!(" {key} "),
+            bold(*color).bg(roles().keycap),
+        ));
         spans.push(Span::styled(
             format!(" {label}"),
-            Style::default().fg(MUTED),
+            Style::default().fg(roles().muted),
         ));
     }
     Line::from(spans)
@@ -282,7 +272,10 @@ pub(crate) fn legend_text(keys: &[LegendKey]) -> String {
 
 /// The faint rule a popup draws over its keys.
 fn rule_line(width: u16) -> Line<'static> {
-    Line::styled("─".repeat(usize::from(width)), Style::default().fg(RULE))
+    Line::styled(
+        "─".repeat(usize::from(width)),
+        Style::default().fg(roles().rule),
+    )
 }
 
 /// Where one step of a launch or merge is.
@@ -298,16 +291,16 @@ enum Step {
 fn step_line(step: Step, text: &str, spinner: &'static str) -> Line<'static> {
     match step {
         Step::Done => Line::from(vec![
-            Span::styled(format!("{SUCCESS_MARK} "), bold(SUCCESS)),
-            Span::styled(text.to_string(), Style::default().fg(Color::Gray)),
+            Span::styled(format!("{SUCCESS_MARK} "), bold(roles().success)),
+            Span::styled(text.to_string(), Style::default().fg(roles().quiet)),
         ]),
         Step::Current => Line::from(vec![
-            Span::styled(format!("{spinner} "), bold(ACCENT)),
-            Span::styled(format!("{text}…"), bold(TEXT)),
+            Span::styled(format!("{spinner} "), bold(roles().accent)),
+            Span::styled(format!("{text}…"), bold(roles().text)),
         ]),
         Step::Pending => Line::from(vec![
-            Span::styled("· ", Style::default().fg(MUTED)),
-            Span::styled(text.to_string(), Style::default().fg(MUTED)),
+            Span::styled("· ", Style::default().fg(roles().muted)),
+            Span::styled(text.to_string(), Style::default().fg(roles().muted)),
         ]),
     }
 }
@@ -331,9 +324,9 @@ fn step_lines(steps: &[String], current: usize, spinner: &'static str) -> Vec<Li
 /// The headline of an outcome: its mark and words, bold in its color.
 fn outcome_line(success: bool, text: String) -> Line<'static> {
     let (mark, color) = if success {
-        (SUCCESS_MARK, SUCCESS)
+        (SUCCESS_MARK, roles().success)
     } else {
-        (FAILURE_MARK, DANGER)
+        (FAILURE_MARK, roles().danger)
     };
     Line::styled(format!("{mark} {text}"), bold(color))
 }
@@ -402,12 +395,12 @@ fn trailing_columns(text: &str, width: usize) -> &str {
     text
 }
 
-/// The frame every dialog shares: rounded corners, the theme's black as a
+/// The frame every dialog shares: rounded corners, the theme's popup fill as a
 /// panel tone that lifts it off the dashboard, and its title in the border's
 /// color so the color says what kind of dialog it is before the words do.
 fn dialog_block(title: &str, color: Color) -> Block<'static> {
     rounded_block(title, Some(color))
-        .style(Style::default().bg(Color::Black))
+        .style(Style::default().bg(roles().popup_fill))
         .border_style(bold(color))
 }
 
@@ -690,7 +683,7 @@ mod tests {
         assert_eq!(popup.width, DIALOG_MIN_WIDTH);
 
         // Keys take a rule and a row of their own under the text.
-        let keys: [LegendKey; 1] = [("Enter", "close", SUCCESS)];
+        let keys: [LegendKey; 1] = [("Enter", "close", roles().success)];
         let popup = centered_for_lines(area, 72, "", &[Line::raw("ok")], &keys);
         assert_eq!(popup.height, 1 + 2 + 2);
     }
@@ -789,7 +782,7 @@ mod tests {
                 .count();
             terminal.backend().buffer()[(x as u16, y as u16)].fg
         };
-        assert_eq!(name, TEXT, "the content ends on its own color");
+        assert_eq!(name, roles().text, "the content ends on its own color");
 
         // Closed, the frame shrinks and is gone once it has.
         app.overlay = Overlay::None;
@@ -809,7 +802,7 @@ mod tests {
         draw_at(&mut terminal, &mut app, 0);
         let footer = terminal.backend().buffer().clone();
         let status_cell = |buffer: &ratatui::buffer::Buffer| buffer[(1, 28)].fg;
-        assert_eq!(status_cell(&footer), ACCENT);
+        assert_eq!(status_cell(&footer), roles().accent);
 
         app.overlay = prompt_overlay();
         draw_at(&mut terminal, &mut app, 1_000);
@@ -826,7 +819,7 @@ mod tests {
         app.overlay = Overlay::None;
         draw_at(&mut terminal, &mut app, 2_000);
         draw_at(&mut terminal, &mut app, 2_500);
-        assert_eq!(status_cell(terminal.backend().buffer()), ACCENT);
+        assert_eq!(status_cell(terminal.backend().buffer()), roles().accent);
     }
 
     #[test]
@@ -869,7 +862,7 @@ mod tests {
         let corner = |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| {
             terminal.backend().buffer()[top_left(terminal)].fg
         };
-        assert_eq!(corner(&terminal), Color::Indexed(blend::FLASH_WHITE));
+        assert_eq!(corner(&terminal), roles().flash);
         let edges: Vec<u16> = (1..40)
             .map(|step| {
                 draw_at(&mut terminal, &mut app, 1_000 + step * 10);
@@ -892,7 +885,7 @@ mod tests {
         // Settled, it stands still in the failure's own red.
         draw_at(&mut terminal, &mut app, 1_900);
         assert_eq!(left_edge(&terminal), resting);
-        assert_eq!(corner(&terminal), DANGER);
+        assert_eq!(corner(&terminal), roles().danger);
     }
 
     #[test]
@@ -940,7 +933,7 @@ mod tests {
         app.overlay.merge_worktree_form_mut().unwrap().phase = MergePhase::Succeeded;
         draw_at(&mut terminal, &mut app, 1_000);
         // The frame is green at once; the stroke has not started yet.
-        assert_eq!(corner(&terminal), Color::Indexed(blend::SUCCESS_FRAME));
+        assert_eq!(corner(&terminal), roles().success_frame);
         assert_eq!(color_of(&terminal, "▀█▄█▀"), None);
 
         // Drawn and holding: the whole ✓ over content faded almost out.
@@ -948,23 +941,20 @@ mod tests {
         for line in effects::CHECK {
             assert!(screen.contains(line.trim()), "missing {line}\n{screen}");
         }
-        assert_eq!(
-            color_of(&terminal, "▀█▄█▀"),
-            Some(Color::Indexed(blend::STAMP_GREEN))
-        );
+        assert_eq!(color_of(&terminal, "▀█▄█▀"), Some(roles().stamp));
         assert_eq!(
             color_of(&terminal, "Worktree worktree-reviewed-agent"),
-            Some(Color::Indexed(blend::FADE_FROM))
+            Some(roles().fade_from)
         );
-        assert_eq!(corner(&terminal), Color::Indexed(blend::SUCCESS_FRAME));
+        assert_eq!(corner(&terminal), roles().success_frame);
 
         // Played out, the panel is as it was, in the theme's own colors.
         let screen = draw_at(&mut terminal, &mut app, 1_900);
         assert!(!screen.contains("▀█▄█▀"), "{screen}");
-        assert_eq!(corner(&terminal), ACCENT);
+        assert_eq!(corner(&terminal), roles().accent);
         assert_eq!(
             color_of(&terminal, "✓ Merge and push complete."),
-            Some(SUCCESS)
+            Some(roles().success)
         );
     }
 

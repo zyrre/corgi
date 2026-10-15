@@ -71,6 +71,8 @@ flowchart TD
 
 For a compact popup instead of a tab, open the `quick` pane: `herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint quick`.
 
+Corgi draws in your terminal's own colors, light or dark: the active Omarchy theme, or else the palette your terminal (through Herdr) reports, with Catppuccin standing in when it reports none. Set `CORGI_THEME=catppuccin-mocha` or `catppuccin-latte` to force Catppuccin's own colors, or `CORGI_THEME=terminal` to ask the terminal even on an Omarchy machine (say, when you view it over SSH from another one).
+
 ### Reading a row
 
 In an expanded card, a project without a supervisor, and the scratch sessions, each agent has three rows:
