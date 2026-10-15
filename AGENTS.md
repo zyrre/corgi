@@ -86,8 +86,9 @@ cargo readme-shots
 ```
 
 It writes the SVG screenshots and `merge-outcomes.gif`, the merge popup's
-failure pulse and shake and its success stamp. The GIF plays the real
-effects of `src/motion.rs` on a manual clock at 25 frames a second, and
+failure pulse and shake and its success stamp, on which it ends and rests.
+The GIF plays the real effects of `src/motion.rs` on a manual clock at 25
+frames a second, and
 rasterizes each frame with resvg (a dev-dependency) and the system's
 monospace fonts, so it needs no tool beyond Cargo. It takes about half a
 minute; keep the GIF well under 2 MB. Delete an image the README stops

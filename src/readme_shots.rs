@@ -33,7 +33,7 @@ use crate::{
     model::{
         Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, PromptCache, PromptCacheKind,
     },
-    motion::{CONTENT, Motion, OPEN},
+    motion::{CONTENT, Motion, OPEN, STAMP_DRAW, STAMP_HOLD},
     supervisor,
     test_support::{test_app, test_terminal},
     time::unix_now,
@@ -96,6 +96,9 @@ const CALLOUT_TIER: u32 = 18;
 /// An animation's frame time in milliseconds: 25 frames a second, which a
 /// GIF's hundredths of a second hold exactly.
 const GIF_FRAME: u16 = 40;
+/// How long the merge animation rests on its check stamp before it loops,
+/// in hundredths of a second.
+const STAMP_REST: u16 = 300;
 /// How much larger than the SVG an animation is rasterized, so its text
 /// stays sharp on a high-density screen; the README shows it at SVG size.
 const GIF_SCALE: f32 = 2.0;
@@ -646,16 +649,12 @@ fn expanded_session() -> String {
     svg(&mut terminal, area, Chrome::Panel, &[])
 }
 
-/// A merge that fails and then succeeds, as the popup plays it: the
-/// confirmation grows in, `Enter` finds the worker's checkout dirty and the
+/// A merge that fails and then succeeds, as the popup plays it: from the
+/// settled confirmation, `Enter` finds the worker's checkout dirty and the
 /// popup pulses red and shakes; once that is committed, `Enter` retries,
-/// the steps run, and the success is stamped with its check before the
-/// popup closes, and the dashboard shows until it opens again.
+/// the steps run, and the success is stamped with its check, on which the
+/// animation ends and rests before it loops.
 fn merge_outcomes() -> Vec<Still> {
-    enum Beat {
-        Phase(MergePhase),
-        Close,
-    }
     let dirty = MergePhase::Failed("agent worktree has uncommitted or untracked changes".into());
     // Every phase's popup and the columns its shake reaches, so no frame
     // is cut off.
@@ -670,41 +669,37 @@ fn merge_outcomes() -> Vec<Still> {
     .reduce(Rect::union)
     .expect("a popup");
     // When each beat starts, in milliseconds on the motion clock.
-    let beats: [(u64, Beat); 8] = [
-        (0, Beat::Phase(MergePhase::Confirm)),
-        (1_800, Beat::Phase(MergePhase::Running(0))),
-        (2_400, Beat::Phase(dirty)),
-        (4_800, Beat::Phase(MergePhase::Running(0))),
-        (5_200, Beat::Phase(MergePhase::Running(1))),
-        (5_800, Beat::Phase(MergePhase::Running(2))),
-        (6_400, Beat::Phase(MergePhase::Succeeded)),
-        (8_600, Beat::Close),
+    let beats: [(u64, MergePhase); 7] = [
+        (0, MergePhase::Confirm),
+        (1_800, MergePhase::Running(0)),
+        (2_400, dirty),
+        (4_800, MergePhase::Running(0)),
+        (5_200, MergePhase::Running(1)),
+        (5_800, MergePhase::Running(2)),
+        (6_400, MergePhase::Succeeded),
     ];
-    let end: u64 = 9_400;
+    // The last frame is the check drawn in full, halfway through its hold.
+    let stamped = 6_400 + (STAMP_DRAW + STAMP_HOLD / 2).as_millis() as u64;
+    // The GIF starts on the settled confirmation, which is also what shows
+    // where it does not play.
+    let settled = (OPEN + CONTENT).as_millis() as u64;
 
     let mut app = merge(MergePhase::Confirm);
     let mut terminal = test_terminal(WIDTH, HEIGHT);
     let mut drawn = Vec::new();
     let mut next = 0;
-    for millis in (0..end).step_by(usize::from(GIF_FRAME)) {
-        while let Some((_, beat)) = beats.get(next).filter(|(at, _)| *at <= millis) {
-            match beat {
-                Beat::Phase(phase) => {
-                    if let Some(form) = app.overlay.merge_worktree_form_mut() {
-                        form.phase = phase.clone();
-                    }
-                }
-                Beat::Close => app.overlay = Overlay::None,
+    for millis in (0..=stamped).step_by(usize::from(GIF_FRAME)) {
+        while let Some((_, phase)) = beats.get(next).filter(|(at, _)| *at <= millis) {
+            if let Some(form) = app.overlay.merge_worktree_form_mut() {
+                form.phase = phase.clone();
             }
             next += 1;
         }
         draw_at(&mut terminal, &mut app, millis);
-        drawn.push(svg(&mut terminal, area, Chrome::Panel, &[]));
+        if millis > settled {
+            drawn.push(svg(&mut terminal, area, Chrome::Panel, &[]));
+        }
     }
-    // The GIF starts on the settled confirmation, which is also what shows
-    // where it does not play; the popup growing in ends the loop instead.
-    let settled = OPEN + CONTENT;
-    drawn.rotate_left(settled.as_millis() as usize / usize::from(GIF_FRAME) + 1);
     let mut frames: Vec<Still> = Vec::new();
     for svg in drawn {
         let centis = GIF_FRAME / 10;
@@ -712,6 +707,9 @@ fn merge_outcomes() -> Vec<Still> {
             Some(last) if last.svg == svg => last.centis += centis,
             _ => frames.push(Still { svg, centis }),
         }
+    }
+    if let Some(last) = frames.last_mut() {
+        last.centis = STAMP_REST;
     }
     frames
 }
