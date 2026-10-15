@@ -25,6 +25,18 @@ cargo build --release
 On macOS the default `$TMPDIR` makes the fake Herdr socket path in
 `src/test_support.rs` exceed `SUN_LEN`, so run `TMPDIR=/tmp cargo test` there.
 
+`rust-version` in `Cargo.toml` is the oldest Rust that builds Corgi: 1.89,
+set by std's `File::lock` (ratatui 0.30 alone needs 1.88). With it set,
+clippy's `incompatible_msrv` lint refuses a newer std API, so raise it
+deliberately. To check an older toolchain, build in Docker with the worktree
+mounted read-only and the target directory inside the container (a session
+scratchpad under `/private/tmp` is not visible to Docker on macOS):
+
+```bash
+docker run --rm -v "$PWD":/src:ro -w /src -e CARGO_TARGET_DIR=/tmp/t \
+  rust:1.89-slim cargo check --locked --all-targets
+```
+
 `HERDR_CONFIG_PATH=<file> herdr config check` validates a Herdr config file
 without a running server (and without touching the real config). Herdr's CLI
 reports errors as JSON lines with an `error.code`, such as
@@ -48,6 +60,11 @@ herdr pane rename "$corgi_preview_pane" "$corgi_preview_label"
 herdr pane run "$corgi_preview_pane" "./target/release/corgi"
 herdr workspace focus "$corgi_preview_workspace"
 ```
+
+When driving the preview pane with `herdr pane run` or `herdr pane send-keys`,
+wait until `herdr pane read` shows the dashboard or the shell prompt before
+sending more: keys sent while Corgi starts or quits can reach the dashboard,
+where letters such as `s`, `t` and `x` are actions.
 
 Report the temporary workspace label and ID in the handoff. Leave it available
 when the user needs to inspect the result; otherwise close only the preview

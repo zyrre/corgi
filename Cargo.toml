@@ -1,10 +1,15 @@
 [package]
 name = "corgi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.89"
 description = "A small, quick Herdr dashboard for coding agents"
 license = "MIT"
 repository = "https://github.com/zyrre/corgi"
+homepage = "https://github.com/zyrre/corgi"
+readme = "README.md"
+keywords = ["herdr", "tui", "agents", "claude", "codex"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0"
