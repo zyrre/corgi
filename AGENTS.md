@@ -25,6 +25,11 @@ cargo build --release
 On macOS the default `$TMPDIR` makes the fake Herdr socket path in
 `src/test_support.rs` exceed `SUN_LEN`, so run `TMPDIR=/tmp cargo test` there.
 
+`HERDR_CONFIG_PATH=<file> herdr config check` validates a Herdr config file
+without a running server (and without touching the real config). Herdr's CLI
+reports errors as JSON lines with an `error.code`, such as
+`server_not_running` or `plugin_not_found`, so match on the code.
+
 To show worktree changes interactively without replacing the stable
 `prefix+d` plugin registration, launch that worktree's release binary in a
 dedicated Herdr preview workspace. Every temporary preview must use the exact
@@ -85,9 +90,10 @@ change, draw them again with:
 cargo readme-shots
 ```
 
-It writes the SVG screenshots and `merge-outcomes.gif`, the merge popup's
-failure pulse and shake and its success stamp. The GIF plays the real
-effects of `src/motion.rs` on a manual clock at 25 frames a second, and
+It writes the SVG screenshots and `merge-outcomes.gif`, a merge in the
+merge popup that ends and rests on its success stamp.
+The GIF plays the real effects of `src/motion.rs` on a manual clock at 25
+frames a second, and
 rasterizes each frame with resvg (a dev-dependency) and the system's
 monospace fonts, so it needs no tool beyond Cargo. It takes about half a
 minute; keep the GIF well under 2 MB. Delete an image the README stops
