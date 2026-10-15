@@ -33,6 +33,8 @@ fn main() -> Result<()> {
         Some("inbox") => corgi::app::inbox_command(&args[2..]),
         Some("tag") if help() => usage(corgi::app::TAG_USAGE),
         Some("tag") => corgi::app::tag_command(&args[2..]),
+        Some("setup") if help() => usage(corgi::app::SETUP_USAGE),
+        Some("setup") => corgi::app::setup(&args[2..]),
         Some("--bar-stream") => {
             let socket = args
                 .get(2)

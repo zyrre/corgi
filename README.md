@@ -17,10 +17,10 @@
 <img src="docs/images/merge-outcomes.gif" width="757" alt="The merge popup confirming the merge of the order-history worker, its steps running, and the success stamped with a big green check">
 
 ```bash
-herdr plugin install zyrre/corgi
+herdr plugin install zyrre/corgi && corgi setup
 ```
 
-The `prefix+d` key binding and updates are under [Install](#install).
+`corgi setup` binds a key to open Corgi, `prefix+d` unless you choose another; more under [Install](#install).
 
 ## The supervisor
 
@@ -96,10 +96,12 @@ In an expanded card, a project without a supervisor, and the scratch sessions, e
 ## Install
 
 ```bash
-herdr plugin install zyrre/corgi
+herdr plugin install zyrre/corgi && corgi setup
 ```
 
-It also links the `corgi` command into `~/.local/bin`. Run it again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`). To open the dashboard with `prefix+d`, or focus it when it is already open, add this to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
+The install links the `corgi` command into `~/.local/bin` (if that is not on your `PATH`, run `~/.local/bin/corgi setup`). `corgi setup` asks which key should open the dashboard, or focus it when it is already open, `prefix+d` unless you type another; it appends that binding to Herdr's `config.toml`, reloads Herdr's config and opens Corgi. It changes nothing when a key is bound already, and is safe to run again. Run the install again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`).
+
+To bind the key by hand instead, add this to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
 
 ```toml
 [[keys.command]]

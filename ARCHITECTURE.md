@@ -78,6 +78,11 @@ Headless launch and the supervisor
   ├─ corgi notify ─── add an item to a supervisor's inbox, text on stdin
   ├─ corgi inbox ──── a supervisor's undelivered inbox items, bounded
   └─ corgi tag ────── tag an agent ready to merge (pane token), or clear it
+
+Setup (once, from a shell)
+  ├─ corgi setup ──── append a key binding for the open action to Herdr's config.toml
+  ├─ herdr config check / server reload-config ── validate the key, load the binding
+  └─ herdr plugin action invoke open ── open or focus the dashboard
 ```
 
 The dashboard refreshes from Herdr in the background, 850 ms after the last
@@ -361,6 +366,12 @@ submodules are split by flow, each adding methods to the one `App`.
   `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
   `corgi tag`. The
   digest's parsing and caps are pure functions in `src/digest.rs`.
+- `setup.rs` is `corgi setup`. Herdr plugins cannot declare key bindings,
+  so it appends one for the plugin's `open` action to the end of Herdr's
+  `config.toml`, never rewriting what is there. It leaves a config that
+  already binds the action alone, asks for the key on the terminal (none
+  without one), refuses a key the config binds already, and lets
+  `herdr config check` on a file of the binding alone judge the key's syntax.
 - `bar.rs` is the `--bar-*` endpoints of the Omarchy widget. Their JSON is
   that widget's contract, pinned by snapshot tests, and they drive the same
   forms, key handlers, and launch as the dashboard.

@@ -57,6 +57,7 @@ mod bar;
 mod cards;
 mod cli;
 mod rows;
+mod setup;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub use cli::{
@@ -65,6 +66,7 @@ pub use cli::{
     supervisor_command, tag_command,
 };
 use rows::codex_thread_id;
+pub use setup::{SETUP_USAGE, setup};
 
 // The periodic refresh, the launch sequence, the project workspace Corgi
 // owns, the record of the marks Corgi sets in Herdr, the supervisor waker and
