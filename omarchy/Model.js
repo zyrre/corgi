@@ -103,19 +103,89 @@ function paneIdFromResponse(raw) {
   }
 }
 
-function dashboardRows(snapshot, expandedPaneId) {
+// Match the dashboard's contiguous project runs and explicit card metadata.
+// Older binaries omit the flags: their agents remain individually accessible.
+function projectGroups(snapshot) {
   var agents = snapshot && Array.isArray(snapshot.agents) ? snapshot.agents : []
-  var rows = [], previous = null
-  for (var i = 0; i < agents.length; i++) {
-    var agent = agents[i]
-    if (expandedPaneId && agent.pane_id !== expandedPaneId) continue
-    if (agent.project_group !== previous) {
-      previous = agent.project_group
-      rows.push({heading: true, project: previous || "Other"})
+  var groups = []
+  agents.forEach(function(agent) {
+    var last = groups[groups.length - 1]
+    if (!last || last.project !== agent.project_group) {
+      last = {project: agent.project_group, agents: [], card: agent.supervisor === true && agent.scratch !== true}
+      groups.push(last)
     }
-    rows.push(agent)
-  }
+    last.agents.push(agent)
+  })
+  return groups
+}
+
+function workerSummary(agents) {
+  var workers = agents.slice(1), counts = summarize({agents: workers}), parts = []
+  ;["blocked", "done", "working", "idle", "unknown"].forEach(function(state) {
+    if (counts[state]) parts.push(counts[state] + " " + state)
+  })
+  return workers.length + (workers.length === 1 ? " worker" : " workers") + (parts.length ? " · " + parts.join(" · ") : "")
+}
+
+function dashboardRows(snapshot, expandedPaneId, expandedProjects) {
+  var rows = [], expanded = expandedProjects || []
+  projectGroups(snapshot).forEach(function(group) {
+    var shown = expandedPaneId ? group.agents.filter(function(agent) { return agent.pane_id === expandedPaneId })
+      : group.card && expanded.indexOf(group.project) < 0 ? group.agents.slice(0, 1) : group.agents
+    if (!shown.length) return
+    rows.push({heading: true, project: group.project || "Other", projectKey: group.project,
+      card: group.card, projectExpanded: expanded.indexOf(group.project) >= 0,
+      supervisorPaneId: group.agents[0].pane_id,
+      workerSummary: group.card ? workerSummary(group.agents) : "",
+      workerCounts: summarize({agents: group.card ? group.agents.slice(1) : []})})
+    shown.forEach(function(agent) { rows.push(agent) })
+  })
   return rows
+}
+
+function projectForPane(snapshot, paneId) {
+  return projectGroups(snapshot).filter(function(group) {
+    return group.agents.some(function(agent) { return agent.pane_id === paneId })
+  })[0] || null
+}
+
+function reconcileNavigation(snapshot, expandedProjects, expandedPaneId, selectedPaneId) {
+  var groups = projectGroups(snapshot)
+  var projects = expandedProjects.filter(function(project) {
+    return groups.some(function(group) { return group.card && group.project === project })
+  })
+  var pane = projectForPane(snapshot, expandedPaneId) ? expandedPaneId : ""
+  var rows = dashboardRows(snapshot, pane, projects).filter(function(row) { return !row.heading })
+  var selected = rows.some(function(row) { return row.pane_id === selectedPaneId }) ? selectedPaneId : (rows[0] || {}).pane_id || ""
+  return {projects: projects, pane: pane, selected: selected}
+}
+
+// One activation has exactly one effect: reveal a project OR toggle a transcript.
+function activateAgent(snapshot, expandedProjects, expandedPaneId, paneId) {
+  var group = projectForPane(snapshot, paneId), projects = expandedProjects.slice()
+  if (!group) return reconcileNavigation(snapshot, projects, expandedPaneId, "")
+  if (group.card && projects.indexOf(group.project) < 0) {
+    projects.push(group.project)
+    return {projects: projects, pane: "", selected: paneId}
+  }
+  return {projects: projects, pane: expandedPaneId === paneId ? "" : paneId, selected: paneId}
+}
+
+function toggleProject(snapshot, expandedProjects, project, supervisorPaneId) {
+  var projects = expandedProjects.slice(), index = projects.indexOf(project)
+  if (index < 0) projects.push(project)
+  else projects.splice(index, 1)
+  return reconcileNavigation(snapshot, projects, "", supervisorPaneId)
+}
+
+function backNavigation(snapshot, expandedProjects, expandedPaneId, selectedPaneId) {
+  if (expandedPaneId) return reconcileNavigation(snapshot, expandedProjects, "", selectedPaneId)
+  var group = projectForPane(snapshot, selectedPaneId)
+  var project = group && group.card && expandedProjects.indexOf(group.project) >= 0 ? group.project
+    : expandedProjects.length ? expandedProjects[expandedProjects.length - 1] : null
+  if (project === null) return null // The next back closes the popup.
+  var target = projectGroups(snapshot).filter(function(candidate) { return candidate.project === project })[0]
+  return toggleProject(snapshot, expandedProjects, project, target ? target.agents[0].pane_id : "")
 }
 
 function expandedEntries(agent, entries) {

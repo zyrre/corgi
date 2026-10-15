@@ -42,9 +42,10 @@ Panel {
   readonly property string binaryPath: String(setting("binaryPath", "") || "corgi")
   readonly property string socketPath: String(setting("socketPath", "") || Quickshell.env("HOME") + "/.config/herdr/herdr.sock")
   property string errorText: ""
-  readonly property var rows: Model.dashboardRows(snapshot, expandedPaneId)
+  readonly property var rows: Model.dashboardRows(snapshot, expandedPaneId, expandedProjects)
   property bool newAgentOpen: false
   property var actionState: null
+  property var expandedProjects: []
   property string selectedPaneId: ""
   property string expandedPaneId: ""
   property string promptPaneId: ""
@@ -60,6 +61,7 @@ Panel {
     else {
       newAgentOpen = false
       expandedPaneId = ""
+      expandedProjects = []
       dismissAction()
       promptPaneId = ""
       promptInput.text = ""
@@ -124,16 +126,31 @@ Panel {
     promptProcess.running = true
   }
 
-  function toggleAgent(paneId) {
-    selectedPaneId = paneId
-    if (expandedPaneId === paneId) expandedPaneId = ""
-    else {
-      transcriptEntries = []
-      expandedPaneId = paneId
+  function applyNavigation(state, retainFocus) {
+    var changed = expandedPaneId !== state.pane
+    expandedProjects = state.projects
+    selectedPaneId = state.selected
+    expandedPaneId = state.pane
+    if (changed) transcriptEntries = []
+    if (expandedPaneId && changed) {
       agentScroll.contentItem.contentY = 0
       refreshTranscript()
     }
-    popupContent.forceActiveFocus()
+    if (!retainFocus) popupContent.forceActiveFocus()
+  }
+
+  function toggleAgent(paneId) {
+    applyNavigation(Model.activateAgent(snapshot, expandedProjects, expandedPaneId, paneId))
+  }
+
+  function toggleProject(project, supervisorPaneId) {
+    applyNavigation(Model.toggleProject(snapshot, expandedProjects, project, supervisorPaneId))
+  }
+
+  function back() {
+    var state = Model.backNavigation(snapshot, expandedProjects, expandedPaneId, selectedPaneId)
+    if (state) applyNavigation(state)
+    else close()
   }
 
   function refreshTranscript() {
@@ -188,7 +205,7 @@ Panel {
     var parsed = Model.parseSnapshot(raw)
     if (parsed === null) return
     snapshot = parsed
-    if (expandedPaneId && !expandedAgent) expandedPaneId = ""
+    applyNavigation(Model.reconcileNavigation(snapshot, expandedProjects, expandedPaneId, selectedPaneId), true)
     connected = parsed.connected === true
     if (!connected) errorText = "Herdr unavailable — check the socket setting"
     else if (errorText === "Herdr unavailable — check the socket setting") errorText = ""
@@ -449,7 +466,7 @@ Panel {
     owner: root
     open: root.opened
     contentWidth: fittedContentWidth(Style.space(800))
-    readonly property real collapsedHeight: Style.space(Math.min(560, 260 + root.summary.total * 65 + (Model.dashboardRows(root.snapshot).length - root.summary.total) * 20)) + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0)
+    readonly property real collapsedHeight: Style.space(Math.min(560, 260 + root.rows.filter(function(row) { return !row.heading }).length * 65 + root.rows.filter(function(row) { return row.heading }).length * 20)) + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0)
     contentHeight: root.newAgentOpen ? cappedContentHeight(headerLayout.implicitHeight + newAgentDialog.implicitHeight + footerRow.implicitHeight + Style.space(30)) : root.expandedPaneId === "" ? cappedContentHeight(collapsedHeight)
       : Math.max(cappedContentHeight(collapsedHeight), fittedContentHeight(headerLayout.implicitHeight + footerRow.implicitHeight + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0) + latestReplyMeasure.implicitHeight + (root.latestReplyIndex > 0 ? newestEntryMeasure.implicitHeight : 0) + agentsBox.lineHeight * (Math.max(0, root.latestReplyIndex - 1) * 2 + 8) + Style.space(20)))
 
@@ -505,8 +522,24 @@ Panel {
           root.beginPrompt(); event.accepted = true; return
         }
         if (root.promptPaneId) return
+        if (!root.actionState && (event.key === Qt.Key_Left || event.key === Qt.Key_Backspace)) {
+          root.back(); event.accepted = true; return
+        }
+        if (!root.actionState && (event.key === Qt.Key_Down || event.key === Qt.Key_Up)) {
+          var agents = root.rows.filter(function(row) { return !row.heading })
+          var current = agents.findIndex(function(agent) { return agent.pane_id === root.selectedPaneId })
+          var next = Math.max(0, Math.min(agents.length - 1, current + (event.key === Qt.Key_Down ? 1 : -1)))
+          if (agents[next]) root.selectedPaneId = agents[next].pane_id
+          event.accepted = true; return
+        }
+        if (!root.actionState && event.key === Qt.Key_Right) {
+          if (!root.expandedPaneId && root.selectedPaneId) root.toggleAgent(root.selectedPaneId)
+          event.accepted = true; return
+        }
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-          if (root.actionState) { root.answerAction("enter"); event.accepted = true }
+          if (root.actionState) root.answerAction("enter")
+          else if (root.selectedPaneId) root.toggleAgent(root.selectedPaneId)
+          event.accepted = true
         } else if (event.key === Qt.Key_X || event.key === Qt.Key_M) {
           if (root.actionState) {
             if (event.key === Qt.Key_X && root.actionState.phase === "succeeded") root.answerAction("x")
@@ -526,8 +559,7 @@ Panel {
         if (root.newAgentOpen) root.newAgentOpen = false
         else if (root.actionState) root.answerAction("escape")
         else if (root.promptPaneId) root.cancelPrompt()
-        else if (root.expandedPaneId) root.expandedPaneId = ""
-        else root.close()
+        else root.back()
         event.accepted = true
       }
       ColumnLayout {
@@ -695,7 +727,7 @@ Panel {
                 width: parent.width
                 implicitHeight: Math.max(rowContent.implicitHeight, sessionActions.visible ? sessionActions.implicitHeight : 0) + (modelData.heading ? 0 : agentsBox.lineHeight)
                 readonly property bool expanded: !modelData.heading && modelData.pane_id === root.expandedPaneId
-                color: (rowMouse.containsMouse || expanded) && !modelData.heading ? Style.selectedFillFor(Color.foreground, Color.accent) : "transparent"
+                color: (rowMouse.containsMouse || expanded || modelData.pane_id === root.selectedPaneId) && !modelData.heading ? Style.selectedFillFor(Color.foreground, Color.accent) : "transparent"
                 Rectangle {
                   visible: (rowMouse.containsMouse || row.expanded) && !row.modelData.heading
                   width: Style.space(2)
@@ -736,13 +768,23 @@ Panel {
                         anchors.fill: parent
                         anchors.leftMargin: agentsBox.cellWidth / 2
                         anchors.rightMargin: agentsBox.cellWidth / 2
-                        text: row.modelData.project || ""
+                        text: (row.modelData.card ? (row.modelData.projectExpanded ? "▾ " : "▸ ") : "") + (row.modelData.project || "") + (row.modelData.card ? " · " + row.modelData.workerSummary : "")
                         textFormat: Text.PlainText
-                        color: root.headerPalette.green
+                        color: (row.modelData.workerCounts || {}).blocked ? root.headerPalette.yellow : (row.modelData.workerCounts || {}).done ? root.headerPalette.green : root.headerPalette.cyan
                         font.family: root.fontFamily
                         font.pixelSize: Style.space(13)
                         font.bold: true
                         elide: Text.ElideRight
+                      }
+                    }
+                    MouseArea {
+                      anchors.fill: parent
+                      enabled: !!row.modelData.card && root.connected && !root.actionState && !root.promptPaneId
+                      acceptedButtons: Qt.LeftButton | Qt.RightButton
+                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onClicked: function(mouse) {
+                        if (mouse.button === Qt.RightButton) root.focusAgent(row.modelData.supervisorPaneId)
+                        else root.toggleProject(row.modelData.projectKey, row.modelData.supervisorPaneId)
                       }
                     }
                   }
