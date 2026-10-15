@@ -97,8 +97,8 @@ Rectangle {
     anchors.fill: parent
     anchors.margins: Style.space(12)
     spacing: Style.space(10)
-    Text { text: "＋ New agent"; color: dialog.palette.cyan; font.family: dialog.fontFamily; font.bold: true; font.pixelSize: Style.space(16) }
-    Text { text: "Task"; color: dialog.palette.foreground; font.family: dialog.fontFamily }
+    Text { text: "＋ New agent"; textFormat: Text.PlainText; color: dialog.palette.cyan; font.family: dialog.fontFamily; font.bold: true; font.pixelSize: Style.space(16) }
+    Text { text: "Task"; textFormat: Text.PlainText; color: dialog.palette.foreground; font.family: dialog.fontFamily }
     ScrollView {
       Layout.fillWidth: true
       Layout.preferredHeight: Style.space(110)
@@ -120,7 +120,7 @@ Rectangle {
       columns: 2
       Layout.fillWidth: true
       enabled: !dialog.busy && !optionsProcess.running && dialog.phase !== "succeeded"
-      Text { text: "Harness"; color: dialog.palette.foreground; font.family: dialog.fontFamily }
+      Text { text: "Harness"; textFormat: Text.PlainText; color: dialog.palette.foreground; font.family: dialog.fontFamily }
       ComboBox {
         id: harness
         Layout.fillWidth: true
@@ -133,7 +133,7 @@ Rectangle {
         onActivated: { model.currentIndex = 0; effort.currentIndex = 0; dialog.loadOptions(false) }
         onAccepted: { model.currentIndex = 0; effort.currentIndex = 0; dialog.loadOptions(false) }
       }
-      Text { text: "Model"; color: dialog.palette.foreground; font.family: dialog.fontFamily }
+      Text { text: "Model"; textFormat: Text.PlainText; color: dialog.palette.foreground; font.family: dialog.fontFamily }
       ComboBox {
         id: model
         Layout.fillWidth: true
@@ -146,7 +146,7 @@ Rectangle {
         onActivated: dialog.loadOptions(false)
         onAccepted: dialog.loadOptions(false)
       }
-      Text { text: "Thinking effort"; visible: dialog.options.supportsEffort || false; color: dialog.palette.foreground; font.family: dialog.fontFamily }
+      Text { text: "Thinking effort"; textFormat: Text.PlainText; visible: dialog.options.supportsEffort || false; color: dialog.palette.foreground; font.family: dialog.fontFamily }
       ComboBox {
         id: effort
         visible: dialog.options.supportsEffort || false
@@ -158,9 +158,9 @@ Rectangle {
         valueRole: "value"
         model: dialog.options.efforts
       }
-      Text { text: "Project"; color: dialog.palette.foreground; font.family: dialog.fontFamily }
+      Text { text: "Project"; textFormat: Text.PlainText; color: dialog.palette.foreground; font.family: dialog.fontFamily }
       ComboBox { font.family: dialog.fontFamily; font.pixelSize: Style.space(13); id: project; Layout.fillWidth: true; editable: true; model: dialog.options.projects }
-      Text { text: "Checkout"; color: dialog.palette.foreground; font.family: dialog.fontFamily }
+      Text { text: "Checkout"; textFormat: Text.PlainText; color: dialog.palette.foreground; font.family: dialog.fontFamily }
       ComboBox { font.family: dialog.fontFamily; font.pixelSize: Style.space(13); id: checkout; Layout.fillWidth: true; model: ["New Git worktree", "Project directory as is"] }
     }
     Text {
@@ -175,7 +175,7 @@ Rectangle {
     }
     RowLayout {
       Layout.fillWidth: true
-      Text { Layout.fillWidth: true; text: "Enter: create · Shift+Enter: newline · Esc: dismiss"; color: dialog.palette.muted; font.family: dialog.fontFamily; font.pixelSize: Style.space(12) }
+      Text { Layout.fillWidth: true; text: "Enter: create · Shift+Enter: newline · Esc: dismiss"; textFormat: Text.PlainText; color: dialog.palette.muted; font.family: dialog.fontFamily; font.pixelSize: Style.space(12) }
       Button { text: dialog.busy ? "Dismiss" : "Cancel"; onClicked: dialog.dismissed() }
       Button { text: dialog.busy ? "Starting…" : "Create agent"; enabled: !dialog.busy && !optionsProcess.running && dialog.phase !== "succeeded"; onClicked: dialog.submit() }
     }

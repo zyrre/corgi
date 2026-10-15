@@ -57,6 +57,7 @@ pub(crate) use prompt::PromptForm;
 mod bar;
 mod cards;
 mod cli;
+mod navigate;
 mod rows;
 mod setup;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_stream, bar_transcript};
@@ -66,6 +67,7 @@ pub use cli::{
     SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify, report, spawn,
     supervisor_command, tag_command,
 };
+pub use navigate::bar_navigate;
 use rows::codex_thread_id;
 pub use setup::{SETUP_USAGE, setup};
 

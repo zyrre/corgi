@@ -118,18 +118,59 @@ using.
 
 ## Releasing
 
-Bump `version` in both `Cargo.toml` and `herdr-plugin.toml` (and run
-`cargo build` so `Cargo.lock` follows), commit, and push a `vX.Y.Z` tag
-matching it. `.github/workflows/release.yml` then builds the four binaries
-and publishes the GitHub release with them and their `SHA256SUMS`; it
-refuses a tag that does not match both versions.
+Bump `version` in `Cargo.toml`, `herdr-plugin.toml` and
+`omarchy/manifest.json` (and run `cargo build` so `Cargo.lock` follows),
+commit, and push a `vX.Y.Z` tag matching it. `.github/workflows/release.yml`
+then builds the four binaries and publishes the GitHub release with them and
+their `SHA256SUMS`; it refuses a tag that does not match all three versions.
+Its last job, `omarchy`, then publishes the Omarchy bar widget (below).
 
-## Applying Omarchy popup changes
+## The Omarchy bar widget
+
+`omarchy/` is the widget's source, and is published as it stands, so
+`omarchy/README.md` is written for its users; developer notes stay here. The
+widget has no program of its own: every `--bar-*` command it runs is in the
+`corgi` binary, which it finds on `PATH` (`~/.local/bin/corgi`, linked by
+`herdr plugin install`). Keep `omarchy/` free of symlinks and of anything
+that needs building, since Omarchy installs by `git clone` and runs nothing.
+Text that shows agent output, commands or names uses
+`textFormat: Text.PlainText`; the one rich text, `ActionDialog`'s spans, goes
+through `Model.escapeHtml`.
+
+Before handing off a change to `omarchy/`, run both validators the plugin
+must pass. Omarchy's is a bash script that runs on macOS (it needs `jq`); the
+marketplace's is `validateManifest` in `scripts/build-catalog.mjs` of
+omacom/omarchy-plugin-marketplace, after `npm ci` there:
+
+```bash
+bash <omarchy>/bin/omarchy-plugin-validate "$PWD/omarchy"
+CATALOG=<marketplace>/scripts/build-catalog.mjs node -e 'import(process.env.CATALOG).then(m => m.validateManifest(JSON.parse(require("fs").readFileSync("omarchy/manifest.json", "utf8")), "manifest.json", {community: true}))'
+```
+
+Pass the module's path in a variable, not as an argument: as `argv[1]` it
+takes itself for the main script and starts a catalog build.
+
+The marketplace accepts `barWidget.defaultSection` only as `left`, `center`
+or `right`, though Omarchy knows more sections. Omarchy's shell reads no
+`activation` and no bar-widget `aliases`, and hands a widget its settings
+without filling in `defaults`, so `Panel.qml` keeps its own fallbacks and
+treats an empty setting as unset.
+
+### Trying a change on an Omarchy machine
 
 The running Omarchy bar loads `~/.config/omarchy/plugins/io.github.zyrre.corgi/`,
-not the worktree's `omarchy/` directory. Apply the changed files to that installed
-directory, preserving its local manifest defaults and `corgi-reader` binary.
-Avoid overwriting unrelated changes from other agents.
+not the worktree's `omarchy/` directory. Copy the changed files there (a
+symlinked folder fails Omarchy's validation); `--exclude .git` keeps the
+checkout `omarchy plugin add` made:
+
+```bash
+rsync -a --delete --exclude .git omarchy/ ~/.config/omarchy/plugins/io.github.zyrre.corgi/
+```
+
+That widget runs `corgi` from `PATH`, the installed plugin's binary, not a
+worktree build. To try a build, set the widget's **Corgi command** setting to
+that worktree's `target/release/corgi`, and clear it afterwards. Avoid
+overwriting unrelated changes from other agents.
 
 For QML changes, plugin rescans can retain cached components even when
 `omarchy-shell shell rescanPlugins` succeeds. Once the installed files are
@@ -145,6 +186,39 @@ ready before summoning, then verify the visible popup after its opening
 animation finishes. Do not assume that a successful rescan made QML edits live.
 If sandbox restrictions block shell IPC, run these commands with the required
 sandbox escalation rather than interpreting the failure as a stopped shell.
+
+### Publishing
+
+Each release's `omarchy` job runs `scripts/publish-omarchy.sh`, which
+commits the tag's `omarchy/` files and `LICENSE` as the whole root of
+`zyrre/omarchy-corgi` ("Corgi vX.Y.Z") on top of its history and pushes with
+a deploy key. `omarchy plugin update` only fast-forwards, so that history
+must never be rewritten or force-pushed. To publish again after a failure,
+re-run the job. Before handing off changes to the script, run its test, which
+publishes into scratch repositories:
+
+```bash
+bash scripts/test-publish-omarchy
+shellcheck scripts/publish-omarchy.sh scripts/test-publish-omarchy
+```
+
+The job is skipped, with a notice, until this one-time setup is done:
+
+1. Create `zyrre/omarchy-corgi` on GitHub: public and empty (no README,
+   license or `.gitignore`).
+2. Make a key pair with no passphrase, used for nothing else:
+   `ssh-keygen -t ed25519 -N "" -C "corgi release" -f omarchy-deploy-key`.
+3. In `zyrre/omarchy-corgi`, Settings → Deploy keys → Add deploy key: paste
+   `omarchy-deploy-key.pub` and tick **Allow write access**.
+4. In `zyrre/corgi`, Settings → Environments → New environment
+   `omarchy-plugin`; under Deployment branches and tags choose **Selected
+   branches and tags** and add the tag rule `v*`. In that environment add the
+   secret `OMARCHY_DEPLOY_KEY` with the whole of `omarchy-deploy-key` (the
+   private key). Then delete both key files.
+
+The job names that environment, so GitHub creates it on the first release if
+step 4 was skipped, and a repository secret of the same name works too, but
+without the tag rule.
 
 Although Corgi is a space-constrained TUI, use clear icons and small ASCII art
 where they improve scanning or personality. Keep text labels and contrast

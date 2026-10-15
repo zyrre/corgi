@@ -837,7 +837,10 @@ role. So Corgi keeps its own record and puts the tokens back.
   The socket is explicit, since the desktop shell has no injected Herdr session.
   Its popup also creates agents (`--bar-new-options`, `--bar-new-agent`) and
   merges or closes them (`--bar-action`) with the TUI's own forms and launch
-  sequence; prompting an existing agent remains in the TUI.
+  sequence, and `--bar-navigate` (`src/app/navigate.rs`) shows a pane in
+  Herdr and then focuses the Hyprland window of the terminal attached to that
+  session. Each release publishes the folder to `zyrre/omarchy-corgi`, which
+  `omarchy plugin add` installs from.
 
 ## Behaviour in detail
 

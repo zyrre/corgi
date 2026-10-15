@@ -38,6 +38,7 @@ Rectangle {
       spacing: Style.space(8)
       Text {
         text: dialog.phase === "running" ? "◌" : dialog.phase === "succeeded" ? "✓" : dialog.state && dialog.state.tone === "red" ? "!" : "⑂"
+        textFormat: Text.PlainText
         color: dialog.toneColor
         font.family: dialog.fontFamily
         font.bold: true
@@ -98,6 +99,7 @@ Rectangle {
         onClicked: dialog.answered(dialog.phase === "succeeded" ? "x" : "enter")
         contentItem: Text {
           text: confirmButton.text
+          textFormat: Text.PlainText
           color: Color.background
           font.family: dialog.fontFamily
           font.pixelSize: Style.space(12)
@@ -120,6 +122,7 @@ Rectangle {
         onClicked: dialog.answered("escape")
         contentItem: Text {
           text: cancelButton.text
+          textFormat: Text.PlainText
           color: dialog.palette.muted
           font.family: dialog.fontFamily
           font.pixelSize: Style.space(12)

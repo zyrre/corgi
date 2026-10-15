@@ -134,7 +134,7 @@ Corgi talks only to the Herdr socket and sends no telemetry. It keeps no termina
 
 - Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) has the socket and API boundaries, and every behaviour in detail.
 - Supervisor: [`supervisor/ROLE.md`](supervisor/ROLE.md) is the role every supervisor runs by, and `corgi <command> --help` documents each command.
-- Omarchy companion: [`omarchy/`](omarchy/README.md) is an experimental bar widget for the Omarchy desktop, with a compact dashboard of its own.
+- Omarchy companion: [`omarchy/`](omarchy/README.md) is a bar widget for the Omarchy desktop, with a compact dashboard of its own. Once Corgi is installed, `omarchy plugin add https://github.com/zyrre/omarchy-corgi.git --enable` adds it.
 
 ## Build from source
 
