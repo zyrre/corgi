@@ -450,8 +450,8 @@ Panel {
     open: root.opened
     contentWidth: fittedContentWidth(Style.space(800))
     readonly property real collapsedHeight: Style.space(Math.min(560, 260 + root.summary.total * 65 + (Model.dashboardRows(root.snapshot).length - root.summary.total) * 20)) + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0)
-    contentHeight: root.newAgentOpen ? cappedContentHeight(headerRow.implicitHeight + newAgentDialog.implicitHeight + footerRow.implicitHeight + Style.space(30)) : root.expandedPaneId === "" ? cappedContentHeight(collapsedHeight)
-      : Math.max(cappedContentHeight(collapsedHeight), fittedContentHeight(headerRow.implicitHeight + footerRow.implicitHeight + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0) + latestReplyMeasure.implicitHeight + (root.latestReplyIndex > 0 ? newestEntryMeasure.implicitHeight : 0) + agentsBox.lineHeight * (Math.max(0, root.latestReplyIndex - 1) * 2 + 8) + Style.space(20)))
+    contentHeight: root.newAgentOpen ? cappedContentHeight(headerLayout.implicitHeight + newAgentDialog.implicitHeight + footerRow.implicitHeight + Style.space(30)) : root.expandedPaneId === "" ? cappedContentHeight(collapsedHeight)
+      : Math.max(cappedContentHeight(collapsedHeight), fittedContentHeight(headerLayout.implicitHeight + footerRow.implicitHeight + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0) + latestReplyMeasure.implicitHeight + (root.latestReplyIndex > 0 ? newestEntryMeasure.implicitHeight : 0) + agentsBox.lineHeight * (Math.max(0, root.latestReplyIndex - 1) * 2 + 8) + Style.space(20)))
 
     Text {
       id: latestReplyMeasure
@@ -530,96 +530,95 @@ Panel {
         else root.close()
         event.accepted = true
       }
-      RowLayout {
-        id: headerRow
+      ColumnLayout {
+        id: headerLayout
         Layout.fillWidth: true
-        Image {
-          id: popupMascot
-          smooth: false
-          source: Qt.resolvedUrl("assets/corgi-pixel.svg")
-          Layout.preferredWidth: herdCard.implicitHeight * 16 / 14
-          Layout.preferredHeight: herdCard.implicitHeight
-          Layout.minimumWidth: Style.space(40)
-          fillMode: Image.PreserveAspectFit
-          transform: Scale {
-            origin.x: popupMascot.width / 2
-            xScale: root.mascotWidthScale
-          }
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.openDashboard()
-          }
-        }
-        Image {
-          smooth: false
-          source: Qt.resolvedUrl("assets/corgi-wordmark.svg")
-          Layout.preferredWidth: herdCard.implicitHeight * 5 / 7 * 38 / 10
-          Layout.preferredHeight: herdCard.implicitHeight * 5 / 7
-          Layout.minimumWidth: Style.space(95)
-          fillMode: Image.PreserveAspectFit
-          layer.enabled: true
-          layer.effect: MultiEffect { colorization: 1; colorizationColor: root.wordmarkColor }
-          MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.openDashboard()
-          }
-        }
-        HeaderCard {
-          id: herdCard
-          // One extra blank character before the first box.
-          Layout.leftMargin: cellWidth
-          title: "HERD"
-          columns: 15
-          horizontalPadding: 0
-          palette: root.headerPalette
-          frameColor: root.summary.blocked > 0 ? palette.yellow : root.summary.working > 0 ? palette.cyan : root.summary.done > 0 ? palette.green : palette.muted
-          lines: Model.herdLines(root.summary)
-        }
-        Repeater {
-          model: root.snapshot.usage || []
-          HeaderCard {
-            required property var modelData
-            title: String(modelData.provider || "").toUpperCase()
-            palette: root.headerPalette
-            frameColor: modelData.provider === "Codex" ? "#00afff" : "#ff8700"
-            lines: modelData.lines || []
-          }
-        }
-        // A provider whose CLI is installed but whose usage cannot be read
-        // gets no card, so its reason sits in the header's top right corner,
-        // the same as in the dashboard.
-        Item {
+        Layout.fillHeight: false
+        spacing: Style.space(4)
+        RowLayout {
           Layout.fillWidth: true
-          Layout.fillHeight: true
-          ColumnLayout {
-            anchors.right: parent.right
-            anchors.top: parent.top
+          Layout.fillHeight: false
+          Image {
+            id: popupMascot
+            smooth: false
+            source: Qt.resolvedUrl("assets/corgi-pixel.svg")
+            Layout.preferredWidth: herdCard.implicitHeight * 16 / 14
+            Layout.preferredHeight: herdCard.implicitHeight
+            Layout.minimumWidth: Style.space(40)
+            fillMode: Image.PreserveAspectFit
+            transform: Scale {
+              origin.x: popupMascot.width / 2
+              xScale: root.mascotWidthScale
+            }
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.openDashboard()
+            }
+          }
+          Image {
+            smooth: false
+            source: Qt.resolvedUrl("assets/corgi-wordmark.svg")
+            Layout.preferredWidth: herdCard.implicitHeight * 5 / 7 * 38 / 10
+            Layout.preferredHeight: herdCard.implicitHeight * 5 / 7
+            Layout.minimumWidth: Style.space(95)
+            fillMode: Image.PreserveAspectFit
+            layer.enabled: true
+            layer.effect: MultiEffect { colorization: 1; colorizationColor: root.wordmarkColor }
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.openDashboard()
+            }
+          }
+          HeaderCard {
+            id: herdCard
+            // One extra blank character before the first box.
+            Layout.leftMargin: cellWidth
+            title: "HERD"
+            columns: 15
+            horizontalPadding: 0
+            palette: root.headerPalette
+            frameColor: root.summary.blocked > 0 ? palette.yellow : root.summary.working > 0 ? palette.cyan : root.summary.done > 0 ? palette.green : palette.muted
+            lines: Model.herdLines(root.summary)
+          }
+          Repeater {
+            model: root.snapshot.usage || []
+            HeaderCard {
+              required property var modelData
+              title: String(modelData.provider || "").toUpperCase()
+              palette: root.headerPalette
+              frameColor: modelData.provider === "Codex" ? "#00afff" : "#ff8700"
+              lines: modelData.lines || []
+            }
+          }
+          Item { Layout.fillWidth: true }
+        }
+        // Give usage warnings their own bounded row so they cannot cover the
+        // cards or make the header consume the agent list's available height.
+        Repeater {
+          model: root.snapshot.usage_notes || []
+          RowLayout {
+            required property var modelData
+            Layout.fillWidth: true
             spacing: 0
-            Repeater {
-              model: root.snapshot.usage_notes || []
-              RowLayout {
-                required property var modelData
-                Layout.alignment: Qt.AlignRight
-                spacing: 0
-                Text {
-                  text: "⚠ " + String(modelData.provider || "").toUpperCase() + " "
-                  textFormat: Text.PlainText
-                  color: root.headerPalette.yellow
-                  font.bold: true
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.space(12)
-                }
-                Text {
-                  text: String(modelData.reason || "")
-                  textFormat: Text.PlainText
-                  color: root.headerPalette.muted
-                  elide: Text.ElideRight
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.space(12)
-                }
-              }
+            Text {
+              text: "⚠ " + String(modelData.provider || "").toUpperCase() + " "
+              textFormat: Text.PlainText
+              color: root.headerPalette.yellow
+              font.bold: true
+              font.family: root.fontFamily
+              font.pixelSize: Style.space(12)
+            }
+            Text {
+              Layout.fillWidth: true
+              Layout.minimumWidth: 0
+              text: String(modelData.reason || "")
+              textFormat: Text.PlainText
+              color: root.headerPalette.muted
+              elide: Text.ElideRight
+              font.family: root.fontFamily
+              font.pixelSize: Style.space(12)
             }
           }
         }
@@ -997,8 +996,10 @@ Panel {
       }
       RowLayout {
         id: footerRow
+        Layout.fillWidth: true
         Text { text: root.noticeText || "Click: expand · Right click: focus · p / m / x: actions"; textFormat: Text.PlainText; color: root.noticeText ? root.headerPalette.green : Color.foreground
-          opacity: 0.8; font.family: root.fontFamily; font.pixelSize: Style.space(12); Layout.fillWidth: true }
+          opacity: 0.8; font.family: root.fontFamily; font.pixelSize: Style.space(12)
+          Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight }
         Button { text: "New agent +"; enabled: !newAgentDialog.busy && !root.actionState && !root.promptPaneId; onClicked: root.openNewAgent() }
         Button { text: "Open dashboard ↗"; onClicked: root.openDashboard() }
       }
