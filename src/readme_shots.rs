@@ -649,19 +649,14 @@ fn expanded_session() -> String {
     svg(&mut terminal, area, Chrome::Panel, &[])
 }
 
-/// A merge that fails and then succeeds, as the popup plays it: from the
-/// settled confirmation, `Enter` finds the worker's checkout dirty and the
-/// popup pulses red and shakes; once that is committed, `Enter` retries,
-/// the steps run, and the success is stamped with its check, on which the
+/// A merge as the popup plays it: from the settled confirmation, `Enter`
+/// runs the steps, and the success is stamped with its check, on which the
 /// animation ends and rests before it loops.
 fn merge_outcomes() -> Vec<Still> {
-    let dirty = MergePhase::Failed("agent worktree has uncommitted or untracked changes".into());
-    // Every phase's popup and the columns its shake reaches, so no frame
-    // is cut off.
+    // Every phase's popup, so no frame is cut off.
     let area = [
         (MergePhase::Confirm, "Merge reviewed work"),
         (MergePhase::Running(0), "Merge and push"),
-        (dirty.clone(), "Merge/push error"),
         (MergePhase::Succeeded, "Merged and pushed"),
     ]
     .into_iter()
@@ -669,17 +664,16 @@ fn merge_outcomes() -> Vec<Still> {
     .reduce(Rect::union)
     .expect("a popup");
     // When each beat starts, in milliseconds on the motion clock.
-    let beats: [(u64, MergePhase); 7] = [
+    let succeeded = 3_600;
+    let beats: [(u64, MergePhase); 5] = [
         (0, MergePhase::Confirm),
         (1_800, MergePhase::Running(0)),
-        (2_400, dirty),
-        (4_800, MergePhase::Running(0)),
-        (5_200, MergePhase::Running(1)),
-        (5_800, MergePhase::Running(2)),
-        (6_400, MergePhase::Succeeded),
+        (2_400, MergePhase::Running(1)),
+        (3_000, MergePhase::Running(2)),
+        (succeeded, MergePhase::Succeeded),
     ];
     // The last frame is the check drawn in full, halfway through its hold.
-    let stamped = 6_400 + (STAMP_DRAW + STAMP_HOLD / 2).as_millis() as u64;
+    let stamped = succeeded + (STAMP_DRAW + STAMP_HOLD / 2).as_millis() as u64;
     // The GIF starts on the settled confirmation, which is also what shows
     // where it does not play.
     let settled = (OPEN + CONTENT).as_millis() as u64;

@@ -22,7 +22,7 @@
 - **What it costs**: its model and effort, how full its context is, how long its prompt cache stays warm, and in the header, each CLI's 5-hour and weekly plan usage.
 - **New agents in their own worktree** with `n`, and their work merged back with `m`, stamped with a check when it lands:
 
-<img src="docs/images/merge-outcomes.gif" width="757" alt="A merge refused because the agent's worktree has uncommitted changes, the popup pulsing red and shaking; then retried, its steps running, and stamped with a big green check">
+<img src="docs/images/merge-outcomes.gif" width="757" alt="The merge popup confirming the merge of the order-history worker, its steps running, and the success stamped with a big green check">
 
 **Install:** `herdr plugin install zyrre/corgi` (key binding and updates under [Install](#install)).
 

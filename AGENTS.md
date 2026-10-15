@@ -85,8 +85,8 @@ change, draw them again with:
 cargo readme-shots
 ```
 
-It writes the SVG screenshots and `merge-outcomes.gif`, the merge popup's
-failure pulse and shake and its success stamp, on which it ends and rests.
+It writes the SVG screenshots and `merge-outcomes.gif`, a merge in the
+merge popup that ends and rests on its success stamp.
 The GIF plays the real effects of `src/motion.rs` on a manual clock at 25
 frames a second, and
 rasterizes each frame with resvg (a dev-dependency) and the system's
