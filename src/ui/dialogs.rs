@@ -79,6 +79,22 @@ pub(crate) fn close_dialog_lines(form: &CloseWorkspaceForm) -> DialogContent<'_>
     }
 }
 
+/// A notice another command left for the dashboard, such as `corgi setup`
+/// saying which key opens Corgi: a success, stamped once it has opened.
+pub(super) fn draw_notice(frame: &mut Frame<'_>, area: Rect, message: &str) -> Drawn {
+    draw_message_dialog(
+        frame,
+        area,
+        DialogContent {
+            mark: SUCCESS_MARK,
+            title: "Corgi set up",
+            color: ACCENT,
+            lines: vec![outcome_line(true, message.to_string())],
+            legend: vec![("Enter / Esc", "close", WARNING)],
+        },
+    )
+}
+
 pub(super) fn draw_merge_worktree(
     frame: &mut Frame<'_>,
     area: Rect,

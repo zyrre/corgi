@@ -270,6 +270,17 @@ impl Motion {
         self.caret_since = self.now();
     }
 
+    /// Whether a popup is open with its frame grown and its content faded
+    /// in, as it is at once without animation.
+    pub(crate) fn settled(&self) -> bool {
+        match self.popup {
+            Popup::Shown { since } => {
+                !self.animate || self.now().saturating_sub(since) >= OPEN + CONTENT
+            }
+            _ => false,
+        }
+    }
+
     /// How far the open popup's frame has grown, from 0 to 1.
     pub(crate) fn openness(&self) -> f32 {
         if !self.animate {

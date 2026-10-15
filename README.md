@@ -99,7 +99,7 @@ In an expanded card, a project without a supervisor, and the scratch sessions, e
 herdr plugin install zyrre/corgi && corgi setup
 ```
 
-The install links the `corgi` command into `~/.local/bin` (if that is not on your `PATH`, run `~/.local/bin/corgi setup`). `corgi setup` asks which key should open the dashboard, or focus it when it is already open, `prefix+d` unless you type another; it appends that binding to Herdr's `config.toml`, reloads Herdr's config and opens Corgi. It changes nothing when a key is bound already, and is safe to run again. Run the install again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`).
+The install links the `corgi` command into `~/.local/bin` (if that is not on your `PATH`, run `~/.local/bin/corgi setup`). `corgi setup` asks which key should open the dashboard, or focus it when it is already open, `prefix+d` unless you type another; it appends that binding to Herdr's `config.toml`, reloads Herdr's config and opens Corgi, which confirms the key in a popup. It changes nothing when a key is bound already, and is safe to run again. Run the install again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`).
 
 To bind the key by hand instead, add this to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
 

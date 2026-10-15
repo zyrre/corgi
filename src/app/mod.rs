@@ -38,6 +38,7 @@ mod catalog;
 mod close;
 mod form;
 mod merge;
+mod notice;
 mod overlay;
 mod prompt;
 #[cfg(test)]
@@ -172,6 +173,11 @@ pub(crate) struct App {
     /// Where the snapshot refreshes log how long they took; only the
     /// interactive dashboard logs them.
     refresh_log: Option<std::path::PathBuf>,
+    /// Where the snapshot refreshes look for a notice from `corgi setup`;
+    /// only the full dashboard, not the compact Omarchy popup, takes them.
+    notice_path: Option<std::path::PathBuf>,
+    /// A notice taken while another popup was open, shown once it closes.
+    pending_notice: Option<String>,
     /// Reads the expanded transcript when a key opens or moves it. The
     /// refresh reads it again with its own reader, so a key never waits for
     /// a refresh to bring its reader back.
@@ -256,6 +262,8 @@ impl App {
             refresh_state: Some(RefreshState::default()),
             refresh_job: Job::default(),
             refresh_log: None,
+            notice_path: None,
+            pending_notice: None,
             transcripts: SessionReader::default(),
             codex_task_titles: HashMap::new(),
             launch_job: Job::default(),
@@ -507,6 +515,21 @@ impl App {
             Overlay::Launch(_) => self.handle_launch_key(key),
             Overlay::Close(_) => self.handle_close_workspace_key(key),
             Overlay::Merge(_) => self.handle_merge_worktree_key(key),
+            Overlay::Notice(_) => {
+                if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+                    self.overlay = Overlay::None;
+                }
+                false
+            }
+        }
+    }
+
+    /// Shows a notice taken from `corgi setup` once no other popup is open.
+    fn show_pending_notice(&mut self) {
+        if matches!(self.overlay, Overlay::None)
+            && let Some(message) = self.pending_notice.take()
+        {
+            self.overlay = Overlay::Notice(message);
         }
     }
 
@@ -599,6 +622,9 @@ pub fn run() -> Result<()> {
     let mut app = App::new(client, compact);
     app.wake_with(SupervisorWaker::default());
     app.refresh_log = refresh_log_path();
+    if !compact {
+        app.notice_path = notice::notice_path();
+    }
     app.motion = Motion::animated();
 
     let mut terminal = init_terminal()?;
@@ -643,6 +669,7 @@ impl App {
     /// waits on Herdr or the disk.
     fn tick(&mut self) {
         self.poll_refresh();
+        self.show_pending_notice();
         self.poll_launch();
         self.poll_plan_usage();
         self.poll_codex_task_titles();

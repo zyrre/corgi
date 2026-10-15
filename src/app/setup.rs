@@ -6,6 +6,8 @@
 //! binds the action themselves. Setup does that once: it leaves a config
 //! that already binds the action alone, asks for a key otherwise, and only
 //! ever appends to the file, so nothing the user wrote is reformatted.
+//! The dashboard it opens shows which key opens Corgi, through a notice (see
+//! [`super::notice`]).
 
 use std::{
     env, fs,
@@ -18,7 +20,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use toml::{Table, Value as Toml};
 
-use crate::paths::home;
+use super::notice;
+use crate::{paths::home, time::unix_now};
 
 pub const SETUP_USAGE: &str = "\
 Usage: corgi setup
@@ -33,6 +36,7 @@ you type another, checks it with herdr config check and against the keys
 the config binds already, appends the binding to the end of the file
 (creating it if needed), and runs herdr server reload-config. Without a
 terminal to ask on it writes nothing and prints the binding to add instead.
+When a key opens Corgi, the dashboard says which in a popup.
 Running it again is safe.";
 
 /// The plugin's id, as `herdr-plugin.toml` names it.
@@ -75,6 +79,7 @@ pub fn setup(args: &[String]) -> Result<()> {
         terminal.as_mut().map(|lock| lock as &mut dyn BufRead),
         &mut out,
         &Herdr::from_env(),
+        notice::notice_path().as_deref(),
     )
 }
 
@@ -92,12 +97,14 @@ fn config_path() -> Option<PathBuf> {
 }
 
 /// Setup on `config`, asking on `terminal`, or not at all when there is
-/// none, and telling the user on `out`.
+/// none, and telling the user on `out`. When a key opens Corgi, the dashboard
+/// it opens is told so too, through a notice left at `notice`.
 fn run(
     config: &Path,
     terminal: Option<&mut dyn BufRead>,
     out: &mut dyn Write,
     herdr: &dyn HerdrCli,
+    notice: Option<&Path>,
 ) -> Result<()> {
     let text = match fs::read_to_string(config) {
         Ok(text) => text,
@@ -111,11 +118,12 @@ fn run(
         )
     })?;
     let shown = config.display();
-    if let Some(key) = bound_key(&table) {
+    let outcome = if let Some(key) = bound_key(&table) {
         writeln!(
             out,
             "Corgi already opens with {key} ({shown}); nothing changed."
         )?;
+        Some(format!("Corgi already opens with {key}"))
     } else if let Some(terminal) = terminal {
         let Some(key) = ask_key(&table, terminal, out, herdr)? else {
             writeln!(out, "No key chosen; nothing changed.")?;
@@ -148,6 +156,7 @@ fn run(
                 error.message
             )?,
         }
+        Some(format!("{key} now opens Corgi"))
     } else {
         writeln!(
             out,
@@ -155,14 +164,24 @@ fn run(
              {DEFAULT_KEY}, add this to {shown} and run herdr server reload-config:\n\n{}",
             snippet(DEFAULT_KEY)
         )?;
-    }
-    open(out, herdr)
+        None
+    };
+    open(out, herdr, notice.zip(outcome))
 }
 
 /// Opens the dashboard through the plugin's own action, and says why when
-/// it cannot.
-fn open(out: &mut dyn Write, herdr: &dyn HerdrCli) -> Result<()> {
-    match herdr.open_dashboard() {
+/// it cannot. With a notice, its message is left at its path first for the
+/// dashboard to show, and taken back if the dashboard did not open. The
+/// notice is a courtesy: when it cannot be written, setup says nothing.
+fn open(out: &mut dyn Write, herdr: &dyn HerdrCli, notice: Option<(&Path, String)>) -> Result<()> {
+    let left = notice.filter(|(path, message)| notice::leave(path, message, unix_now()).is_ok());
+    let opened = herdr.open_dashboard();
+    if opened.is_err()
+        && let Some((path, _)) = left
+    {
+        fs::remove_file(path).ok();
+    }
+    match opened {
         Ok(()) => writeln!(out, "Opened Corgi.")?,
         Err(error) => match error.code.as_deref() {
             Some("server_not_running") => writeln!(
@@ -454,7 +473,8 @@ mod tests {
     }
 
     /// Runs setup on `config` with `typed` on a terminal, or with no
-    /// terminal when it is `None`; what it printed.
+    /// terminal when it is `None`; what it printed. Its notice goes beside
+    /// the config, where [`notice_beside`] finds it.
     fn setup_with(config: &Path, typed: Option<&str>, herdr: &FakeHerdr) -> String {
         let mut out = Vec::new();
         let mut terminal = typed.map(|typed| Cursor::new(typed.as_bytes().to_vec()));
@@ -463,9 +483,19 @@ mod tests {
             terminal.as_mut().map(|cursor| cursor as &mut dyn BufRead),
             &mut out,
             herdr,
+            Some(&notice_path(config)),
         )
         .expect("setup runs");
         String::from_utf8(out).expect("utf-8 output")
+    }
+
+    fn notice_path(config: &Path) -> PathBuf {
+        config.with_file_name("setup-notice.json")
+    }
+
+    /// The message of the notice setup left beside `config`, if any.
+    fn notice_beside(config: &Path) -> Option<String> {
+        notice::take(&notice_path(config), unix_now())
     }
 
     const OTHER_CONFIG: &str = "\
@@ -496,6 +526,10 @@ description = \"Other\"";
         assert!(printed.contains("already opens with ctrl+g"), "{printed}");
         assert_eq!(fs::read_to_string(&config).unwrap(), text);
         assert_eq!(*herdr.calls.borrow(), ["open"]);
+        assert_eq!(
+            notice_beside(&config).as_deref(),
+            Some("Corgi already opens with ctrl+g")
+        );
     }
 
     #[test]
@@ -516,6 +550,10 @@ description = \"Other\"";
         assert_eq!(*herdr.calls.borrow(), ["check", "reload", "open"]);
         let table: Table = written.parse().unwrap();
         assert_eq!(bound_key(&table).as_deref(), Some("prefix+d"));
+        assert_eq!(
+            notice_beside(&config).as_deref(),
+            Some("prefix+d now opens Corgi")
+        );
     }
 
     #[test]
@@ -568,6 +606,8 @@ description = \"Other\"";
             printed.contains("Herdr is not running, so Corgi did not open"),
             "{printed}"
         );
+        // No dashboard opened to take it, so none is left for a later one.
+        assert!(!notice_path(&config).exists());
     }
 
     #[test]
@@ -583,6 +623,7 @@ description = \"Other\"";
         assert!(printed.contains(&snippet("prefix+d")), "{printed}");
         assert_eq!(*herdr.calls.borrow(), ["open"]);
         assert!(!dir.join("herdr").exists());
+        assert!(!notice_path(&config).exists());
     }
 
     #[test]
@@ -596,6 +637,7 @@ description = \"Other\"";
         assert!(printed.contains("nothing changed"), "{printed}");
         assert!(!config.exists());
         assert!(herdr.calls.borrow().is_empty());
+        assert!(!notice_path(&config).exists());
     }
 
     #[test]
@@ -609,6 +651,27 @@ description = \"Other\"";
 
         assert_eq!(fs::read_to_string(&config).unwrap(), text);
         assert!(printed.contains("Add this to it by hand"), "{printed}");
+        assert!(!notice_path(&config).exists());
+    }
+
+    #[test]
+    fn an_invalid_config_is_reported_and_leaves_no_notice() {
+        let dir = ScratchDir::new("setup-invalid");
+        let config = dir.join("config.toml");
+        fs::write(&config, "[keys\n").unwrap();
+        let herdr = FakeHerdr::new();
+
+        let result = run(
+            &config,
+            None,
+            &mut Vec::new(),
+            &herdr,
+            Some(&notice_path(&config)),
+        );
+
+        assert!(result.is_err());
+        assert!(herdr.calls.borrow().is_empty());
+        assert!(!notice_path(&config).exists());
     }
 
     #[test]

@@ -37,6 +37,7 @@ use crate::{
 use super::{
     App, REFRESH_INTERVAL, SUPERVISOR_NAME, is_due,
     markers::{clear_stale_merge_tags, restore_markers},
+    notice,
     project_main::{dashboard_pane_ids, relabel_project_mains},
     rows::{
         NO_TOOL_YET, SCRATCH_GROUP, agent_project, agent_worktree, checkout_label, codex_thread_id,
@@ -85,6 +86,8 @@ struct Inputs {
     /// The pane whose transcript the expanded view shows, read again with
     /// the rows.
     transcript_pane: Option<String>,
+    /// Where to look for a notice from `corgi setup`, for the full dashboard.
+    notice_path: Option<PathBuf>,
 }
 
 /// A refresh's result and the state it hands back.
@@ -93,6 +96,8 @@ pub(super) struct Refreshed {
     state: RefreshState,
     /// The new rows, or why Herdr gave none.
     view: Result<View, String>,
+    /// A notice from `corgi setup` this refresh took, to show in a popup.
+    notice: Option<String>,
 }
 
 /// The rows one refresh found, ready to put in place.
@@ -123,7 +128,15 @@ fn run(inputs: &Inputs, mut state: RefreshState, log: Option<&Path>) -> Refreshe
     if let Some(log) = log {
         log_refresh(log, started.elapsed(), &timings, &view);
     }
-    Refreshed { state, view }
+    let notice = inputs
+        .notice_path
+        .as_deref()
+        .and_then(|path| notice::take(path, unix_now()));
+    Refreshed {
+        state,
+        view,
+        notice,
+    }
 }
 
 impl RefreshState {
@@ -449,6 +462,7 @@ impl App {
                 .selected_agent()
                 .filter(|_| self.expanded)
                 .map(|agent| agent.info.pane_id.clone()),
+            notice_path: self.notice_path.clone(),
         }
     }
 
@@ -526,8 +540,16 @@ impl App {
 
     /// Takes a refresh's state back and puts its rows in place.
     fn apply_refresh(&mut self, refreshed: Refreshed) {
-        let Refreshed { state, view } = refreshed;
+        let Refreshed {
+            state,
+            view,
+            notice,
+        } = refreshed;
         self.refresh_state = Some(state);
+        if notice.is_some() {
+            self.pending_notice = notice;
+            self.show_pending_notice();
+        }
         self.last_refresh = Some(Instant::now());
         match view {
             Ok(mut view) => {
