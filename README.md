@@ -24,6 +24,8 @@
 
 <img src="docs/images/merge-outcomes.gif" width="757" alt="A merge refused because the agent's worktree has uncommitted changes, the popup pulsing red and shaking; then retried, its steps running, and stamped with a big green check">
 
+**Install:** `herdr plugin install zyrre/corgi` (key binding and updates under [Install](#install)).
+
 ### Keys
 
 | Key | Action |
