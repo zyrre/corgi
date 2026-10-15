@@ -1,150 +1,150 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="982" height="298" viewBox="0 0 982 298">
-<rect x="0.5" y="0.5" width="981" height="297" rx="10" fill="#1a1b26" stroke="#2a2e42"/>
+<rect x="0.5" y="0.5" width="981" height="297" rx="10" fill="#1e1e2e" stroke="#313244"/>
 <g transform="translate(14 14)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="15">
-<rect x="36" y="0" width="63" height="18" fill="#bb9af7" shape-rendering="crispEdges"/>
-<rect x="0" y="0" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="0" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="45 54 63 72 81" y="13" fill="#15161e" font-weight="bold">MERGE</text>
-<text x="108" y="13" fill="#414868">·</text>
-<text x="126 135 144 153 162 171 180 189" y="13" fill="#c0caf5" font-weight="bold">Paginate</text>
-<text x="207 216 225" y="13" fill="#c0caf5" font-weight="bold">the</text>
-<text x="243 252 261 270 279" y="13" fill="#c0caf5" font-weight="bold">order</text>
-<text x="297 306 315 324 333 342 351" y="13" fill="#c0caf5" font-weight="bold">history</text>
-<text x="369" y="13" fill="#414868">·</text>
+<rect x="36" y="0" width="63" height="18" fill="#f5c2e7" shape-rendering="crispEdges"/>
+<rect x="0" y="0" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="0" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="45 54 63 72 81" y="13" fill="#45475a" font-weight="bold">MERGE</text>
+<text x="108" y="13" fill="#585b70">·</text>
+<text x="126 135 144 153 162 171 180 189" y="13" fill="#a6adc8" font-weight="bold">Paginate</text>
+<text x="207 216 225" y="13" fill="#a6adc8" font-weight="bold">the</text>
+<text x="243 252 261 270 279" y="13" fill="#a6adc8" font-weight="bold">order</text>
+<text x="297 306 315 324 333 342 351" y="13" fill="#a6adc8" font-weight="bold">history</text>
+<text x="369" y="13" fill="#585b70">·</text>
 <text x="387 396 405 414" y="13" fill="#ff8700">Opus</text>
 <text x="432" y="13" fill="#ff8700">5</text>
-<text x="450 459 468 477" y="13" fill="#7dcfff">high</text>
-<text x="495" y="13" fill="#414868">·</text>
-<text x="513 522 531" y="13" fill="#d7af5f">67%</text>
-<text x="549 558 567" y="13" fill="#d7af5f">ctx</text>
-<text x="585" y="13" fill="#414868">·</text>
-<text x="603" y="13" fill="#f7768e" font-weight="bold">⚠</text>
-<text x="621 630 639 648" y="13" fill="#f7768e" font-weight="bold">182k</text>
-<text x="666 675 684 693 702 711 720" y="13" fill="#f7768e" font-weight="bold">re-read</text>
-<text x="738" y="13" fill="#414868">·</text>
-<text x="756" y="13" fill="#7dcfff">⑂</text>
-<text x="774 783 792 801 810 819 828 837 846 855 864 873 882 891 900 909" y="13" fill="#414868">order-pages-2d5a</text>
-<rect x="0" y="18" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="18" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="31" fill="#c0caf5" font-weight="bold">›</text>
-<text x="54 63 72 81 90 99 108 117 126 135" y="31" fill="#c0caf5">Pagination</text>
-<text x="153 162" y="31" fill="#c0caf5">is</text>
-<text x="180 189 198" y="31" fill="#c0caf5">in.</text>
-<text x="216 225 234" y="31" fill="#c0caf5">The</text>
-<text x="252 261 270 279 288" y="31" fill="#c0caf5">order</text>
-<text x="306 315 324 333 342 351 360" y="31" fill="#c0caf5">history</text>
-<text x="378 387 396 405 414" y="31" fill="#c0caf5">loads</text>
-<text x="432 441" y="31" fill="#c0caf5">20</text>
-<text x="459 468 477 486 495 504" y="31" fill="#c0caf5">orders</text>
-<text x="522 531" y="31" fill="#c0caf5">at</text>
-<text x="549" y="31" fill="#c0caf5">a</text>
-<text x="567 576 585 594" y="31" fill="#c0caf5">time</text>
-<text x="612 621 630 639" y="31" fill="#c0caf5">from</text>
-<text x="657" y="31" fill="#c0caf5">a</text>
-<text x="675 684 693 702 711 720" y="31" fill="#c0caf5">cursor</text>
-<text x="738 747" y="31" fill="#c0caf5">on</text>
-<text x="765 774 783 792 801 810 819 828 837 846 855 864" y="31" fill="#c0caf5">(created_at,</text>
-<text x="882 891 900 909" y="31" fill="#c0caf5">id),</text>
-<text x="927 936" y="31" fill="#c0caf5">so</text>
-<rect x="0" y="36" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="36" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54" y="49" fill="#c0caf5">a</text>
-<text x="72 81 90" y="49" fill="#c0caf5">new</text>
-<text x="108 117 126 135 144" y="49" fill="#c0caf5">order</text>
-<text x="162 171 180 189 198" y="49" fill="#c0caf5">never</text>
-<text x="216 225 234 243 252 261" y="49" fill="#c0caf5">shifts</text>
-<text x="279" y="49" fill="#c0caf5">a</text>
-<text x="297 306 315 324" y="49" fill="#c0caf5">page</text>
-<text x="342 351 360 369 378" y="49" fill="#c0caf5">under</text>
-<text x="396 405 414" y="49" fill="#c0caf5">the</text>
-<text x="432 441 450 459 468 477 486" y="49" fill="#c0caf5">reader.</text>
-<rect x="0" y="54" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="54" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="0" y="72" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="72" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54" y="85" fill="#c0caf5">-</text>
-<text x="72 81 90" y="85" fill="#c0caf5">GET</text>
-<text x="108 117 126 135 144 153 162 171 180 189 198 207 216 225 234 243 252 261 270 279 288 297" y="85" fill="#c0caf5">/orders?after=&lt;cursor&gt;</text>
-<text x="315 324 333 342 351 360 369" y="85" fill="#c0caf5">returns</text>
-<text x="387 396 405" y="85" fill="#c0caf5">the</text>
-<text x="423 432 441 450" y="85" fill="#c0caf5">next</text>
-<text x="468 477 486 495" y="85" fill="#c0caf5">page</text>
-<text x="513 522 531" y="85" fill="#c0caf5">and</text>
-<text x="549 558 567" y="85" fill="#c0caf5">its</text>
-<text x="585 594 603" y="85" fill="#c0caf5">own</text>
-<text x="621 630 639 648 657 666" y="85" fill="#c0caf5">cursor</text>
-<rect x="0" y="90" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="90" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54" y="103" fill="#c0caf5">-</text>
-<text x="72 81 90" y="103" fill="#c0caf5">The</text>
-<text x="108 117 126 135" y="103" fill="#c0caf5">page</text>
-<text x="153 162 171 180 189" y="103" fill="#c0caf5">shows</text>
-<text x="207 216 225 234" y="103" fill="#c0caf5">Load</text>
-<text x="252 261 270 279" y="103" fill="#c0caf5">more</text>
-<text x="297 306 315 324 333" y="103" fill="#c0caf5">until</text>
-<text x="351 360 369" y="103" fill="#c0caf5">the</text>
-<text x="387 396 405 414" y="103" fill="#c0caf5">last</text>
-<text x="432 441 450 459 468" y="103" fill="#c0caf5">order</text>
-<text x="486 495" y="103" fill="#c0caf5">is</text>
-<text x="513 522" y="103" fill="#c0caf5">on</text>
-<text x="540 549 558 567 576 585" y="103" fill="#c0caf5">screen</text>
-<rect x="0" y="108" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="108" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54" y="121" fill="#c0caf5">-</text>
-<text x="72 81 90 99 108" y="121" fill="#c0caf5">Tests</text>
-<text x="126 135 144 153 162" y="121" fill="#c0caf5">cover</text>
-<text x="180 189 198" y="121" fill="#c0caf5">the</text>
-<text x="216 225 234 243 252" y="121" fill="#c0caf5">first</text>
-<text x="270 279 288 297 306" y="121" fill="#c0caf5">page,</text>
-<text x="324 333 342" y="121" fill="#c0caf5">the</text>
-<text x="360 369 378 387" y="121" fill="#c0caf5">last</text>
-<text x="405 414 423 432" y="121" fill="#c0caf5">page</text>
-<text x="450 459 468" y="121" fill="#c0caf5">and</text>
-<text x="486 495" y="121" fill="#c0caf5">an</text>
-<text x="513 522 531 540 549" y="121" fill="#c0caf5">empty</text>
-<text x="567 576 585 594 603 612 621" y="121" fill="#c0caf5">history</text>
-<rect x="0" y="126" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="126" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="0" y="144" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="144" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="157" fill="#7dcfff" font-weight="bold">$</text>
-<text x="54 63 72 81" y="157" fill="#7dcfff">pnpm</text>
-<text x="99 108 117 126" y="157" fill="#7dcfff">test</text>
-<text x="144 153" y="157" fill="#7dcfff">--</text>
-<text x="171 180 189 198 207 216" y="157" fill="#7dcfff">orders</text>
-<rect x="0" y="162" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="162" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="175" fill="#7dcfff" font-weight="bold">●</text>
-<text x="54 63 72 81" y="175" fill="#7dcfff">Edit</text>
-<text x="99 108 117 126 135 144 153 162 171 180 189 198 207 216 225 234 243 252 261 270 279 288 297 306 315 324" y="175" fill="#7dcfff">src/pages/OrderHistory.tsx</text>
-<rect x="0" y="180" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="180" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="193" fill="#7dcfff" font-weight="bold">●</text>
-<text x="54 63 72 81" y="193" fill="#7dcfff">Edit</text>
-<text x="99 108 117 126 135 144 153 162 171 180 189 198 207 216 225 234 243" y="193" fill="#7dcfff">src/api/orders.ts</text>
-<rect x="0" y="198" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="198" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="211" fill="#7aa2f7" font-weight="bold">…</text>
-<text x="54 63 72" y="211" fill="#7aa2f7">The</text>
-<text x="90 99 108" y="211" fill="#7aa2f7">API</text>
-<text x="126 135 144 153 162 171 180" y="211" fill="#7aa2f7">already</text>
-<text x="198 207 216 225 234" y="211" fill="#7aa2f7">sorts</text>
-<text x="252 261" y="211" fill="#7aa2f7">by</text>
-<text x="279 288 297 306 315 324 333 342 351 360 369" y="211" fill="#7aa2f7">created_at,</text>
-<text x="387 396" y="211" fill="#7aa2f7">so</text>
-<text x="414" y="211" fill="#7aa2f7">a</text>
-<text x="432 441 450 459 468 477" y="211" fill="#7aa2f7">cursor</text>
-<text x="495 504" y="211" fill="#7aa2f7">on</text>
-<text x="522 531 540 549 558 567 576 585 594 603 612 621" y="211" fill="#7aa2f7">(created_at,</text>
-<text x="639 648 657" y="211" fill="#7aa2f7">id)</text>
-<text x="675 684 693 702 711" y="211" fill="#7aa2f7">keeps</text>
-<text x="729 738 747" y="211" fill="#7aa2f7">the</text>
-<text x="765 774 783 792 801" y="211" fill="#7aa2f7">pages</text>
-<text x="819 828 837 846 855 864" y="211" fill="#7aa2f7">stable</text>
-<text x="882 891 900 909 918" y="211" fill="#7aa2f7">while</text>
-<rect x="0" y="216" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="216" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="54 63 72" y="229" fill="#7aa2f7">new</text>
-<text x="90 99 108 117 126 135" y="229" fill="#7aa2f7">orders</text>
-<text x="153 162 171 180 189 198 207" y="229" fill="#7aa2f7">arrive,</text>
-<text x="225 234 243 252 261" y="229" fill="#7aa2f7">which</text>
-<text x="279 288" y="229" fill="#7aa2f7">an</text>
-<text x="306 315 324 333 342 351" y="229" fill="#7aa2f7">offset</text>
-<text x="369 378 387 396 405" y="229" fill="#7aa2f7">would</text>
-<text x="423 432 441 450" y="229" fill="#7aa2f7">not.</text>
-<rect x="0" y="234" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="234" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="247" fill="#7dcfff" font-weight="bold">$</text>
-<text x="54 63" y="247" fill="#7dcfff">rg</text>
-<text x="81 90" y="247" fill="#7dcfff">-n</text>
-<text x="108 117 126 135 144 153 162 171" y="247" fill="#7dcfff">"orders"</text>
-<text x="189 198 207 216 225 234 243" y="247" fill="#7dcfff">src/api</text>
-<rect x="0" y="252" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><rect x="9" y="252" width="9" height="18" fill="#7dcfff" shape-rendering="crispEdges"/><text x="36" y="265" fill="#9ece6a" font-weight="bold">»</text>
-<text x="54 63 72 81 90 99 108 117" y="265" fill="#9ece6a">Paginate</text>
-<text x="135 144 153" y="265" fill="#9ece6a">the</text>
-<text x="171 180 189 198 207" y="265" fill="#9ece6a">order</text>
-<text x="225 234 243 252 261 270 279" y="265" fill="#9ece6a">history</text>
-<text x="297 306 315 324 333" y="265" fill="#9ece6a">page,</text>
-<text x="351 360" y="265" fill="#9ece6a">20</text>
-<text x="378 387 396 405 414 423" y="265" fill="#9ece6a">orders</text>
-<text x="441 450" y="265" fill="#9ece6a">at</text>
-<text x="468" y="265" fill="#9ece6a">a</text>
-<text x="486 495 504 513 522" y="265" fill="#9ece6a">time.</text>
-<text x="540 549 558 567" y="265" fill="#9ece6a">Keep</text>
-<text x="585 594 603" y="265" fill="#9ece6a">the</text>
-<text x="621 630 639" y="265" fill="#9ece6a">URL</text>
-<text x="657 666 675 684 693 702 711 720 729 738" y="265" fill="#9ece6a">shareable.</text>
+<text x="450 459 468 477" y="13" fill="#94e2d5">high</text>
+<text x="495" y="13" fill="#585b70">·</text>
+<text x="513 522 531" y="13" fill="#f3c7b3">67%</text>
+<text x="549 558 567" y="13" fill="#f3c7b3">ctx</text>
+<text x="585" y="13" fill="#585b70">·</text>
+<text x="603" y="13" fill="#f38ba8" font-weight="bold">⚠</text>
+<text x="621 630 639 648" y="13" fill="#f38ba8" font-weight="bold">182k</text>
+<text x="666 675 684 693 702 711 720" y="13" fill="#f38ba8" font-weight="bold">re-read</text>
+<text x="738" y="13" fill="#585b70">·</text>
+<text x="756" y="13" fill="#94e2d5">⑂</text>
+<text x="774 783 792 801 810 819 828 837 846 855 864 873 882 891 900 909" y="13" fill="#585b70">order-pages-2d5a</text>
+<rect x="0" y="18" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="18" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="31" fill="#a6adc8" font-weight="bold">›</text>
+<text x="54 63 72 81 90 99 108 117 126 135" y="31" fill="#a6adc8">Pagination</text>
+<text x="153 162" y="31" fill="#a6adc8">is</text>
+<text x="180 189 198" y="31" fill="#a6adc8">in.</text>
+<text x="216 225 234" y="31" fill="#a6adc8">The</text>
+<text x="252 261 270 279 288" y="31" fill="#a6adc8">order</text>
+<text x="306 315 324 333 342 351 360" y="31" fill="#a6adc8">history</text>
+<text x="378 387 396 405 414" y="31" fill="#a6adc8">loads</text>
+<text x="432 441" y="31" fill="#a6adc8">20</text>
+<text x="459 468 477 486 495 504" y="31" fill="#a6adc8">orders</text>
+<text x="522 531" y="31" fill="#a6adc8">at</text>
+<text x="549" y="31" fill="#a6adc8">a</text>
+<text x="567 576 585 594" y="31" fill="#a6adc8">time</text>
+<text x="612 621 630 639" y="31" fill="#a6adc8">from</text>
+<text x="657" y="31" fill="#a6adc8">a</text>
+<text x="675 684 693 702 711 720" y="31" fill="#a6adc8">cursor</text>
+<text x="738 747" y="31" fill="#a6adc8">on</text>
+<text x="765 774 783 792 801 810 819 828 837 846 855 864" y="31" fill="#a6adc8">(created_at,</text>
+<text x="882 891 900 909" y="31" fill="#a6adc8">id),</text>
+<text x="927 936" y="31" fill="#a6adc8">so</text>
+<rect x="0" y="36" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="36" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="54" y="49" fill="#a6adc8">a</text>
+<text x="72 81 90" y="49" fill="#a6adc8">new</text>
+<text x="108 117 126 135 144" y="49" fill="#a6adc8">order</text>
+<text x="162 171 180 189 198" y="49" fill="#a6adc8">never</text>
+<text x="216 225 234 243 252 261" y="49" fill="#a6adc8">shifts</text>
+<text x="279" y="49" fill="#a6adc8">a</text>
+<text x="297 306 315 324" y="49" fill="#a6adc8">page</text>
+<text x="342 351 360 369 378" y="49" fill="#a6adc8">under</text>
+<text x="396 405 414" y="49" fill="#a6adc8">the</text>
+<text x="432 441 450 459 468 477 486" y="49" fill="#a6adc8">reader.</text>
+<rect x="0" y="54" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="54" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="0" y="72" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="72" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="54" y="85" fill="#a6adc8">-</text>
+<text x="72 81 90" y="85" fill="#a6adc8">GET</text>
+<text x="108 117 126 135 144 153 162 171 180 189 198 207 216 225 234 243 252 261 270 279 288 297" y="85" fill="#a6adc8">/orders?after=&lt;cursor&gt;</text>
+<text x="315 324 333 342 351 360 369" y="85" fill="#a6adc8">returns</text>
+<text x="387 396 405" y="85" fill="#a6adc8">the</text>
+<text x="423 432 441 450" y="85" fill="#a6adc8">next</text>
+<text x="468 477 486 495" y="85" fill="#a6adc8">page</text>
+<text x="513 522 531" y="85" fill="#a6adc8">and</text>
+<text x="549 558 567" y="85" fill="#a6adc8">its</text>
+<text x="585 594 603" y="85" fill="#a6adc8">own</text>
+<text x="621 630 639 648 657 666" y="85" fill="#a6adc8">cursor</text>
+<rect x="0" y="90" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="90" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="54" y="103" fill="#a6adc8">-</text>
+<text x="72 81 90" y="103" fill="#a6adc8">The</text>
+<text x="108 117 126 135" y="103" fill="#a6adc8">page</text>
+<text x="153 162 171 180 189" y="103" fill="#a6adc8">shows</text>
+<text x="207 216 225 234" y="103" fill="#a6adc8">Load</text>
+<text x="252 261 270 279" y="103" fill="#a6adc8">more</text>
+<text x="297 306 315 324 333" y="103" fill="#a6adc8">until</text>
+<text x="351 360 369" y="103" fill="#a6adc8">the</text>
+<text x="387 396 405 414" y="103" fill="#a6adc8">last</text>
+<text x="432 441 450 459 468" y="103" fill="#a6adc8">order</text>
+<text x="486 495" y="103" fill="#a6adc8">is</text>
+<text x="513 522" y="103" fill="#a6adc8">on</text>
+<text x="540 549 558 567 576 585" y="103" fill="#a6adc8">screen</text>
+<rect x="0" y="108" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="108" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="54" y="121" fill="#a6adc8">-</text>
+<text x="72 81 90 99 108" y="121" fill="#a6adc8">Tests</text>
+<text x="126 135 144 153 162" y="121" fill="#a6adc8">cover</text>
+<text x="180 189 198" y="121" fill="#a6adc8">the</text>
+<text x="216 225 234 243 252" y="121" fill="#a6adc8">first</text>
+<text x="270 279 288 297 306" y="121" fill="#a6adc8">page,</text>
+<text x="324 333 342" y="121" fill="#a6adc8">the</text>
+<text x="360 369 378 387" y="121" fill="#a6adc8">last</text>
+<text x="405 414 423 432" y="121" fill="#a6adc8">page</text>
+<text x="450 459 468" y="121" fill="#a6adc8">and</text>
+<text x="486 495" y="121" fill="#a6adc8">an</text>
+<text x="513 522 531 540 549" y="121" fill="#a6adc8">empty</text>
+<text x="567 576 585 594 603 612 621" y="121" fill="#a6adc8">history</text>
+<rect x="0" y="126" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="126" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="0" y="144" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="144" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="157" fill="#94e2d5" font-weight="bold">$</text>
+<text x="54 63 72 81" y="157" fill="#94e2d5">pnpm</text>
+<text x="99 108 117 126" y="157" fill="#94e2d5">test</text>
+<text x="144 153" y="157" fill="#94e2d5">--</text>
+<text x="171 180 189 198 207 216" y="157" fill="#94e2d5">orders</text>
+<rect x="0" y="162" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="162" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="175" fill="#94e2d5" font-weight="bold">●</text>
+<text x="54 63 72 81" y="175" fill="#94e2d5">Edit</text>
+<text x="99 108 117 126 135 144 153 162 171 180 189 198 207 216 225 234 243 252 261 270 279 288 297 306 315 324" y="175" fill="#94e2d5">src/pages/OrderHistory.tsx</text>
+<rect x="0" y="180" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="180" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="193" fill="#94e2d5" font-weight="bold">●</text>
+<text x="54 63 72 81" y="193" fill="#94e2d5">Edit</text>
+<text x="99 108 117 126 135 144 153 162 171 180 189 198 207 216 225 234 243" y="193" fill="#94e2d5">src/api/orders.ts</text>
+<rect x="0" y="198" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="198" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="211" fill="#89b4fa" font-weight="bold">…</text>
+<text x="54 63 72" y="211" fill="#89b4fa">The</text>
+<text x="90 99 108" y="211" fill="#89b4fa">API</text>
+<text x="126 135 144 153 162 171 180" y="211" fill="#89b4fa">already</text>
+<text x="198 207 216 225 234" y="211" fill="#89b4fa">sorts</text>
+<text x="252 261" y="211" fill="#89b4fa">by</text>
+<text x="279 288 297 306 315 324 333 342 351 360 369" y="211" fill="#89b4fa">created_at,</text>
+<text x="387 396" y="211" fill="#89b4fa">so</text>
+<text x="414" y="211" fill="#89b4fa">a</text>
+<text x="432 441 450 459 468 477" y="211" fill="#89b4fa">cursor</text>
+<text x="495 504" y="211" fill="#89b4fa">on</text>
+<text x="522 531 540 549 558 567 576 585 594 603 612 621" y="211" fill="#89b4fa">(created_at,</text>
+<text x="639 648 657" y="211" fill="#89b4fa">id)</text>
+<text x="675 684 693 702 711" y="211" fill="#89b4fa">keeps</text>
+<text x="729 738 747" y="211" fill="#89b4fa">the</text>
+<text x="765 774 783 792 801" y="211" fill="#89b4fa">pages</text>
+<text x="819 828 837 846 855 864" y="211" fill="#89b4fa">stable</text>
+<text x="882 891 900 909 918" y="211" fill="#89b4fa">while</text>
+<rect x="0" y="216" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="216" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="54 63 72" y="229" fill="#89b4fa">new</text>
+<text x="90 99 108 117 126 135" y="229" fill="#89b4fa">orders</text>
+<text x="153 162 171 180 189 198 207" y="229" fill="#89b4fa">arrive,</text>
+<text x="225 234 243 252 261" y="229" fill="#89b4fa">which</text>
+<text x="279 288" y="229" fill="#89b4fa">an</text>
+<text x="306 315 324 333 342 351" y="229" fill="#89b4fa">offset</text>
+<text x="369 378 387 396 405" y="229" fill="#89b4fa">would</text>
+<text x="423 432 441 450" y="229" fill="#89b4fa">not.</text>
+<rect x="0" y="234" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="234" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="247" fill="#94e2d5" font-weight="bold">$</text>
+<text x="54 63" y="247" fill="#94e2d5">rg</text>
+<text x="81 90" y="247" fill="#94e2d5">-n</text>
+<text x="108 117 126 135 144 153 162 171" y="247" fill="#94e2d5">"orders"</text>
+<text x="189 198 207 216 225 234 243" y="247" fill="#94e2d5">src/api</text>
+<rect x="0" y="252" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="252" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="265" fill="#a6e3a1" font-weight="bold">»</text>
+<text x="54 63 72 81 90 99 108 117" y="265" fill="#a6e3a1">Paginate</text>
+<text x="135 144 153" y="265" fill="#a6e3a1">the</text>
+<text x="171 180 189 198 207" y="265" fill="#a6e3a1">order</text>
+<text x="225 234 243 252 261 270 279" y="265" fill="#a6e3a1">history</text>
+<text x="297 306 315 324 333" y="265" fill="#a6e3a1">page,</text>
+<text x="351 360" y="265" fill="#a6e3a1">20</text>
+<text x="378 387 396 405 414 423" y="265" fill="#a6e3a1">orders</text>
+<text x="441 450" y="265" fill="#a6e3a1">at</text>
+<text x="468" y="265" fill="#a6e3a1">a</text>
+<text x="486 495 504 513 522" y="265" fill="#a6e3a1">time.</text>
+<text x="540 549 558 567" y="265" fill="#a6e3a1">Keep</text>
+<text x="585 594 603" y="265" fill="#a6e3a1">the</text>
+<text x="621 630 639" y="265" fill="#a6e3a1">URL</text>
+<text x="657 666 675 684 693 702 711 720 729 738" y="265" fill="#a6e3a1">shareable.</text>
 </g>
 </svg>

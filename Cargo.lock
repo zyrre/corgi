@@ -146,6 +146,7 @@ dependencies = [
  "color_quant",
  "crossterm",
  "gif",
+ "libc",
  "ratatui",
  "regex",
  "resvg",

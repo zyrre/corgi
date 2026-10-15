@@ -16,8 +16,10 @@ use crate::{
 };
 
 use super::status::model_color;
-use super::{
-    ACCENT, DANGER, MERGE, MERGE_MARK, MUTED, SUCCESS, TEXT, WARNING, bold, clip, rounded_block,
+use super::{MERGE_MARK, bold, clip, rounded_block};
+use crate::theme::{
+    brand::{CORGI_COAT, CORGI_DARK, CORGI_GLINT, CORGI_INNER_EAR, CORGI_TONGUE, CORGI_WHITE},
+    roles,
 };
 
 // Each subscription gets ten content columns: exactly `Weekly 99%`, with one
@@ -115,15 +117,15 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     // row for a state the user cannot act on would only dilute the card.
     let idle = count(AgentState::Idle) + count(AgentState::Unknown);
     let agent_color = if blocked > 0 {
-        WARNING
+        roles().warning
     } else if working > 0 {
-        ACCENT
+        roles().accent
     } else if merge > 0 {
-        MERGE
+        roles().merge
     } else if done > 0 {
-        SUCCESS
+        roles().success
     } else {
-        MUTED
+        roles().muted
     };
     // The supervisor hugs the top-left corner and only appears when the header is
     // tall enough to hold it and wide enough to leave room for the band.
@@ -169,11 +171,21 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         // The pack by state, the ones ready to merge right after the
         // blocked, as the next thing the user can act on.
         lines: vec![
-            Line::from(agent_summary_spans("●", working, "WORKING", ACCENT)),
-            Line::from(agent_summary_spans("!", blocked, "BLOCKED", WARNING)),
-            Line::from(agent_summary_spans(MERGE_MARK, merge, "MERGE", MERGE)),
-            Line::from(agent_summary_spans("✓", done, "DONE", SUCCESS)),
-            Line::from(agent_summary_spans("·", idle, "IDLE", MUTED)),
+            Line::from(agent_summary_spans("●", working, "WORKING", roles().accent)),
+            Line::from(agent_summary_spans(
+                "!",
+                blocked,
+                "BLOCKED",
+                roles().warning,
+            )),
+            Line::from(agent_summary_spans(
+                MERGE_MARK,
+                merge,
+                "MERGE",
+                roles().merge,
+            )),
+            Line::from(agent_summary_spans("✓", done, "DONE", roles().success)),
+            Line::from(agent_summary_spans("·", idle, "IDLE", roles().muted)),
         ],
     }];
     let now = unix_now();
@@ -238,8 +250,11 @@ fn usage_note_line(slot: &UsageSlot, width: u16) -> Option<Line<'static>> {
         return None;
     }
     Some(Line::from(vec![
-        Span::styled(label, bold(WARNING)),
-        Span::styled(clip(reason, reason_width), Style::default().fg(MUTED)),
+        Span::styled(label, bold(roles().warning)),
+        Span::styled(
+            clip(reason, reason_width),
+            Style::default().fg(roles().muted),
+        ),
     ]))
 }
 
@@ -290,15 +305,8 @@ const CORGI_PIXELS: [&str; 14] = [
 ];
 const CORGI_ROWS: u16 = CORGI_PIXELS.len() as u16 / 2;
 const CORGI_WIDTH: u16 = CORGI_PIXELS[0].len() as u16;
-// Like the vendor colors, the coat is fixed rather than themed: a supervisor in
-// the theme's accent shade would no longer read as a corgi.
-const CORGI_COAT: Color = Color::Indexed(208);
-const CORGI_INNER_EAR: Color = Color::Indexed(166);
-const CORGI_WHITE: Color = Color::Indexed(255);
-const CORGI_DARK: Color = Color::Indexed(16);
-// Brighter than the muzzle so the glint reads as a reflection, not fur.
-const CORGI_GLINT: Color = Color::Indexed(231);
-const CORGI_TONGUE: Color = Color::Indexed(210);
+// The coat and its details are brand colors, fixed in every theme (see
+// `crate::theme::brand`).
 // Omarchy's own wordmark is Delta Corps Priest 1: solid three-cell stems,
 // corners chamfered with half blocks, and crossbars split into a `▄▄` over a
 // `▀▀`. This is a CORGI cut of that alphabet, shortened to five rows so the
@@ -346,7 +354,7 @@ fn draw_wordmark(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(logo)
             .alignment(Alignment::Left)
-            .style(Style::default().fg(SUCCESS)),
+            .style(Style::default().fg(roles().success)),
         logo_area,
     );
 }
@@ -412,9 +420,9 @@ pub(crate) fn usage_lines_for_slot(slot: &UsageSlot, now: u64) -> Vec<Line<'stat
 /// right-aligned and dim. The row never outgrows the card: the age drops its
 /// "ago" first, then the subscription is clipped.
 fn usage_heading_line(slot: &UsageSlot, now: u64) -> Line<'static> {
-    let muted = Style::default().fg(MUTED);
+    let muted = Style::default().fg(roles().muted);
     let (heading, style) = match &slot.usage {
-        Some(usage) if !usage.plan_type.is_empty() => (usage.plan_type.clone(), bold(TEXT)),
+        Some(usage) if !usage.plan_type.is_empty() => (usage.plan_type.clone(), bold(roles().text)),
         Some(_) => ("—".to_string(), muted),
         None if slot.error.is_some() => ("unavailable".to_string(), muted),
         None => ("loading…".to_string(), muted),
@@ -457,7 +465,7 @@ fn reading_age(elapsed: u64) -> String {
 
 fn usage_percent_line(label: &'static str, window: Option<&UsageWindow>) -> Line<'static> {
     let (percent, style) = window.map_or_else(
-        || ("—".to_string(), Style::default().fg(MUTED)),
+        || ("—".to_string(), Style::default().fg(roles().muted)),
         |window| {
             (
                 format!("{}%", window.used_percent),
@@ -475,7 +483,7 @@ fn usage_percent_line(label: &'static str, window: Option<&UsageWindow>) -> Line
     Line::from(vec![
         Span::styled(
             format!("{label}{}", " ".repeat(padding)),
-            Style::default().fg(MUTED),
+            Style::default().fg(roles().muted),
         ),
         Span::styled(percent, style),
     ])
@@ -486,7 +494,8 @@ fn usage_reset_line(window: Option<&UsageWindow>, now: u64) -> Line<'static> {
         || "—".to_string(),
         |window| reset_countdown(window.resets_at, now),
     );
-    Line::from(Span::styled(countdown, Style::default().fg(ACCENT))).alignment(Alignment::Right)
+    Line::from(Span::styled(countdown, Style::default().fg(roles().accent)))
+        .alignment(Alignment::Right)
 }
 
 fn reset_countdown(resets_at: u64, now: u64) -> String {
@@ -515,9 +524,9 @@ fn reset_countdown(resets_at: u64, now: u64) -> String {
 
 fn usage_color(used_percent: u8) -> Style {
     let color = match used_percent {
-        0..=59 => SUCCESS,
-        60..=84 => WARNING,
-        _ => DANGER,
+        0..=59 => roles().success,
+        60..=84 => roles().warning,
+        _ => roles().danger,
     };
     bold(color)
 }
@@ -563,7 +572,7 @@ mod tests {
             let cells = terminal.backend().buffer().content().to_vec();
             let has_wordmark = cells
                 .iter()
-                .any(|cell| cell.fg == SUCCESS && cell.symbol() == "█");
+                .any(|cell| cell.fg == roles().success && cell.symbol() == "█");
             let text: String = cells.iter().map(|cell| cell.symbol()).collect();
             (has_wordmark, text)
         };
@@ -632,7 +641,7 @@ mod tests {
         // The letters run their full width from just after the corgi.
         let is_letter = |x: u16, y: u16| {
             let cell = &buffer[(x, y)];
-            cell.fg == SUCCESS && ["█", "▄", "▀"].contains(&cell.symbol())
+            cell.fg == roles().success && ["█", "▄", "▀"].contains(&cell.symbol())
         };
         let letter_columns: Vec<u16> = (0..130)
             .filter(|&x| (0..HEADER_HEIGHT).any(|y| is_letter(x, y)))
@@ -882,7 +891,7 @@ mod tests {
             assert_eq!(line.width(), usize::from(USAGE_CONTENT_WIDTH), "{line}");
             assert_eq!(line.alignment, None, "padded, not aligned, for Omarchy");
             let age_span = line.spans.last().expect("an age span");
-            assert_eq!(age_span.style.fg, Some(MUTED));
+            assert_eq!(age_span.style.fg, Some(roles().muted));
             line.to_string()
         };
         assert_eq!(heading("Max", 180), "Max 3m ago");

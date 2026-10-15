@@ -53,16 +53,12 @@ pub fn bar_transcript(socket: &str, pane_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The tone the Omarchy widget draws `color` in: the role's own name when
+/// it has one, else the widget's foreground.
 fn popup_color_tone(color: Option<ratatui::style::Color>) -> &'static str {
-    use ratatui::style::Color;
-    match color {
-        Some(Color::Cyan) => "cyan",
-        Some(Color::Green) => "green",
-        Some(Color::Yellow) => "yellow",
-        Some(Color::Red) => "red",
-        Some(Color::DarkGray) => "muted",
-        _ => "foreground",
-    }
+    color
+        .and_then(|color| crate::theme::with(|theme| theme.tone(color)))
+        .unwrap_or("foreground")
 }
 
 /// A dialog as the Omarchy popup draws it: its title without the mark the
@@ -80,7 +76,7 @@ fn popup_dialog_state(phase: &str, content: ui::DialogContent<'_>) -> serde_json
         lines.push(ratatui::text::Line::raw(""));
         lines.push(ratatui::text::Line::styled(
             ui::legend_text(&legend),
-            ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray),
+            ratatui::style::Style::default().fg(crate::theme::roles().muted),
         ));
     }
     let text = lines
@@ -368,8 +364,7 @@ fn bar_stream_frame(app: &App, now: u64) -> serde_json::Value {
                 "tool_kind": format!("{:?}", agent.tool.kind).to_lowercase(),
                 "details": ui::status_fields(agent, now).into_iter().flat_map(|field| {
                     std::iter::once(serde_json::json!({"text": field.separator, "tone": "muted"})).chain(field.spans.into_iter().map(|span| {
-                        use ratatui::style::Color;
-                        let indexed = match span.style.fg { Some(Color::Indexed(value)) => Some(value), _ => None };
+                        let indexed = span.style.fg.and_then(crate::theme::indexed);
                         serde_json::json!({"text": span.content, "tone": popup_color_tone(span.style.fg), "indexed": indexed, "bold": span.style.add_modifier.contains(ratatui::style::Modifier::BOLD)})
                     }))
                 }).collect::<Vec<_>>(),

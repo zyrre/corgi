@@ -19,6 +19,7 @@ pub mod supervisor;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod textfield;
+pub mod theme;
 pub mod time;
 pub mod ui;
 pub mod usage;

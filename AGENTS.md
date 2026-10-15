@@ -136,3 +136,9 @@ strong enough that decoration never interferes with readability.
 Use color often to clarify state, hierarchy, and actions. Prefer semantic ANSI
 terminal colors over fixed RGB values so Corgi automatically follows the active
 Omarchy theme palette; reserve high-contrast colors for important information.
+Take every color from a role in `src/theme/` (`theme::roles()`), adding a role
+there when none fits, so it follows the terminal's palette, light or dark; only
+the theme module and tests write color literals. To check a color change
+without a light terminal or an Omarchy machine, write the theme preview with
+`CORGI_PREVIEW_DIR=<dir> TMPDIR=/tmp cargo test --lib theme_preview -- --ignored`
+and read its files with `less -R`.

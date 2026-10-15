@@ -11,9 +11,10 @@ use crate::{
 };
 
 use super::{
-    ACCENT, DANGER, DialogContent, Drawn, FAILURE_MARK, MUTED, POPUP_MARK, SUCCESS, SUCCESS_MARK,
-    TEXT, WARNING, bold, clip, draw_message_dialog, indent_left_block, outcome_line, step_lines,
+    DialogContent, Drawn, FAILURE_MARK, POPUP_MARK, SUCCESS_MARK, bold, clip, draw_message_dialog,
+    indent_left_block, outcome_line, step_lines,
 };
+use crate::theme::roles;
 
 // Commits the merge dialog lists before summing up the rest, and the columns
 // a subject may take before it is cut, so one long message cannot widen the
@@ -60,22 +61,25 @@ pub(crate) fn close_dialog_lines(form: &CloseWorkspaceForm) -> DialogContent<'_>
         ),
     };
     let mut lines = vec![
-        Line::styled(question, bold(TEXT)),
+        Line::styled(question, bold(roles().text)),
         Line::raw(""),
-        Line::styled(detail.to_string(), Style::default().fg(MUTED)),
+        Line::styled(detail.to_string(), Style::default().fg(roles().muted)),
     ];
     if matches!(form.target, CloseTarget::Worktree { .. }) {
         lines.push(Line::styled(
             "Stops its panes and deletes the checkout from disk; the branch is kept.",
-            Style::default().fg(MUTED),
+            Style::default().fg(roles().muted),
         ));
     }
     DialogContent {
         mark: POPUP_MARK,
         title,
-        color: DANGER,
+        color: roles().danger,
         lines,
-        legend: vec![("Enter", confirm, DANGER), ("Esc", "cancel", WARNING)],
+        legend: vec![
+            ("Enter", confirm, roles().danger),
+            ("Esc", "cancel", roles().warning),
+        ],
     }
 }
 
@@ -88,9 +92,9 @@ pub(super) fn draw_notice(frame: &mut Frame<'_>, area: Rect, message: &str) -> D
         DialogContent {
             mark: SUCCESS_MARK,
             title: "Corgi set up",
-            color: ACCENT,
+            color: roles().accent,
             lines: vec![outcome_line(true, message.to_string())],
-            legend: vec![("Enter / Esc", "close", WARNING)],
+            legend: vec![("Enter / Esc", "close", roles().warning)],
         },
     )
 }
@@ -117,22 +121,28 @@ pub(crate) fn merge_dialog_lines<'a>(
     // the branch is only where it happens to be.
     let mut lines = Vec::new();
     if !form.task.trim().is_empty() {
-        lines.push(Line::styled(form.task.trim().to_string(), bold(TEXT)));
+        lines.push(Line::styled(
+            form.task.trim().to_string(),
+            bold(roles().text),
+        ));
         lines.push(Line::styled(
             format!("Worktree {worktree}"),
-            Style::default().fg(MUTED),
+            Style::default().fg(roles().muted),
         ));
     } else {
-        lines.push(Line::styled(format!("Worktree {worktree}"), bold(TEXT)));
+        lines.push(Line::styled(
+            format!("Worktree {worktree}"),
+            bold(roles().text),
+        ));
     }
     lines.push(Line::raw(""));
     lines.extend([
         // One line, so the two names centre as a pair instead of each
         // finding its own middle a few columns off the other's.
         Line::from(vec![
-            Span::styled(&form.source_branch, bold(ACCENT)),
-            Span::styled("  →  ", Style::default().fg(MUTED)),
-            Span::styled(&form.target_branch, bold(SUCCESS)),
+            Span::styled(&form.source_branch, bold(roles().accent)),
+            Span::styled("  →  ", Style::default().fg(roles().muted)),
+            Span::styled(&form.target_branch, bold(roles().success)),
         ]),
         Line::raw(""),
     ]);
@@ -141,19 +151,19 @@ pub(crate) fn merge_dialog_lines<'a>(
             lines.extend(merge_commit_lines(&form.commits, &form.target_branch));
             lines.push(Line::styled(
                 "Runs git merge, then git push in the primary checkout.",
-                Style::default().fg(MUTED),
+                Style::default().fg(roles().muted),
             ));
             lines.push(Line::styled(
                 "The agent worktree stays open.",
-                Style::default().fg(MUTED),
+                Style::default().fg(roles().muted),
             ));
             (
                 POPUP_MARK,
                 "Merge reviewed work",
-                SUCCESS,
+                roles().success,
                 vec![
-                    ("Enter", "merge + push", SUCCESS),
-                    ("Esc", "cancel", WARNING),
+                    ("Enter", "merge + push", roles().success),
+                    ("Esc", "cancel", roles().warning),
                 ],
             )
         }
@@ -166,28 +176,28 @@ pub(crate) fn merge_dialog_lines<'a>(
             lines.push(Line::raw(""));
             lines.push(Line::styled(
                 "Please wait; this operation cannot be cancelled safely.",
-                Style::default().fg(MUTED),
+                Style::default().fg(roles().muted),
             ));
-            (POPUP_MARK, "Merge and push", ACCENT, Vec::new())
+            (POPUP_MARK, "Merge and push", roles().accent, Vec::new())
         }
         MergePhase::Succeeded => {
             lines.push(outcome_line(true, "Merge and push complete.".into()));
             lines.push(Line::raw(""));
             lines.push(Line::styled(
                 format!("Close worktree {worktree} too?"),
-                bold(TEXT),
+                bold(roles().text),
             ));
             lines.push(Line::styled(
                 "Stops its panes and deletes the checkout from disk; the branch is kept.",
-                Style::default().fg(MUTED),
+                Style::default().fg(roles().muted),
             ));
             (
                 SUCCESS_MARK,
                 "Merged and pushed",
-                ACCENT,
+                roles().accent,
                 vec![
-                    ("x", "close worktree", DANGER),
-                    ("Enter / Esc", "keep it open", WARNING),
+                    ("x", "close worktree", roles().danger),
+                    ("Enter / Esc", "keep it open", roles().warning),
                 ],
             )
         }
@@ -196,12 +206,15 @@ pub(crate) fn merge_dialog_lines<'a>(
                 false,
                 "Merge and push did not complete.".into(),
             ));
-            lines.push(Line::styled(error, Style::default().fg(MUTED)));
+            lines.push(Line::styled(error, Style::default().fg(roles().muted)));
             (
                 FAILURE_MARK,
                 "Merge/push error",
-                DANGER,
-                vec![("Enter", "retry", SUCCESS), ("Esc", "close", WARNING)],
+                roles().danger,
+                vec![
+                    ("Enter", "retry", roles().success),
+                    ("Esc", "close", roles().warning),
+                ],
             )
         }
         MergePhase::Conflicted { files, help } => {
@@ -220,33 +233,40 @@ pub(crate) fn merge_dialog_lines<'a>(
                             "Its supervisor can have the agent merge {} into its own branch.",
                             form.target_branch
                         ),
-                        Style::default().fg(TEXT),
+                        Style::default().fg(roles().text),
                     ));
                     lines.push(Line::styled(
                         "The worktree stays open; merge again once it reports.",
-                        Style::default().fg(MUTED),
+                        Style::default().fg(roles().muted),
                     ));
                     lines.push(Line::styled(
                         "Esc leaves the primary checkout mid-merge to resolve by hand.",
-                        Style::default().fg(MUTED),
+                        Style::default().fg(roles().muted),
                     ));
                     vec![
-                        ("s", "abort merge and ask the supervisor to fix", SUCCESS),
-                        ("Esc", "resolve by hand", WARNING),
+                        (
+                            "s",
+                            "abort merge and ask the supervisor to fix",
+                            roles().success,
+                        ),
+                        ("Esc", "resolve by hand", roles().warning),
                     ]
                 }
                 ConflictHelp::NoSupervisor | ConflictHelp::Unavailable => {
                     if *help == ConflictHelp::NoSupervisor {
                         lines.push(Line::styled(
                             "No supervisor is running for this project.",
-                            Style::default().fg(WARNING),
+                            Style::default().fg(roles().warning),
                         ));
                     }
-                    lines.push(Line::styled(by_hand, Style::default().fg(MUTED)));
-                    vec![("Enter", "retry", SUCCESS), ("Esc", "close", WARNING)]
+                    lines.push(Line::styled(by_hand, Style::default().fg(roles().muted)));
+                    vec![
+                        ("Enter", "retry", roles().success),
+                        ("Esc", "close", roles().warning),
+                    ]
                 }
             };
-            (FAILURE_MARK, "Merge conflict", DANGER, legend)
+            (FAILURE_MARK, "Merge conflict", roles().danger, legend)
         }
     };
     DialogContent {
@@ -267,7 +287,7 @@ fn merge_commit_lines(commits: &[String], target_branch: &str) -> Vec<Line<'stat
     if commits.is_empty() {
         lines.push(Line::styled(
             format!("No commits ahead of {target_branch}."),
-            Style::default().fg(WARNING),
+            Style::default().fg(roles().warning),
         ));
         lines.push(Line::raw(""));
         return lines;
@@ -279,16 +299,16 @@ fn merge_commit_lines(commits: &[String], target_branch: &str) -> Vec<Line<'stat
         } else {
             format!("{count} commits")
         },
-        Style::default().fg(MUTED),
+        Style::default().fg(roles().muted),
     ));
     for commit in commits.iter().take(MERGE_COMMIT_ROWS) {
         let (hash, subject) = split_commit(commit);
         lines.push(
             Line::from(vec![
-                Span::styled(format!("{hash}  "), Style::default().fg(ACCENT)),
+                Span::styled(format!("{hash}  "), Style::default().fg(roles().accent)),
                 Span::styled(
                     clip(subject, MERGE_SUBJECT_WIDTH),
-                    Style::default().fg(TEXT),
+                    Style::default().fg(roles().text),
                 ),
             ])
             .alignment(Alignment::Left),
@@ -298,7 +318,7 @@ fn merge_commit_lines(commits: &[String], target_branch: &str) -> Vec<Line<'stat
         lines.push(
             Line::styled(
                 format!("… and {} more", count - MERGE_COMMIT_ROWS),
-                Style::default().fg(MUTED),
+                Style::default().fg(roles().muted),
             )
             .alignment(Alignment::Left),
         );
@@ -317,13 +337,13 @@ fn conflict_file_lines(files: &[String]) -> Vec<Line<'static>> {
         } else {
             format!("{count} conflicted files")
         },
-        Style::default().fg(MUTED),
+        Style::default().fg(roles().muted),
     )];
     for file in files.iter().take(MERGE_COMMIT_ROWS) {
         lines.push(
             Line::styled(
                 clip(file, MERGE_SUBJECT_WIDTH),
-                Style::default().fg(WARNING),
+                Style::default().fg(roles().warning),
             )
             .alignment(Alignment::Left),
         );
@@ -332,7 +352,7 @@ fn conflict_file_lines(files: &[String]) -> Vec<Line<'static>> {
         lines.push(
             Line::styled(
                 format!("… and {} more", count - MERGE_COMMIT_ROWS),
-                Style::default().fg(MUTED),
+                Style::default().fg(roles().muted),
             )
             .alignment(Alignment::Left),
         );

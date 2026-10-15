@@ -14,22 +14,23 @@ use crate::{
 };
 
 use super::new_agent::CHOICE_LEGEND_SEPARATOR;
-use super::{
-    ACCENT, LegendKey, MUTED, SUCCESS, TEXT, WARNING, bold, clip_start, dialog_block, legend_line,
-    unhighlighted_list,
-};
+use super::{LegendKey, bold, clip_start, dialog_block, legend_line, unhighlighted_list};
+use crate::theme::roles;
 
 // Two blank columns separate a choice's label from its detail.
 const FIELD_GAP: usize = 2;
 // Most rows a selector's list shows before it scrolls.
 const CHOICE_LIST_ROWS: u16 = 8;
 /// The keys of an open list, which explains them in its own border.
-pub(super) const CHOICE_LIST_KEYS: [LegendKey; 4] = [
-    ("↑ ↓", "move", ACCENT),
-    ("↵", "choose", SUCCESS),
-    ("⇥", "choose, next", ACCENT),
-    ("Esc", "back", WARNING),
-];
+pub(super) fn choice_list_keys() -> [LegendKey; 4] {
+    let roles = roles();
+    [
+        ("↑ ↓", "move", roles.accent),
+        ("↵", "choose", roles.success),
+        ("⇥", "choose, next", roles.accent),
+        ("Esc", "back", roles.warning),
+    ]
+}
 
 /// A selector's open list, hung below its row (or above it when the screen
 /// ends first) and as wide as the value column, so the choices line up with
@@ -56,11 +57,11 @@ pub(super) fn draw_choice_list(frame: &mut Frame<'_>, area: Rect, anchor: Rect, 
     frame.render_widget(Clear, popup);
     // The list can cover the form's legend, so it carries its own keys, a
     // column in from either corner.
-    let mut keys = legend_line(&CHOICE_LIST_KEYS, CHOICE_LEGEND_SEPARATOR);
+    let mut keys = legend_line(&choice_list_keys(), CHOICE_LEGEND_SEPARATOR);
     keys.spans.insert(0, Span::raw(" "));
     keys.spans
-        .push(Span::styled(" ", Style::default().fg(MUTED)));
-    let block = dialog_block("", ACCENT).title_bottom(keys);
+        .push(Span::styled(" ", Style::default().fg(roles().muted)));
+    let block = dialog_block("", roles().accent).title_bottom(keys);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
@@ -72,7 +73,7 @@ pub(super) fn draw_choice_list(frame: &mut Frame<'_>, area: Rect, anchor: Rect, 
         };
         vec![ListItem::new(Line::styled(
             format!(" {hint}"),
-            Style::default().fg(WARNING),
+            Style::default().fg(roles().warning),
         ))]
     } else {
         rows.iter()
@@ -89,9 +90,9 @@ pub(super) fn draw_choice_list(frame: &mut Frame<'_>, area: Rect, anchor: Rect, 
 fn choice_item(choice: &Choice, selected: bool, width: u16) -> ListItem<'static> {
     let marker = if selected { "▸ " } else { "  " };
     let label_style = if selected {
-        bold(ACCENT)
+        bold(roles().accent)
     } else {
-        Style::default().fg(TEXT)
+        Style::default().fg(roles().text)
     };
     let badge = if choice.badge.is_empty() {
         String::new()
@@ -111,16 +112,16 @@ fn choice_item(choice: &Choice, selected: bool, width: u16) -> ListItem<'static>
         + 1;
     let detail = clip_start(&detail, usize::from(width).saturating_sub(fixed));
     let mut spans = vec![
-        Span::styled(marker, Style::default().fg(ACCENT)),
+        Span::styled(marker, Style::default().fg(roles().accent)),
         Span::styled(choice.label.clone(), label_style),
     ];
     if !detail.is_empty() {
         spans.push(Span::raw(" ".repeat(FIELD_GAP)));
-        spans.push(Span::styled(detail, Style::default().fg(MUTED)));
+        spans.push(Span::styled(detail, Style::default().fg(roles().muted)));
     }
     if !badge.is_empty() {
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(badge, Style::default().fg(SUCCESS)));
+        spans.push(Span::styled(badge, Style::default().fg(roles().success)));
     }
     ListItem::new(Line::from(spans))
 }

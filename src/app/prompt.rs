@@ -116,7 +116,7 @@ mod tests {
         app.motion = Motion::manual();
         app.motion.record_frame(
             ratatui::layout::Rect::new(10, 5, 40, 6),
-            ratatui::style::Color::Cyan,
+            crate::theme::roles().accent,
         );
 
         // Cancelled, nothing plays.

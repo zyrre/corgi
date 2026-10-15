@@ -16,10 +16,8 @@ use crate::{
 };
 
 use super::status::{StatusField, status_fields};
-use super::{
-    ACCENT, MERGE, MERGE_MARK, MUTED, SUCCESS, TEXT, UNKNOWN, WARNING, bold, clip, ellipsized,
-    rounded_block, unhighlighted_list,
-};
+use super::{MERGE_MARK, bold, clip, ellipsized, rounded_block, unhighlighted_list};
+use crate::theme::roles;
 
 // Every row reserves the same gutter, selected or not, so the columns to the
 // right of it stay aligned as the cursor moves. The selected agent row is
@@ -95,7 +93,7 @@ pub(super) fn draw_agents(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
         frame.render_widget(
             Paragraph::new("No coding agents are currently detected in this Herdr session.\n\nPress n to start one.")
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(MUTED))
+                .style(Style::default().fg(roles().muted))
                 .block(rounded_block(" Agents ", None)),
             area,
         );
@@ -346,10 +344,10 @@ impl Rim {
         };
         let mut spans = vec![
             Span::raw(CARD_MARGIN),
-            Span::styled("│", Style::default().fg(MUTED)),
+            Span::styled("│", Style::default().fg(roles().muted)),
         ];
         spans.extend(fitted_spans(line, inner));
-        spans.push(Span::styled("│", Style::default().fg(MUTED)));
+        spans.push(Span::styled("│", Style::default().fg(roles().muted)));
         Line::from(spans)
     }
 
@@ -399,9 +397,12 @@ fn card_top(project: &str, area_width: u16) -> Line<'static> {
     let rule = inner.saturating_sub(title.width());
     Line::from(vec![
         Span::raw(CARD_MARGIN),
-        Span::styled("╭", Style::default().fg(MUTED)),
-        Span::styled(title, bold(SUCCESS)),
-        Span::styled(format!("{}╮", "─".repeat(rule)), Style::default().fg(MUTED)),
+        Span::styled("╭", Style::default().fg(roles().muted)),
+        Span::styled(title, bold(roles().success)),
+        Span::styled(
+            format!("{}╮", "─".repeat(rule)),
+            Style::default().fg(roles().muted),
+        ),
     ])
 }
 
@@ -413,7 +414,7 @@ fn card_divider(area_width: u16) -> Line<'static> {
         Span::raw(CARD_MARGIN),
         Span::styled(
             format!("├{}┤", "─".repeat(inner)),
-            Style::default().fg(MUTED),
+            Style::default().fg(roles().muted),
         ),
     ])
 }
@@ -423,7 +424,7 @@ fn card_bottom(area_width: u16, hint: Option<&'static str>) -> Line<'static> {
     let inner = card_inner_width(area_width);
     let mut spans = vec![
         Span::raw(CARD_MARGIN),
-        Span::styled("╰", Style::default().fg(MUTED)),
+        Span::styled("╰", Style::default().fg(roles().muted)),
     ];
     let hint = hint
         .map(|hint| format!(" {hint} "))
@@ -431,13 +432,16 @@ fn card_bottom(area_width: u16, hint: Option<&'static str>) -> Line<'static> {
     match hint {
         Some(hint) => {
             let left = inner - hint.width() - 1;
-            spans.push(Span::styled("─".repeat(left), Style::default().fg(MUTED)));
-            spans.push(Span::styled(hint, bold(MUTED)));
-            spans.push(Span::styled("─╯", Style::default().fg(MUTED)));
+            spans.push(Span::styled(
+                "─".repeat(left),
+                Style::default().fg(roles().muted),
+            ));
+            spans.push(Span::styled(hint, bold(roles().muted)));
+            spans.push(Span::styled("─╯", Style::default().fg(roles().muted)));
         }
         None => spans.push(Span::styled(
             format!("{}╯", "─".repeat(inner)),
-            Style::default().fg(MUTED),
+            Style::default().fg(roles().muted),
         )),
     }
     Line::from(spans)
@@ -499,7 +503,7 @@ fn railed(line: Line<'_>) -> Line<'_> {
     if let Some(gutter) = spans.first_mut() {
         let kept = super::leading_columns(&gutter.content, GUTTER_WIDTH - 1).to_string();
         *gutter = Span::styled(kept, gutter.style);
-        spans.insert(1, Span::styled(RAIL, Style::default().fg(SUCCESS)));
+        spans.insert(1, Span::styled(RAIL, Style::default().fg(roles().success)));
     }
     Line::from(spans)
 }
@@ -510,9 +514,12 @@ fn railed(line: Line<'_>) -> Line<'_> {
 fn worker_summary(workers: &[DashboardAgent], width: usize) -> Vec<Line<'static>> {
     let mut left = vec![Span::raw(BLANK_GUTTER)];
     match workers.len() {
-        0 => left.push(Span::styled("no workers", Style::default().fg(MUTED))),
-        1 => left.push(Span::styled("1 worker", bold(TEXT))),
-        count => left.push(Span::styled(format!("{count} workers"), bold(TEXT))),
+        0 => left.push(Span::styled(
+            "no workers",
+            Style::default().fg(roles().muted),
+        )),
+        1 => left.push(Span::styled("1 worker", bold(roles().text))),
+        count => left.push(Span::styled(format!("{count} workers"), bold(roles().text))),
     }
     // Workers tagged ready to merge are summed apart from the done and idle
     // ones, right after the blocked, as the next thing the user can act on.
@@ -526,7 +533,7 @@ fn worker_summary(workers: &[DashboardAgent], width: usize) -> Vec<Line<'static>
             left.push(Span::styled(mark, bold(color)));
             left.push(Span::styled(
                 format!(" {count} {word}"),
-                Style::default().fg(TEXT),
+                Style::default().fg(roles().text),
             ));
         }
     };
@@ -542,14 +549,14 @@ fn worker_summary(workers: &[DashboardAgent], width: usize) -> Vec<Line<'static>
             state_word(state),
         );
         if state == AgentState::Blocked {
-            count_of(MERGE_MARK, MERGE, merge, "merge");
+            count_of(MERGE_MARK, roles().merge, merge, "merge");
         }
     }
     let used: usize = left.iter().map(Span::width).sum();
     let hint = format!("{EXPAND_HINT} ");
     if used + SUMMARY_SEPARATOR.width() + hint.width() <= width {
         left.push(Span::raw(" ".repeat(width - used - hint.width())));
-        left.push(Span::styled(hint, bold(MUTED)));
+        left.push(Span::styled(hint, bold(roles().muted)));
     }
 
     let mut lines = vec![Line::from(left)];
@@ -567,17 +574,17 @@ fn worker_summary(workers: &[DashboardAgent], width: usize) -> Vec<Line<'static>
         let room = room.saturating_sub(task.width() + BLOCKED_SEPARATOR.width());
         let mut spans = vec![
             Span::raw(BLANK_GUTTER),
-            Span::styled(label, bold(WARNING)),
-            Span::styled(task, bold(TEXT)),
+            Span::styled(label, bold(roles().warning)),
+            Span::styled(task, bold(roles().text)),
         ];
         if room > 0 {
             spans.push(Span::styled(
                 BLOCKED_SEPARATOR,
-                Style::default().fg(WARNING),
+                Style::default().fg(roles().warning),
             ));
             spans.push(Span::styled(
                 clip(waits_on, room),
-                Style::default().fg(WARNING),
+                Style::default().fg(roles().warning),
             ));
         }
         lines.push(Line::from(spans));
@@ -641,8 +648,8 @@ fn unread_transcript_rows(agent: &DashboardAgent) -> Vec<Line<'_>> {
         activity_line(&agent.tool, true),
         Line::from(vec![
             gutter(true),
-            Span::styled("○ ", bold(MUTED)),
-            Span::styled(reason, Style::default().fg(MUTED)),
+            Span::styled("○ ", bold(roles().muted)),
+            Span::styled(reason, Style::default().fg(roles().muted)),
         ]),
     ]
 }
@@ -736,9 +743,15 @@ fn project_heading(project: &str, area_width: u16) -> Line<'static> {
         .min(inner_width.saturating_sub(label.width()));
     let right_rule_width = inner_width.saturating_sub(left_rule_width + label.width());
     Line::from(vec![
-        Span::styled("─".repeat(left_rule_width), Style::default().fg(MUTED)),
-        Span::styled(label, bold(SUCCESS)),
-        Span::styled("─".repeat(right_rule_width), Style::default().fg(MUTED)),
+        Span::styled(
+            "─".repeat(left_rule_width),
+            Style::default().fg(roles().muted),
+        ),
+        Span::styled(label, bold(roles().success)),
+        Span::styled(
+            "─".repeat(right_rule_width),
+            Style::default().fg(roles().muted),
+        ),
     ])
 }
 
@@ -770,7 +783,7 @@ fn activity_line(activity: &Activity, selected: bool) -> Line<'_> {
 /// an action would apply to, and blanks of the same width when it is not.
 fn gutter(selected: bool) -> Span<'static> {
     if selected {
-        Span::styled(SELECTED_GUTTER, bold(ACCENT))
+        Span::styled(SELECTED_GUTTER, bold(roles().accent))
     } else {
         Span::raw(BLANK_GUTTER)
     }
@@ -792,7 +805,7 @@ pub(super) fn agent_status_line(
     let marker = gutter(selected);
     // A worker a supervisor tagged ready to merge reads MERGE while it rests.
     let (status, status_color) = if agent.ready_to_merge() {
-        (" MERGE ".to_string(), MERGE)
+        (" MERGE ".to_string(), roles().merge)
     } else {
         (
             format!(" {} ", agent.info.state.label()),
@@ -820,20 +833,20 @@ pub(super) fn agent_status_line(
     // A supervisor's task is its name, in the wordmark's color; selection turns
     // it bold, same as a worker's task, so the cue still shows on its row.
     let task_style = if agent.supervisor {
-        Style::default().fg(SUCCESS)
+        Style::default().fg(roles().success)
     } else {
-        Style::default().fg(TEXT)
+        Style::default().fg(roles().text)
     };
     let mut spans = vec![
         marker,
         Span::styled(
             status,
             Style::default()
-                .fg(Color::Black)
+                .fg(roles().badge_text)
                 .bg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(FIELD_SEPARATOR, Style::default().fg(MUTED)),
+        Span::styled(FIELD_SEPARATOR, Style::default().fg(roles().muted)),
         // The selected summary is bold as well, so the row still stands out
         // in a terminal whose theme renders the accent color faintly.
         Span::styled(
@@ -846,7 +859,10 @@ pub(super) fn agent_status_line(
         ),
     ];
     for field in trailing {
-        spans.push(Span::styled(field.separator, Style::default().fg(MUTED)));
+        spans.push(Span::styled(
+            field.separator,
+            Style::default().fg(roles().muted),
+        ));
         spans.extend(field.spans);
     }
     Line::from(spans)
@@ -854,11 +870,11 @@ pub(super) fn agent_status_line(
 
 fn state_color(state: AgentState) -> Color {
     match state {
-        AgentState::Working => ACCENT,
-        AgentState::Blocked => WARNING,
-        AgentState::Done => SUCCESS,
-        AgentState::Idle => MUTED,
-        AgentState::Unknown => UNKNOWN,
+        AgentState::Working => roles().accent,
+        AgentState::Blocked => roles().warning,
+        AgentState::Done => roles().success,
+        AgentState::Idle => roles().muted,
+        AgentState::Unknown => roles().unknown,
     }
 }
 
@@ -878,14 +894,14 @@ fn activity_marker(kind: ActivityKind) -> &'static str {
 
 fn activity_color(kind: ActivityKind) -> Color {
     match kind {
-        ActivityKind::Command | ActivityKind::Tool => ACCENT,
-        ActivityKind::Question => WARNING,
+        ActivityKind::Command | ActivityKind::Tool => roles().accent,
+        ActivityKind::Question => roles().warning,
         // The user's own words stand apart from the assistant's in the
         // success color, which no other row text uses.
-        ActivityKind::Prompt => SUCCESS,
-        ActivityKind::Thinking => Color::LightBlue,
-        ActivityKind::Message => TEXT,
-        ActivityKind::Ready => MUTED,
+        ActivityKind::Prompt => roles().success,
+        ActivityKind::Thinking => roles().thinking,
+        ActivityKind::Message => roles().text,
+        ActivityKind::Ready => roles().muted,
     }
 }
 
@@ -1386,7 +1402,7 @@ mod tests {
             .draw(|frame| draw(frame, &mut app))
             .expect("draw dashboard");
         // Selected: the supervisor's task is bold, in the wordmark's color.
-        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
+        assert_eq!(color_of(&terminal, "Supervisor ·"), roles().success);
         assert!(modifier_of(&terminal, "Supervisor ·").contains(Modifier::BOLD));
 
         // A worker folded into a collapsed card selects as the card, so the
@@ -1397,7 +1413,7 @@ mod tests {
             .draw(|frame| draw(frame, &mut app))
             .expect("draw dashboard");
         // Unselected: still the wordmark's color, but no longer bold.
-        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
+        assert_eq!(color_of(&terminal, "Supervisor ·"), roles().success);
         assert!(!modifier_of(&terminal, "Supervisor ·").contains(Modifier::BOLD));
     }
 
@@ -1492,11 +1508,11 @@ mod tests {
         terminal
             .draw(|frame| draw(frame, &mut app))
             .expect("draw dashboard");
-        assert_eq!(color_of(&terminal, "webshop"), SUCCESS);
-        assert_eq!(color_of(&terminal, "▌"), SUCCESS);
-        assert_eq!(color_of(&terminal, "Supervisor ·"), SUCCESS);
+        assert_eq!(color_of(&terminal, "webshop"), roles().success);
+        assert_eq!(color_of(&terminal, "▌"), roles().success);
+        assert_eq!(color_of(&terminal, "Supervisor ·"), roles().success);
         // Workers' tasks keep their own color.
-        assert_eq!(color_of(&terminal, "Export as Markdown"), TEXT);
+        assert_eq!(color_of(&terminal, "Export as Markdown"), roles().text);
     }
 
     #[test]
@@ -1579,7 +1595,7 @@ mod tests {
 
         let mut terminal = test_terminal(100, 40);
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
-        assert_eq!(color_of(&terminal, "⇡ 1 merge"), MERGE);
+        assert_eq!(color_of(&terminal, "⇡ 1 merge"), roles().merge);
     }
 
     #[test]
@@ -1603,8 +1619,8 @@ mod tests {
             let x = row[..row.find(needle).expect("needle")].width();
             buffer[(x as u16, y as u16)].bg
         };
-        assert_eq!(bg_of("MERGE  · Paginate"), MERGE);
-        assert_eq!(bg_of("BLOCKED  · Retry"), WARNING);
+        assert_eq!(bg_of("MERGE  · Paginate"), roles().merge);
+        assert_eq!(bg_of("BLOCKED  · Retry"), roles().warning);
 
         // An untagged done worker is still DONE.
         app.agents[3].info.tokens.clear();

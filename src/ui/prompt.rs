@@ -13,11 +13,19 @@ use unicode_width::UnicodeWidthStr;
 use crate::{app::PromptForm, textfield::wrap_rows};
 
 use super::{
-    ACCENT, DIALOG_FRAME_WIDTH, Drawn, LegendKey, MUTED, POPUP_MARK, SUCCESS, TEXT, WARNING, bold,
-    centered, dialog_block, dialog_width, legend_line, popup_title, rule_line,
+    DIALOG_FRAME_WIDTH, Drawn, LegendKey, POPUP_MARK, bold, centered, dialog_block, dialog_width,
+    legend_line, popup_title, rule_line,
 };
+use crate::theme::roles;
 
-const PROMPT_KEYS: [LegendKey; 2] = [("↵", "send", SUCCESS), ("Esc", "cancel", WARNING)];
+/// The keys of the prompt.
+fn prompt_keys() -> [LegendKey; 2] {
+    let roles = roles();
+    [
+        ("↵", "send", roles.success),
+        ("Esc", "cancel", roles.warning),
+    ]
+}
 // Rows of the prompt that are not its text: the frame, the recipient and the
 // gap under it, and the rule and keys at the bottom.
 const PROMPT_CHROME_HEIGHT: u16 = 6;
@@ -35,8 +43,8 @@ pub(super) fn draw_prompt(frame: &mut Frame<'_>, area: Rect, form: &PromptForm) 
     let first_shown_row = rows.len() - visible_rows;
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("Send to  ", Style::default().fg(MUTED)),
-            Span::styled(form.label.clone(), bold(TEXT)),
+            Span::styled("Send to  ", Style::default().fg(roles().muted)),
+            Span::styled(form.label.clone(), bold(roles().text)),
         ]),
         Line::raw(""),
     ];
@@ -47,21 +55,21 @@ pub(super) fn draw_prompt(frame: &mut Frame<'_>, area: Rect, form: &PromptForm) 
             "  "
         };
         lines.push(Line::from(vec![
-            Span::styled(marker, bold(ACCENT)),
+            Span::styled(marker, bold(roles().accent)),
             Span::styled(
                 form.text[row.clone()].to_string(),
-                Style::default().fg(TEXT),
+                Style::default().fg(roles().text),
             ),
         ]));
     }
     let popup = centered(area, width, visible_rows as u16 + PROMPT_CHROME_HEIGHT);
     let rule_width = popup.width.saturating_sub(DIALOG_FRAME_WIDTH);
     lines.push(rule_line(rule_width));
-    lines.push(legend_line(&PROMPT_KEYS, "   "));
+    lines.push(legend_line(&prompt_keys(), "   "));
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines).block(
-            dialog_block(&popup_title(POPUP_MARK, "Prompt"), ACCENT)
+            dialog_block(&popup_title(POPUP_MARK, "Prompt"), roles().accent)
                 .padding(Padding::horizontal(1)),
         ),
         popup,
@@ -74,7 +82,7 @@ pub(super) fn draw_prompt(frame: &mut Frame<'_>, area: Rect, form: &PromptForm) 
         .min(popup.bottom().saturating_sub(4));
     Drawn {
         area: popup,
-        color: ACCENT,
+        color: roles().accent,
         caret: Some(Position::new(caret_x, caret_y)),
     }
 }
