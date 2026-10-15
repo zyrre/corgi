@@ -3,28 +3,54 @@
 </p>
 
 <p align="center">
-  <b>The dashboard for your Herdr agents, and a supervisor that runs them.</b><br>
-  Every coding agent in your Herdr session in one pane, grouped by project:
-  what it is doing, what it waits on, and what its context and prompt cache
-  cost you. Give each project a supervisor, a long-lived agent you talk to
-  about what to build, and it briefs worker agents in their own worktrees,
-  reviews what they report, and tags their work for you to merge.
+  <b>The dashboard for your Herdr agents, and a supervisor that runs them.</b>
 </p>
-
-## The dashboard
 
 ![The Corgi dashboard: the header's herd and plan-usage cards over the webshop and weather projects, each a card of its supervisor's latest message and command over a count of its workers by state, with webshop's blocked worker named](docs/images/dashboard.svg)
 
 - **One card per project with a supervisor**: the supervisor's latest message and command, and its workers summed up by state, with every blocked worker named. `→` expands a card into each worker's own rows, and Corgi remembers the choice per project.
 - **One row per agent** of any kind Herdr can start, such as Codex and Claude Code, for expanded cards, projects without a supervisor, and scratch sessions.
-- **What needs you first**: the supervisor, then blocked, working, done and idle; within a state, the agent that arrived there last comes first. A worker its supervisor recommends merging shows a magenta `MERGE` badge.
 - **What each agent is doing**: the newest thing said in its session and the command or tool it runs.
 - **What it costs**: its model and effort, how full its context is, how long its prompt cache stays warm, and in the header, each CLI's 5-hour and weekly plan usage.
 - **New agents in their own worktree** with `n`, and their work merged back with `m`, stamped with a check when it lands:
 
 <img src="docs/images/merge-outcomes.gif" width="757" alt="The merge popup confirming the merge of the order-history worker, its steps running, and the success stamped with a big green check">
 
-**Install:** `herdr plugin install zyrre/corgi` (key binding and updates under [Install](#install)).
+```bash
+herdr plugin install zyrre/corgi
+```
+
+The `prefix+d` key binding and updates are under [Install](#install).
+
+## The supervisor
+
+Each project can have one supervisor: a long-lived Claude Code or Codex session in the project's root tab, which you talk to about *what* to build and *why*. It turns that into briefs, runs worker agents in their own worktrees, reviews what they report, and keeps the project's decisions and history, so you deal with one agent instead of many. It never edits the checkout, merges or pushes itself. Its full role is [`supervisor/ROLE.md`](supervisor/ROLE.md).
+
+- **Start it** with `s` on any agent of the project, or `corgi supervisor ~/repos/webshop` from a shell. It greets you with the open work, anything blocked or ready to merge, and the questions it still has for you.
+- **Plans, then briefs**: it proposes how the work splits and which model and effort each part gets, waits for your go, then saves a self-contained brief per worker and starts each with `corgi spawn` in a fresh worktree. Spawn refuses a project outside Git or in Corgi's state directory, so a worker never lands in the wrong place.
+- **Woken by its workers**: when a worker stops, the dashboard puts a `[Corgi]` line in the supervisor's inbox, with the worker's report quoted when it is short, and types it in once the supervisor is between turns. Wakes survive the dashboard closing; `corgi inbox` shows what has not been typed in yet, and scripts add lines with `corgi notify`.
+- **Questions you can answer at a glance**: anything that needs your judgement comes as a numbered question with options and a recommendation (`Q3: B` answers it), and a worker with an open question is not tagged for merge.
+- **MERGE when it is ready**: once a worker's report meets its brief and its branch merges cleanly, the supervisor runs `corgi tag NAME merge` and the dashboard shows it with a magenta `MERGE` badge instead of `DONE`. Your `m` merge tells the supervisor, which records it and re-checks its other tagged workers against the moved base branch; a conflicted merge is handed to it from the merge popup.
+- **Memory that outlives its context**: a decision log, a ledger of every worker, and every brief, kept outside the repository. `corgi digest` gives it a bounded summary at the start of each session, and `--search` and `--decision` find older history.
+- **Handover to a fresh session**: when its context passes 50%, or it has idled nearly until its prompt cache expires, the dashboard has it write a handover note and starts a fresh supervisor that picks up from it.
+- **Lessons kept in the repo**: what a worker learned the hard way goes into `AGENTS.md` or `ARCHITECTURE.md` as a commit on that worker's branch, so the next worker knows it.
+- **Cost-aware**: `corgi fleet` lists its agents with their context use and prompt cache, warm with the minutes left or cold with the tokens a follow-up would re-read, so it can start a fresh worker instead.
+- **Out of your way**: agents you start or steer yourself are yours; it only notes significant decisions made there, silently.
+
+```mermaid
+flowchart TD
+    you(["You"]) <-->|"what to build,<br/>numbered questions"| sup["Supervisor<br/>project root tab"]
+    sup <-->|"corgi digest"| memory[("Memory<br/>decisions, ledger,<br/>briefs, handover")]
+    sup -->|"corgi spawn + brief,<br/>[supervisor] prompts"| workers["Workers<br/>one worktree each"]
+    workers -.->|"stop: done, idle, blocked"| dash["Corgi dashboard"]
+    dash -.-> inbox[("Inbox")]
+    inbox -.->|"[Corgi] wake with<br/>the quoted report"| sup
+    sup -->|"corgi tag NAME merge"| badge["MERGE badge"]
+    badge --> merge(["Your merge with m"])
+    merge -.->|"[Corgi] merged line"| inbox
+```
+
+## Using the dashboard
 
 ### Keys
 
@@ -66,34 +92,6 @@ In an expanded card, a project without a supervisor, and the scratch sessions, e
 ### Merging
 
 `m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout, and offers to close the worktree. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
-
-## The supervisor
-
-Each project can have one supervisor: a long-lived Claude Code or Codex session in the project's root tab, which you talk to about *what* to build and *why*. It turns that into briefs, runs worker agents in their own worktrees, reviews what they report, and keeps the project's decisions and history, so you deal with one agent instead of many. It never edits the checkout, merges or pushes itself. Its full role is [`supervisor/ROLE.md`](supervisor/ROLE.md).
-
-- **Start it** with `s` on any agent of the project, or `corgi supervisor ~/repos/webshop` from a shell. It greets you with the open work, anything blocked or ready to merge, and the questions it still has for you.
-- **Plans, then briefs**: it proposes how the work splits and which model and effort each part gets, waits for your go, then saves a self-contained brief per worker and starts each with `corgi spawn` in a fresh worktree. Spawn refuses a project outside Git or in Corgi's state directory, so a worker never lands in the wrong place.
-- **Woken by its workers**: when a worker stops, the dashboard puts a `[Corgi]` line in the supervisor's inbox, with the worker's report quoted when it is short, and types it in once the supervisor is between turns. Wakes survive the dashboard closing; `corgi inbox` shows what has not been typed in yet, and scripts add lines with `corgi notify`.
-- **Questions you can answer at a glance**: anything that needs your judgement comes as a numbered question with options and a recommendation (`Q3: B` answers it), and a worker with an open question is not tagged for merge.
-- **MERGE when it is ready**: once a worker's report meets its brief and its branch merges cleanly, the supervisor runs `corgi tag NAME merge` and the dashboard shows it as `MERGE`. Your `m` merge tells the supervisor, which records it and re-checks its other tagged workers against the moved base branch; a conflicted merge is handed to it from the merge popup.
-- **Memory that outlives its context**: a decision log, a ledger of every worker, and every brief, kept outside the repository. `corgi digest` gives it a bounded summary at the start of each session, and `--search` and `--decision` find older history.
-- **Handover to a fresh session**: when its context passes 50%, or it has idled nearly until its prompt cache expires, the dashboard has it write a handover note and starts a fresh supervisor that picks up from it.
-- **Lessons kept in the repo**: what a worker learned the hard way goes into `AGENTS.md` or `ARCHITECTURE.md` as a commit on that worker's branch, so the next worker knows it.
-- **Cost-aware**: `corgi fleet` lists its agents with their context use and prompt cache, warm with the minutes left or cold with the tokens a follow-up would re-read, so it can start a fresh worker instead.
-- **Out of your way**: agents you start or steer yourself are yours; it only notes significant decisions made there, silently.
-
-```mermaid
-flowchart TD
-    you(["You"]) <-->|"what to build,<br/>numbered questions"| sup["Supervisor<br/>project root tab"]
-    sup <-->|"corgi digest"| memory[("Memory<br/>decisions, ledger,<br/>briefs, handover")]
-    sup -->|"corgi spawn + brief,<br/>[supervisor] prompts"| workers["Workers<br/>one worktree each"]
-    workers -.->|"stop: done, idle, blocked"| dash["Corgi dashboard"]
-    dash -.-> inbox[("Inbox")]
-    inbox -.->|"[Corgi] wake with<br/>the quoted report"| sup
-    sup -->|"corgi tag NAME merge"| badge["MERGE badge"]
-    badge --> merge(["Your merge with m"])
-    merge -.->|"[Corgi] merged line"| inbox
-```
 
 ## Install
 
