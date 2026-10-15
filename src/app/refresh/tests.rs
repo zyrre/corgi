@@ -19,7 +19,10 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::{
-    app::test_helpers::{poll_until, press},
+    app::{
+        Overlay,
+        test_helpers::{poll_until, press},
+    },
     inbox::{Item, Kind},
     supervisor::{SUPERVISOR_TOKEN, marker},
     test_support::{ScratchDir, buffer_text, fake_herdr, test_app, test_terminal},
@@ -374,4 +377,74 @@ fn every_refresh_is_logged_with_how_long_each_step_took() {
     assert!(lines[0].contains("(herdr "), "{log}");
     assert!(lines[0].ends_with(": 3 agents"), "{log}");
     assert!(lines[1].contains(": Herdr unavailable: "), "{log}");
+}
+
+#[test]
+fn a_setup_notice_is_shown_once_in_a_popup_after_any_other_closes() {
+    let scratch = ScratchDir::new("refresh-notice");
+    let path = scratch.join("setup-notice.json");
+    let mut app = test_app();
+    app.client = HerdrClient::from_socket_path(scratch.join("gone.sock"));
+    app.notice_path = Some(path.clone());
+    let refresh = |app: &mut App| {
+        app.request_refresh();
+        app.tick();
+        poll_until(app, App::poll_refresh, |app| !app.refreshing());
+        app.tick();
+    };
+
+    notice::leave(&path, "prefix+d now opens Corgi", unix_now()).unwrap();
+    refresh(&mut app);
+    assert!(
+        matches!(&app.overlay, Overlay::Notice(message) if message == "prefix+d now opens Corgi")
+    );
+    assert!(!path.exists(), "the notice is taken");
+    let mut terminal = test_terminal(100, 30);
+    terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+    let screen = buffer_text(terminal.backend().buffer());
+    assert!(screen.contains("✓ Corgi set up"), "{screen}");
+    assert!(screen.contains("✓ prefix+d now opens Corgi"), "{screen}");
+
+    press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(matches!(app.overlay, Overlay::None));
+    refresh(&mut app);
+    assert!(matches!(app.overlay, Overlay::None), "shown only once");
+
+    // Taken while another popup is open, it waits for the prompt to close.
+    app.overlay = Overlay::Close(crate::app::CloseWorkspaceForm {
+        workspace_id: "w1".into(),
+        tab_id: "t1".into(),
+        label: "corgi".into(),
+        project_root: None,
+        target: crate::app::CloseTarget::Workspace,
+    });
+    notice::leave(&path, "Corgi already opens with ctrl+g", unix_now()).unwrap();
+    refresh(&mut app);
+    assert!(matches!(app.overlay, Overlay::Close(_)));
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    app.tick();
+    assert!(
+        matches!(&app.overlay, Overlay::Notice(message) if message == "Corgi already opens with ctrl+g")
+    );
+    press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+    // One left long ago is thrown away unseen.
+    notice::leave(&path, "prefix+d now opens Corgi", unix_now() - 3_600).unwrap();
+    refresh(&mut app);
+    assert!(matches!(app.overlay, Overlay::None));
+    assert!(!path.exists());
+}
+
+#[test]
+fn without_a_notice_path_a_left_notice_is_not_taken() {
+    let scratch = ScratchDir::new("refresh-no-notice");
+    let path = scratch.join("setup-notice.json");
+    let mut app = test_app();
+    app.client = HerdrClient::from_socket_path(scratch.join("gone.sock"));
+    notice::leave(&path, "prefix+d now opens Corgi", unix_now()).unwrap();
+    app.tick();
+    poll_until(&mut app, App::poll_refresh, |app| !app.refreshing());
+    app.tick();
+    assert!(matches!(app.overlay, Overlay::None));
+    assert!(path.exists(), "left for the full dashboard");
 }

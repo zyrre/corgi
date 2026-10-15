@@ -254,7 +254,7 @@ submodules are split by flow, each adding methods to the one `App`.
   facts: the project and its heading (`repo/checkout` for a linked worktree),
   the task summary, and the status-line bridge fallbacks.
 - `overlay.rs` is `Overlay`: nothing, or the one form or dialog open over the
-  agent list, which takes the keys and is drawn on top. A launch or merge
+  agent list (or a notice such as `corgi setup`'s), which takes the keys and is drawn on top. A launch or merge
   keeps its background job on `App`, since dropping a job would not stop its
   worker, and Esc never closes the overlay while that job runs. In the
   animated dashboard a launch that started keeps its panel up for 0.9 s,
@@ -372,6 +372,17 @@ submodules are split by flow, each adding methods to the one `App`.
   already binds the action alone, asks for the key on the terminal (none
   without one), refuses a key the config binds already, and lets
   `herdr config check` on a file of the binding alone judge the key's syntax.
+  Opening the dashboard takes the user to its tab before they can read
+  setup's lines, and `herdr plugin action invoke` passes no arguments, so
+  when a key opens Corgi (bound already or bound now) setup first leaves
+  `setup-notice.json` in Corgi's state directory, and removes it again if the
+  dashboard did not open.
+- `notice.rs` is that one-shot notice. The full dashboard's refresh job (not
+  the compact Omarchy popup's) reads it at start and on every refresh and
+  removes it; only the process whose removal succeeds gets the message, so
+  two full dashboards never both show it, and one older than five minutes is
+  removed unread. The UI thread shows it as `Overlay::Notice`, once no other
+  popup is open, a success whose check stamp plays once it has opened.
 - `bar.rs` is the `--bar-*` endpoints of the Omarchy widget. Their JSON is
   that widget's contract, pinned by snapshot tests, and they drive the same
   forms, key handlers, and launch as the dashboard.
@@ -736,7 +747,10 @@ role. So Corgi keeps its own record and puts the tokens back.
   Every popup that ends in success stamps a check where it stands: a launch
   or merge when its outcome arrives, and a prompt sent or a close confirmed
   when the confirm key's action succeeds (`Motion::succeeded`); Esc and
-  failures never do. The stamp keeps its own 880 ms clock, apart from the
+  failures never do. A popup that is a success from its first frame, such
+  as a notice, would start its stamp while still growing, so `ui::draw`
+  gives the notice its outcome only once `Motion::settled` says it has
+  opened, rather than through `Overlay::outcome()`. The stamp keeps its own 880 ms clock, apart from the
   popup's: the frame turns green at once, a big four-row `✓` is drawn column
   by column centred on the popup with two clear columns either side, holds,
   and fades while the frame eases back to its color. It is drawn last, over

@@ -25,7 +25,7 @@ mod status;
 
 use agents::draw_agents;
 pub(crate) use dialogs::{close_dialog_lines, merge_dialog_lines};
-use dialogs::{draw_close_workspace, draw_merge_worktree};
+use dialogs::{draw_close_workspace, draw_merge_worktree, draw_notice};
 use header::{HEADER_HEIGHT, draw_header};
 pub(crate) use header::{show_usage_card, usage_lines_for_slot};
 use new_agent::{draw_new_agent, draw_new_agent_launch};
@@ -69,8 +69,14 @@ const DIALOG_MIN_WIDTH: u16 = 40;
 const DIALOG_FRAME_WIDTH: u16 = 4;
 
 pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    // A notice is a success from the start; its stamp waits until it has
+    // opened and can be read, so the check ends it rather than covering it.
+    let outcome = match app.overlay {
+        Overlay::Notice(_) => app.motion.settled().then_some(Outcome::Success),
+        _ => app.overlay.outcome(),
+    };
     app.motion
-        .observe(!matches!(app.overlay, Overlay::None), app.overlay.outcome());
+        .observe(!matches!(app.overlay, Overlay::None), outcome);
     let area = frame.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -174,6 +180,7 @@ fn draw_popup(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Placed
         Overlay::Launch(launch) => draw_new_agent_launch(frame, area, launch, spinner),
         Overlay::Close(form) => draw_close_workspace(frame, area, form),
         Overlay::Merge(form) => draw_merge_worktree(frame, area, form, spinner),
+        Overlay::Notice(message) => draw_notice(frame, area, message),
     };
     let color = effects::frame_color(drawn.color, motion.outcome_effect().or(success));
     let fade = motion.content_fade();
@@ -959,6 +966,34 @@ mod tests {
             color_of(&terminal, "✓ Merge and push complete."),
             Some(SUCCESS)
         );
+    }
+
+    #[test]
+    fn a_notice_opens_to_be_read_then_ends_with_the_check_stamp() {
+        let mut app = test_app();
+        app.motion = crate::motion::Motion::manual();
+        let mut terminal = test_terminal(100, 30);
+        draw_at(&mut terminal, &mut app, 0);
+        app.overlay = Overlay::Notice("prefix+d now opens Corgi".into());
+
+        // Growing and fading in, it is not stamped over yet.
+        draw_at(&mut terminal, &mut app, 1_000);
+        draw_at(&mut terminal, &mut app, 1_200);
+        assert_eq!(app.motion.stamp(), None);
+        let screen = draw_at(&mut terminal, &mut app, 1_299);
+        assert!(screen.contains("✓ prefix+d now opens Corgi"), "{screen}");
+
+        // Open, the check is drawn over it, then fades to leave it readable.
+        draw_at(&mut terminal, &mut app, 1_300);
+        let screen = draw_at(&mut terminal, &mut app, 1_700);
+        for line in effects::CHECK {
+            assert!(screen.contains(line.trim()), "missing {line}\n{screen}");
+        }
+        let screen = draw_at(&mut terminal, &mut app, 2_500);
+        assert!(!screen.contains("▀█▄█▀"), "{screen}");
+        assert!(screen.contains("✓ Corgi set up"), "{screen}");
+        assert!(screen.contains("✓ prefix+d now opens Corgi"), "{screen}");
+        assert!(screen.contains("Enter / Esc"), "{screen}");
     }
 
     #[test]

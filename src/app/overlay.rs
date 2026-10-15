@@ -32,6 +32,9 @@ pub(crate) enum Overlay {
     Close(CloseWorkspaceForm),
     /// A worktree merge from its confirmation to its outcome.
     Merge(MergeWorktreeForm),
+    /// A message another command left for the dashboard, such as
+    /// `corgi setup`'s outcome, until Enter or Esc.
+    Notice(String),
 }
 
 impl Overlay {
