@@ -38,11 +38,11 @@ Panel {
   readonly property real mascotWidthScale: 0.97
   property color wordmarkColor: Color.accent
   property var headerPalette: ({foreground: Color.foreground, muted: Color.muted, cyan: Color.accent, green: Color.accent, yellow: Color.foreground, red: Color.urgent, magenta: Color.accent})
-  readonly property string binaryPath: String(setting("binaryPath", "corgi"))
-  readonly property string socketPath: String(setting("socketPath", Quickshell.env("HOME") + "/.config/herdr/herdr.sock"))
+  // An empty setting, as the settings form may save it, means the default.
+  readonly property string binaryPath: String(setting("binaryPath", "") || "corgi")
+  readonly property string socketPath: String(setting("socketPath", "") || Quickshell.env("HOME") + "/.config/herdr/herdr.sock")
   property string errorText: ""
   readonly property var rows: Model.dashboardRows(snapshot, expandedPaneId)
-  readonly property string actionBinaryPath: decodeURIComponent(Qt.resolvedUrl("corgi-actions").toString().replace(/^file:\/\//, ""))
   property bool newAgentOpen: false
   property var actionState: null
   property string selectedPaneId: ""
@@ -90,6 +90,7 @@ Panel {
     hoverEnabled: true
     contentItem: Text {
       text: sessionButton.text
+      textFormat: Text.PlainText
       color: sessionButton.tone
       font: sessionButton.font
       horizontalAlignment: Text.AlignHCenter
@@ -142,7 +143,6 @@ Panel {
     transcriptProcess.running = true
   }
 
-  readonly property string navigationPath: decodeURIComponent(Qt.resolvedUrl("navigate.py").toString().replace(/^file:\/\//, ""))
   readonly property int refreshIntervalSec: Math.max(2, Number(setting("refreshIntervalSec", 5)) || 5)
   readonly property bool compact: String(setting("display", "Icon")).toLowerCase() === "compact"
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -195,7 +195,7 @@ Panel {
   }
 
   function navigationCommand(action, paneId) {
-    var command = ["env", "HERDR_SOCKET_PATH=" + socketPath, "python3", navigationPath, action]
+    var command = [binaryPath, "--bar-navigate", socketPath, action]
     if (paneId) command.push(paneId)
     return command
   }
@@ -207,7 +207,7 @@ Panel {
     errorText = ""
     actionState = {phase: "running", title: "Corgi", text: "Checking agent…"}
     actionProcess.dismissed = false
-    actionProcess.command = [actionBinaryPath, "--bar-action", socketPath, paneId, action]
+    actionProcess.command = [binaryPath, "--bar-action", socketPath, paneId, action]
     actionProcess.running = true
   }
 
@@ -821,6 +821,7 @@ Panel {
                         Text {
                           width: agentsBox.cellWidth * 2
                           text: Model.activityMarker(parent.modelData.kind, "›")
+                          textFormat: Text.PlainText
                           color: Model.activityColor(parent.modelData.kind, root.headerPalette)
                           font.family: root.fontFamily
                           font.pixelSize: Style.space(13)
@@ -918,7 +919,7 @@ Panel {
         id: newAgentDialog
         visible: root.newAgentOpen
         Layout.fillWidth: true
-        binaryPath: root.actionBinaryPath
+        binaryPath: root.binaryPath
         socketPath: root.socketPath
         paneId: root.expandedPaneId || root.selectedPaneId
         palette: root.headerPalette
@@ -980,6 +981,7 @@ Panel {
           Layout.fillWidth: true
           Text {
             text: "Enter: send · Shift+Enter: newline · Esc: cancel"
+            textFormat: Text.PlainText
             color: root.headerPalette.muted
             font.family: root.fontFamily
             font.pixelSize: Style.space(12)

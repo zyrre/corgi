@@ -1,10 +1,11 @@
 # Builds corgi for every platform scripts/install.sh downloads for, and
 # publishes a GitHub release carrying the binaries and their SHA256SUMS.
 #
-# Runs when a `vX.Y.Z` tag is pushed. The tag must match `version` in both
-# herdr-plugin.toml and Cargo.toml, or nothing is built. Every asset below
-# must be present before the release is created, so a partial release is
-# never published.
+# Runs when a `vX.Y.Z` tag is pushed. The tag must match `version` in
+# herdr-plugin.toml, Cargo.toml and omarchy/manifest.json, or nothing is
+# built. Every asset below must be present before the release is created, so
+# a partial release is never published. Once it is, the Omarchy bar widget
+# is published to its own repository (see the `omarchy` job).
 name: Release
 
 on:
@@ -23,11 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check the tag matches the manifest and Cargo.toml
+      - name: Check the tag matches the manifests and Cargo.toml
         run: |
           version="${TAG#v}"
           grep -qx "version = \"$version\"" herdr-plugin.toml || { echo "::error::herdr-plugin.toml version is not $version"; exit 1; }
           grep -qx "version = \"$version\"" Cargo.toml || { echo "::error::Cargo.toml version is not $version"; exit 1; }
+          jq -e --arg version "$version" '.version == $version' omarchy/manifest.json >/dev/null || { echo "::error::omarchy/manifest.json version is not $version"; exit 1; }
 
   build:
     needs: check-version
@@ -119,3 +121,38 @@ jobs:
         run: |
           # shellcheck disable=SC2086 # $ASSETS is a word list
           gh release create "$TAG" $ASSETS SHA256SUMS --verify-tag --title "$TAG" --generate-notes
+
+  # Publishes omarchy/ and LICENSE as the root of zyrre/omarchy-corgi, the
+  # repository `omarchy plugin add` installs the bar widget from, with the
+  # deploy key in the OMARCHY_DEPLOY_KEY secret. It runs only for a release
+  # that was published, from the tag's own files, and is skipped when the
+  # secret is not set. To publish again after a failure, re-run this job.
+  omarchy:
+    needs: publish
+    runs-on: ubuntu-24.04
+    environment: omarchy-plugin
+    permissions:
+      contents: read
+    env:
+      DEPLOY_KEY: ${{ secrets.OMARCHY_DEPLOY_KEY }}
+      REPOSITORY: git@github.com:zyrre/omarchy-corgi.git
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Publish the bar widget
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::notice::OMARCHY_DEPLOY_KEY is not set; the Omarchy widget was not published"
+            exit 0
+          fi
+          key="$RUNNER_TEMP/omarchy-deploy-key"
+          known_hosts="$RUNNER_TEMP/known_hosts"
+          (umask 077 && printf '%s\n' "$DEPLOY_KEY" >"$key")
+          # GitHub's published host key, so the push never trusts on first use.
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >"$known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts -o StrictHostKeyChecking=yes"
+          export GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          sh scripts/publish-omarchy.sh "${TAG#v}" "$REPOSITORY"

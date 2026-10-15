@@ -90,6 +90,7 @@ fn main() -> Result<()> {
             args.get(2)
                 .ok_or_else(|| anyhow::anyhow!("missing socket"))?,
         ),
+        Some("--bar-navigate") => std::process::exit(corgi::app::bar_navigate(&args[2..])),
         _ if starts_dashboard(&args[1..]) => corgi::app::run(),
         // Not the dashboard, so that a mistyped command, or one this version
         // does not have yet, says so instead of opening it.

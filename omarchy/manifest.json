@@ -2,14 +2,13 @@
   "schemaVersion": 1,
   "id": "io.github.zyrre.corgi",
   "name": "Corgi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "zyrre",
   "license": "MIT",
-  "description": "A compact Omarchy bar companion for the Corgi Herdr dashboard.",
+  "description": "Your Herdr coding agents in the Omarchy bar: their state, latest messages and commands, and plan usage, with prompt, merge, close, new agent and jump-to-pane. Needs Herdr and the Corgi Herdr plugin.",
   "kinds": [
     "bar-widget"
   ],
-  "activation": "on-demand",
   "entryPoints": {
     "barWidget": "Panel.qml"
   },
@@ -17,14 +16,12 @@
     "displayName": "Corgi",
     "description": "A compact Corgi dashboard with grouped agents, activity, and pane focusing.",
     "category": "AI",
-    "aliases": [
-      "corgi",
-      "herdr-corgi",
-      "agent-dashboard"
-    ],
+    "defaultSection": "center",
     "defaults": {
       "refreshIntervalSec": 5,
-      "display": "Icon"
+      "display": "Icon",
+      "binaryPath": "corgi",
+      "socketPath": ""
     },
     "schema": [
       {
@@ -35,7 +32,7 @@
         "max": 60,
         "step": 1,
         "defaultValue": 5,
-        "description": "How frequently Corgi reads the current Herdr session snapshot."
+        "description": "How often the widget rereads an expanded transcript, and restarts its reader if it stopped."
       },
       {
         "key": "display",
@@ -51,15 +48,16 @@
       {
         "key": "binaryPath",
         "type": "string",
-        "label": "Corgi binary",
+        "label": "Corgi command",
         "defaultValue": "corgi",
-        "description": "Path to a Corgi binary supporting --bar-stream."
+        "description": "The Corgi command. herdr plugin install zyrre/corgi puts corgi in ~/.local/bin; set a full path only for another build."
       },
       {
         "key": "socketPath",
-        "type": "string",
+        "type": "path",
         "label": "Herdr socket",
-        "description": "Socket of the Herdr session to display. Defaults to ~/.config/herdr/herdr.sock."
+        "defaultValue": "",
+        "description": "Only needed for a named Herdr session: that session's socket. Empty uses the default session, ~/.config/herdr/herdr.sock."
       }
     ]
   }

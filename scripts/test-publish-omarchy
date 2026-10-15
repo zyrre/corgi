@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Shell tests for scripts/publish-omarchy.sh against scratch repositories.
+#
+# Run directly: scripts/test-publish-omarchy
+#
+# Each test makes a small Corgi checkout of its own (omarchy/ and LICENSE)
+# and an empty bare repository standing in for zyrre/omarchy-corgi, then
+# publishes from the one to the other. Git reads no user or system config,
+# so neither commit signing nor hooks of the developer's own apply.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+publish_script="$script_dir/publish-omarchy.sh"
+
+failures=0
+tests_run=0
+
+work_root="$(mktemp -d "${TMPDIR:-/tmp}/corgi-publish-test.XXXXXX")"
+trap 'rm -rf "$work_root"' EXIT
+
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=Corgi GIT_AUTHOR_EMAIL=corgi@example.com
+export GIT_COMMITTER_NAME=Corgi GIT_COMMITTER_EMAIL=corgi@example.com
+
+# --- fixtures ---------------------------------------------------------------
+
+# Prints a fresh folder holding source/ (a Corgi checkout at widget version
+# $2) and remote.git (an empty bare repository).
+new_state() {
+  local state="$work_root/$1" version="$2"
+  mkdir -p "$state/source/omarchy/assets" "$state/source/omarchy/tests"
+  git init --quiet --bare --initial-branch=main "$state/remote.git"
+  (
+    cd "$state/source"
+    git init --quiet
+    echo "MIT License" >LICENSE
+    echo "# Corgi" >README.md
+    printf '{\n  "schemaVersion": 1,\n  "version": "%s"\n}\n' "$version" >omarchy/manifest.json
+    echo "# Corgi for the Omarchy bar" >omarchy/README.md
+    echo "Panel {}" >omarchy/Panel.qml
+    echo "<svg/>" >omarchy/assets/corgi.svg
+    echo "test" >omarchy/test_model.py
+    echo "test" >omarchy/tests/Panel.qml
+    echo "untracked" >omarchy/scratch.txt
+    git add LICENSE README.md omarchy/manifest.json omarchy/README.md omarchy/Panel.qml \
+      omarchy/assets omarchy/test_model.py omarchy/tests
+    git commit --quiet -m "Corgi"
+  )
+  printf '%s\n' "$state"
+}
+
+# Sets the source's widget to version $2, committed.
+bump() {
+  local state="$1" version="$2"
+  (
+    cd "$state/source"
+    printf '{\n  "schemaVersion": 1,\n  "version": "%s"\n}\n' "$version" >omarchy/manifest.json
+    git commit --quiet -am "v$version"
+  )
+}
+
+publish() {
+  local state="$1" version="$2"
+  (cd "$state/source" && sh "$publish_script" "$version" "$state/remote.git") 2>"$state/stderr"
+}
+
+# The files on the published branch, one path per line.
+published_files() {
+  git --git-dir="$1/remote.git" ls-tree -r --name-only main
+}
+
+# --- assertions -------------------------------------------------------------
+
+fail() {
+  echo "  FAIL: $*" >&2
+  failures=$((failures + 1))
+}
+
+expect_files() {
+  local state="$1" expected="$2" actual
+  actual="$(published_files "$state" | tr '\n' ' ')"
+  [[ "$actual" == "$expected" ]] || fail "published '$actual', expected '$expected'"
+}
+
+expect_commits() {
+  local state="$1" expected="$2" actual
+  actual="$(git --git-dir="$state/remote.git" rev-list --count main)"
+  [[ "$actual" == "$expected" ]] || fail "main has $actual commits, expected $expected"
+}
+
+run_test() {
+  tests_run=$((tests_run + 1))
+  echo "- $1"
+  "$1"
+}
+
+# --- tests ------------------------------------------------------------------
+
+first_publish_starts_main_with_the_widget_at_the_root() {
+  local state
+  state="$(new_state first 1.0.0)"
+  publish "$state" 1.0.0 || fail "publish failed: $(cat "$state/stderr")"
+  expect_files "$state" "LICENSE Panel.qml README.md assets/corgi.svg manifest.json "
+  expect_commits "$state" 1
+  [[ "$(git --git-dir="$state/remote.git" log -1 --format=%s main)" == "Corgi v1.0.0" ]] ||
+    fail "the commit is not named Corgi v1.0.0"
+  [[ "$(git --git-dir="$state/remote.git" show main:LICENSE)" == "MIT License" ]] ||
+    fail "LICENSE is not Corgi's"
+  [[ -z "$(git --git-dir="$state/remote.git" ls-tree -r main | awk '$1 == "120000"')" ]] ||
+    fail "the tree holds a symlink"
+}
+
+second_publish_fast_forwards_and_drops_removed_files() {
+  local state first second
+  state="$(new_state second 1.0.0)"
+  publish "$state" 1.0.0 || fail "first publish failed: $(cat "$state/stderr")"
+  first="$(git --git-dir="$state/remote.git" rev-parse main)"
+  (cd "$state/source" && git rm --quiet omarchy/assets/corgi.svg && git commit --quiet -m "drop")
+  bump "$state" 1.1.0
+  publish "$state" 1.1.0 || fail "second publish failed: $(cat "$state/stderr")"
+  second="$(git --git-dir="$state/remote.git" rev-parse main)"
+  git --git-dir="$state/remote.git" merge-base --is-ancestor "$first" "$second" ||
+    fail "the second publish is not a fast-forward of the first"
+  expect_commits "$state" 2
+  expect_files "$state" "LICENSE Panel.qml README.md manifest.json "
+  [[ "$(git --git-dir="$state/remote.git" log -1 --format=%s main)" == "Corgi v1.1.0" ]] ||
+    fail "the commit is not named Corgi v1.1.0"
+}
+
+unchanged_widget_publishes_nothing() {
+  local state
+  state="$(new_state unchanged 1.0.0)"
+  publish "$state" 1.0.0 || fail "first publish failed: $(cat "$state/stderr")"
+  publish "$state" 1.0.0 || fail "second publish failed: $(cat "$state/stderr")"
+  expect_commits "$state" 1
+  grep -q "already published" "$state/stderr" || fail "it did not say nothing changed"
+}
+
+existing_history_is_kept_even_when_head_names_another_branch() {
+  local state
+  state="$(new_state existing 1.0.0)"
+  git --git-dir="$state/remote.git" symbolic-ref HEAD refs/heads/master
+  (
+    git clone --quiet "$state/remote.git" "$state/seed" 2>/dev/null
+    cd "$state/seed"
+    git checkout --quiet -b main
+    echo "hello" >NOTES.md
+    git add NOTES.md
+    git commit --quiet -m "Initial commit"
+    git push --quiet origin main
+  )
+  publish "$state" 1.0.0 || fail "publish failed: $(cat "$state/stderr")"
+  expect_commits "$state" 2
+  expect_files "$state" "LICENSE Panel.qml README.md assets/corgi.svg manifest.json "
+}
+
+version_mismatch_publishes_nothing() {
+  local state
+  state="$(new_state mismatch 1.0.0)"
+  if publish "$state" 2.0.0; then
+    fail "published a manifest at 1.0.0 as v2.0.0"
+  fi
+  grep -q "not 2.0.0" "$state/stderr" || fail "it did not name the version mismatch"
+  [[ -z "$(git --git-dir="$state/remote.git" for-each-ref)" ]] || fail "it pushed something"
+}
+
+symlink_publishes_nothing() {
+  local state
+  state="$(new_state symlink 1.0.0)"
+  (cd "$state/source" && ln -s Panel.qml omarchy/Link.qml && git add omarchy/Link.qml &&
+    git commit --quiet -m "link")
+  if publish "$state" 1.0.0; then
+    fail "published a symlink"
+  fi
+  grep -q "symlink" "$state/stderr" || fail "it did not name the symlink"
+  [[ -z "$(git --git-dir="$state/remote.git" for-each-ref)" ]] || fail "it pushed something"
+}
+
+run_test first_publish_starts_main_with_the_widget_at_the_root
+run_test second_publish_fast_forwards_and_drops_removed_files
+run_test unchanged_widget_publishes_nothing
+run_test existing_history_is_kept_even_when_head_names_another_branch
+run_test version_mismatch_publishes_nothing
+run_test symlink_publishes_nothing
+
+if ((failures > 0)); then
+  echo "$failures failure(s) in $tests_run tests" >&2
+  exit 1
+fi
+echo "all $tests_run tests passed"

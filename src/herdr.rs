@@ -247,6 +247,46 @@ impl HerdrClient {
         self.focus_pane(&pane.pane_id)
     }
 
+    /// Brings the agent in `pane` into view; see [`HerdrClient::go_to_agent`].
+    pub fn go_to_agent_pane(&self, pane: &PaneInfo) -> Result<AgentInfo> {
+        self.walk_to(&pane.workspace_id, &pane.tab_id)?;
+        self.focus_agent(&pane.pane_id)
+    }
+
+    /// Brings a plugin pane into view; see [`HerdrClient::go_to_agent`].
+    /// After a restart Herdr no longer knows the panes it restored as plugin
+    /// panes, and refuses `plugin.pane.focus` for them, so such a pane is
+    /// focused as a plain pane instead.
+    pub fn go_to_plugin_pane(&self, pane: &PaneInfo) -> Result<()> {
+        self.walk_to(&pane.workspace_id, &pane.tab_id)?;
+        let focused = self
+            .request("plugin.pane.focus", json!({ "pane_id": pane.pane_id }))
+            .and_then(|result| expect_result_type(&result, "plugin_pane_focused"));
+        match focused {
+            Err(error) if HerdrError::code_of(&error) == Some("plugin_pane_not_found") => {
+                self.focus_pane(&pane.pane_id)
+            }
+            other => other,
+        }
+    }
+
+    /// Opens a plugin's pane entry point as a new tab in the focused
+    /// workspace, without focusing it, and returns the new pane.
+    pub fn open_plugin_tab(&self, plugin_id: &str, entrypoint: &str) -> Result<PaneInfo> {
+        let mut result = self.request(
+            "plugin.pane.open",
+            json!({
+                "plugin_id": plugin_id,
+                "entrypoint": entrypoint,
+                "placement": "tab",
+                "focus": false,
+            }),
+        )?;
+        expect_result_type(&result, "plugin_pane_opened")?;
+        serde_json::from_value(result["plugin_pane"]["pane"].take())
+            .context("Herdr returned an invalid plugin pane")
+    }
+
     fn walk_to(&self, workspace_id: &str, tab_id: &str) -> Result<()> {
         if !workspace_id.is_empty() {
             self.focus_workspace(workspace_id)?;
