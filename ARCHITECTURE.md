@@ -485,9 +485,8 @@ role. So Corgi keeps its own record and puts the tokens back.
   `corgi_steward` token is the supervisor's, and the next write of its marks
   moves the marker to `corgi_handler`, in Herdr and in Corgi's record. A
   project workspace still labelled `<project> corgi`, `<project> handler` or
-  `<project> steward` is relabelled `<project> supervisor`; `corgi start`,
-  `corgi handler` and `corgi steward` (unlisted) still start the
-  supervisor; `CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN` are still read;
+  `<project> steward` is relabelled `<project> supervisor`;
+  `CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN` are still read;
   and the role tells `[corgi]`, `[handler]` and `[steward]` prompts on a
   worker's screen as its own. The dashboard's own lines start with
   `[Corgi]`, the app's name, so they are never taken for the supervisor's
@@ -1157,9 +1156,13 @@ date (a handover note's in full, since a stale note misled the test's
 answers) and up to three lines of context, and the output stops near 5 KB
 with a line counting the hits left out. No index: the files are small enough
 to read on each search. Like `fleet`, it
-needs Herdr to resolve the project and its agents. `corgi start`, `corgi
-handler` and `corgi steward`, the names of `corgi supervisor` before the
-renames, still work but are not listed.
+needs Herdr to resolve the project and its agents. `corgi` alone, or with
+`--compact`, opens the dashboard; any other word it does not know prints the
+usage to stderr and exits 2, so a mistyped command, or one this binary lacks,
+says so instead of opening the dashboard (0.1.0 opened it for any word, so
+`corgi setup` on that release silently did nothing). The old names of `corgi
+supervisor`, `corgi start`, `corgi handler` and `corgi steward`, were dropped
+in 0.2.0 and are unknown commands now.
 
 ### Plan usage
 

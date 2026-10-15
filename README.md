@@ -6,7 +6,9 @@
   <b>The dashboard for your Herdr agents, and a supervisor that runs them.</b>
 </p>
 
-![The Corgi dashboard: the header's herd and plan-usage cards over the webshop and weather projects, each a card of its supervisor's latest message and command over a count of its workers by state, with webshop's blocked worker named](docs/images/dashboard.svg)
+Corgi is a plugin for [Herdr](https://herdr.dev), a terminal workspace manager for AI coding agents such as Claude Code and Codex.
+
+![The Corgi dashboard, with one card per project summing up its supervisor and workers.](docs/images/dashboard.svg)
 
 - **One card per project with a supervisor**: the supervisor's latest message and command, and its workers summed up by state, with every blocked worker named. `→` expands a card into each worker's own rows, and Corgi remembers the choice per project.
 - **One row per agent** of any kind Herdr can start, such as Codex and Claude Code, for expanded cards, projects without a supervisor, and scratch sessions.
@@ -16,11 +18,13 @@
 
 <img src="docs/images/merge-outcomes.gif" width="757" alt="The merge popup confirming the merge of the order-history worker, its steps running, and the success stamped with a big green check">
 
+Install on macOS or Linux:
+
 ```bash
 herdr plugin install zyrre/corgi && corgi setup
 ```
 
-`corgi setup` binds a key to open Corgi, `prefix+d` unless you choose another; more under [Install](#install).
+`corgi setup` binds a key that opens Corgi; [Install](#install) has the requirements and the details.
 
 ## The supervisor
 
@@ -71,7 +75,7 @@ flowchart TD
 
 For a compact popup instead of a tab, open the `quick` pane: `herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint quick`.
 
-Corgi draws in your terminal's own colors, light or dark: the active Omarchy theme, or else the palette your terminal (through Herdr) reports, with Catppuccin standing in when it reports none. Set `CORGI_THEME=catppuccin-mocha` or `catppuccin-latte` to force Catppuccin's own colors, or `CORGI_THEME=terminal` to ask the terminal even on an Omarchy machine (say, when you view it over SSH from another one).
+Corgi draws in your terminal's own colors, light or dark: the active theme of the [Omarchy](https://omarchy.org) Linux desktop, or else the palette your terminal (through Herdr) reports, with Catppuccin standing in when it reports none. Set `CORGI_THEME=catppuccin-mocha` or `catppuccin-latte` to force Catppuccin's own colors, or `CORGI_THEME=terminal` to ask the terminal even on an Omarchy machine (say, when you view it over SSH from another one).
 
 ### Reading a row
 
@@ -97,11 +101,20 @@ In an expanded card, a project without a supervisor, and the scratch sessions, e
 
 ## Install
 
+Install on macOS or Linux:
+
 ```bash
 herdr plugin install zyrre/corgi && corgi setup
 ```
 
-The install links the `corgi` command into `~/.local/bin` (if that is not on your `PATH`, run `~/.local/bin/corgi setup`). `corgi setup` asks which key should open the dashboard, or focus it when it is already open, `prefix+d` unless you type another; it appends that binding to Herdr's `config.toml`, reloads Herdr's config and opens Corgi, which confirms the key in a popup. It changes nothing when a key is bound already, and is safe to run again. Run the install again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`).
+Requirements:
+
+- [Herdr](https://herdr.dev) 0.8.2 or newer
+- Git
+- Claude Code, Codex or both, for the agents
+- Rust 1.89 or newer, only when [building from source](#build-from-source)
+
+The install downloads the prebuilt binary of the plugin's version, checked against its release's checksums, or builds it with Cargo when there is none for your machine. It links the `corgi` command into `~/.local/bin` (if that is not on your `PATH`, run `~/.local/bin/corgi setup`). `corgi setup` asks which key should open the dashboard, or focus it when it is already open, `prefix+d` unless you type another; it appends that binding to Herdr's `config.toml`, reloads Herdr's config and opens Corgi, which confirms the key in a popup. It changes nothing when a key is bound already, and is safe to run again. Run the install again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`).
 
 To bind the key by hand instead, add this to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
 
@@ -115,13 +128,13 @@ description = "Corgi (open or focus)"
 
 ## Data and privacy
 
-Corgi talks only to the Herdr socket and sends no telemetry. It keeps no terminal output or prompt history; what it stores, in `~/.local/state/corgi` (or `$XDG_STATE_HOME/corgi`), is its own bookkeeping and each supervisor's memory and inbox, which holds the reports of workers that stopped. The only network use is the plan usage: `codex app-server` for Codex, and Claude Code's stored login sent to `api.anthropic.com` for Claude. That Claude reading is unofficial and read-only, and may break if Anthropic changes the endpoint.
+Corgi talks only to the Herdr socket and sends no telemetry. It keeps no terminal output or prompt history; what it stores, in `~/.local/state/corgi` (or `$XDG_STATE_HOME/corgi`), is its own bookkeeping and each supervisor's memory and inbox, which holds the reports of workers that stopped. The only network use is the plan usage: `codex app-server` for Codex, and Claude Code's stored login sent to `api.anthropic.com` for Claude. Corgi reads that login from `.credentials.json` in Claude Code's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), or on macOS from the Keychain, which may ask you to allow it the first time. That Claude reading is unofficial and read-only, and may break if Anthropic changes the endpoint.
 
 ## More
 
 - Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) has the socket and API boundaries, and every behaviour in detail.
 - Supervisor: [`supervisor/ROLE.md`](supervisor/ROLE.md) is the role every supervisor runs by, and `corgi <command> --help` documents each command.
-- Omarchy companion: [`omarchy/`](omarchy/README.md) is an optional bar widget with a compact dashboard of its own.
+- Omarchy companion: [`omarchy/`](omarchy/README.md) is an experimental bar widget for the Omarchy desktop, with a compact dashboard of its own.
 
 ## Build from source
 
@@ -132,6 +145,10 @@ cargo build --release && herdr plugin link "$PWD"
 
 Uninstall the plugin before you link, since both use the same id. The installer builds from source when `CORGI_BUILD=source` is set, and `CORGI_DOWNLOAD_URL=<url>` downloads from `<url>/v<version>/` instead of the GitHub release. `CORGI_LINK=0` skips the `~/.local/bin` link, and `CORGI_BIN_DIR=<dir>` links into `<dir>` instead.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).

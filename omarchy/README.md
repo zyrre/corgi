@@ -1,5 +1,11 @@
 # Corgi for the Omarchy bar
 
+> **Experimental, for advanced users.** This widget for the bar of the
+> [Omarchy](https://omarchy.org) Linux desktop is not installed by
+> `herdr plugin install`, has no release of its own, and is set up by hand
+> from a Corgi checkout as described below. It may change or break between
+> Corgi versions.
+
 A corgi icon opens a compact dashboard with projects, agent state, model and
 context usage, cache estimates, latest messages and commands, and plan usage.
 Colors follow the active Omarchy shell theme.
