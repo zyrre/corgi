@@ -747,7 +747,10 @@ role. So Corgi keeps its own record and puts the tokens back.
   Every popup that ends in success stamps a check where it stands: a launch
   or merge when its outcome arrives, and a prompt sent or a close confirmed
   when the confirm key's action succeeds (`Motion::succeeded`); Esc and
-  failures never do. The stamp keeps its own 880 ms clock, apart from the
+  failures never do. A popup that is a success from its first frame, such
+  as a notice, would start its stamp while still growing, so `ui::draw`
+  gives the notice its outcome only once `Motion::settled` says it has
+  opened, rather than through `Overlay::outcome()`. The stamp keeps its own 880 ms clock, apart from the
   popup's: the frame turns green at once, a big four-row `✓` is drawn column
   by column centred on the popup with two clear columns either side, holds,
   and fades while the frame eases back to its color. It is drawn last, over
