@@ -8,6 +8,10 @@ use, prompt cache, latest message and command, and your plan usage. From the
 popup you can prompt, merge or close an agent, start a new one, and jump to
 its pane in the terminal. Colors follow the active Omarchy theme.
 
+![Popup with a collapsed supervisor project, a standalone agent and a scratch session](preview.png)
+
+The preview uses made-up agents and no account usage data.
+
 The bar shows the corgi with a small underline when agents are running
 (accent), need your attention (urgent) or have finished (green); attention
 wins, and idle agents leave no underline. Hover for the agent counts.
@@ -68,9 +72,14 @@ All are optional. Change them in the widget's settings in the Omarchy bar.
 
 - Left click the corgi to open or close the popup; right click it to
   reconnect when the reader stopped.
-- Each agent takes three lines: its state and task with model, context,
+- Projects led by a supervisor start collapsed, showing the supervisor and a
+  count of workers by state. Click that row or its ▸ project heading to reveal
+  the agents; click the ▾ heading to collapse them. Scratch sessions and projects
+  without a supervisor always show their agents.
+- Each visible agent takes three lines: its state and task with model, context,
   cache and checkout; its latest message; and its current or latest command.
-- Click an agent, or press Space, to expand its newest-first transcript.
+- Click an exposed agent, or press Space or Enter, to expand its newest-first
+  transcript. Up/Down selects an agent; Right reveals its project or transcript.
   Right click an agent to jump to its pane: Herdr shows the pane, and the
   terminal window attached to the session comes into view.
 - **Prompt** (or `p`) sends the agent a prompt: Enter sends, Shift+Enter adds
@@ -83,8 +92,9 @@ All are optional. Change them in the widget's settings in the Omarchy bar.
   worktree; the popup closes once the agent has taken its first prompt.
 - **Open dashboard** (or a click on the Corgi logo) opens the full Corgi
   dashboard in Herdr, or brings it into view when it is already open.
-- Escape collapses an expanded agent, then closes the popup; so does a click
-  outside it.
+- Escape, Left or Backspace leaves the transcript, then collapses the selected
+  project, then closes the popup. Clicking outside closes it. Projects start
+  collapsed again the next time you open the popup.
 
 ## When something is wrong
 

@@ -353,6 +353,8 @@ fn bar_stream_frame(app: &App, now: u64) -> serde_json::Value {
                 "kind": agent.info.kind(),
                 "agent_status": agent.info.state,
                 "project_group": agent.project_group,
+                "supervisor": agent.supervisor,
+                "scratch": agent.scratch,
                 "checkout": agent.worktree_label,
                 "task": agent.task,
                 "model": agent.model,
@@ -597,6 +599,8 @@ mod tests {
                         "name": "Supervisor",
                         "pane_id": "w-main:p1",
                         "project_group": "corgi",
+                        "supervisor": true,
+                        "scratch": false,
                         "task": "Supervisor",
                         "tool": "No command yet",
                         "tool_kind": "ready"
@@ -663,6 +667,8 @@ mod tests {
                         "name": "corgi-quiet-owl",
                         "pane_id": "w-worker:p1",
                         "project_group": "corgi",
+                        "supervisor": false,
+                        "scratch": false,
                         "task": "Pin the bar contract",
                         "tool": "cargo test",
                         "tool_kind": "command"
