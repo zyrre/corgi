@@ -30,9 +30,9 @@ const USAGE_CARD_PADDING: u16 = 1;
 // answer, so the header drops it rather than print a bare provider name.
 const USAGE_NOTE_MIN_REASON: usize = 8;
 const USAGE_CONTENT_WIDTH: u16 = USAGE_CARD_WIDTH - 2 - 2 * USAGE_CARD_PADDING;
-// The herd card leads with the whole pack's total, followed by one row per
-// state. It is wide enough for a two-digit count beside its summation mark.
-const HERD_WIDTH: u16 = 15;
+// One leading cell, a two-cell icon slot, and room for a two-digit count
+// beside the longest state label, within the two borders.
+pub(crate) const HERD_WIDTH: u16 = 15;
 // Two rules and five counts. A box rule is painted
 // across the middle of its cell while the wordmark's bars fill theirs edge to
 // edge, so the card can never sit flush with the letters: any row it starts on
@@ -96,7 +96,9 @@ fn draw_header_cards(frame: &mut Frame<'_>, band: Rect, cards: Vec<HeaderCard<'_
     x
 }
 
-pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
+/// The dashboard and bar share the exact classification, ordering and terminal
+/// cell padding of the HERD card, including state-bound merge markers.
+pub(crate) fn herd_header(app: &App) -> (Color, Vec<Line<'static>>) {
     // An agent tagged ready to merge counts as MERGE rather than done or
     // idle, as its badge reads.
     let count = |state: AgentState| {
@@ -127,6 +129,28 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         roles().muted
     };
+    let lines = vec![
+        Line::from(agent_summary_spans("●", working, "WORKING", roles().accent)),
+        Line::from(agent_summary_spans(
+            "!",
+            blocked,
+            "BLOCKED",
+            roles().warning,
+        )),
+        Line::from(agent_summary_spans(
+            MERGE_MARK,
+            merge,
+            "MERGE",
+            roles().merge,
+        )),
+        Line::from(agent_summary_spans("✓", done, "DONE", roles().success)),
+        Line::from(agent_summary_spans("·", idle, "IDLE", roles().muted)),
+    ];
+    (agent_color, lines)
+}
+
+pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let (agent_color, herd_lines) = herd_header(app);
     // The supervisor hugs the top-left corner and only appears when the header is
     // tall enough to hold it and wide enough to leave room for the band.
     let show_corgi = area.height >= CORGI_ROWS
@@ -170,23 +194,7 @@ pub(super) fn draw_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
         color: agent_color,
         // The pack by state, the ones ready to merge right after the
         // blocked, as the next thing the user can act on.
-        lines: vec![
-            Line::from(agent_summary_spans("●", working, "WORKING", roles().accent)),
-            Line::from(agent_summary_spans(
-                "!",
-                blocked,
-                "BLOCKED",
-                roles().warning,
-            )),
-            Line::from(agent_summary_spans(
-                MERGE_MARK,
-                merge,
-                "MERGE",
-                roles().merge,
-            )),
-            Line::from(agent_summary_spans("✓", done, "DONE", roles().success)),
-            Line::from(agent_summary_spans("·", idle, "IDLE", roles().muted)),
-        ],
+        lines: herd_lines,
     }];
     let now = unix_now();
     cards.extend(

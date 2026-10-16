@@ -21,7 +21,7 @@ const snapshot = {agents: [
 const panes = (rows) => Array.from(rows.filter(row => !row.heading), row => row.pane_id);
 assert.deepEqual(panes(model.dashboardRows(snapshot)), ['lead', 'other-lead', 'solo', 'scratch', 'scratch-worker', 'named-supervisor', 'legacy-worker']);
 const heading = model.dashboardRows(snapshot)[0];
-assert.equal(heading.workerSummary, '2 workers · 1 blocked · 1 done');
+assert.equal(heading.workerSummary, '2 workers · ▲ 1 · ✓ 1');
 assert.equal(heading.workerCounts.blocked, 1);
 let state = model.activateAgent(snapshot, [], '', 'lead');
 assert.equal(state.pane, '', 'first click must only reveal project');
@@ -59,4 +59,28 @@ assert.deepEqual(Array.from(state.projects), []);
 assert.equal(state.selected, 'lead');
 assert.equal(state.pane, '');
 assert.deepEqual(panes(model.dashboardRows({agents: []})), []);
-console.log('Omarchy model grouping and navigation checks passed');
+const closedRows = model.dashboardRows(snapshot);
+assert.equal(closedRows.find(row => row.pane_id === 'lead').collapsedProject, true);
+assert.equal(model.dashboardRows(snapshot, '', ['App']).find(row => row.pane_id === 'lead').collapsedProject, false);
+assert.equal(model.dashboardRows(snapshot, 'lead', ['App']).find(row => row.pane_id === 'lead').collapsedProject, false);
+assert.equal(closedRows.find(row => row.pane_id === 'scratch').collapsedProject, false);
+assert.equal(closedRows.find(row => row.pane_id === 'solo').collapsedProject, false);
+assert.equal(snapshot.agents[0].collapsedProject, undefined, 'row decoration must not mutate snapshot');
+const fallback = model.herdLines(model.summarize(snapshot));
+assert.deepEqual(Array.from(fallback, row => row.spans[2].text.trim()), ['WORKING', 'BLOCKED', 'MERGE', 'DONE', 'IDLE']);
+
+const states = {agents: [agent('lead', 'All', {supervisor: true}),
+  agent('working', 'All', {agent_status: 'working'}),
+  agent('blocked', 'All', {agent_status: 'blocked'}),
+  agent('merge', 'All', {agent_status: 'done', ready_to_merge: true}),
+  agent('done', 'All', {agent_status: 'done'}), agent('idle', 'All'),
+  agent('unknown', 'All', {agent_status: 'unknown'})]};
+const segments = model.dashboardRows(states)[0].workerSegments;
+assert.deepEqual(Array.from(segments, part => part.text), ['6 workers', '▲ 1', '⇡ 1', '● 1', '✓ 1', '○ 1', '? 1']);
+assert.deepEqual(Array.from(segments, part => part.tone), ['foreground', 'yellow', 'magenta', 'cyan', 'green', 'muted', 'magenta']);
+assert.equal(model.dashboardRows(states)[0].workerCounts.done, 1, 'merge workers are not counted twice');
+assert.deepEqual(Array.from(model.dashboardRows(states, '', ['All'])[0].workerSegments, part => part.text), Array.from(segments, part => part.text));
+assert.equal(model.workerSummarySegments([states.agents[0]])[0].text, 'no workers');
+
+assert.deepEqual(Array.from(segments.slice(1), part => part.label), ['1 blocked', '1 merge', '1 working', '1 done', '1 idle', '1 unknown']);
+console.log('Omarchy model grouping, navigation, and worker summary checks passed');

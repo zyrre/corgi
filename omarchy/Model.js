@@ -119,12 +119,28 @@ function projectGroups(snapshot) {
   return groups
 }
 
-function workerSummary(agents) {
-  var workers = agents.slice(1), counts = summarize({agents: workers}), parts = []
-  ;["blocked", "done", "working", "idle", "unknown"].forEach(function(state) {
-    if (counts[state]) parts.push(counts[state] + " " + state)
+function workerCounts(agents) {
+  var counts = {total: Math.max(0, agents.length - 1), blocked: 0, merge: 0, working: 0, done: 0, idle: 0, unknown: 0}
+  agents.slice(1).forEach(function(agent) {
+    counts[agent.ready_to_merge === true ? "merge" : stateFor(agent)] += 1
   })
-  return workers.length + (workers.length === 1 ? " worker" : " workers") + (parts.length ? " · " + parts.join(" · ") : "")
+  return counts
+}
+
+function workerSummarySegments(agents) {
+  var counts = workerCounts(agents)
+  var parts = [{text: counts.total === 0 ? "no workers" : counts.total + (counts.total === 1 ? " worker" : " workers"), tone: counts.total ? "foreground" : "muted"}]
+  // The dashboard's urgency order and marks; merge readiness comes from its
+  // state-bound marker classification, never a task name or raw done status.
+  ;[["blocked", "▲", "yellow"], ["merge", "⇡", "magenta"], ["working", "●", "cyan"],
+    ["done", "✓", "green"], ["idle", "○", "muted"], ["unknown", "?", "magenta"]].forEach(function(state) {
+    if (counts[state[0]]) parts.push({text: state[1] + " " + counts[state[0]], label: counts[state[0]] + " " + state[0], tone: state[2]})
+  })
+  return parts
+}
+
+function workerSummary(agents) {
+  return workerSummarySegments(agents).map(function(part) { return part.text }).join(" · ")
 }
 
 function dashboardRows(snapshot, expandedPaneId, expandedProjects) {
@@ -137,8 +153,11 @@ function dashboardRows(snapshot, expandedPaneId, expandedProjects) {
       card: group.card, projectExpanded: expanded.indexOf(group.project) >= 0,
       supervisorPaneId: group.agents[0].pane_id,
       workerSummary: group.card ? workerSummary(group.agents) : "",
-      workerCounts: summarize({agents: group.card ? group.agents.slice(1) : []})})
-    shown.forEach(function(agent) { rows.push(agent) })
+      workerSegments: group.card ? workerSummarySegments(group.agents) : [],
+      workerCounts: workerCounts(group.card ? group.agents : [])})
+    shown.forEach(function(agent) {
+      rows.push(Object.assign({}, agent, {collapsedProject: group.card && !expandedPaneId && expanded.indexOf(group.project) < 0}))
+    })
   })
   return rows
 }
@@ -225,14 +244,20 @@ function agentColor(agent, accent, urgent, foreground, muted, success) {
 
 function herdLines(summary) {
   var rows = [
-    ["Σ", summary.total, "TOTAL", "magenta"],
     ["●", summary.working, "WORKING", "cyan"],
     ["!", summary.blocked, "BLOCKED", "yellow"],
+    ["⇡", 0, "MERGE", "magenta"],
     ["✓", summary.done, "DONE", "green"],
     ["·", summary.idle + summary.unknown, "IDLE", "muted"]
   ]
   return rows.map(function(row) {
-    return {right: false, spans: [{text: " " + row[0] + " " + row[1] + " " + row[2], tone: row[3], bold: true}]}
+    // Compatibility for older binaries without the shared HERD data. They
+    // cannot classify merge readiness; a current binary supplies these spans.
+    return {spans: [
+      {text: " " + row[0] + " ", cells: 3, tone: row[3], bold: true},
+      {text: String(row[1]), cells: String(row[1]).length, tone: row[3], bold: true},
+      {text: " " + row[2], cells: row[2].length + 1, tone: row[3], bold: true}
+    ]}
   })
 }
 

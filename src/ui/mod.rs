@@ -27,7 +27,7 @@ use agents::draw_agents;
 pub(crate) use dialogs::{close_dialog_lines, merge_dialog_lines};
 use dialogs::{draw_close_workspace, draw_merge_worktree, draw_notice};
 use header::{HEADER_HEIGHT, draw_header};
-pub(crate) use header::{show_usage_card, usage_lines_for_slot};
+pub(crate) use header::{HERD_WIDTH, herd_header, show_usage_card, usage_lines_for_slot};
 use new_agent::{draw_new_agent, draw_new_agent_launch};
 use prompt::draw_prompt;
 pub(crate) use status::status_fields;

@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Render the actual HeaderCard with small substitutes for shell theme services.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+runner=${QMLTESTRUNNER:-/usr/lib/qt6/bin/qmltestrunner}
+if [[ ! -x $runner ]]; then
+  echo 'Qt 6 qmltestrunner is required (or set QMLTESTRUNNER).' >&2
+  exit 1
+fi
+probe_dir=$(mktemp -d)
+trap 'rm -rf "$probe_dir"' EXIT
+mkdir -p "$probe_dir/qs/Commons"
+cp omarchy/HeaderCard.qml omarchy/ProjectHeading.qml "$probe_dir/"
+cat > "$probe_dir/qs/Commons/qmldir" <<'QML'
+module qs.Commons
+singleton Style 1.0 Style.qml
+singleton Color 1.0 Color.qml
+QML
+cat > "$probe_dir/qs/Commons/Style.qml" <<'QML'
+pragma Singleton
+import QtQuick
+QtObject {
+  property real scale: 1
+  function space(value) { return value * scale }
+}
+QML
+cat > "$probe_dir/qs/Commons/Color.qml" <<'QML'
+pragma Singleton
+import QtQuick
+QtObject {
+  property color foreground: "white"
+  property var popups: ({background: "black"})
+}
+QML
+cat > "$probe_dir/tst_header.qml" <<'QML'
+import QtQuick
+import QtQuick.Layouts
+import QtTest
+import qs.Commons
+
+TestCase {
+  id: testRoot
+  property int usageCount: 2
+  name: "HeaderCard"
+  width: 800; height: 200
+  when: windowShown
+  TextMetrics { id: expected; text: "0"; font.family: "monospace"; font.pixelSize: Style.space(12) }
+  RowLayout {
+    id: band
+    width: parent.width
+    HeaderCard {
+      id: herd
+      title: "HERD"; columns: 15; horizontalPadding: 0
+      frameColor: "white"; palette: ({cyan: "white"})
+      lines: ["●", "!", "⇡", "✓", "·"].map(function(icon) { return {spans: [
+        {text: " " + icon + " ", cells: 3, tone: "cyan", bold: true},
+        {text: "12", cells: 2, tone: "cyan", bold: true},
+        {text: " WORKING", cells: 8, tone: "cyan", bold: true}
+      ]} })
+    }
+    Repeater {
+      model: testRoot.usageCount
+      HeaderCard {
+        title: "USAGE"; frameColor: "white"; palette: ({})
+        lines: [{right: true, spans: [{text: "99%", bold: true}]}]
+      }
+    }
+    Item { Layout.fillWidth: true }
+  }
+  ProjectHeading {
+    id: heading
+    y: 120; width: 760; cellWidth: herd.cellWidth; lineHeight: 16
+    palette: ({foreground: "white", green: "green", yellow: "yellow", cyan: "cyan", magenta: "magenta", muted: "gray"})
+    project: ({project: "corgi", card: true, projectExpanded: false, workerSegments: [
+      {text: "16 workers", tone: "foreground"}, {text: "▲ 1", tone: "yellow"},
+      {text: "⇡ 2", tone: "magenta"}, {text: "● 11", tone: "cyan"},
+      {text: "✓ 1", tone: "green"}, {text: "○ 1", tone: "muted"}
+    ]})
+  }
+  function descendants(item) {
+    var result = []
+    for (var i = 0; i < item.children.length; ++i) {
+      result.push(item.children[i])
+      result = result.concat(descendants(item.children[i]))
+    }
+    return result
+  }
+  function test_metrics_follow_font_and_terminal_cell_slots() {
+    for (var scale of [1, 1.25, 1]) {
+      Style.scale = scale
+      wait(30)
+      fuzzyCompare(herd.cellWidth, expected.advanceWidth, 0.01)
+      fuzzyCompare(herd.width, 15 * expected.advanceWidth, 0.5) // layouts round to pixels
+      var counts = descendants(herd).filter(function(item) { return item.text === "12" })
+      compare(counts.length, 5)
+      for (var count of counts) {
+        fuzzyCompare(count.x, 3 * herd.cellWidth, 0.01)
+        fuzzyCompare(count.width, 2 * herd.cellWidth, 0.01)
+      }
+      for (var row of descendants(herd).filter(function(item) { return item.text === " WORKING" })) {
+        fuzzyCompare(row.x, 5 * herd.cellWidth, 0.01)
+        verify(row.x + row.width <= 13 * herd.cellWidth + 0.01)
+      }
+    }
+  }
+  function test_worker_segments_wrap_without_losing_counts_or_colors() {
+    var previous = 0
+    for (var width of [760, 360, 180]) {
+      heading.width = width
+      wait(30)
+      verify(heading.implicitHeight >= previous)
+      previous = heading.implicitHeight
+      var labels = descendants(heading).filter(function(item) { return item.text !== undefined })
+      compare(labels.length, 7)
+      var blocked = labels.filter(function(item) { return item.text === "▲ 1" })[0]
+      compare(blocked.color, Qt.color("yellow"))
+      compare(labels.filter(function(item) { return item.text === "16 workers" }).length, 1)
+      for (var label of labels) {
+        var pos = label.mapToItem(heading, 0, 0)
+        verify(pos.x >= 0 && pos.x + label.width <= heading.width + 0.01)
+        verify(pos.y + label.implicitHeight <= heading.implicitHeight + 0.01)
+      }
+    }
+    verify(previous > heading.lineHeight, "narrow summaries wrap rather than elide")
+  }
+  function test_usage_present_absent_and_narrow_band() {
+    for (var scenario of [[800, 2], [400, 2], [240, 1], [160, 0]]) {
+      band.width = scenario[0]
+      usageCount = scenario[1]
+      wait(30)
+      fuzzyCompare(herd.width, herd.implicitWidth, 0.5)
+    }
+  }
+}
+QML
+QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=basic "$runner" -input "$probe_dir" -import "$probe_dir"

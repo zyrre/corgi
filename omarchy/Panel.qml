@@ -466,7 +466,7 @@ Panel {
     owner: root
     open: root.opened
     contentWidth: fittedContentWidth(Style.space(800))
-    readonly property real collapsedHeight: Style.space(Math.min(560, 260 + root.rows.filter(function(row) { return !row.heading }).length * 65 + root.rows.filter(function(row) { return row.heading }).length * 20)) + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0)
+    readonly property real collapsedHeight: Math.min(Style.space(560), Style.space(260) + agentList.implicitHeight) + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0)
     contentHeight: root.newAgentOpen ? cappedContentHeight(headerLayout.implicitHeight + newAgentDialog.implicitHeight + footerRow.implicitHeight + Style.space(30)) : root.expandedPaneId === "" ? cappedContentHeight(collapsedHeight)
       : Math.max(cappedContentHeight(collapsedHeight), fittedContentHeight(headerLayout.implicitHeight + footerRow.implicitHeight + (root.promptPaneId ? promptEditor.implicitHeight + Style.space(10) : 0) + latestReplyMeasure.implicitHeight + (root.latestReplyIndex > 0 ? newestEntryMeasure.implicitHeight : 0) + agentsBox.lineHeight * (Math.max(0, root.latestReplyIndex - 1) * 2 + 8) + Style.space(20)))
 
@@ -565,16 +565,21 @@ Panel {
       ColumnLayout {
         id: headerLayout
         Layout.fillWidth: true
+        Layout.minimumWidth: 0
         Layout.fillHeight: false
         spacing: Style.space(4)
         RowLayout {
+          id: headerRow
           Layout.fillWidth: true
+          Layout.minimumWidth: 0
           Layout.fillHeight: false
           Image {
             id: popupMascot
             smooth: false
             source: Qt.resolvedUrl("assets/corgi-pixel.svg")
             Layout.preferredWidth: herdCard.implicitHeight * 16 / 14
+            Layout.fillWidth: true
+            Layout.maximumWidth: Layout.preferredWidth
             Layout.preferredHeight: herdCard.implicitHeight
             Layout.minimumWidth: Style.space(40)
             fillMode: Image.PreserveAspectFit
@@ -589,9 +594,12 @@ Panel {
             }
           }
           Image {
+            id: popupWordmark
             smooth: false
             source: Qt.resolvedUrl("assets/corgi-wordmark.svg")
             Layout.preferredWidth: herdCard.implicitHeight * 5 / 7 * 38 / 10
+            Layout.fillWidth: true
+            Layout.maximumWidth: Layout.preferredWidth
             Layout.preferredHeight: herdCard.implicitHeight * 5 / 7
             Layout.minimumWidth: Style.space(95)
             fillMode: Image.PreserveAspectFit
@@ -608,16 +616,20 @@ Panel {
             // One extra blank character before the first box.
             Layout.leftMargin: cellWidth
             title: "HERD"
-            columns: 15
+            columns: root.snapshot.herd ? root.snapshot.herd.columns : 15
             horizontalPadding: 0
             palette: root.headerPalette
-            frameColor: root.summary.blocked > 0 ? palette.yellow : root.summary.working > 0 ? palette.cyan : root.summary.done > 0 ? palette.green : palette.muted
-            lines: Model.herdLines(root.summary)
+            frameColor: root.snapshot.herd ? palette[root.snapshot.herd.tone] : root.summary.blocked > 0 ? palette.yellow : root.summary.working > 0 ? palette.cyan : root.summary.done > 0 ? palette.green : palette.muted
+            lines: root.snapshot.herd ? root.snapshot.herd.lines : Model.herdLines(root.summary)
           }
           Repeater {
             model: root.snapshot.usage || []
             HeaderCard {
               required property var modelData
+              required property int index
+              // Like the dashboard, keep complete cards and drop trailing usage
+              // cards when even the brand's minimum widths cannot leave room.
+              visible: headerRow.width >= popupMascot.Layout.minimumWidth + popupWordmark.Layout.minimumWidth + herdCard.implicitWidth + herdCard.Layout.leftMargin + (index + 1) * (implicitWidth + headerRow.spacing) + headerRow.spacing * 2
               title: String(modelData.provider || "").toUpperCase()
               palette: root.headerPalette
               frameColor: modelData.provider === "Codex" ? "#00afff" : "#ff8700"
@@ -705,6 +717,7 @@ Panel {
           clip: true
           ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
           Column {
+            id: agentList
             width: agentScroll.availableWidth
             spacing: 0
             Text {
@@ -729,6 +742,16 @@ Panel {
                 readonly property bool expanded: !modelData.heading && modelData.pane_id === root.expandedPaneId
                 color: (rowMouse.containsMouse || expanded || modelData.pane_id === root.selectedPaneId) && !modelData.heading ? Style.selectedFillFor(Color.foreground, Color.accent) : "transparent"
                 Rectangle {
+                  // The existing spacer becomes the collapsed card's closing
+                  // rule, so it scrolls with the row and adds no overlay/height.
+                  visible: row.modelData.collapsedProject === true
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  y: rowContent.implicitHeight + agentsBox.lineHeight / 2
+                  height: 1
+                  color: root.headerPalette.muted
+                }
+                Rectangle {
                   visible: (rowMouse.containsMouse || row.expanded) && !row.modelData.heading
                   width: Style.space(2)
                   height: rowContent.implicitHeight
@@ -744,39 +767,16 @@ Panel {
                   anchors.leftMargin: row.modelData.heading ? 0 : Style.space(4)
                   anchors.rightMargin: row.modelData.heading ? 0 : agentsBox.cellWidth - 1
                   spacing: 0
-                  Item {
+                  ProjectHeading {
                     visible: row.modelData.heading === true
                     Layout.fillWidth: true
                     Layout.topMargin: row.index > 0 ? agentsBox.lineHeight : 0
-                    implicitHeight: agentsBox.lineHeight
-                    Rectangle {
-                      anchors.left: parent.left
-                      anchors.right: parent.right
-                      anchors.verticalCenter: parent.verticalCenter
-                      height: 1
-                      color: root.headerPalette.muted
-                    }
-                    Rectangle {
-                      // Start the name beneath the middle of the Agents title.
-                      x: agentsBox.cellWidth / 2 + agentsTitle.implicitWidth / 2 - Style.space(2)
-                      width: Math.max(0, Math.min(projectName.implicitWidth + agentsBox.cellWidth, parent.width - x))
-                      height: agentsBox.lineHeight
-                      color: Color.popups.background
-                      clip: true
-                      Text {
-                        id: projectName
-                        anchors.fill: parent
-                        anchors.leftMargin: agentsBox.cellWidth / 2
-                        anchors.rightMargin: agentsBox.cellWidth / 2
-                        text: (row.modelData.card ? (row.modelData.projectExpanded ? "▾ " : "▸ ") : "") + (row.modelData.project || "") + (row.modelData.card ? " · " + row.modelData.workerSummary : "")
-                        textFormat: Text.PlainText
-                        color: (row.modelData.workerCounts || {}).blocked ? root.headerPalette.yellow : (row.modelData.workerCounts || {}).done ? root.headerPalette.green : root.headerPalette.cyan
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.space(13)
-                        font.bold: true
-                        elide: Text.ElideRight
-                      }
-                    }
+                    project: row.modelData
+                    palette: root.headerPalette
+                    cellWidth: agentsBox.cellWidth
+                    lineHeight: agentsBox.lineHeight
+                    leftInset: agentsBox.cellWidth / 2 + agentsTitle.implicitWidth / 2 - Style.space(2)
+                    fontFamily: root.fontFamily
                     MouseArea {
                       anchors.fill: parent
                       enabled: !!row.modelData.card && root.connected && !root.actionState && !root.promptPaneId

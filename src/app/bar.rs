@@ -355,6 +355,7 @@ fn bar_stream_frame(app: &App, now: u64) -> serde_json::Value {
                 "project_group": agent.project_group,
                 "supervisor": agent.supervisor,
                 "scratch": agent.scratch,
+                "ready_to_merge": agent.ready_to_merge(),
                 "checkout": agent.worktree_label,
                 "task": agent.task,
                 "model": agent.model,
@@ -375,6 +376,21 @@ fn bar_stream_frame(app: &App, now: u64) -> serde_json::Value {
             })
         })
         .collect();
+    let (herd_color, herd_lines) = ui::herd_header(app);
+    let herd_lines: Vec<_> =
+        herd_lines
+            .into_iter()
+            .map(|line| {
+                let spans: Vec<_> = line.spans.into_iter().map(|span| serde_json::json!({
+            "text": span.content, "cells": span.width(),
+            "tone": popup_color_tone(span.style.fg),
+            "bold": span.style.add_modifier.contains(ratatui::style::Modifier::BOLD),
+        })).collect();
+                serde_json::json!({"spans": spans})
+            })
+            .collect();
+    let herd = serde_json::json!({"columns": ui::HERD_WIDTH,
+        "tone": popup_color_tone(Some(herd_color)), "lines": herd_lines});
     let usage: Vec<_> = app.usage.iter().filter(|slot| ui::show_usage_card(slot)).map(|slot| {
         let lines: Vec<_> = ui::usage_lines_for_slot(slot, now).into_iter().map(|line| {
             let spans: Vec<_> = line.spans.into_iter().map(|span| {
@@ -398,7 +414,7 @@ fn bar_stream_frame(app: &App, now: u64) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({
-        "connected": app.connected, "agents": agents, "usage": usage,
+        "connected": app.connected, "agents": agents, "herd": herd, "usage": usage,
         "usage_notes": usage_notes,
     })
 }
@@ -429,6 +445,94 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn herd_stream_matches_the_terminal_card_including_merge_and_two_digit_counts() {
+        use crate::{
+            model::{AgentState, DashboardAgent},
+            supervisor,
+        };
+        for (suffix, working) in [("single", 1), ("double", 12)] {
+            let mut app = test_app();
+            app.agents = vec![DashboardAgent::default(); working + 5];
+            for agent in &mut app.agents[..working] {
+                agent.info.state = AgentState::Working;
+            }
+            app.agents[working].info.state = AgentState::Blocked;
+            for agent in &mut app.agents[working + 1..working + 4] {
+                agent.info.state = AgentState::Done;
+                agent.info.state_change_seq = 9;
+                agent.info.tokens.insert(
+                    supervisor::MERGE_TOKEN.into(),
+                    supervisor::merge_tag_value(AgentState::Done, 9),
+                );
+            }
+            // Only the two current markers apply; stale readiness stays DONE.
+            app.agents[working + 3].info.state_change_seq = 10;
+            let frame = bar_stream_frame(&app, 1_000_000);
+            let rows = frame["herd"]["lines"].as_array().unwrap();
+            let texts: Vec<String> = rows
+                .iter()
+                .map(|row| {
+                    row["spans"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|span| span["text"].as_str().unwrap())
+                        .collect()
+                })
+                .collect();
+            assert_eq!(
+                texts,
+                [
+                    format!(" ● {working} WORKING"),
+                    " ! 1 BLOCKED".into(),
+                    " ⇡ 2 MERGE".into(),
+                    " ✓ 1 DONE".into(),
+                    " · 1 IDLE".into()
+                ]
+            );
+            for row in rows {
+                let spans = row["spans"].as_array().unwrap();
+                assert_eq!(spans[0]["cells"], 3, "counts share the fourth content cell");
+                assert!(
+                    spans
+                        .iter()
+                        .map(|span| span["cells"].as_u64().unwrap())
+                        .sum::<u64>()
+                        <= 13
+                );
+            }
+            assert_eq!(frame["agents"][working + 1]["ready_to_merge"], true);
+            assert_eq!(frame["agents"][working + 3]["ready_to_merge"], false);
+            assert_eq!(frame["herd"]["columns"], 15);
+            assert_eq!(frame["herd"]["tone"], "yellow");
+            let mut terminal = crate::test_support::test_terminal(130, 24);
+            terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let screen: Vec<String> = (0..7)
+                .map(|y| (0..130).map(|x| buffer[(x, y)].symbol()).collect())
+                .collect();
+            for text in &texts {
+                assert!(screen.iter().any(|line| line.contains(text)));
+            }
+            // Optional live-test fixtures come from the real terminal renderer
+            // and the very same snapshot, rather than hand-copied counts.
+            if let Ok(dir) = std::env::var("CORGI_HERD_PREVIEW_DIR") {
+                fs::create_dir_all(&dir).unwrap();
+                fs::write(
+                    Path::new(&dir).join(format!("herd-{suffix}.txt")),
+                    screen.join("\n"),
+                )
+                .unwrap();
+                fs::write(
+                    Path::new(&dir).join(format!("herd-{suffix}.json")),
+                    serde_json::to_string(&frame).unwrap(),
+                )
+                .unwrap();
+            }
+        }
+    }
 
     /// A fake Herdr that answers `replies` in order, one connection each, and
     /// checks that every request calls the method its reply is paired with.
@@ -572,6 +676,36 @@ mod tests {
         assert_eq!(
             frame,
             json!({
+                "herd": {
+                    "columns": 15, "tone": "cyan",
+                    "lines": [
+                        {"spans": [
+                            {"text": " ● ", "cells": 3, "tone": "cyan", "bold": true},
+                            {"text": "1", "cells": 1, "tone": "cyan", "bold": true},
+                            {"text": " WORKING", "cells": 8, "tone": "cyan", "bold": true}
+                        ]},
+                        {"spans": [
+                            {"text": " ! ", "cells": 3, "tone": "yellow", "bold": true},
+                            {"text": "0", "cells": 1, "tone": "yellow", "bold": true},
+                            {"text": " BLOCKED", "cells": 8, "tone": "yellow", "bold": true}
+                        ]},
+                        {"spans": [
+                            {"text": " ⇡ ", "cells": 3, "tone": "magenta", "bold": true},
+                            {"text": "0", "cells": 1, "tone": "magenta", "bold": true},
+                            {"text": " MERGE", "cells": 6, "tone": "magenta", "bold": true}
+                        ]},
+                        {"spans": [
+                            {"text": " ✓ ", "cells": 3, "tone": "green", "bold": true},
+                            {"text": "0", "cells": 1, "tone": "green", "bold": true},
+                            {"text": " DONE", "cells": 5, "tone": "green", "bold": true}
+                        ]},
+                        {"spans": [
+                            {"text": " · ", "cells": 3, "tone": "muted", "bold": true},
+                            {"text": "1", "cells": 1, "tone": "muted", "bold": true},
+                            {"text": " IDLE", "cells": 5, "tone": "muted", "bold": true}
+                        ]}
+                    ]
+                },
                 "agents": [
                     {
                         "agent_status": "idle",
@@ -601,6 +735,7 @@ mod tests {
                         "project_group": "corgi",
                         "supervisor": true,
                         "scratch": false,
+                        "ready_to_merge": false,
                         "task": "Supervisor",
                         "tool": "No command yet",
                         "tool_kind": "ready"
@@ -669,6 +804,7 @@ mod tests {
                         "project_group": "corgi",
                         "supervisor": false,
                         "scratch": false,
+                        "ready_to_merge": false,
                         "task": "Pin the bar contract",
                         "tool": "cargo test",
                         "tool_kind": "command"
