@@ -10,7 +10,9 @@ its pane in the terminal. Colors follow the active Omarchy theme.
 
 ![Popup with a collapsed supervisor project, a standalone agent and a scratch session](preview.png)
 
-The preview uses made-up agents and no account usage data.
+The preview uses made-up agents and illustrative usage data. The HERD card shares
+the dashboard’s WORKING, BLOCKED, MERGE, DONE and IDLE counts; agents tagged
+ready to merge count as MERGE instead of DONE or IDLE.
 
 The bar shows the corgi with a small underline when agents are running
 (accent), need your attention (urgent) or have finished (green); attention
@@ -73,7 +75,11 @@ All are optional. Change them in the widget's settings in the Omarchy bar.
 - Left click the corgi to open or close the popup; right click it to
   reconnect when the reader stopped.
 - Projects led by a supervisor start collapsed, showing the supervisor and a
-  count of workers by state. Click that row or its ▸ project heading to reveal
+  count of workers by state, with a closing rule beneath the supervisor.
+  The summary uses colored dashboard icons for blocked, merge-ready, working,
+  done and idle workers. Only the total has a visible label; state segments
+  show an icon and count, with state names in tooltips. They wrap on narrow
+  popups. Click that row or its ▸ project heading to reveal
   the agents; click the ▾ heading to collapse them. Scratch sessions and projects
   without a supervisor always show their agents.
 - Each visible agent takes three lines: its state and task with model, context,

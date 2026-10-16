@@ -10,12 +10,16 @@ Item {
   required property var palette
   property int columns: 14
   property int horizontalPadding: 1
-  readonly property real cellWidth: metrics.advanceWidth("0")
+  // advanceWidth() in a binding does not track font changes: it cached the
+  // application's initial 15px font even after our 12px font was applied.
+  // TextMetrics exposes a notifying property, so the box and text use one grid.
+  readonly property real cellWidth: cellMetrics.advanceWidth
   readonly property real lineHeight: Math.ceil(metrics.height)
   implicitWidth: columns * cellWidth
   implicitHeight: lineHeight * 7
 
   FontMetrics { id: metrics; font.family: "monospace"; font.pixelSize: Style.space(12) }
+  TextMetrics { id: cellMetrics; font: metrics.font; text: "0" }
   Rectangle {
     anchors.fill: parent
     anchors.topMargin: root.lineHeight / 2
@@ -59,6 +63,9 @@ Item {
             Text {
               required property var modelData
               text: modelData.text
+              // Terminal spans reserve cells even when a fallback glyph has a
+              // different pixel advance (notably the merge arrow).
+              width: modelData.cells === undefined ? implicitWidth : modelData.cells * root.cellWidth
               textFormat: Text.PlainText
               color: root.palette[modelData.tone] || Color.foreground
               font.family: "monospace"

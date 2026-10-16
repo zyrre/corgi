@@ -427,6 +427,7 @@ impl Theme {
             (roles.success, "green"),
             (roles.warning, "yellow"),
             (roles.danger, "red"),
+            (roles.merge, "magenta"),
             (roles.muted, "muted"),
         ]
         .into_iter()
@@ -776,7 +777,7 @@ mod tests {
         let theme = Theme::assumed();
         assert_eq!(theme.tone(Color::Cyan), Some("cyan"));
         assert_eq!(theme.tone(Color::DarkGray), Some("muted"));
-        assert_eq!(theme.tone(Color::Magenta), None);
+        assert_eq!(theme.tone(theme.roles.merge), Some("magenta"));
         assert_eq!(indexed(Color::Rgb(95, 215, 135)), Some(78));
         assert_eq!(indexed(Color::Indexed(208)), Some(208));
         assert_eq!(indexed(Color::Cyan), None);
