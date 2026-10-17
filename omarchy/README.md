@@ -8,7 +8,7 @@ use, prompt cache, latest message and command, and your plan usage. From the
 popup you can prompt, merge or close an agent, start a new one, and jump to
 its pane in the terminal. Colors follow the active Omarchy theme.
 
-![Popup with a collapsed supervisor project, a standalone agent and a scratch session](preview.png)
+![Popup with five worker states in an expanded supervisor project and a second collapsed project](preview.png)
 
 The preview uses made-up agents and illustrative usage data. The HERD card shares
 the dashboard’s WORKING, BLOCKED, MERGE, DONE and IDLE counts; agents tagged
