@@ -122,7 +122,9 @@ Panel {
   function submitPrompt() {
     if (!promptPaneId || promptProcess.running || !promptInput.text.trim()) return
     errorText = ""
-    promptProcess.command = ["env", "HERDR_SOCKET_PATH=" + socketPath, "herdr", "agent", "prompt", promptPaneId, promptInput.text.trim()]
+    // Capture now: the popup can be dismissed before Process.onStarted runs.
+    promptProcess.pendingText = promptInput.text.trim()
+    promptProcess.command = [binaryPath, "--bar-prompt", socketPath, promptPaneId]
     promptProcess.running = true
   }
 
@@ -327,6 +329,12 @@ Panel {
 
   Process {
     id: promptProcess
+    property string pendingText: ""
+    stdinEnabled: true
+    onStarted: {
+      write(JSON.stringify({text: pendingText}) + "\n")
+      pendingText = ""
+    }
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -336,6 +344,7 @@ Panel {
       }
     }
     onExited: function(exitCode) {
+      pendingText = ""
       if (exitCode === 0) {
         root.noticeText = "Prompt sent"
         root.cancelPrompt()

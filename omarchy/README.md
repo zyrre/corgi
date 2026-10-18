@@ -115,10 +115,11 @@ All are optional. Change them in the widget's settings in the Omarchy bar.
 ## What it runs
 
 The widget runs `corgi` (which talks to Herdr's socket, and fetches plan
-usage as described in Corgi's README), `herdr agent prompt` to send prompts,
-and, when you jump to a pane, `herdr status` and `hyprctl` to find and focus
-the terminal. It reads `/proc` to tell which terminal shows the session. It
-installs nothing and keeps no data of its own.
+usage as described in Corgi's README). Prompts go to Corgi through stdin and
+then directly to Herdr's socket; their text is never put in process arguments
+or environment variables. When you jump to a pane, it runs `herdr status` and
+`hyprctl` to find and focus the terminal. It reads `/proc` to tell which
+terminal shows the session. It installs nothing and keeps no data of its own.
 
 ## Source and license
 

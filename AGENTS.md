@@ -169,6 +169,21 @@ or `right`, though Omarchy knows more sections. Omarchy's shell reads no
 without filling in `defaults`, so `Panel.qml` keeps its own fallbacks and
 treats an empty setting as unset.
 
+For changes to the widget's existing-agent prompt path, `cargo test` exercises
+the real `--bar-prompt SOCKET PANE` binary against a fake Unix socket. The
+endpoint accepts one newline-terminated JSON object with a nonempty `text`
+string on stdin; embedded newlines must be JSON-escaped. Keep prompt text out
+of argv/environment and discard raw parser/Herdr errors, which can echo it.
+Never automatically retry an unconfirmed delivery.
+
+On an Omarchy machine, after `cargo build --release`, also run
+`python3 scripts/test-omarchy-prompt.py`. It opens a separate Quickshell preview
+with the actual widget and controlled Herdr socket, checks the running process
+tree's argv/environment while delivery is held, and verifies the form's success,
+failure and explicit-retry lifecycle. It needs Linux `/proc`, graphical session
+access and the Omarchy shell QML (`OMARCHY_PATH` defaults to `/usr/share/omarchy`).
+It changes no installed files or registrations and closes its own preview.
+
 ### Trying a change on an Omarchy machine
 
 The running Omarchy bar loads `~/.config/omarchy/plugins/io.github.zyrre.corgi/`,
