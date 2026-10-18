@@ -176,13 +176,25 @@ string on stdin; embedded newlines must be JSON-escaped. Keep prompt text out
 of argv/environment and discard raw parser/Herdr errors, which can echo it.
 Never automatically retry an unconfirmed delivery.
 
-On an Omarchy machine, after `cargo build --release`, also run
-`python3 scripts/test-omarchy-prompt.py`. It opens a separate Quickshell preview
-with the actual widget and controlled Herdr socket, checks the running process
-tree's argv/environment while delivery is held, and verifies the form's success,
-failure and explicit-retry lifecycle. It needs Linux `/proc`, graphical session
-access and the Omarchy shell QML (`OMARCHY_PATH` defaults to `/usr/share/omarchy`).
-It changes no installed files or registrations and closes its own preview.
+On an Omarchy machine, after `cargo build --release`, also run the prompt test.
+Callers must first provide a supported isolated Wayland compositor and set
+`CORGI_PROMPT_TEST_DISPLAY` to its absolute socket path. The test refuses the
+inherited desktop display; keep the isolated compositor's host windows off
+workspaces 1–4. With `isolated_wayland_socket` set to that already-started
+compositor's socket:
+
+```bash
+CORGI_PROMPT_TEST_DISPLAY="$isolated_wayland_socket" python3 scripts/test-omarchy-prompt.py
+```
+
+It opens a Quickshell preview on that display with the actual widget and a
+controlled Herdr socket, checks argv/environment while delivery is held, and
+verifies success, failure, explicit retry and dismissal during send. Startup
+assertions follow `Process.started`: the `running` getter can become true before
+its notifications update QML bindings. It needs Linux `/proc` and the Omarchy
+shell QML (`OMARCHY_PATH` defaults to `/usr/share/omarchy`). It changes no installed
+files or registrations and closes its own preview; callers manage the isolated
+compositor's lifecycle.
 
 ### Trying a change on an Omarchy machine
 
