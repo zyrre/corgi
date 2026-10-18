@@ -7,6 +7,7 @@ pub mod git;
 pub mod harness;
 pub mod herdr;
 pub mod inbox;
+mod inbox_privacy;
 pub mod job;
 pub mod model;
 pub(crate) mod motion;

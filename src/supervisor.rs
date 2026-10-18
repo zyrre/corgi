@@ -245,6 +245,7 @@ fn prepare_at(base: &Path, project_root: &str, corgi_bin: &Path) -> Result<Prepa
 }
 
 fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Result<Prepared> {
+    crate::inbox_privacy::state_dir(&state_dir)?;
     for dir in ["briefs", HANDOVERS_DIR] {
         fs::create_dir_all(state_dir.join(dir))
             .with_context(|| format!("create {}", state_dir.display()))?;
@@ -1061,6 +1062,28 @@ impl Handover {
 mod tests {
     use super::*;
     use AgentState::{Blocked, Done, Idle, Working};
+
+    #[test]
+    fn preparation_protects_state_without_changing_shared_parent() {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = crate::test_support::ScratchDir::new("private-supervisor");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let state = parent.join("project");
+        fs::create_dir(&state).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
+        let prepared =
+            prepare_in(state.clone(), "/repos/private", Path::new("/bin/corgi")).unwrap();
+        assert!(prepared.role_file.is_file());
+        assert!(state.join("briefs").is_dir());
+        assert_eq!(
+            fs::metadata(state).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&parent).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+    }
 
     #[test]
     fn a_merge_tag_applies_only_while_its_agent_rests_where_it_was_tagged() {
