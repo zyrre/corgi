@@ -125,6 +125,19 @@ then builds the four binaries and publishes the GitHub release with them and
 their `SHA256SUMS`; it refuses a tag that does not match all three versions.
 Its last job, `omarchy`, then publishes the Omarchy bar widget (below).
 
+After the artifacts exist, independently download all four binaries and hash
+those bytes; compare with the published `SHA256SUMS`, GitHub asset digests and
+retained CI/publication evidence. Review and commit `checksums/vX.Y.Z.sha256`
+in a follow-up source change. Each line is exactly `vX.Y.Z <lowercase 64-digit
+SHA256> <asset filename>` with no header, comments, blank lines or duplicates;
+the version in every row must match the filename and `herdr-plugin.toml`.
+Use the four exact platform asset names from the release workflow. Never
+replace existing pins just because mutable release assets changed: investigate
+the discrepancy. Keep verification evidence with the review. Until reviewed
+pins reach the source checkout users install, that version builds from source.
+The release tag need not contain its own future binary hashes, and the release
+workflow must not automatically grant trust to its output by committing pins.
+
 ## The Omarchy bar widget
 
 `omarchy/` is the widget's source, and is published as it stands, so

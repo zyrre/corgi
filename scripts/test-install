@@ -14,7 +14,7 @@
 # checkout at plugins/.tmp-install-*/checkout and afterwards moves it to
 # plugins/github/<id>-<hash>, as Herdr does once the build passes.
 set -euo pipefail
-unset XDG_BIN_HOME CORGI_BIN_DIR CORGI_LINK
+unset XDG_BIN_HOME CORGI_BIN_DIR CORGI_LINK CORGI_BUILD
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install_script="$script_dir/install.sh"
@@ -55,7 +55,7 @@ fi
 # Prints a fresh state directory holding checkout/, release/ and bin/.
 new_state() {
   local state="$work_root/$1"
-  mkdir -p "$state/checkout/scripts" "$state/release" "$state/bin" "$state/home"
+  mkdir -p "$state/checkout/scripts" "$state/checkout/checksums" "$state/release" "$state/bin" "$state/home"
   cp "$install_script" "$state/checkout/scripts/install.sh"
   cp "$script_dir/link-command.sh" "$state/checkout/scripts/link-command.sh"
   printf 'id = "%s"\nversion = "%s"\n' "$plugin_id" "$version" >"$state/checkout/herdr-plugin.toml"
@@ -84,6 +84,9 @@ publish_release() {
     printf '%s  %s\n' "$(sha256 "$dir/corgi-other-target")" corgi-other-target
     printf '%s  %s\n' "$(sha256 "$dir/$asset")" "$asset"
   } >"$dir/SHA256SUMS"
+  # Snapshot reviewed data before any test replaces mutable release content.
+  printf 'v%s %s %s\n' "$version" "$(sha256 "$dir/$asset")" "$asset" \
+    >"$state/checkout/checksums/v$version.sha256"
 }
 
 # Like new_state, but the checkout sits where Herdr builds an install;
@@ -238,7 +241,7 @@ test_checksum_mismatch_builds_from_source() {
   check "checksum mismatch: exit status" "0" "$status"
   check "checksum mismatch: builds from source" "corgi built from source" "$(installed "$state")"
   check "checksum mismatch: no download folder left behind" "0" "$(leftover_downloads "$state")"
-  check_stderr "checksum mismatch: says why" "does not match its SHA256SUMS entry" "$state"
+  check_stderr "checksum mismatch: says why" "does not match its reviewed checksum pin" "$state"
 }
 
 # --- test: a release without this platform's binary builds from source -----
@@ -246,18 +249,19 @@ test_missing_asset_builds_from_source() {
   local state status=0
   state="$(new_state missing-asset)"
   publish_release "$state" "corgi $version"
-  grep -v -- "$asset" "$state/release/v$version/SHA256SUMS" >"$state/sums" || true
-  mv "$state/sums" "$state/release/v$version/SHA256SUMS"
+  rm "$state/release/v$version/$asset"
 
   run_install "$state" || status=$?
   check "missing asset: builds from source" "corgi built from source" "$(installed "$state")"
-  check_stderr "missing asset: says why" "the v$version release has no $asset" "$state"
+  check_stderr "missing asset: says why" "could not download" "$state"
 }
 
 # --- test: no release for this version builds from source ------------------
 test_missing_release_builds_from_source() {
   local state status=0
   state="$(new_state missing-release)"
+  publish_release "$state" "corgi $version"
+  rm -rf "$state/release/v$version"
 
   run_install "$state" || status=$?
   check "missing release: exit status" "0" "$status"
@@ -274,6 +278,92 @@ test_wrong_version_builds_from_source() {
   run_install "$state" || status=$?
   check "wrong version: builds from source" "corgi built from source" "$(installed "$state")"
   check_stderr "wrong version: says why" "is not $version (it said: corgi 0.0.1)" "$state"
+}
+
+# A matching remote checksum must never authorize replacement bytes, even
+# when they claim the correct version. The marker catches execution at --version.
+test_replaced_remote_artifacts() {
+  local state status=0
+  state="$(new_state replacement-attack)"
+  publish_release "$state" "corgi $version"
+  cat >"$state/release/v$version/$asset" <<'ATTACKER'
+#!/bin/sh
+touch "$HOME/replacement-executed"
+echo "corgi 0.4.2"
+ATTACKER
+  printf '%s  %s\n' "$(sha256 "$state/release/v$version/$asset")" "$asset" \
+    >"$state/release/v$version/SHA256SUMS"
+
+  run_install "$state" || status=$?
+  check "replacement attack: exit status" 0 "$status"
+  check "replacement attack: never executes replacement" no \
+    "$([[ -e "$state/home/replacement-executed" ]] && echo yes || echo no)"
+  check "replacement attack: source build" 1 "$(count_cargo "$state")"
+  check "replacement attack: installed source bytes" "corgi built from source" "$(installed "$state")"
+  check_stderr "replacement attack: rejects local pin mismatch" "does not match its reviewed checksum pin" "$state"
+}
+
+# Untrusted pin data cannot reach even --version, or a later command link.
+test_invalid_pins() {
+  local state kind pins status
+  for kind in missing empty malformed short-hash invalid-hex duplicate conflicting wrong-version wrong-asset missing-platform extra-field malformed-other; do
+    state="$(new_herdr_state "pin-$kind")"
+    publish_release "$state" "corgi $version"
+    # Marker-bearing remote bytes remain unauthorized regardless of pin failure.
+    # shellcheck disable=SC2016 # HOME must expand only if the payload executes.
+    printf '#!/bin/sh\ntouch "$HOME/replacement-executed"\necho "corgi %s"\n' "$version" \
+      >"$state/release/v$version/$asset"
+    printf '%s  %s\n' "$(sha256 "$state/release/v$version/$asset")" "$asset" \
+      >"$state/release/v$version/SHA256SUMS"
+    pins="$state/checkout/checksums/v$version.sha256"
+    # Pin the exact marker-bearing bytes first, then invalidate only trust data.
+    printf 'v%s %s %s\n' "$version" "$(sha256 "$state/release/v$version/$asset")" "$asset" >"$pins"
+    case "$kind" in
+      missing) rm "$pins" ;;
+      empty) : >"$pins" ;;
+      malformed) echo 'not a pin' >"$pins" ;;
+      short-hash) printf 'v%s abc %s\n' "$version" "$asset" >"$pins" ;;
+      invalid-hex) sed 's/ [0-9a-f]/ z/' "$pins" >"$state/edit"; mv "$state/edit" "$pins" ;;
+      duplicate) cat "$pins" >"$state/copy"; cat "$state/copy" >>"$pins" ;;
+      conflicting) printf 'v%s %064d %s\n' "$version" 0 "$asset" >>"$pins" ;;
+      wrong-version) sed "s/v$version /v0.0.1 /" "$pins" >"$state/edit"; mv "$state/edit" "$pins" ;;
+      wrong-asset) sed "s/$asset/corgi-other-target/" "$pins" >"$state/edit"; mv "$state/edit" "$pins" ;;
+      missing-platform) printf 'v%s %064d corgi-aarch64-apple-darwin\n' "$version" 0 >"$pins"
+        if [[ "$asset" == corgi-aarch64-apple-darwin ]]; then
+          sed 's/aarch64/x86_64/' "$pins" >"$state/edit"; mv "$state/edit" "$pins"
+        fi ;;
+      extra-field) sed 's/$/ extra/' "$pins" >"$state/edit"; mv "$state/edit" "$pins" ;;
+      malformed-other) echo 'invalid unrelated entry' >>"$pins" ;;
+    esac
+    status=0
+    run_install "$state" || status=$?
+    check "pin $kind: exit status" 0 "$status"
+    check "pin $kind: never executes remote bytes" no \
+      "$([[ -e "$state/home/replacement-executed" ]] && echo yes || echo no)"
+    check "pin $kind: builds local source" 1 "$(count_cargo "$state")"
+    finish_herdr_install "$state"
+    check "pin $kind: links source binary" "corgi built from source" "$(command_version "$state/home/.local/bin")"
+    check_stderr "pin $kind: explains fallback" "reviewed checksum pin" "$state"
+  done
+}
+
+# Remote sums have no authority, and are not required for trusted downloads.
+test_remote_sums_not_required() {
+  local state kind status
+  for kind in absent malformed; do
+    state="$(new_state "remote-sums-$kind")"
+    publish_release "$state" "corgi $version"
+    if [[ "$kind" == absent ]]; then
+      rm "$state/release/v$version/SHA256SUMS"
+    else
+      echo 'untrusted nonsense' >"$state/release/v$version/SHA256SUMS"
+    fi
+    status=0
+    run_install "$state" || status=$?
+    check "remote sums $kind: exit status" 0 "$status"
+    check "remote sums $kind: trusted download" "corgi $version" "$(installed "$state")"
+    check "remote sums $kind: no source build" 0 "$(count_cargo "$state")"
+  done
 }
 
 # --- test: a failing cargo build fails the install --------------------------
@@ -458,6 +548,9 @@ test_no_link_outside_herdr() {
   check "outside Herdr: nothing linked" "no" "$([[ -e "$state/home/.local" ]] && echo yes || echo no)"
 }
 
+test_replaced_remote_artifacts
+test_invalid_pins
+test_remote_sums_not_required
 test_downloads_release_binary
 test_clean_checkout_past_tag_downloads
 test_dirty_checkout_builds_from_source

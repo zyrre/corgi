@@ -5,8 +5,8 @@ min_herdr_version = "0.8.2"
 description = "A small, quick dashboard for Herdr coding agents."
 platforms = ["linux", "macos"]
 
-# Downloads the prebuilt binary of this version's release, or builds from
-# source with cargo when there is none (see the script for overrides).
+# Downloads this version's binary only when it matches a committed checksum
+# pin; otherwise builds local source with cargo (see the script for overrides).
 [[build]]
 command = ["sh", "scripts/install.sh"]
 

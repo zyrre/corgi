@@ -3,8 +3,8 @@
 #
 # Herdr runs this as the plugin's build step on `herdr plugin install`. It
 # downloads the prebuilt binary of the release named by herdr-plugin.toml's
-# `version` for this machine, checks it against the release's SHA256SUMS, and
-# falls back to `cargo build --release --locked` when there is no such binary
+# `version` for this machine, checks it against this checkout's committed
+# checksum pins, and falls back to `cargo build --release --locked` when there is no such binary
 # or it cannot be verified. A checkout with uncommitted changes to tracked
 # files is a developer's, so it always builds what it has.
 #
@@ -74,6 +74,18 @@ if [ -e .git ] && command -v git >/dev/null 2>&1; then
   origin=$(git remote get-url origin 2>/dev/null)
 fi
 
+# The file binds each digest to both a version and an exact platform asset.
+# Reject the whole file on malformed or duplicate entries; never let remote
+# SHA256SUMS (including a download mirror's) supply or override trusted bytes.
+pins="checksums/$tag.sha256"
+[ -f "$pins" ] || build_from_source "no reviewed checksum pins for $tag ($pins)"
+expected=$(awk -v tag="$tag" -v name="$asset" '
+  NF != 3 || $1 != tag || length($2) != 64 || $2 ~ /[^0-9a-f]/ ||
+    $3 !~ /^corgi-(aarch64|x86_64)-(apple-darwin|unknown-linux-musl)$/ { bad = 1 }
+  { if (seen[$3]++) bad = 1; if ($3 == name) { digest = $2; matches++ } }
+  END { if (bad || matches != 1) exit 1; print digest }
+' "$pins") || build_from_source "invalid or missing reviewed checksum pin for $asset $tag in $pins"
+
 if [ -n "${CORGI_DOWNLOAD_URL:-}" ]; then
   base="${CORGI_DOWNLOAD_URL%/}/$tag"
 else
@@ -104,15 +116,11 @@ tmp=$(mktemp -d "target/release/.download.XXXXXX") || {
 trap '[ -z "$tmp" ] || rm -rf "$tmp"' EXIT
 
 say "downloading $asset $tag"
-fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS" ||
-  build_from_source "could not download $base/SHA256SUMS"
-expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1 }' "$tmp/SHA256SUMS")
-[ -n "$expected" ] || build_from_source "the $tag release has no $asset"
 fetch "$base/$asset" "$tmp/$asset" ||
   build_from_source "could not download $base/$asset"
 actual=$(sha256 "$tmp/$asset")
 [ "$actual" = "$expected" ] ||
-  build_from_source "the downloaded $asset does not match its SHA256SUMS entry (got $actual, expected $expected)"
+  build_from_source "the downloaded $asset does not match its reviewed checksum pin (got $actual, expected $expected)"
 
 chmod 755 "$tmp/$asset"
 reported=$("$tmp/$asset" --version 2>/dev/null)

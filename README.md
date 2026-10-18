@@ -114,7 +114,7 @@ Requirements:
 - Claude Code, Codex or both, for the agents
 - Rust 1.89 or newer, only when [building from source](#build-from-source)
 
-The install downloads the prebuilt binary of the plugin's version, checked against its release's checksums, or builds it with Cargo when there is none for your machine. It links the `corgi` command into `~/.local/bin` (if that is not on your `PATH`, run `~/.local/bin/corgi setup`). `corgi setup` asks which key should open the dashboard, or focus it when it is already open, `prefix+d` unless you type another; it appends that binding to Herdr's `config.toml`, reloads Herdr's config and opens Corgi, which confirms the key in a popup. It changes nothing when a key is bound already, and is safe to run again. Run the install again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`).
+The install downloads the prebuilt binary of the plugin's version, verified before execution against version and platform checksum pins committed in [`checksums/`](checksums/), or builds local source with `cargo build --release --locked` when a pin or matching download is unavailable. It links the `corgi` command into `~/.local/bin` (if that is not on your `PATH`, run `~/.local/bin/corgi setup`). `corgi setup` asks which key should open the dashboard, or focus it when it is already open, `prefix+d` unless you type another; it appends that binding to Herdr's `config.toml`, reloads Herdr's config and opens Corgi, which confirms the key in a popup. It changes nothing when a key is bound already, and is safe to run again. Run the install again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`).
 
 To bind the key by hand instead, add this to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
 
@@ -143,7 +143,7 @@ git clone https://github.com/zyrre/corgi && cd corgi
 cargo build --release && herdr plugin link "$PWD"
 ```
 
-Uninstall the plugin before you link, since both use the same id. The installer builds from source when `CORGI_BUILD=source` is set, and `CORGI_DOWNLOAD_URL=<url>` downloads from `<url>/v<version>/` instead of the GitHub release. `CORGI_LINK=0` skips the `~/.local/bin` link, and `CORGI_BIN_DIR=<dir>` links into `<dir>` instead.
+Uninstall the plugin before you link, since both use the same id. The installer builds from source when `CORGI_BUILD=source` is set, and `CORGI_DOWNLOAD_URL=<url>` downloads from `<url>/v<version>/` instead of the GitHub release; mirrors must serve the same pinned bytes. Remote `SHA256SUMS` never supplies trust. `CORGI_LINK=0` skips the `~/.local/bin` link, and `CORGI_BIN_DIR=<dir>` links into `<dir>` instead.
 
 ## Contributing
 
