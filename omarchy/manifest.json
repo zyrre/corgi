@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.zyrre.corgi",
   "name": "Corgi",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "author": "zyrre",
   "license": "MIT",
   "description": "Your Herdr coding agents in the Omarchy bar: their state, latest messages and commands, and plan usage, with prompt, merge, close, new agent and jump-to-pane. Needs Herdr and the Corgi Herdr plugin.",
