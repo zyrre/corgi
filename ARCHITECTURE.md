@@ -555,6 +555,28 @@ role. So Corgi keeps its own record and puts the tokens back.
   hook's line) through the same code. Projects of the same directory name
   share a state directory, so each item names its project root, and a
   supervisor gets only its own project's items.
+- Inbox privacy lives in `src/inbox_privacy.rs`. Before supervisor preparation
+  writes content, its Corgi-owned project state directory is protected. New
+  state/report directories request 0700; inbox, lock, spilled report and
+  compaction files request 0600 at open, before content is written. Umask may
+  remove further owner permissions. Repairs only remove bits (directory mode
+  AND 0700, file mode AND 0600), never grant missing owner access; an access
+  failure stops writes. Existing HOME/XDG/shared parents are not chmodded.
+  Every inbox read (including dashboard polling and CLI reads), append,
+  delivery write and saved-report read checks the state directory, reports
+  directory, inbox, lock and interrupted compaction file. All old report files,
+  including orphans, are swept on first access in a process and again when the
+  reports directory's identity or timestamps change. Successful sweeps are
+  cached only in memory, keeping unchanged polling independent of report count;
+  an in-place external chmod of an unselected old report is revisited by a new
+  process or the next directory change. A selected report is always checked.
+  State-directory migration aliases remain supported. Content symlinks,
+  report-directory symlinks, nonregular files, multiply linked files and
+  foreign-owned entries fail closed, without chmodding/truncating their targets.
+  Opens use O_NOFOLLOW and validate the opened inode before chmod or truncation.
+  This boundary protects against other local users, not concurrent filesystem
+  replacement by the owning user. CLI inbox/report errors propagate; existing
+  infallible dashboard readers log errors and return no private content.
 - A wake's id names the agent, its pane, the run of state changes it is
   in, its `state_change_seq` and the state, and an item whose id the inbox
   already has is not added again. Herdr restores a pane's id and agent

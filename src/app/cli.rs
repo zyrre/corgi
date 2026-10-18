@@ -789,9 +789,9 @@ pub fn report(args: &[String]) -> Result<()> {
     });
     let printed = match (&connected, running) {
         (Some((client, _)), Some(agent)) => print_running_report(client, &agent, target),
-        _ => inbox_report(target)
+        _ => inbox_report(target)?
             .with_context(|| format!("no running agent named {target}, and no report kept for it"))
-            .map(|(dir, item)| print_kept_report(target, &dir, &item)),
+            .and_then(|(dir, item)| print_kept_report(target, &dir, &item)),
     };
     if let Ok(root) = project_root(None) {
         print_inbox_footer(&root);
@@ -810,14 +810,13 @@ fn print_running_report(
 ) -> Result<()> {
     let info = &agent.info;
     let name = info.name.as_deref().unwrap_or(target);
-    let kept = crate::supervisor::state_dir(&agent.project_root)
-        .ok()
-        .and_then(|dir| {
-            let item = current_report(&Inbox::read(&dir), agent, name)?.clone();
-            Some((dir, item))
-        });
+    let dir = crate::supervisor::state_dir(&agent.project_root)?;
+    let saved = Inbox::try_read(&dir)?;
+    let kept = current_report(&saved, agent, name)
+        .cloned()
+        .map(|item| (dir, item));
     if let Some((dir, item)) = kept {
-        print_kept_report(name, &dir, &item);
+        print_kept_report(name, &dir, &item)?;
     } else if let Some(entry) = SessionReader::default().facts(info).report {
         println!("{}", entry.text);
     } else {
@@ -845,27 +844,30 @@ fn current_report<'a>(
 
 /// Prints the report `item` of the inbox in the state directory `dir` kept
 /// of the agent `name`.
-fn print_kept_report(name: &str, dir: &std::path::Path, item: &Item) {
+fn print_kept_report(name: &str, dir: &std::path::Path, item: &Item) -> Result<()> {
     let state = item.state.as_deref().unwrap_or("stopped");
     eprintln!(
         "(the report {name} left when it was {state}, at {})",
         item.ts
     );
-    let text = item.report_text(dir).unwrap_or_default();
+    let text = item.try_report_text(dir)?.unwrap_or_default();
     println!("{}", text.trim_end());
+    Ok(())
 }
 
 /// The newest report of the agent `name` kept in any supervisor's inbox, with
 /// the state directory it is in, for an agent whose pane is gone.
-fn inbox_report(name: &str) -> Option<(PathBuf, Item)> {
-    let base = corgi_state_dir()?;
-    inbox::all_state_dirs(&base)
-        .into_iter()
-        .filter_map(|dir| {
-            let item = Inbox::read(&dir).newest_report(name)?.clone();
-            Some((dir, item))
-        })
-        .max_by(|(_, a), (_, b)| a.ts.cmp(&b.ts))
+fn inbox_report(name: &str) -> Result<Option<(PathBuf, Item)>> {
+    let Some(base) = corgi_state_dir() else {
+        return Ok(None);
+    };
+    let mut reports = Vec::new();
+    for dir in inbox::all_state_dirs(&base) {
+        if let Some(item) = Inbox::try_read(&dir)?.newest_report(name).cloned() {
+            reports.push((dir, item));
+        }
+    }
+    Ok(reports.into_iter().max_by(|(_, a), (_, b)| a.ts.cmp(&b.ts)))
 }
 
 pub const NOTIFY_USAGE: &str = "\
@@ -995,7 +997,7 @@ pub fn inbox_command(args: &[String]) -> Result<()> {
     }
     let root = project_root(project)?;
     let dir = crate::supervisor::state_dir(&root)?;
-    let inbox = Inbox::read(&dir);
+    let inbox = Inbox::try_read(&dir)?;
     let (text, shown) = inbox_text(&inbox, &dir, &root, delivered);
     print!("{text}");
     if take {

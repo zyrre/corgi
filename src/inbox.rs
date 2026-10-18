@@ -28,6 +28,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    inbox_privacy as privacy,
     supervisor::{WAKE_PREFIX, wake_report_message},
     time::{parse_rfc3339, rfc3339_utc, unix_now, utc_stamp},
 };
@@ -141,11 +142,24 @@ impl Item {
 
     /// The item's report in full, read from its file when it has one there.
     pub fn report_text(&self, dir: &Path) -> Option<String> {
-        self.report.clone().or_else(|| {
-            self.report_file
-                .as_ref()
-                .and_then(|file| fs::read_to_string(dir.join(file)).ok())
+        self.try_report_text(dir).unwrap_or_else(|error| {
+            eprintln!("Cannot read private inbox report: {error:#}");
+            None
         })
+    }
+
+    pub fn try_report_text(&self, dir: &Path) -> Result<Option<String>> {
+        privacy::repair(dir)?;
+        if let Some(report) = &self.report {
+            return Ok(Some(report.clone()));
+        }
+        let Some(name) = &self.report_file else {
+            return Ok(None);
+        };
+        let path = privacy::report_path(dir, name)?;
+        let mut text = String::new();
+        privacy::open(&path, OpenOptions::new().read(true))?.read_to_string(&mut text)?;
+        Ok(Some(text))
     }
 
     /// Whether the item is for the project at `root`.
@@ -215,9 +229,29 @@ pub struct Inbox {
 impl Inbox {
     /// The inbox in the state directory `dir`; empty when there is none.
     pub fn read(dir: &Path) -> Self {
-        fs::read_to_string(dir.join(INBOX_FILE))
-            .map(|text| Self::parse(&text))
-            .unwrap_or_default()
+        Self::try_read(dir).unwrap_or_else(|error| {
+            eprintln!("Cannot read private inbox: {error:#}");
+            Self::default()
+        })
+    }
+
+    pub fn try_read(dir: &Path) -> Result<Self> {
+        privacy::repair(dir)?;
+        let path = dir.join(INBOX_FILE);
+        let mut file = match privacy::open(&path, OpenOptions::new().read(true)) {
+            Ok(file) => file,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(Self::default());
+            }
+            Err(error) => return Err(error),
+        };
+        let mut text = String::new();
+        file.read_to_string(&mut text)?;
+        Ok(Self::parse(&text))
     }
 
     /// The inbox written as `text`. A line that does not parse, such as a
@@ -319,7 +353,7 @@ pub fn append(dir: &Path, mut item: Item) -> Result<Option<Item>> {
     let _lock = lock(dir)?;
     if item.id.is_empty() {
         item.id = fresh_id(item.agent.as_deref().unwrap_or(&item.source));
-    } else if Inbox::read(dir).contains(&item.id) {
+    } else if Inbox::try_read(dir)?.contains(&item.id) {
         return Ok(None);
     }
     if item.ts.is_empty() {
@@ -334,9 +368,11 @@ pub fn append(dir: &Path, mut item: Item) -> Result<Option<Item>> {
     {
         let file = format!("{REPORTS_DIR}/{}.md", file_safe(&item.id));
         let path = dir.join(&file);
-        fs::create_dir_all(dir.join(REPORTS_DIR))
-            .with_context(|| format!("create {}", dir.join(REPORTS_DIR).display()))?;
-        fs::write(&path, report).with_context(|| format!("write {}", path.display()))?;
+        privacy::reports_dir(dir)?;
+        let mut output = privacy::open(&path, OpenOptions::new().write(true).create_new(true))?;
+        output
+            .write_all(report.as_bytes())
+            .with_context(|| format!("write {}", path.display()))?;
         item.report_file = Some(file);
     }
     append_line(dir, &serde_json::to_string(&item)?)?;
@@ -387,9 +423,10 @@ pub fn footer(
 
 /// The inbox's write lock, held until the file is dropped.
 fn lock(dir: &Path) -> Result<File> {
-    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    privacy::state_dir(dir)?;
+    privacy::repair(dir)?;
     let path = dir.join(LOCK_FILE);
-    let file = File::create(&path).with_context(|| format!("open {}", path.display()))?;
+    let file = privacy::open(&path, OpenOptions::new().write(true).create(true))?;
     file.lock()
         .with_context(|| format!("lock {}", path.display()))?;
     Ok(file)
@@ -400,12 +437,10 @@ fn lock(dir: &Path) -> Result<File> {
 /// first, so the new line is not taken for part of it.
 fn append_line(dir: &Path, line: &str) -> Result<()> {
     let path = dir.join(INBOX_FILE);
-    let mut file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .open(&path)
-        .with_context(|| format!("open {}", path.display()))?;
+    let mut file = privacy::open(
+        &path,
+        OpenOptions::new().create(true).read(true).append(true),
+    )?;
     let length = file.metadata().map_or(0, |meta| meta.len());
     let mut last = *b"\n";
     if length > 0 {
@@ -428,7 +463,7 @@ fn compact_if_large(dir: &Path) -> Result<()> {
     if fs::metadata(&path).map_or(0, |meta| meta.len()) <= COMPACT_AT {
         return Ok(());
     }
-    let inbox = Inbox::read(dir);
+    let inbox = Inbox::try_read(dir)?;
     let delivered = inbox.delivered();
     // Undelivered items are never dropped, so a file of those alone stays.
     if delivered.len() <= KEEP_DELIVERED {
@@ -463,15 +498,22 @@ fn compact_if_large(dir: &Path) -> Result<()> {
         text.push('\n');
     }
     let temporary = dir.join(format!("{INBOX_FILE}.tmp"));
-    fs::write(&temporary, text).with_context(|| format!("write {}", temporary.display()))?;
+    // Reuse an interrupted compaction only after validating and protecting it.
+    let mut output = privacy::open(&temporary, OpenOptions::new().write(true).create(true))?;
+    output.set_len(0)?;
+    output
+        .write_all(text.as_bytes())
+        .with_context(|| format!("write {}", temporary.display()))?;
     fs::rename(&temporary, &path).with_context(|| format!("replace {}", path.display()))?;
     for item in inbox
         .items
         .iter()
         .filter(|item| dropped.contains(item.id.as_str()))
     {
-        if let Some(file) = &item.report_file {
-            let _ = fs::remove_file(dir.join(file));
+        if let Some(file) = &item.report_file
+            && let Ok(path) = privacy::report_path(dir, file)
+        {
+            let _ = fs::remove_file(path);
         }
     }
     Ok(())
@@ -525,6 +567,238 @@ pub fn all_state_dirs(base: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use crate::test_support::ScratchDir;
+
+    #[test]
+    fn private_inbox_under_permissive_umask() {
+        use std::{
+            os::unix::{
+                fs::{MetadataExt, PermissionsExt},
+                process::CommandExt,
+            },
+            process::Command,
+        };
+        const CHILD: &str = "CORGI_PRIVATE_INBOX_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "inbox::tests::private_inbox_under_permissive_umask",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1");
+            // Only the exec child changes umask; the parallel test runner never does.
+            unsafe {
+                command.pre_exec(|| {
+                    libc::umask(0o022);
+                    Ok(())
+                });
+            }
+            assert!(command.status().unwrap().success());
+            return;
+        }
+        let parent = ScratchDir::new("private-inbox");
+        let mode = |p: &Path| fs::metadata(p).unwrap().mode() & 0o7777;
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let dir = parent.join("state");
+        let inline = append(
+            &dir,
+            Item {
+                report: Some("inline secret".into()),
+                ..wake("small", "inline")
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let long = "private report\n".repeat(500);
+        let spilled = append(
+            &dir,
+            Item {
+                report: Some(long.clone()),
+                ..wake("large", "spilled")
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join(REPORTS_DIR)), 0o700);
+        for name in [INBOX_FILE, LOCK_FILE, "inbox-reports/spilled.md"] {
+            assert_eq!(mode(&dir.join(name)), 0o600);
+        }
+        assert_eq!(
+            inline.try_report_text(&dir).unwrap().as_deref(),
+            Some("inline secret")
+        );
+        mark_delivered(&dir, &[inline.id], "test").unwrap();
+        assert_eq!(Inbox::try_read(&dir).unwrap().delivered().len(), 1);
+        assert_eq!(spilled.try_report_text(&dir).unwrap(), Some(long.clone()));
+
+        // Recreate old, permissive data, including an orphan and interrupted temp.
+        fs::write(dir.join("inbox-reports/orphan.md"), "orphan secret").unwrap();
+        fs::write(dir.join("inbox.jsonl.tmp"), "interrupted").unwrap();
+        let before = fs::read(dir.join(INBOX_FILE)).unwrap();
+        for name in [
+            INBOX_FILE,
+            LOCK_FILE,
+            "inbox.jsonl.tmp",
+            "inbox-reports/spilled.md",
+            "inbox-reports/orphan.md",
+        ] {
+            fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        for path in [&dir, &dir.join(REPORTS_DIR)] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // A read alone protects all old data, with no delivery/content changes.
+        assert_eq!(Inbox::try_read(&dir).unwrap().undelivered().len(), 1);
+        assert_eq!(fs::read(dir.join(INBOX_FILE)).unwrap(), before);
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join(REPORTS_DIR)), 0o700);
+        for name in [
+            INBOX_FILE,
+            LOCK_FILE,
+            "inbox.jsonl.tmp",
+            "inbox-reports/spilled.md",
+            "inbox-reports/orphan.md",
+        ] {
+            assert_eq!(mode(&dir.join(name)), 0o600);
+        }
+        assert_eq!(
+            fs::read_to_string(dir.join("inbox-reports/orphan.md")).unwrap(),
+            "orphan secret"
+        );
+        assert_eq!(spilled.try_report_text(&dir).unwrap(), Some(long));
+        assert_eq!(mode(&parent), 0o755);
+
+        // Actual atomic replacement, retaining undelivered data and delivery history.
+        let mut text = String::from_utf8(before).unwrap();
+        let mut ids = Vec::new();
+        for n in 0..120 {
+            let item = Item {
+                report: Some("x".repeat(3000)),
+                ..wake("old", &format!("old{n}"))
+            };
+            text.push_str(&serde_json::to_string(&item).unwrap());
+            text.push('\n');
+            ids.push(item.id);
+        }
+        fs::write(dir.join(INBOX_FILE), text).unwrap();
+        mark_delivered(&dir, &ids, "test").unwrap();
+        let old_inode = fs::metadata(dir.join(INBOX_FILE)).unwrap().ino();
+        append(&dir, wake("new", "new")).unwrap();
+        assert_ne!(fs::metadata(dir.join(INBOX_FILE)).unwrap().ino(), old_inode);
+        assert_eq!(mode(&dir.join(INBOX_FILE)), 0o600);
+        assert!(!dir.join("inbox.jsonl.tmp").exists());
+        let inbox = Inbox::try_read(&dir).unwrap();
+        assert!(inbox.contains("spilled") && inbox.contains("new"));
+        assert_eq!(inbox.delivered().len(), KEEP_DELIVERED);
+
+        // A stricter umask is preserved at creation, and repair adds no owner bits.
+        let restricted = parent.join("restricted");
+        fs::create_dir(&restricted).unwrap();
+        let path = restricted.join("file");
+        fs::write(&path, "read only").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        privacy::open(&path, OpenOptions::new().read(true)).unwrap();
+        assert_eq!(mode(&path), 0o400);
+    }
+
+    #[test]
+    fn private_creation_preserves_stricter_umask() {
+        use std::{
+            os::unix::{fs::PermissionsExt, process::CommandExt},
+            process::Command,
+        };
+        const CHILD: &str = "CORGI_STRICT_INBOX_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "inbox::tests::private_creation_preserves_stricter_umask",
+                ])
+                .env(CHILD, "1");
+            unsafe {
+                command.pre_exec(|| {
+                    libc::umask(0o277);
+                    Ok(())
+                });
+            }
+            assert!(command.status().unwrap().success());
+            return;
+        }
+        let parent = ScratchDir::new("strict-inbox");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let path = parent.join("content");
+        let mut file =
+            privacy::open(&path, OpenOptions::new().write(true).create_new(true)).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o400);
+        file.write_all(b"private at creation").unwrap();
+        let dir = parent.join("state");
+        privacy::state_dir(&dir).unwrap();
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+        assert_eq!(fs::read_to_string(path).unwrap(), "private at creation");
+        // Permit the scratch fixture to remove its own contents on drop.
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn private_inbox_rejects_content_aliases_but_preserves_state_aliases() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let parent = ScratchDir::new("inbox-aliases");
+        let outside = parent.join("unrelated");
+        fs::write(&outside, "untouched").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o644)).unwrap();
+        for (i, name) in [
+            INBOX_FILE,
+            LOCK_FILE,
+            "inbox.jsonl.tmp",
+            "inbox-reports/old.md",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let dir = parent.join(format!("state{i}"));
+            fs::create_dir_all(dir.join(REPORTS_DIR)).unwrap();
+            symlink(&outside, dir.join(name)).unwrap();
+            assert!(Inbox::try_read(&dir).is_err(), "{name}");
+            assert!(append(&dir, wake("a", "a")).is_err(), "{name}");
+        }
+        let dir = parent.join("reports-alias");
+        fs::create_dir(&dir).unwrap();
+        symlink(&parent, dir.join(REPORTS_DIR)).unwrap();
+        assert!(Inbox::try_read(&dir).is_err());
+        let hard = parent.join("hard-link");
+        fs::create_dir(&hard).unwrap();
+        fs::hard_link(&outside, hard.join(INBOX_FILE)).unwrap();
+        assert!(append(&hard, wake("a", "a")).is_err());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched");
+        assert_eq!(
+            fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        let real = parent.join("real-state");
+        fs::create_dir(&real).unwrap();
+        let alias = parent.join("old-state");
+        symlink(&real, &alias).unwrap();
+        append(&alias, wake("a", "a")).unwrap();
+        assert!(Inbox::try_read(&real).unwrap().contains("a"));
+        assert!(
+            fs::symlink_metadata(alias)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let escaped = Item {
+            report_file: Some("../unrelated".into()),
+            ..Item::default()
+        };
+        assert!(escaped.try_report_text(&real).is_err());
+    }
 
     fn wake(agent: &str, id: &str) -> Item {
         Item {
