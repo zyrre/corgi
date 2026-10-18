@@ -72,6 +72,10 @@ fn main() -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("--bar-transcript requires a pane ID"))?;
             corgi::app::bar_transcript(socket, pane_id)
         }
+        Some("--bar-prompt") => {
+            anyhow::ensure!(args.len() == 4, "--bar-prompt requires socket and pane ID");
+            corgi::app::bar_prompt(&args[2], &args[3])
+        }
         Some("--bar-action") => {
             anyhow::ensure!(
                 args.len() == 5,

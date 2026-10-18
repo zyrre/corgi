@@ -60,7 +60,7 @@ mod cli;
 mod navigate;
 mod rows;
 mod setup;
-pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_stream, bar_transcript};
+pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub use cli::{
     DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, REPORT_USAGE, SPAWN_USAGE,

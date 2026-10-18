@@ -169,6 +169,45 @@ fn bar_new_options_value(
     }))
 }
 
+/// One JSON object (`{"text":"…"}`), terminated by a newline, on stdin.
+/// JSON escapes embedded newlines, so a multiline prompt is still one record.
+/// Never expose parser details or Herdr replies: either may contain the prompt.
+pub fn bar_prompt(socket: &str, pane_id: &str) -> Result<()> {
+    use std::io::BufRead;
+
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Prompt {
+        text: String,
+    }
+
+    let invalid =
+        || anyhow::anyhow!("Invalid prompt input: expected one JSON line with nonempty text");
+    let mut line = String::new();
+    io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|_| invalid())?;
+    anyhow::ensure!(line.ends_with('\n'), "{}", invalid());
+    let prompt: Prompt = serde_json::from_str(&line).map_err(|_| invalid())?;
+    anyhow::ensure!(!prompt.text.trim().is_empty(), "{}", invalid());
+
+    // A failed response can follow delivery. Submit once, and leave any retry
+    // to the user; do not include the original error even as an anyhow cause.
+    HerdrClient::from_socket_path(socket)
+        .prompt_agent(pane_id, &prompt.text)
+        .map(|_| ())
+        .map_err(|error| {
+            if crate::herdr::HerdrError::is_agent_blocked(&error) {
+                anyhow::anyhow!("Blocked agents must be handled in their own pane")
+            } else {
+                anyhow::anyhow!(
+                    "Could not confirm prompt delivery. Check the agent before retrying."
+                )
+            }
+        })
+}
+
 pub fn bar_new_agent(socket: &str) -> Result<()> {
     use std::io::{BufRead, Write};
     let mut line = String::new();
