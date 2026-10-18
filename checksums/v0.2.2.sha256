@@ -1,0 +1,4 @@
+v0.2.2 f1fbfcfdadf0bf08c7ecefddf771e5396192e28b3a883a4dd8ac7e1569e86083 corgi-aarch64-apple-darwin
+v0.2.2 58cd4e12f08f27e35cb573c3ac2bc7b052057e58714511a15355d8bf8fef40a4 corgi-x86_64-apple-darwin
+v0.2.2 a8d15de98cbb46b9c114e88ae9c877110377d2807bcee39d438b993c1b12f1f8 corgi-aarch64-unknown-linux-musl
+v0.2.2 180e03de9db6e2664b821d0eafe383deb669cf4f354d9604346d2165664a8e0d corgi-x86_64-unknown-linux-musl
