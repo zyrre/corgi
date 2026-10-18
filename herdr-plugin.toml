@@ -1,6 +1,6 @@
 id = "io.github.zyrre.corgi"
 name = "Corgi"
-version = "0.2.2"
+version = "0.2.3"
 min_herdr_version = "0.8.2"
 description = "A small, quick dashboard for Herdr coding agents."
 platforms = ["linux", "macos"]
