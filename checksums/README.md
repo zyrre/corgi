@@ -88,3 +88,43 @@ These pins are a separate candidate for user review and merge. Until reviewed
 pins reach the public source installation path, v0.2.2 installs build from source.
 The release tag itself has no v0.2.2 pins; candidate installation does not verify
 the later public source installation or local activation steps.
+
+## v0.2.3 verification
+
+The [release](https://github.com/zyrre/corgi/releases/tag/v0.2.3) was published by
+[run 39160739431, attempt 1](https://github.com/zyrre/corgi/actions/runs/39160739431)
+from merged commit
+[`ba6ee6c2cfd2b6426b907fc398964592200b3c09`](https://github.com/zyrre/corgi/commit/ba6ee6c2cfd2b6426b907fc398964592200b3c09).
+The version gate, all four builds, release publication and actual Omarchy
+publication succeeded. All four binaries were freshly downloaded and hashed.
+Each matches `v0.2.3.sha256`, the published `SHA256SUMS`, its GitHub asset
+digest, publication log and bytes from its separately downloaded CI artifact.
+Each retained artifact archive matches its API digest and identifies this exact
+run and source commit. Raw downloads, archives, metadata and publication logs
+were retained for review; mutable release sums/API hashes alone did not
+establish these pins. Existing v0.2.1 and v0.2.2 pins are unchanged.
+
+| Asset | Verified bytes | CI artifact ID |
+| --- | ---: | ---: |
+| corgi-aarch64-apple-darwin | 4434032 | 12147649916 |
+| corgi-x86_64-apple-darwin | 4666512 | 12147804563 |
+| corgi-aarch64-unknown-linux-musl | 4396248 | 12148886627 |
+| corgi-x86_64-unknown-linux-musl | 5277440 | 12149165499 |
+
+The native x86_64 Linux public binary is static and reports `corgi 0.2.3`.
+Controlled socket checks verified intact multiline/Unicode stdin delivery once,
+no prompt in held-process argv/environment, safe success/rejection/error and
+disconnect handling, no echo or automatic retry, and malformed-input rejection.
+Isolated inbox/report checks also passed private creation, legacy/orphan repair,
+delivery, compaction and content preservation. CI runs arm64 macOS and both
+Linux assets; x86_64 macOS is cross-built without a runtime smoke test.
+
+The published [Omarchy commit `51a7de1012ce01786294fdd6e270ee93703c60da`](https://github.com/zyrre/omarchy-corgi/commit/51a7de1012ce01786294fdd6e270ee93703c60da)
+matches the tag's `omarchy/` plus `LICENSE` by paths, modes, blobs and bytes,
+retains the previous public history, and passes both manifest validators.
+This does not activate an installed widget.
+
+These pins require a separate user review and merge before public prebuilt
+installation verification and local activation. Until reviewed pins reach the
+public source installation path, v0.2.3 correctly builds from source. The release
+tag itself has no v0.2.3 pins.
