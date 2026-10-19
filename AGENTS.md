@@ -66,6 +66,22 @@ wait until `herdr pane read` shows the dashboard or the shell prompt before
 sending more: keys sent while Corgi starts or quits can reach the dashboard,
 where letters such as `s`, `t` and `x` are actions.
 
+The `herdr pane current` CLI sends the calling pane's ID from
+`HERDR_PANE_ID`, so run inside a pane it returns that pane, not the one
+focused in Herdr's UI; the socket request `pane.current` with `{}` returns
+the focused pane.
+
+To test against an agent without starting one, report a shell pane in the
+preview workspace as one. Corgi hides agent panes without a session, so tag
+it with one too (the pane ID goes before the options), and release it
+afterwards:
+
+```bash
+herdr pane report-agent --source corgi-test --agent claude --state idle "$pane"
+herdr pane report-metadata "$pane" --source corgi-test --token session=test
+herdr pane release-agent "$pane" --source corgi-test --agent claude
+```
+
 Report the temporary workspace label and ID in the handoff. Leave it available
 when the user needs to inspect the result; otherwise close only the preview
 workspace created for the test. Do not run `herdr plugin link "$PWD"` from a
