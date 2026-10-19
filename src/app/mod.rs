@@ -36,6 +36,7 @@ use crate::{
 // closing, and merging.
 mod catalog;
 mod close;
+mod edit;
 mod form;
 mod merge;
 mod notice;
@@ -67,6 +68,7 @@ pub use cli::{
     SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify, report, spawn,
     supervisor_command, tag_command,
 };
+pub use edit::{EDIT_USAGE, edit_command};
 pub use navigate::bar_navigate;
 use rows::codex_thread_id;
 pub use setup::{SETUP_USAGE, setup};
@@ -199,6 +201,11 @@ pub(crate) struct App {
     /// whose refresh has a waker that delivers them.
     inboxes: Option<Inboxes>,
     status_hold_until: Option<Instant>,
+    /// Where this dashboard tells `corgi edit` which agent it has selected;
+    /// only the interactive dashboard, full or compact, shares it.
+    selection_file: Option<std::path::PathBuf>,
+    /// The pane last written there, empty for no agent.
+    shared_selection: Option<String>,
 }
 
 /// What an app reads from the machine it runs on. [`App::new`] reads the
@@ -275,6 +282,8 @@ impl App {
             model_catalogs: ModelCatalogs::default(),
             inboxes: None,
             status_hold_until: None,
+            selection_file: None,
+            shared_selection: None,
         }
     }
 
@@ -559,6 +568,7 @@ impl App {
             KeyCode::Char('t') => self.begin_scratch_agent(),
             KeyCode::Char('s') => self.begin_supervisor(),
             KeyCode::Char('f') | KeyCode::Enter => self.focus_selected(),
+            KeyCode::Char('e') => self.edit_selected(),
             KeyCode::Char('m') => self.begin_merge_worktree(),
             KeyCode::Char('x') => self.begin_close_workspace(),
             KeyCode::Char('r') => self.request_refresh(),
@@ -628,9 +638,11 @@ pub fn run() -> Result<()> {
         app.notice_path = notice::notice_path();
     }
     app.motion = Motion::animated();
+    app.selection_file = edit::selection_file(app.client.socket_path(), std::process::id());
 
     let mut terminal = init_terminal()?;
     let result = run_loop(&mut terminal, &mut app);
+    app.unshare_selection();
     restore_terminal(&mut terminal)?;
     result
 }
@@ -678,6 +690,7 @@ impl App {
         self.poll_model_catalogs();
         self.poll_merge();
         self.close_started_launch();
+        self.share_selection();
         self.refresh_plan_usage();
         self.start_refresh();
     }
