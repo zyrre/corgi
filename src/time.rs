@@ -105,13 +105,13 @@ impl LocalTime {
         }
     }
 
-    /// The local time and date as `HH:MM · DD Mon`, such as `10:21 · 20 Oct`.
+    /// The local time and date as `HH:MM DD Mon`, such as `10:21 20 Oct`.
     pub fn clock_and_date(self) -> String {
         let local = self.secs as i64 + self.offset;
         let (days, time) = (local.div_euclid(86_400), local.rem_euclid(86_400));
         let (_, month, day) = civil_from_days(days);
         format!(
-            "{:02}:{:02} · {day:02} {}",
+            "{:02}:{:02} {day:02} {}",
             time / 3_600,
             time / 60 % 60,
             MONTHS[(month - 1) as usize]
@@ -227,20 +227,20 @@ mod tests {
             }
             .clock_and_date()
         };
-        assert_eq!(local("2026-10-20T10:21:59Z", 0), "10:21 · 20 Oct");
-        assert_eq!(local("2026-10-20T08:21:00Z", 2 * 3_600), "10:21 · 20 Oct");
+        assert_eq!(local("2026-10-20T10:21:59Z", 0), "10:21 20 Oct");
+        assert_eq!(local("2026-10-20T08:21:00Z", 2 * 3_600), "10:21 20 Oct");
         // An offset carries the clock across midnight in either direction,
         // and the date across the end of a month and of a year.
-        assert_eq!(local("2026-10-20T23:30:00Z", 2 * 3_600), "01:30 · 21 Oct");
-        assert_eq!(local("2026-10-01T01:00:00Z", -5 * 3_600), "20:00 · 30 Sep");
+        assert_eq!(local("2026-10-20T23:30:00Z", 2 * 3_600), "01:30 21 Oct");
+        assert_eq!(local("2026-10-01T01:00:00Z", -5 * 3_600), "20:00 30 Sep");
         assert_eq!(
             local("2026-12-31T22:15:00Z", 5 * 3_600 + 1_800),
-            "03:45 · 01 Jan"
+            "03:45 01 Jan"
         );
-        assert_eq!(local("2027-01-01T00:59:00Z", -3_600), "23:59 · 31 Dec");
-        assert_eq!(local("2028-02-28T23:00:00Z", 3_600), "00:00 · 29 Feb");
+        assert_eq!(local("2027-01-01T00:59:00Z", -3_600), "23:59 31 Dec");
+        assert_eq!(local("2028-02-28T23:00:00Z", 3_600), "00:00 29 Feb");
         // Before 1970 in local time, the clock still reads forwards.
-        assert_eq!(local("1970-01-01T00:00:00Z", -3_600), "23:00 · 31 Dec");
+        assert_eq!(local("1970-01-01T00:00:00Z", -3_600), "23:00 31 Dec");
     }
 
     #[test]

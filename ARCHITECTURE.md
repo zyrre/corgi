@@ -910,7 +910,7 @@ What the README leaves out, as the dashboard shows and does it.
 ### Rows and their order
 
 Each agent takes three rows. The identity row holds its state, the local time
-of its session's newest record (`HH:MM · DD Mon`, absent for a harness whose
+of its session's newest record (`HH:MM DD Mon`, absent for a harness whose
 transcript Corgi does not read), the task its CLI summarizes, model and
 effort, context used, the prompt cache, and its worktree checkout; a narrow
 pane drops the fields after the task from the right before it clips the task,

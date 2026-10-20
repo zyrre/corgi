@@ -4,28 +4,27 @@
 <rect x="36" y="0" width="63" height="18" fill="#f5c2e7" shape-rendering="crispEdges"/>
 <rect x="0" y="0" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="0" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="45 54 63 72 81" y="13" fill="#45475a" font-weight="bold">MERGE</text>
 <text x="108 117 126 135 144" y="13" fill="#585b70">13:58</text>
-<text x="162" y="13" fill="#585b70">·</text>
-<text x="180 189" y="13" fill="#585b70">20</text>
-<text x="207 216 225" y="13" fill="#585b70">Oct</text>
-<text x="243" y="13" fill="#585b70">·</text>
-<text x="261 270 279 288 297 306 315 324" y="13" fill="#a6adc8" font-weight="bold">Paginate</text>
-<text x="342 351 360" y="13" fill="#a6adc8" font-weight="bold">the</text>
-<text x="378 387 396 405 414" y="13" fill="#a6adc8" font-weight="bold">order</text>
-<text x="432 441 450 459 468 477 486" y="13" fill="#a6adc8" font-weight="bold">history</text>
-<text x="504" y="13" fill="#585b70">·</text>
-<text x="522 531 540 549" y="13" fill="#ff8700">Opus</text>
-<text x="567" y="13" fill="#ff8700">5</text>
-<text x="585 594 603 612" y="13" fill="#94e2d5">high</text>
-<text x="630" y="13" fill="#585b70">·</text>
-<text x="648 657 666" y="13" fill="#f3c7b3">67%</text>
-<text x="684 693 702" y="13" fill="#f3c7b3">ctx</text>
-<text x="720" y="13" fill="#585b70">·</text>
-<text x="738" y="13" fill="#f38ba8" font-weight="bold">⚠</text>
-<text x="756 765 774 783" y="13" fill="#f38ba8" font-weight="bold">182k</text>
-<text x="801 810 819 828 837 846 855" y="13" fill="#f38ba8" font-weight="bold">re-read</text>
-<text x="873" y="13" fill="#585b70">·</text>
-<text x="891" y="13" fill="#94e2d5">⑂</text>
-<text x="909 918 927 936 945 954 963 972 981 990 999 1008 1017 1026 1035 1044" y="13" fill="#585b70">order-pages-2d5a</text>
+<text x="162 171" y="13" fill="#585b70">20</text>
+<text x="189 198 207" y="13" fill="#585b70">Oct</text>
+<text x="225" y="13" fill="#585b70">·</text>
+<text x="243 252 261 270 279 288 297 306" y="13" fill="#a6adc8" font-weight="bold">Paginate</text>
+<text x="324 333 342" y="13" fill="#a6adc8" font-weight="bold">the</text>
+<text x="360 369 378 387 396" y="13" fill="#a6adc8" font-weight="bold">order</text>
+<text x="414 423 432 441 450 459 468" y="13" fill="#a6adc8" font-weight="bold">history</text>
+<text x="486" y="13" fill="#585b70">·</text>
+<text x="504 513 522 531" y="13" fill="#ff8700">Opus</text>
+<text x="549" y="13" fill="#ff8700">5</text>
+<text x="567 576 585 594" y="13" fill="#94e2d5">high</text>
+<text x="612" y="13" fill="#585b70">·</text>
+<text x="630 639 648" y="13" fill="#f3c7b3">67%</text>
+<text x="666 675 684" y="13" fill="#f3c7b3">ctx</text>
+<text x="702" y="13" fill="#585b70">·</text>
+<text x="720" y="13" fill="#f38ba8" font-weight="bold">⚠</text>
+<text x="738 747 756 765" y="13" fill="#f38ba8" font-weight="bold">182k</text>
+<text x="783 792 801 810 819 828 837" y="13" fill="#f38ba8" font-weight="bold">re-read</text>
+<text x="855" y="13" fill="#585b70">·</text>
+<text x="873" y="13" fill="#94e2d5">⑂</text>
+<text x="891 900 909 918 927 936 945 954 963 972 981 990 999 1008 1017 1026" y="13" fill="#585b70">order-pages-2d5a</text>
 <rect x="0" y="18" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="18" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="31" fill="#a6adc8" font-weight="bold">›</text>
 <text x="54 63 72 81 90 99 108 117 126 135" y="31" fill="#a6adc8">Pagination</text>
 <text x="153 162" y="31" fill="#a6adc8">is</text>
