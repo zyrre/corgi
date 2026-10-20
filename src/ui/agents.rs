@@ -1920,7 +1920,7 @@ mod tests {
         let line = agent_status_line(&active_agent(), false, 120, NOW);
         let text = line_text(&line);
         assert!(
-            text.contains("WORKING  10:21 · 20 Oct · Agent session status line · Opus 5"),
+            text.contains("WORKING  10:21 20 Oct · Agent session status line · Opus 5"),
             "{text}"
         );
         let time = line
@@ -1940,13 +1940,13 @@ mod tests {
         let agent = active_agent();
         // Room for the time and the task, but not for the worktree.
         let line = line_text(&agent_status_line(&agent, false, 76, NOW));
-        assert!(line.contains("10:21 · 20 Oct"), "{line}");
+        assert!(line.contains("10:21 20 Oct"), "{line}");
         assert!(line.contains("Opus 5"), "{line}");
         assert!(!line.contains("silver-cloud-028f"), "{line}");
 
         // Too narrow for any field: the time stays with the badge.
         let line = line_text(&agent_status_line(&agent, false, 46, NOW));
-        assert!(line.contains("WORKING  10:21 · 20 Oct · "), "{line}");
+        assert!(line.contains("WORKING  10:21 20 Oct · "), "{line}");
         assert!(!line.contains("Opus 5"), "{line}");
         assert!(line.ends_with('…'), "{line}");
         assert!(line.width() <= 43, "{line}");

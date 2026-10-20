@@ -4,28 +4,27 @@
 <rect x="0" y="0" width="36" height="18" fill="#5b575b" shape-rendering="crispEdges"/>
 <text x="0 9 18" y="13" fill="#505266" font-weight="bold">KED</text>
 <text x="45 54 63 72 81" y="13" fill="#54566a">14:29</text>
-<text x="99" y="13" fill="#54566a">·</text>
-<text x="117 126" y="13" fill="#54566a">20</text>
-<text x="144 153 162" y="13" fill="#54566a">Oct</text>
-<text x="180" y="13" fill="#54566a">·</text>
-<text x="198 207 216 225 234" y="13" fill="#64677c">Retry</text>
-<text x="252 261 270 279 288 297" y="13" fill="#64677c">failed</text>
-<text x="315 324 333 342" y="13" fill="#64677c">card</text>
-<text x="360 369 378 387 396 405 414 423" y="13" fill="#64677c">payments</text>
-<text x="441" y="13" fill="#54566a">·</text>
-<text x="459 468 477 486 495 504" y="13" fill="#755f54">Sonnet</text>
-<text x="522" y="13" fill="#755f54">5</text>
-<text x="540 549 558 567 576 585" y="13" fill="#60717f">medium</text>
-<text x="603" y="13" fill="#54566a">·</text>
-<text x="621 630 639" y="13" fill="#6e7177">41%</text>
-<text x="657 666 675" y="13" fill="#6e7177">ctx</text>
-<text x="693" y="13" fill="#54566a">·</text>
-<text x="711" y="13" fill="#747177">⏱</text>
-<text x="729 738" y="13" fill="#747177">3m</text>
-<text x="756 765 774 783 792" y="13" fill="#747177">cache</text>
-<text x="810" y="13" fill="#54566a">·</text>
-<text x="828" y="13" fill="#60717f">⑂</text>
-<text x="846 855 864 873 882 891 900 909 918 927 936 945" y="13" fill="#54566a">checkout-ret</text>
+<text x="99 108" y="13" fill="#54566a">20</text>
+<text x="126 135 144" y="13" fill="#54566a">Oct</text>
+<text x="162" y="13" fill="#54566a">·</text>
+<text x="180 189 198 207 216" y="13" fill="#64677c">Retry</text>
+<text x="234 243 252 261 270 279" y="13" fill="#64677c">failed</text>
+<text x="297 306 315 324" y="13" fill="#64677c">card</text>
+<text x="342 351 360 369 378 387 396 405" y="13" fill="#64677c">payments</text>
+<text x="423" y="13" fill="#54566a">·</text>
+<text x="441 450 459 468 477 486" y="13" fill="#755f54">Sonnet</text>
+<text x="504" y="13" fill="#755f54">5</text>
+<text x="522 531 540 549 558 567" y="13" fill="#60717f">medium</text>
+<text x="585" y="13" fill="#54566a">·</text>
+<text x="603 612 621" y="13" fill="#6e7177">41%</text>
+<text x="639 648 657" y="13" fill="#6e7177">ctx</text>
+<text x="675" y="13" fill="#54566a">·</text>
+<text x="693" y="13" fill="#747177">⏱</text>
+<text x="711 720" y="13" fill="#747177">3m</text>
+<text x="738 747 756 765 774" y="13" fill="#747177">cache</text>
+<text x="792" y="13" fill="#54566a">·</text>
+<text x="810" y="13" fill="#60717f">⑂</text>
+<text x="828 837 846 855 864 873 882 891 900 909 918 927 936 945" y="13" fill="#54566a">checkout-retry</text>
 <rect x="27" y="18" width="900" height="18" fill="#45475a" shape-rendering="crispEdges"/>
 <text x="0 9" y="31" fill="#747177">ow</text>
 <path d="M36 27H36Q31.5 27 31.5 31.5V36" fill="none" stroke="#94e2d5" stroke-width="1.2"/><text x="45" y="31" fill="#94e2d5" font-weight="bold">◆</text>
@@ -59,7 +58,7 @@
 <path d="M31.5 72V90" fill="none" stroke="#94e2d5" stroke-width="1.2"/><text x="63 72 81 90 99 108 117" y="85" fill="#585b70">Harness</text>
 <text x="153 162 171 180 189 198" y="85" fill="#ff8700">claude</text>
 <text x="216" y="85" fill="#585b70">▾</text>
-<path d="M922.5 72V90" fill="none" stroke="#94e2d5" stroke-width="1.2"/><text x="927 936 945" y="85" fill="#54566a">adg</text>
+<path d="M922.5 72V90" fill="none" stroke="#94e2d5" stroke-width="1.2"/><text x="927 936 945" y="85" fill="#54566a">ge-</text>
 <rect x="27" y="90" width="900" height="18" fill="#45475a" shape-rendering="crispEdges"/>
 <text x="9 18" y="103" fill="#5e6886">ba</text>
 <path d="M31.5 90V108" fill="none" stroke="#94e2d5" stroke-width="1.2"/><text x="63 72 81 90 99" y="103" fill="#585b70">Model</text>
@@ -93,7 +92,7 @@
 <text x="387 396 405 414 423 432" y="157" fill="#585b70">branch</text>
 <text x="450 459 468" y="157" fill="#585b70">and</text>
 <text x="486 495 504 513 522 531 540 549" y="157" fill="#585b70">checkout</text>
-<path d="M922.5 144V162" fill="none" stroke="#94e2d5" stroke-width="1.2"/><text x="927 936 945" y="157" fill="#54566a">-2d</text>
+<path d="M922.5 144V162" fill="none" stroke="#94e2d5" stroke-width="1.2"/><text x="927 936 945" y="157" fill="#54566a">d5a</text>
 <rect x="27" y="162" width="900" height="18" fill="#45475a" shape-rendering="crispEdges"/>
 <text x="0 9 18" y="175" fill="#64677c">ina</text>
 <path d="M31.5 162V180" fill="none" stroke="#94e2d5" stroke-width="1.2"/><path d="M922.5 162V180" fill="none" stroke="#94e2d5" stroke-width="1.2"/><rect x="27" y="180" width="900" height="18" fill="#45475a" shape-rendering="crispEdges"/>
