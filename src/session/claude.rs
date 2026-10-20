@@ -65,7 +65,8 @@ pub(super) struct ClaudeScan {
     /// The newest request of the main conversation.
     request: Option<ClaudeRequest>,
     /// The newest moment the main conversation touched the API: an assistant
-    /// reply, or a user turn or tool result whose request is in flight.
+    /// reply, or a user turn or tool result whose request is in flight. The
+    /// row shows it as the session's last activity.
     touched_at: Option<u64>,
     /// The cache lifetime the newest cache write asked for. A request that
     /// only read the cache writes zero for both lifetimes and says nothing.
@@ -124,6 +125,7 @@ impl ClaudeScan {
             message: self.conversation.message(),
             tool: self.conversation.tool(),
             report: self.conversation.report(),
+            last_activity: self.touched_at,
             ..SessionFacts::default()
         };
         let Some(request) = &self.request else {
