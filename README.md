@@ -96,7 +96,7 @@ description = "Corgi: edit agent checkout"
 
 In an expanded card, a project without a supervisor, and the scratch sessions, each agent has three rows:
 
-![One agent row, labelled: selection bar, state, task, model, effort, context used, prompt cache left, worktree, the newest thing said, and the command it runs](docs/images/row-anatomy.svg)
+![One agent row, labelled: selection bar, state, last activity, task, model, effort, context used, prompt cache left, worktree, the newest thing said, and the command it runs](docs/images/row-anatomy.svg)
 
 ### Read a session in place
 

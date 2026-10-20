@@ -789,13 +789,14 @@ fn gutter(selected: bool) -> Span<'static> {
     }
 }
 
-/// The identity row of an agent: its state, what it is working on, the model
-/// answering, how full its context window is, how long its prompt cache stays
-/// warm, and the checkout it edits.
+/// The identity row of an agent: its state, when its session last did
+/// anything, what it is working on, the model answering, how full its context
+/// window is, how long its prompt cache stays warm, and the checkout it edits.
 ///
 /// The fields follow the task summary directly so a row reads as one phrase.
 /// Only the summary is clipped, and a row too narrow for everything drops its
-/// trailing fields from the right.
+/// trailing fields from the right; the state and the time lead the row and
+/// always stay.
 pub(super) fn agent_status_line(
     agent: &DashboardAgent,
     selected: bool,
@@ -812,11 +813,16 @@ pub(super) fn agent_status_line(
             state_color(agent.info.state),
         )
     };
+    // The local time of the session's newest record, a space after the badge.
+    let last_activity = agent
+        .last_activity
+        .map(|at| format!(" {}", at.clock_and_date()))
+        .unwrap_or_default();
     let mut trailing = status_fields(agent, now);
     // The block borders take one column on either side, and one more column
     // keeps the longest row off the right border.
     let inner_width = usize::from(area_width.saturating_sub(3));
-    let leading_width = GUTTER_WIDTH + status.width() + SEPARATOR_WIDTH;
+    let leading_width = GUTTER_WIDTH + status.width() + last_activity.width() + SEPARATOR_WIDTH;
     let mut trailing_width: usize = trailing.iter().map(StatusField::width).sum();
     // Narrow terminals lose the trailing fields, least important one first,
     // rather than clipping the summary down to a few letters.
@@ -846,6 +852,7 @@ pub(super) fn agent_status_line(
                 .bg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(last_activity, Style::default().fg(roles().muted)),
         Span::styled(FIELD_SEPARATOR, Style::default().fg(roles().muted)),
         // The selected summary is bold as well, so the row still stands out
         // in a terminal whose theme renders the accent color faintly.
@@ -911,6 +918,7 @@ mod tests {
     use crate::{
         model::AgentInfo,
         test_support::{buffer_rows, line_text, lines_text, test_app, test_terminal},
+        time::LocalTime,
         ui::{
             draw,
             tests::{NOW, dashboard_agent},
@@ -1893,6 +1901,55 @@ mod tests {
             ..dashboard_agent()
         };
         assert!(line_text(&agent_status_line(&agent, false, 80, NOW)).contains("claude"));
+    }
+
+    /// The test agent, whose session last wrote at 10:21 UTC on 20 October,
+    /// on a clock two hours ahead.
+    fn active_agent() -> DashboardAgent {
+        DashboardAgent {
+            last_activity: Some(LocalTime {
+                secs: crate::time::parse_rfc3339("2026-10-20T08:21:00Z").expect("timestamp"),
+                offset: 2 * 3_600,
+            }),
+            ..dashboard_agent()
+        }
+    }
+
+    #[test]
+    fn a_status_line_shows_the_last_activity_between_the_badge_and_the_task() {
+        let line = agent_status_line(&active_agent(), false, 120, NOW);
+        let text = line_text(&line);
+        assert!(
+            text.contains("WORKING  10:21 · 20 Oct · Agent session status line · Opus 5"),
+            "{text}"
+        );
+        let time = line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("10:21"))
+            .expect("time span");
+        assert_eq!(time.style.fg, Some(roles().muted));
+
+        // A session whose harness records no time shows nothing in its place.
+        let text = line_text(&agent_status_line(&dashboard_agent(), false, 100, NOW));
+        assert!(text.contains("WORKING  · Agent session"), "{text}");
+    }
+
+    #[test]
+    fn a_narrow_row_keeps_the_last_activity_and_drops_trailing_fields() {
+        let agent = active_agent();
+        // Room for the time and the task, but not for the worktree.
+        let line = line_text(&agent_status_line(&agent, false, 76, NOW));
+        assert!(line.contains("10:21 · 20 Oct"), "{line}");
+        assert!(line.contains("Opus 5"), "{line}");
+        assert!(!line.contains("silver-cloud-028f"), "{line}");
+
+        // Too narrow for any field: the time stays with the badge.
+        let line = line_text(&agent_status_line(&agent, false, 46, NOW));
+        assert!(line.contains("WORKING  10:21 · 20 Oct · "), "{line}");
+        assert!(!line.contains("Opus 5"), "{line}");
+        assert!(line.ends_with('…'), "{line}");
+        assert!(line.width() <= 43, "{line}");
     }
 
     #[test]

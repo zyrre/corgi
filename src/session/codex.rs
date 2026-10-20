@@ -65,6 +65,8 @@ pub(super) struct CodexScan {
     effort: Option<String>,
     /// The newest request that read or wrote the prompt cache.
     cache_hit: Option<CodexCacheHit>,
+    /// When the newest record was written.
+    written_at: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -84,6 +86,7 @@ impl CodexScan {
     pub(super) fn of(record: &Value) -> Self {
         let mut scan = Self::default();
         codex_events(record, &mut |event| scan.conversation.see(&event));
+        scan.written_at = record["timestamp"].as_str().and_then(parse_rfc3339);
         let payload = &record["payload"];
         if payload["type"] == "token_count" && payload["info"].is_object() {
             let info = &payload["info"];
@@ -108,7 +111,7 @@ impl CodexScan {
                     || usage["cache_write_input_tokens"].as_u64().unwrap_or(0) > 0
             })
             .map(|usage| CodexCacheHit {
-                at: record["timestamp"].as_str().and_then(parse_rfc3339),
+                at: scan.written_at,
                 tokens: usage["input_tokens"].as_u64().unwrap_or(0),
             });
         scan
@@ -125,6 +128,7 @@ impl CodexScan {
             message: self.conversation.message(),
             tool: self.conversation.tool(),
             report: self.conversation.report(),
+            last_activity: self.written_at,
         }
     }
 
@@ -154,6 +158,7 @@ impl Fold for CodexScan {
             model: self.model.or(older.model),
             effort: self.effort.or(older.effort),
             cache_hit: self.cache_hit.or(older.cache_hit),
+            written_at: self.written_at.or(older.written_at),
         }
     }
 
@@ -163,6 +168,7 @@ impl Fold for CodexScan {
             && self.model.is_some()
             && self.effort.is_some()
             && self.cache_hit.is_some()
+            && self.written_at.is_some()
     }
 }
 
