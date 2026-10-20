@@ -777,6 +777,12 @@ role. So Corgi keeps its own record and puts the tokens back.
   The usage cards, status fields, and dialog lines are also what
   `app/bar.rs` sends the Omarchy widget, so both show the same thing; the
   widget gets a dialog's keys as a line of words, since it draws no keycaps.
+  One function, `agent_status_line`, draws the identity line of worker rows,
+  supervisor cards, and the expanded view alike. Its leading part, the state
+  badge and the last-activity time, is never dropped; the `status_fields`
+  after the task are dropped from the right on a narrow row, and are what the
+  widget reads. A field meant for the dashboard alone therefore belongs in the
+  leading part.
 - Every popup shares one look inside its frame: a mark in the title (`◆`,
   `✓` or `✗` once it has an outcome), dimmed labels that line up beside
   bright values, the model and harness in their vendor's color, the keys as
@@ -903,10 +909,12 @@ What the README leaves out, as the dashboard shows and does it.
 
 ### Rows and their order
 
-Each agent takes three rows. The identity row holds its state, the task its
-CLI summarizes, model and effort, context used, the prompt cache, and its
-worktree checkout; a narrow pane drops these fields from the right before it
-clips the task. The message row is the newest thing said, with the live
+Each agent takes three rows. The identity row holds its state, the local time
+of its session's newest record (`HH:MM · DD Mon`, absent for a harness whose
+transcript Corgi does not read), the task its CLI summarizes, model and
+effort, context used, the prompt cache, and its worktree checkout; a narrow
+pane drops the fields after the task from the right before it clips the task,
+and keeps the state and the time. The message row is the newest thing said, with the live
 terminal filling in what the session file lacks, such as a permission prompt.
 The tool row is the command or tool running or last run, with its whole
 argument. Their marker says what they show:
