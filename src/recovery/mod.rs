@@ -13,7 +13,7 @@ use crate::{
     supervisor,
     time::{unix_now, utc_stamp},
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use native::{Profile, Settings};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -249,26 +249,7 @@ pub(crate) fn capture(client: &HerdrClient, displayed: &[DashboardAgent]) -> Res
                             settings = profile.settings;
                         }
                     }
-                    if !observed.model.is_empty() {
-                        settings.model = observed.model;
-                    }
-                    if !observed.effort.is_empty() {
-                        settings.effort = observed.effort;
-                    }
-                    if observed.sandbox.is_some() {
-                        settings.sandbox = observed.sandbox;
-                    }
-                    if observed.approval.is_some() {
-                        settings.approval = observed.approval;
-                    }
-                    if observed.network.is_some() {
-                        settings.network = observed.network;
-                    }
-                    if !observed.writable.is_empty() {
-                        settings.writable = observed.writable;
-                    }
-                    settings.native_cwd = observed.native_cwd;
-                    settings.native_pending = observed.native_pending;
+                    settings.apply_native(observed);
                 }
                 Err(_) => {
                     warnings.push("Exact native conversation file could not be verified".into())
@@ -282,12 +263,17 @@ pub(crate) fn capture(client: &HerdrClient, displayed: &[DashboardAgent]) -> Res
                 "Some launch/permission details are unverified. Listed settings are reapplied; other options use native defaults".into(),
             );
         }
-        if sup && agent.kind() == "codex" {
+        if let Some(error) = &settings.permission_error {
+            warnings.push(format!("Permissions cannot be restored: {error}"));
+        }
+        if sup && agent.kind() == "codex" && settings.permission_error.is_none() {
             settings
                 .sandbox
                 .get_or_insert_with(|| "workspace-write".into());
             settings.approval.get_or_insert_with(|| "on-request".into());
-            settings.network.get_or_insert(true);
+            if settings.sandbox.as_deref() == Some("workspace-write") {
+                settings.network.get_or_insert(true);
+            }
         }
         if settings.model.is_empty() || settings.effort.is_empty() {
             warnings
@@ -757,6 +743,9 @@ fn plan_entry(
     );
     let file = native::exact_file(root, &entry.kind, id, entry.native_file.as_deref())?;
     let latest = native::metadata(&file, &entry.kind, id)?;
+    if let Some(error) = &latest.permission_error {
+        bail!("Current native permissions cannot be restored: {error}");
+    }
     ensure!(
         !latest.native_pending,
         "native pending turn/input detected; inspect it manually, no replay will be attempted"
@@ -866,8 +855,9 @@ fn available_shell(client: &HerdrClient, pane: &str, cwd: &Path) -> Result<bool>
     }))
 }
 
-/// Holds are session-bound. Save's next-boot intent is embedded in the immutable
-/// manifest, so it is visible before the very first waker tick after reboot.
+/// Holds are session-bound. Every immutable manifest retains its next-boot
+/// intent until Continue acknowledges it; a newer Save cannot erase a hold.
+/// This also works before the first waker tick and across dashboard restarts.
 pub(crate) fn held_projects(
     client: &HerdrClient,
     agents: &[DashboardAgent],
@@ -879,10 +869,7 @@ pub(crate) fn held_projects(
     let boot = store::boot()?;
     let scope = client.socket_path().to_string_lossy();
     let host = store::host()?;
-    let latest = store
-        .snapshots()?
-        .into_iter()
-        .find(|s| s.scope == scope && s.host == host);
+    let snapshots = store.snapshots()?;
     let mut held = BTreeSet::new();
     for agent in agents.iter().filter(|a| a.supervisor) {
         let Some(id) = supervisor::native_session(&agent.info) else {
@@ -893,8 +880,11 @@ pub(crate) fn held_projects(
             .held
             .get(scope.as_ref())
             .is_some_and(|v| v.contains_key(&key));
-        let armed = latest.as_ref().is_some_and(|s| {
-            s.boot != boot
+        let armed = snapshots.iter().any(|s| {
+            s.scope == scope
+                && s.host == host
+                && s.uid == unsafe { libc::geteuid() }
+                && s.boot != boot
                 && s.entries.iter().any(|e| {
                     e.role == "supervisor"
                         && e.kind == agent.info.kind()
@@ -924,18 +914,16 @@ pub(crate) fn continue_coordination(
         held.retain(|_, project| !projects.contains(project));
     }
     let host = store::host()?;
-    if let Some(latest) = store
-        .snapshots()?
-        .into_iter()
-        .find(|s| s.scope == scope && s.host == host)
-    {
-        journal.released.entry(latest.id).or_default().extend(
-            latest
+    let boot = store::boot()?;
+    for saved in store.snapshots()?.into_iter().filter(|s| {
+        s.scope == scope && s.host == host && s.uid == unsafe { libc::geteuid() } && s.boot != boot
+    }) {
+        journal.released.entry(saved.id).or_default().extend(
+            saved
                 .entries
                 .iter()
                 .filter(|e| e.role == "supervisor" && projects.contains(&e.project))
-                .filter_map(|e| e.native_id.as_ref().map(|id| format!("{}:{id}", e.kind)))
-                .collect::<BTreeSet<_>>(),
+                .filter_map(|e| e.native_id.as_ref().map(|id| format!("{}:{id}", e.kind))),
         );
     }
     store.write_journal(&journal)
@@ -1264,10 +1252,16 @@ pub(crate) fn begin_delivery(
     let mut journal = store.journal()?;
     let boot = store::boot()?;
     let host = store::host()?;
-    let latest = store
+    let snapshots: Vec<_> = store
         .snapshots()?
         .into_iter()
-        .find(|s| s.scope == scope && s.host == host);
+        .filter(|s| {
+            s.scope == scope
+                && s.host == host
+                && s.uid == unsafe { libc::geteuid() }
+                && s.boot != boot
+        })
+        .collect();
     ensure!(
         !journal
             .held
@@ -1275,7 +1269,7 @@ pub(crate) fn begin_delivery(
             .is_some_and(|held| held.values().any(|root| root == project)),
         "recovered supervisor coordination held"
     );
-    if let Some(saved) = latest.as_ref().filter(|s| s.boot != boot) {
+    for saved in &snapshots {
         ensure!(
             !saved.entries.iter().any(|e| e.role == "supervisor"
                 && e.project == project
@@ -1295,7 +1289,7 @@ pub(crate) fn begin_delivery(
         !ids.iter().any(|id| journal.deliveries.contains(&key(id))),
         "inbox delivery outcome unknown; quarantined, inspect with corgi inbox"
     );
-    if let Some(saved) = latest.filter(|s| s.boot != boot) {
+    for saved in &snapshots {
         ensure!(
             !saved
                 .entries
