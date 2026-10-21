@@ -67,6 +67,7 @@ flowchart TD
 | `n` | Start a new agent in its own worktree |
 | `t` | Start a scratch session in your home directory |
 | `s` | Start or focus the supervisor of the selected agent's project |
+| `S` | Save sessions, restore saved conversations, or continue held coordination |
 | `m` | Merge and push an agent's worktree branch (asks first) |
 | `f` or `Enter` | Focus the selected agent's pane |
 | `x` | Close the selected agent, and delete its worktree checkout (asks first) |
@@ -94,6 +95,31 @@ In an expanded card, a project without a supervisor, and the scratch sessions, e
 ![The new-agent form: the task typed, and the harness, model, effort, project and checkout on their presets](docs/images/new-agent-form.svg)
 
 `n` opens the new-agent form with everything but the task preset: the selected agent's project, the default harness with its own model and effort, and a fresh worktree. Type the task and press `Enter`; `←` / `→` change a setting in place, and `Space` or typing opens its list. In a project with no agents yet, the first one is its supervisor. Each worker gets its own Git worktree on a fresh `worktree/<name>` branch; switch the Checkout row to work in the project directory as it is instead.
+
+### Save and restore sessions
+
+Press `S` before reboot to save supervisors, workers and scratch sessions. Save
+records private recovery references while agents keep running; it lists missing
+IDs, unsupported harnesses and interrupted work. Prepare **Manual recovery
+setup** once before reboot: its explicit confirmation disables Herdr's automatic
+agent resume while retaining layout restoration. Save reports when this setup
+is still needed.
+
+![Sessions menu with Save, Restore, manual setup and held coordination actions](docs/images/session-recovery.svg)
+
+After reboot, choose **Restore sessions**, browse a dated snapshot and select
+Codex or Claude Code conversations individually. Nothing is selected initially;
+launching requires a separate confirmation with Cancel focused. Corgi resumes
+inside the original Herdr-restored terminals, reuses matching running agents,
+and offers a new placement only when the original is missing or occupied and
+you explicitly select it. It sends no task. Restored supervisor coordination
+stays held until you choose **Continue held coordination**.
+
+Recovery needs the existing native conversation stores, repositories/worktrees
+and supervisor memory. It preserves recoverable setup, not running tools,
+unsent input or shell processes. Unknown settings and incomplete sessions stay
+visible. See the [recovery contract and verification](docs/session-recovery-design.md)
+for limits, retry behavior and the Claude documentation/fixture verification.
 
 ### Merging
 
@@ -128,7 +154,7 @@ description = "Corgi (open or focus)"
 
 ## Data and privacy
 
-Corgi talks only to the Herdr socket and sends no telemetry. It keeps no terminal output or prompt history; what it stores, in `~/.local/state/corgi` (or `$XDG_STATE_HOME/corgi`), is its own bookkeeping and each supervisor's memory and inbox, which holds the reports of workers that stopped. The only network use is the plan usage: `codex app-server` for Codex, and Claude Code's stored login sent to `api.anthropic.com` for Claude. Corgi reads that login from `.credentials.json` in Claude Code's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), or on macOS from the Keychain, which may ask you to allow it the first time. That Claude reading is unofficial and read-only, and may break if Anthropic changes the endpoint.
+Corgi talks only to the Herdr socket and sends no telemetry. It keeps no terminal output or prompt history; what it stores, in `~/.local/state/corgi` (or `$XDG_STATE_HOME/corgi`), is its own bookkeeping, private session recovery metadata and each supervisor's memory and inbox, which holds the reports of workers that stopped. The only network use is the plan usage: `codex app-server` for Codex, and Claude Code's stored login sent to `api.anthropic.com` for Claude. Corgi reads that login from `.credentials.json` in Claude Code's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), or on macOS from the Keychain, which may ask you to allow it the first time. That Claude reading is unofficial and read-only, and may break if Anthropic changes the endpoint.
 
 ## More
 

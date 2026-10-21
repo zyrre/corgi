@@ -80,6 +80,7 @@ mod launch;
 mod markers;
 mod progress;
 mod project_main;
+pub(crate) mod recovery;
 mod refresh;
 mod waker;
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
@@ -192,6 +193,7 @@ pub(crate) struct App {
     usage_job: Job<Vec<UsageResult>>,
     codex_task_job: Job<Result<HashMap<String, String>, String>>,
     merge_job: Job<Result<String, merge::MergeError>, JobReport>,
+    recovery_job: Job<Result<recovery::Event>, String>,
     /// The model catalogs and harness configurations behind the new-agent
     /// form's selectors.
     model_catalogs: ModelCatalogs,
@@ -272,6 +274,7 @@ impl App {
             usage_job: Job::default(),
             codex_task_job: Job::default(),
             merge_job: Job::default(),
+            recovery_job: Job::default(),
             model_catalogs: ModelCatalogs::default(),
             inboxes: None,
             status_hold_until: None,
@@ -517,6 +520,7 @@ impl App {
             Overlay::Launch(_) => self.handle_launch_key(key),
             Overlay::Close(_) => self.handle_close_workspace_key(key),
             Overlay::Merge(_) => self.handle_merge_worktree_key(key),
+            Overlay::Sessions(_) => self.handle_sessions_key(key),
             Overlay::Notice(_) => {
                 if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
                     self.overlay = Overlay::None;
@@ -562,6 +566,7 @@ impl App {
             KeyCode::Char('m') => self.begin_merge_worktree(),
             KeyCode::Char('x') => self.begin_close_workspace(),
             KeyCode::Char('r') => self.request_refresh(),
+            KeyCode::Char('S') => self.begin_sessions(),
             _ => {}
         }
         false
@@ -622,7 +627,9 @@ pub fn run() -> Result<()> {
     let compact = env::args().any(|arg| arg == "--compact");
     let client = HerdrClient::from_env().context("Corgi must run inside a Herdr plugin pane")?;
     let mut app = App::new(client, compact);
-    app.wake_with(SupervisorWaker::default());
+    if std::env::var_os("CORGI_RECOVERY_PREVIEW").is_none() {
+        app.wake_with(SupervisorWaker::default());
+    }
     app.refresh_log = refresh_log_path();
     if !compact {
         app.notice_path = notice::notice_path();
@@ -673,6 +680,7 @@ impl App {
         self.poll_refresh();
         self.show_pending_notice();
         self.poll_launch();
+        self.poll_recovery();
         self.poll_plan_usage();
         self.poll_codex_task_titles();
         self.poll_model_catalogs();

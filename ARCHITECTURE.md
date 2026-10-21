@@ -1268,6 +1268,42 @@ agent, a linked worktree workspace, or an extra tab remains; it also keeps the
 parent when it sees a workspace it did not create. That conservative rule
 means Corgi never closes a project resource it cannot prove is idle and owned.
 
+### Confirmed conversation recovery
+
+`S` opens `app/recovery.rs`'s cancel-first Sessions flow. Save writes immutable
+versioned metadata in `recovery/` under the state home; `recovery/store.rs`
+serializes mutations, uses owner-only files and fsync/rename, and keeps a
+monotonic save sequence. Native conversation stores and supervisor memory stay
+separate: the manifest references their current durable state, never copies
+transcript/task text or rewinds memory. `recovery/native.rs` verifies exact UUIDs
+without the display reader's newest-by-cwd fallback and builds prompt-free
+Codex and Claude resume arguments. Unknown settings require explicit review.
+
+Herdr owns layout restoration. Recovery validates saved workspace/tab/pane IDs,
+checkout and `pane.process_info`'s foreground shell, then calls `agent.start`
+in the original pane. The normal path creates no placement. Only an explicitly
+selected missing/occupied-destination alternative creates a tab or opens an
+existing directory/worktree. A durable native-identity intent precedes each
+mutation. Unconfirmed launches are reconciled, not repeated; a confirmed native
+identity permits metadata-only retry. Sequence-dependent merge and handover
+claims are not restored. See [the recovery contract](docs/session-recovery-design.md).
+
+Manual setup has its own explicit confirmation and config check/backup/reload;
+startup, Save and browsing never edit Herdr configuration. Herdr 0.9.1 cannot
+report its loaded config path or an auto-resume barrier. Setup therefore needs
+user acknowledgment of the displayed path and a subsequent normal server start
+before new recovery launches; Corgi never restarts it. Layout restore remains on.
+
+A committed Save arms next-boot supervisor holds; the waker checks them before
+its first observation/delivery/handover. Same-boot Save does not pause normal
+coordination. Explicit restore also holds before launch. Observation baselines
+advance while held, so Continue does not replay stops. Continue is separately
+confirmed. Delivery IDs are persisted before inbox sends; uncertain sends and
+saved pre-reboot pending IDs remain quarantined, with inbox bytes intact.
+Old coordinating binaries cannot enforce these holds: use the updated build
+for all coordinating dashboards after activation. Holds do not stop native
+hooks, pending work, direct input or coordination already in flight.
+
 ## Future extensions
 
 The polling boundary can later be replaced with Herdr event subscriptions while

@@ -46,6 +46,10 @@ pub struct AgentSession {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentInfo {
     #[serde(default)]
+    pub launch_pending: bool,
+    #[serde(default)]
+    pub interactive_ready: bool,
+    #[serde(default)]
     pub agent: Option<String>,
     #[serde(default)]
     pub display_agent: Option<String>,
