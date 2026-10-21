@@ -25,6 +25,11 @@ cargo build --release
 On macOS the default `$TMPDIR` makes the fake Herdr socket path in
 `src/test_support.rs` exceed `SUN_LEN`, so run `TMPDIR=/tmp cargo test` there.
 
+A test that polls a non-blocking listener's `accept()` must set the accepted
+stream back to blocking (`set_nonblocking(false)`) before relying on a read
+timeout: macOS/BSD sockets inherit `O_NONBLOCK` from the listener, Linux
+sockets do not, so the failure shows only on macOS CI.
+
 `rust-version` in `Cargo.toml` is the oldest Rust that builds Corgi: 1.89,
 set by std's `File::lock` (ratatui 0.30 alone needs 1.88). With it set,
 clippy's `incompatible_msrv` lint refuses a newer std API, so raise it
