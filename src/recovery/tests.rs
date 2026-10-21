@@ -770,3 +770,200 @@ fn saved_order_survives_a_backward_wall_clock_change() {
     assert_eq!(saved[0].id, f.snapshot.id);
     assert!(saved[0].sequence > saved[1].sequence);
 }
+
+#[test]
+fn independent_late_identity_after_unknown_start_only_reconciles_metadata() {
+    let f = Fixture::new();
+    let server = Server::new(&f);
+    server.state.lock().unwrap().unknown_start = true;
+    let row = plan_in(&f.client, &f.snapshot, &f.runtime)
+        .unwrap()
+        .remove(0);
+    restore_in(
+        &f.client,
+        &f.snapshot,
+        &[(0, row.target.unwrap(), row.differences)],
+        &f.runtime,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    // The start was accepted despite its lost acknowledgment. The integration
+    // reports exact identity later, after the first restore already returned.
+    let e = &f.snapshot.entries[0];
+    server.state.lock().unwrap().agents.push(json!({
+        "agent": e.kind, "name": e.name, "workspace_id": e.workspace,
+        "tab_id": e.tab, "pane_id": e.pane, "cwd": e.cwd,
+        "agent_status": "idle", "interactive_ready": true, "launch_pending": false,
+        "agent_session": {"agent": e.kind, "kind": "id", "value": e.native_id,
+                          "source": "herdr:test"}
+    }));
+    let row = plan_in(&f.client, &f.snapshot, &f.runtime)
+        .unwrap()
+        .remove(0);
+    assert!(matches!(row.target, Some(Target::Metadata { .. })));
+    restore_in(
+        &f.client,
+        &f.snapshot,
+        &[(0, row.target.unwrap(), row.differences)],
+        &f.runtime,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let state = server.state.lock().unwrap();
+    assert_eq!(state.starts, 1);
+    assert!(
+        state
+            .methods
+            .iter()
+            .all(|m| !m.contains("create") && !m.contains("prompt"))
+    );
+    assert_eq!(
+        f.store().journal().unwrap().attempts[&e.key()].phase,
+        "complete"
+    );
+}
+
+#[test]
+fn independent_partial_retry_does_not_restart_completed_entries() {
+    let f = Fixture::new();
+    let server = Server::new(&f);
+    for index in [0, 1] {
+        let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
+        if index == 1 {
+            assert!(rows[0].target.is_none());
+            assert!(rows[0].reason.contains("Already running"));
+        }
+        let row = &rows[index];
+        restore_in(
+            &f.client,
+            &f.snapshot,
+            &[(index, row.target.clone().unwrap(), row.differences.clone())],
+            &f.runtime,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+    }
+    assert_eq!(server.state.lock().unwrap().starts, 2);
+    assert!(
+        plan_in(&f.client, &f.snapshot, &f.runtime)
+            .unwrap()
+            .iter()
+            .all(|r| r.target.is_none())
+    );
+}
+
+#[test]
+fn independent_identity_elsewhere_is_reused_and_duplicate_live_ids_block() {
+    let f = Fixture::new();
+    let server = Server::new(&f);
+    let e = &f.snapshot.entries[0];
+    let elsewhere = json!({
+        "agent": e.kind, "name": "different-name", "workspace_id": "elsewhere",
+        "tab_id": "elsewhere:t1", "pane_id": "elsewhere:p1", "cwd": e.cwd,
+        "agent_status": "idle", "interactive_ready": true,
+        "agent_session": {"agent": e.kind, "kind": "id", "value": e.native_id,
+                          "source": "herdr:test"}
+    });
+    server.state.lock().unwrap().agents.push(elsewhere.clone());
+    let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
+    assert!(rows[0].target.is_none() && rows[0].alternative.is_none());
+    assert!(rows[0].reason.contains("Already running in elsewhere:p1"));
+    let mut duplicate = elsewhere;
+    duplicate["pane_id"] = json!(e.pane);
+    server.state.lock().unwrap().agents.push(duplicate);
+    let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
+    assert!(
+        rows[0]
+            .reason
+            .contains("duplicate live conversation identities")
+    );
+    assert_eq!(server.state.lock().unwrap().starts, 0);
+}
+
+// Independent verification reproducers. Kept ignored until the separately
+// scoped repairs land; run `cargo test independent_regression -- --ignored`.
+#[test]
+#[ignore = "known bug: Codex 0.163 permission_profile is ignored after an older turn_context"]
+fn independent_regression_latest_codex_permission_profile_supersedes_old_turn() {
+    let f = Fixture::new();
+    let e = &f.snapshot.entries[0];
+    let file = e.native_file.as_ref().unwrap();
+    let mut writer = fs::OpenOptions::new().append(true).open(file).unwrap();
+    writeln!(
+        writer,
+        "{}",
+        json!({
+            "type": "turn_context",
+            "payload": {"sandbox_policy": {"type": "read-only"}}
+        })
+    )
+    .unwrap();
+    // Shape observed in the installed CLI's real synthetic conversation,
+    // emitted on interactive resume without a new turn_context/task.
+    writeln!(
+        writer,
+        "{}",
+        json!({
+            "type": "event_msg",
+            "payload": {"type": "thread_settings_applied", "thread_settings": {
+                "model": "gpt-6.1-sol", "reasoning_effort": "high",
+                "approval_policy": "on-request", "cwd": e.cwd,
+                "runtime_workspace_roots": [e.cwd, f.dir.join("extra")],
+                "permission_profile": {"type": "managed",
+                    "file_system": {"type": "restricted", "entries": [
+                        {"path": {"type": "special", "value": {"kind": "root"}}, "access": "read"},
+                        {"path": {"type": "path", "path": e.cwd}, "access": "write"},
+                        {"path": {"type": "path", "path": f.dir.join("extra")}, "access": "write"}
+                    ]}, "network": "enabled"}
+            }}
+        })
+    )
+    .unwrap();
+    let observed = native::metadata(file, "codex", CODEX_ID).unwrap();
+    assert_eq!(observed.sandbox.as_deref(), Some("workspace-write"));
+    assert_eq!(observed.network, Some(true));
+    assert!(observed.writable.contains(&f.dir.join("extra")));
+}
+
+#[test]
+#[ignore = "known bug: installed Codex rejects read-only plus supervisor --add-dir"]
+fn independent_regression_read_only_supervisor_has_no_writable_root_argument() {
+    let mut f = Fixture::new();
+    let e = &mut f.snapshot.entries[0];
+    e.settings.sandbox = Some("read-only".into());
+    let args = native::resume_args(e).unwrap();
+    assert!(
+        args.iter()
+            .any(|arg| arg.starts_with("developer_instructions="))
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--sandbox", "read-only"])
+    );
+    assert!(
+        !args.contains(&"--add-dir".into()),
+        "--add-dir is rejected with read-only; retaining read access must not request writable roots"
+    );
+}
+
+#[test]
+#[ignore = "known bug: a same-boot Save silently drops uncontinued next-boot holds"]
+fn independent_regression_save_does_not_release_an_active_next_boot_hold() {
+    let mut f = Fixture::new();
+    let store = f.store();
+    store.save(&f.snapshot).unwrap();
+    let agents = dashboard_agents(&f.snapshot);
+    let held = held_projects(&f.client, &agents).unwrap();
+    assert_eq!(held.len(), 2);
+    f.snapshot.id.push_str("-new-save");
+    f.snapshot.boot = store::boot().unwrap();
+    store.save(&f.snapshot).unwrap();
+    assert_eq!(
+        held_projects(&f.client, &agents).unwrap(),
+        held,
+        "only deliberate Continue may release an existing recovery hold"
+    );
+}
