@@ -1298,6 +1298,12 @@ mutation. Unconfirmed launches are reconciled, not repeated; a confirmed native
 identity permits metadata-only retry. Sequence-dependent merge and handover
 claims are not restored. See [the recovery contract](docs/session-recovery-design.md).
 
+Lifecycle tests must preserve a live native reference at disposable-server
+shutdown. Quitting the harness first clears that reference and exercises a
+different identity path. Record manual hook/API identity reports as a fixture
+boundary: a hook browser's trusted/active status does not prove idle resume
+emitted an identity report. Check native argv, history and task counts as well.
+
 Manual setup has its own explicit confirmation and config check/backup/reload;
 startup, Save and browsing never edit Herdr configuration. Herdr 0.9.1 cannot
 report its loaded config path or an auto-resume barrier. Setup therefore needs
