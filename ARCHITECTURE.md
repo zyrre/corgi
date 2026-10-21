@@ -1277,7 +1277,17 @@ monotonic save sequence. Native conversation stores and supervisor memory stay
 separate: the manifest references their current durable state, never copies
 transcript/task text or rewinds memory. `recovery/native.rs` verifies exact UUIDs
 without the display reader's newest-by-cwd fallback and builds prompt-free
-Codex and Claude resume arguments. Unknown settings require explicit review.
+Codex and Claude resume arguments. Codex permission records replace the whole
+previous policy in transcript order: current `thread_settings_applied` profiles
+supersede older `turn_context` policies, including empty roots and network/temp
+restrictions. Capture replaces launch-profile permissions as a unit. The adapter
+reconstructs Codex's built-in `.git`/`.agents`/`.codex`/`.aws` read guards and
+blocks policies it cannot express faithfully (custom read restrictions, deny
+rules and external enforcement); explicit review cannot override that block.
+Read-only supervisors retain role instructions and state read access without
+`--add-dir`, which requests writes. Observed writable roots are never expanded
+for supervisor memory; registered launch profiles retain their intended state
+root. Unknown other settings require explicit review.
 
 Herdr owns layout restoration. Recovery validates saved workspace/tab/pane IDs,
 checkout and `pane.process_info`'s foreground shell, then calls `agent.start`
@@ -1296,7 +1306,12 @@ before new recovery launches; Corgi never restarts it. Layout restore remains on
 
 A committed Save arms next-boot supervisor holds; the waker checks them before
 its first observation/delivery/handover. Same-boot Save does not pause normal
-coordination. Explicit restore also holds before launch. Observation baselines
+coordination. Every retained prior-boot manifest contributes unreleased holds,
+independently of the newest Save and before any observation. Continue records
+per-manifest acknowledgments for all matching prior-boot identities in selected
+projects, leaving same-boot saves armed for next boot. Delivery checks use the
+same retained manifests, including pending inbox quarantines. Explicit restore
+also holds before launch. Observation baselines
 advance while held, so Continue does not replay stops. Continue is separately
 confirmed. Delivery IDs are persisted before inbox sends; uncertain sends and
 saved pre-reboot pending IDs remain quarantined, with inbox bytes intact.

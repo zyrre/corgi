@@ -18,6 +18,8 @@ pub(crate) struct Settings {
     pub effort: String,
     pub sandbox: Option<String>,
     pub approval: Option<String>,
+    #[serde(default)]
+    pub approvals_reviewer: Option<String>,
     pub permission: Option<String>,
     pub writable: Vec<PathBuf>,
     pub profile: Option<String>,
@@ -25,6 +27,12 @@ pub(crate) struct Settings {
     pub unknown: bool,
     pub native_cwd: Option<PathBuf>,
     pub native_pending: bool,
+    #[serde(default)]
+    pub permission_error: Option<String>,
+    #[serde(default)]
+    pub exclude_tmpdir_env_var: Option<bool>,
+    #[serde(default)]
+    pub exclude_slash_tmp: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -36,6 +44,31 @@ pub(crate) struct Profile {
 }
 
 impl Settings {
+    pub fn apply_native(&mut self, observed: Self) {
+        if !observed.model.is_empty() {
+            self.model = observed.model;
+        }
+        if !observed.effort.is_empty() {
+            self.effort = observed.effort;
+        }
+        if observed.sandbox.is_some() || observed.permission_error.is_some() {
+            self.sandbox = observed.sandbox;
+            self.network = observed.network;
+            self.writable = observed.writable;
+            self.exclude_tmpdir_env_var = observed.exclude_tmpdir_env_var;
+            self.exclude_slash_tmp = observed.exclude_slash_tmp;
+            self.permission_error = observed.permission_error;
+        }
+        if observed.approval.is_some() {
+            self.approval = observed.approval;
+        }
+        if observed.approvals_reviewer.is_some() {
+            self.approvals_reviewer = observed.approvals_reviewer;
+        }
+        self.native_cwd = observed.native_cwd;
+        self.native_pending = observed.native_pending;
+    }
+
     pub fn from_launch(model: &str, effort: &str, extra: &[String]) -> Self {
         let mut settings = Self {
             model: model.into(),
@@ -231,15 +264,20 @@ pub(crate) fn metadata(path: &Path, kind: &str, id: &str) -> Result<Settings> {
             if let Some(value) = meta["approval_policy"].as_str() {
                 settings.approval = Some(value.into());
             }
-            if let Some(value) = meta["sandbox_policy"]["type"].as_str() {
-                settings.sandbox = Some(value.replace('_', "-"));
-                settings.network = meta["sandbox_policy"]["network_access"].as_bool();
-                if let Some(roots) = meta["sandbox_policy"]["writable_roots"].as_array() {
-                    settings.writable = roots
-                        .iter()
-                        .filter_map(|r| r.as_str().map(PathBuf::from))
-                        .collect();
-                }
+            if let Some(value) = meta["approvals_reviewer"].as_str() {
+                settings.approvals_reviewer = Some(value.into());
+            }
+            if !meta["permission_profile"].is_null() || !meta["sandbox_policy"].is_null() {
+                // Each permission record replaces the whole previous policy,
+                // including empty roots and defaults, in JSONL order.
+                settings.sandbox = None;
+                settings.writable.clear();
+                settings.network = None;
+                settings.exclude_tmpdir_env_var = None;
+                settings.exclude_slash_tmp = None;
+                settings.permission_error = codex_permissions(&mut settings, meta)
+                    .err()
+                    .map(|error| error.to_string());
             }
         }
         if let Some(value) = meta["effort"]
@@ -252,6 +290,154 @@ pub(crate) fn metadata(path: &Path, kind: &str, id: &str) -> Result<Settings> {
         }
     }
     Ok(settings)
+}
+
+/// Translate only policies expressible by our CLI adapter. Keep unsupported
+/// permissions as a blocking diagnostic, never fall back to an older policy.
+fn codex_permissions(settings: &mut Settings, meta: &Value) -> Result<()> {
+    let profile = &meta["permission_profile"];
+    if profile.is_null() {
+        let policy = &meta["sandbox_policy"];
+        let kind = policy["type"]
+            .as_str()
+            .context("unrecognized Codex sandbox policy")?
+            .replace('_', "-");
+        ensure!(
+            ["read-only", "workspace-write", "danger-full-access"].contains(&kind.as_str()),
+            "Codex sandbox policy cannot be represented by recovery"
+        );
+        ensure!(
+            policy["access"].is_null(),
+            "restricted Codex reads cannot be represented by recovery"
+        );
+        settings.network = Some(
+            policy["network_access"]
+                .as_bool()
+                .unwrap_or(kind == "danger-full-access"),
+        );
+        settings.sandbox = Some(kind);
+        settings.exclude_tmpdir_env_var =
+            Some(policy["exclude_tmpdir_env_var"].as_bool().unwrap_or(false));
+        settings.exclude_slash_tmp = Some(policy["exclude_slash_tmp"].as_bool().unwrap_or(false));
+        if let Some(roots) = policy["writable_roots"].as_array() {
+            for root in roots {
+                let path = root.as_str().context("unrecognized Codex writable root")?;
+                ensure!(
+                    Path::new(path).is_absolute(),
+                    "Codex writable root must be absolute"
+                );
+                settings.writable.push(path.into());
+            }
+        }
+    } else if profile["type"] == "disabled" {
+        settings.sandbox = Some("danger-full-access".into());
+        settings.network = Some(true);
+    } else {
+        ensure!(
+            profile["type"] == "managed" && profile["file_system"]["type"] == "restricted",
+            "Codex permission profile cannot be represented by recovery"
+        );
+        settings.network = Some(match profile["network"].as_str() {
+            Some("enabled") => true,
+            Some("restricted") => false,
+            _ => bail!("Codex network policy cannot be represented by recovery"),
+        });
+        let entries = profile["file_system"]["entries"]
+            .as_array()
+            .context("Codex filesystem permissions missing")?;
+        let mut reads_root = false;
+        let mut guarded = std::collections::BTreeSet::new();
+        settings.exclude_tmpdir_env_var = Some(true);
+        settings.exclude_slash_tmp = Some(true);
+        for entry in entries {
+            let path = &entry["path"];
+            if path["type"] == "path"
+                && entry["access"] == "read"
+                && entry["missing_path_behavior"] == "skip"
+            {
+                guarded.insert(PathBuf::from(
+                    path["path"].as_str().context("invalid Codex read guard")?,
+                ));
+                continue;
+            }
+            ensure!(
+                entry["missing_path_behavior"].is_null(),
+                "Codex filesystem path behavior cannot be represented by recovery"
+            );
+            match (path["type"].as_str(), entry["access"].as_str()) {
+                (Some("special"), Some("read"))
+                    if path["value"] == serde_json::json!({"kind":"root"}) =>
+                {
+                    reads_root = true
+                }
+                (Some("path"), Some("write")) => {
+                    let path = path["path"]
+                        .as_str()
+                        .context("invalid Codex writable path")?;
+                    ensure!(
+                        Path::new(path).is_absolute(),
+                        "Codex writable root must be absolute"
+                    );
+                    settings.writable.push(path.into());
+                }
+                (Some("special"), Some("write"))
+                    if path["value"] == serde_json::json!({"kind":"tmpdir"}) =>
+                {
+                    settings.exclude_tmpdir_env_var = Some(false)
+                }
+                (Some("special"), Some("write"))
+                    if path["value"] == serde_json::json!({"kind":"slash_tmp"}) =>
+                {
+                    settings.exclude_slash_tmp = Some(false)
+                }
+                _ => bail!(
+                    "Codex filesystem rules cannot be represented by recovery (restricted reads, deny rules or symbolic paths)"
+                ),
+            }
+        }
+        ensure!(
+            reads_root,
+            "restricted Codex reads cannot be represented by recovery"
+        );
+        if settings.writable.is_empty()
+            && settings.exclude_tmpdir_env_var == Some(true)
+            && settings.exclude_slash_tmp == Some(true)
+        {
+            settings.sandbox = Some("read-only".into());
+        } else {
+            ensure!(
+                settings
+                    .native_cwd
+                    .as_ref()
+                    .is_some_and(|cwd| settings.writable.iter().any(|root| cwd.starts_with(root))),
+                "Codex write policy without writable cwd cannot be represented by recovery"
+            );
+            settings.sandbox = Some("workspace-write".into());
+            // Codex 0.163 materializes these built-in guards for each write
+            // root. --sandbox workspace-write reconstructs exactly this set.
+            // Other read carveouts cannot be recreated with legacy CLI flags.
+            let expected: std::collections::BTreeSet<_> = settings
+                .writable
+                .iter()
+                .flat_map(|root| [".git", ".agents", ".codex", ".aws"].map(|name| root.join(name)))
+                .collect();
+            ensure!(
+                guarded == expected,
+                "Codex read guards differ from built-in workspace protections; recovery cannot represent them"
+            );
+        }
+        if settings.sandbox.as_deref() == Some("read-only") {
+            ensure!(
+                guarded.is_empty(),
+                "Codex read guards cannot be represented by read-only recovery"
+            );
+        }
+    }
+    ensure!(
+        settings.sandbox.as_deref() != Some("read-only") || settings.network != Some(true),
+        "Codex read-only with enabled network cannot be represented by recovery"
+    );
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,6 +513,21 @@ pub(crate) fn resume_args(entry: &Entry) -> Result<Vec<String>> {
     ensure!(valid_id(id), "invalid native conversation ID");
     let harness = Harness::from_kind(&entry.kind);
     let settings = &entry.settings;
+    if let Some(error) = &settings.permission_error {
+        bail!("Saved permissions cannot be restored: {error}");
+    }
+    ensure!(
+        entry.kind != "codex"
+            || settings.sandbox.as_deref() != Some("read-only")
+            || settings.writable.is_empty(),
+        "read-only Codex cannot request writable roots"
+    );
+    ensure!(
+        entry.kind != "codex"
+            || settings.sandbox.as_deref() != Some("read-only")
+            || settings.network != Some(true),
+        "read-only Codex with enabled network cannot be represented by recovery"
+    );
     ensure!(
         !settings.model.chars().any(char::is_control),
         "invalid saved model"
@@ -350,6 +551,12 @@ pub(crate) fn resume_args(entry: &Entry) -> Result<Vec<String>> {
         ensure!(
             entry.kind == "codex" && ["on-request", "never"].contains(&policy.as_str()),
             "unsupported saved approval policy"
+        );
+    }
+    if let Some(reviewer) = &settings.approvals_reviewer {
+        ensure!(
+            entry.kind == "codex" && ["user", "auto_review"].contains(&reviewer.as_str()),
+            "unsupported saved approvals reviewer"
         );
     }
     if let Some(policy) = &settings.permission {
@@ -387,6 +594,24 @@ pub(crate) fn resume_args(entry: &Entry) -> Result<Vec<String>> {
         _ => bail!("unsupported harness"),
     };
     args.extend(harness.launch_args(&entry.settings.model, &entry.settings.effort));
+    if settings.sandbox.as_deref() == Some("workspace-write") {
+        // Clear inherited extra roots; only the saved roots go through --add-dir.
+        args.extend([
+            "-c".into(),
+            "sandbox_workspace_write.writable_roots=[]".into(),
+        ]);
+        for (key, value) in [
+            ("exclude_tmpdir_env_var", settings.exclude_tmpdir_env_var),
+            ("exclude_slash_tmp", settings.exclude_slash_tmp),
+        ] {
+            if let Some(value) = value {
+                args.extend([
+                    "-c".into(),
+                    format!("sandbox_workspace_write.{key}={value}"),
+                ]);
+            }
+        }
+    }
     if let Some(network) = entry.settings.network {
         ensure!(
             entry.kind == "codex",
@@ -395,6 +620,15 @@ pub(crate) fn resume_args(entry: &Entry) -> Result<Vec<String>> {
         args.extend([
             "-c".into(),
             format!("sandbox_workspace_write.network_access={network}"),
+        ]);
+    }
+    if let Some(reviewer) = &settings.approvals_reviewer {
+        args.extend([
+            "-c".into(),
+            format!(
+                "approvals_reviewer={}",
+                crate::harness::toml_string(reviewer)
+            ),
         ]);
     }
     for (key, value) in [
@@ -435,9 +669,23 @@ pub(crate) fn resume_args(entry: &Entry) -> Result<Vec<String>> {
                     "developer_instructions={}",
                     crate::harness::toml_string(&role)
                 ),
-                "--add-dir".into(),
-                supervisor.state_dir.to_string_lossy().into_owned(),
             ]);
+            // Read-only already grants read access to durable state. --add-dir
+            // requests writes and Codex rejects it with read-only permissions.
+            // A launch profile can retain the launcher's intended state root;
+            // observed native permissions already contain all permitted roots.
+            if settings.sandbox.as_deref() == Some("workspace-write")
+                && settings.exclude_tmpdir_env_var.is_none()
+                && !settings
+                    .writable
+                    .iter()
+                    .any(|root| supervisor.state_dir.starts_with(root))
+            {
+                args.extend([
+                    "--add-dir".into(),
+                    supervisor.state_dir.to_string_lossy().into_owned(),
+                ]);
+            }
         } else {
             args.extend(harness.supervisor_args(
                 &supervisor.role_file,

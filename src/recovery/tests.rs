@@ -102,6 +102,7 @@ impl Fixture {
                     }
                     .into(),
                     effort: "high".into(),
+                    sandbox: (kind == "codex").then(|| "workspace-write".into()),
                     ..Settings::default()
                 },
                 warnings: Vec::new(),
@@ -205,8 +206,18 @@ impl Server {
                         assert!(!args.contains(&json!("--last")));
                         assert!(!args.contains(&json!("--continue")));
                         assert!(!args.contains(&json!("--worktree")));
-                        assert!(args.contains(&json!("--add-dir")));
-                        assert!(args.contains(&json!(e.supervisor.as_ref().unwrap().state_dir)));
+                        if e.kind == "codex" && e.settings.sandbox.as_deref() == Some("read-only") {
+                            assert!(!args.contains(&json!("--add-dir")));
+                            assert!(args.iter().any(|arg| {
+                                arg.as_str()
+                                    .is_some_and(|s| s.starts_with("developer_instructions="))
+                            }));
+                        } else {
+                            assert!(args.contains(&json!("--add-dir")));
+                            assert!(
+                                args.contains(&json!(e.supervisor.as_ref().unwrap().state_dir))
+                            );
+                        }
                         let agent = json!({"agent":e.kind,"name":params["name"],"workspace_id":e.workspace,"tab_id":e.tab,"pane_id":e.pane,"cwd":e.cwd,"agent_status":"idle","interactive_ready":true,"launch_pending":false,"agent_session":{"source":"herdr:test","agent":e.kind,"kind":"id","value":e.native_id}});
                         if !s.unknown_start {
                             s.agents.push(agent.clone());
@@ -769,4 +780,560 @@ fn saved_order_survives_a_backward_wall_clock_change() {
     let saved = store.snapshots().unwrap();
     assert_eq!(saved[0].id, f.snapshot.id);
     assert!(saved[0].sequence > saved[1].sequence);
+}
+
+#[test]
+fn independent_regression_latest_codex_permission_profile_supersedes_old_turn() {
+    let f = Fixture::new();
+    let e = &f.snapshot.entries[0];
+    let file = e.native_file.as_ref().unwrap();
+    let mut writer = fs::OpenOptions::new().append(true).open(file).unwrap();
+    writeln!(
+        writer,
+        "{}",
+        json!({
+            "type": "turn_context",
+            "payload": {"sandbox_policy": {"type": "read-only"}}
+        })
+    )
+    .unwrap();
+    // Shape observed in the installed CLI's real synthetic conversation,
+    // emitted on interactive resume without a new turn_context/task.
+    writeln!(
+        writer,
+        "{}",
+        json!({
+            "type": "event_msg",
+            "payload": {"type": "thread_settings_applied", "thread_settings": {
+                "model": "gpt-6.1-sol", "reasoning_effort": "high",
+                "approval_policy": "on-request", "cwd": e.cwd,
+                "runtime_workspace_roots": [e.cwd, f.dir.join("extra")],
+                "permission_profile": {"type": "managed",
+                    "file_system": {"type": "restricted", "entries": [
+                        {"path": {"type": "special", "value": {"kind": "root"}}, "access": "read"},
+                        {"path": {"type": "path", "path": e.cwd}, "access": "write"},
+                        {"path": {"type": "path", "path": f.dir.join("extra")}, "access": "write"}
+                    ]}, "network": "enabled"}
+            }}
+        })
+    )
+    .unwrap();
+    let observed = native::metadata(file, "codex", CODEX_ID).unwrap();
+    assert_eq!(observed.sandbox.as_deref(), Some("workspace-write"));
+    assert_eq!(observed.network, Some(true));
+    assert!(observed.writable.contains(&f.dir.join("extra")));
+}
+
+#[test]
+fn independent_regression_read_only_supervisor_has_no_writable_root_argument() {
+    let mut f = Fixture::new();
+    let e = &mut f.snapshot.entries[0];
+    e.settings.sandbox = Some("read-only".into());
+    let args = native::resume_args(e).unwrap();
+    assert!(
+        args.iter()
+            .any(|arg| arg.starts_with("developer_instructions="))
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--sandbox", "read-only"])
+    );
+    assert!(
+        !args.contains(&"--add-dir".into()),
+        "--add-dir is rejected with read-only; retaining read access must not request writable roots"
+    );
+}
+
+#[test]
+fn independent_regression_save_does_not_release_an_active_next_boot_hold() {
+    let mut f = Fixture::new();
+    let store = f.store();
+    store.save(&f.snapshot).unwrap();
+    let agents = dashboard_agents(&f.snapshot);
+    let held = held_projects(&f.client, &agents).unwrap();
+    assert_eq!(held.len(), 2);
+    f.snapshot.id.push_str("-new-save");
+    f.snapshot.boot = store::boot().unwrap();
+    store.save(&f.snapshot).unwrap();
+    assert_eq!(
+        held_projects(&f.client, &agents).unwrap(),
+        held,
+        "only deliberate Continue may release an existing recovery hold"
+    );
+}
+
+fn append_codex(entry: &Entry, record: Value) {
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(entry.native_file.as_ref().unwrap())
+        .unwrap();
+    writeln!(file, "{record}").unwrap();
+}
+
+fn native_settings(entry: &Entry) -> Settings {
+    native::metadata(entry.native_file.as_ref().unwrap(), "codex", CODEX_ID).unwrap()
+}
+
+#[test]
+fn chronological_permissions_replace_roots_network_and_launch_profile_defaults() {
+    let mut f = Fixture::new();
+    let e = &mut f.snapshot.entries[0];
+    e.settings.writable = vec![f.dir.to_path_buf()];
+    e.settings.network = Some(true);
+    append_codex(
+        e,
+        json!({"type":"turn_context", "payload":{
+            "cwd":e.cwd, "sandbox_policy":{"type":"workspace-write", "writable_roots":[f.dir.to_path_buf()], "network_access":true}
+        }}),
+    );
+    append_codex(
+        e,
+        json!({"type":"event_msg", "payload":{
+            "type":"thread_settings_applied", "thread_settings":{
+                "approval_policy":"on-request", "approvals_reviewer":"auto_review",
+                "permission_profile":{"type":"managed", "network":"restricted", "file_system":{
+                    "type":"restricted", "entries":[{"path":{"type":"special","value":{"kind":"root"}},"access":"read"}]
+                }}
+            }
+        }}),
+    );
+    let observed = native_settings(e);
+    assert!(observed.permission_error.is_none());
+    e.settings.apply_native(observed);
+    assert_eq!(e.settings.sandbox.as_deref(), Some("read-only"));
+    assert_eq!(e.settings.network, Some(false));
+    assert!(e.settings.writable.is_empty());
+    let args = native::resume_args(e).unwrap();
+    assert!(!args.contains(&"--add-dir".into()));
+    assert!(args.contains(&"approvals_reviewer=\"auto_review\"".into()));
+    assert!(
+        args.iter()
+            .any(|s| s.starts_with("developer_instructions="))
+    );
+
+    // A later legacy turn is authoritative too, including its temp controls.
+    let memory = e.supervisor.as_ref().unwrap().state_dir.clone();
+    append_codex(
+        e,
+        json!({"type":"turn_context", "payload":{
+            "sandbox_policy":{"type":"workspace-write", "writable_roots":[memory],
+                "network_access":false, "exclude_tmpdir_env_var":true, "exclude_slash_tmp":false}
+        }}),
+    );
+    e.settings.apply_native(native_settings(e));
+    assert_eq!(e.settings.sandbox.as_deref(), Some("workspace-write"));
+    assert_eq!(
+        e.settings.writable.as_slice(),
+        std::slice::from_ref(&memory)
+    );
+    let args = native::resume_args(e).unwrap();
+    for config in [
+        "sandbox_workspace_write.network_access=false",
+        "sandbox_workspace_write.exclude_tmpdir_env_var=true",
+        "sandbox_workspace_write.exclude_slash_tmp=false",
+        "sandbox_workspace_write.writable_roots=[]",
+    ] {
+        assert!(args.contains(&config.into()), "missing {config}");
+    }
+    assert_eq!(args.iter().filter(|s| *s == "--add-dir").count(), 1);
+    assert!(args.contains(&memory.to_string_lossy().into_owned()));
+    let roundtrip: Settings =
+        serde_json::from_slice(&serde_json::to_vec(&e.settings).unwrap()).unwrap();
+    assert_eq!(roundtrip, e.settings);
+}
+
+#[test]
+fn managed_permissions_preserve_exact_roots_and_do_not_add_supervisor_writes() {
+    let mut f = Fixture::new();
+    let e = &mut f.snapshot.entries[0];
+    let extra = f.dir.join("extra");
+    fs::create_dir(&extra).unwrap();
+    append_codex(
+        e,
+        json!({"type":"event_msg","payload":{
+            "type":"thread_settings_applied", "thread_settings":{"cwd":e.cwd,
+                // Runtime roots are not write grants; only the permission entries are.
+                "runtime_workspace_roots":[e.cwd, extra, f.dir.to_path_buf()],
+                "permission_profile":{"type":"managed","network":"enabled","file_system":{
+                    "type":"restricted","entries":[
+                        {"path":{"type":"special","value":{"kind":"root"}},"access":"read"},
+                        {"path":{"type":"path","path":e.cwd},"access":"write"},
+                        {"path":{"type":"path","path":extra},"access":"write"}
+                    ]
+                }}
+            }
+        }}),
+    );
+    // Match the full installed 0.163 profile, including its automatic guards.
+    let mut record = serde_json::json!({"type":"event_msg","payload":{
+        "type":"thread_settings_applied", "thread_settings":{"cwd":e.cwd,
+            "permission_profile":{"type":"managed","network":"enabled","file_system":{
+                "type":"restricted","entries":[
+                    {"path":{"type":"special","value":{"kind":"root"}},"access":"read"},
+                    {"path":{"type":"path","path":e.cwd},"access":"write"},
+                    {"path":{"type":"path","path":extra},"access":"write"}
+                ]
+            }}
+        }
+    }});
+    for root in [&e.cwd, &extra] {
+        for name in [".git", ".agents", ".codex", ".aws"] {
+            record["payload"]["thread_settings"]["permission_profile"]["file_system"]["entries"].as_array_mut().unwrap().push(
+                json!({"path":{"type":"path","path":root.join(name)}, "access":"read", "missing_path_behavior":"skip"}));
+        }
+    }
+    append_codex(e, record);
+    e.settings.apply_native(native_settings(e));
+    let args = native::resume_args(e).unwrap();
+    assert_eq!(args.iter().filter(|s| *s == "--add-dir").count(), 2);
+    assert!(args.contains(&extra.to_string_lossy().into_owned()));
+    assert!(
+        !args.contains(
+            &e.supervisor
+                .as_ref()
+                .unwrap()
+                .state_dir
+                .to_string_lossy()
+                .into_owned()
+        )
+    );
+    assert!(args.contains(&"sandbox_workspace_write.network_access=true".into()));
+    assert!(args.contains(&"sandbox_workspace_write.exclude_tmpdir_env_var=true".into()));
+    assert!(args.contains(&"sandbox_workspace_write.exclude_slash_tmp=true".into()));
+}
+
+#[test]
+fn unsupported_current_permissions_block_instead_of_using_older_policy() {
+    let f = Fixture::new();
+    let server = Server::new(&f);
+    let e = &f.snapshot.entries[0];
+    let read_root = json!({"path":{"type":"special","value":{"kind":"root"}}, "access":"read"});
+    let deny = json!({"path":{"type":"path","path":e.cwd.join("private")},"access":"deny"});
+    for profile in [
+        json!({"type":"external","network":"enabled"}),
+        json!({"type":"managed","network":"restricted","file_system":{"type":"unrestricted"}}),
+        json!({"type":"managed","network":"restricted","file_system":{"type":"restricted","entries":[read_root,deny]}}),
+        json!({"type":"managed","network":"enabled","file_system":{"type":"restricted","entries":[read_root]}}),
+        json!({"type":"managed","network":"restricted","file_system":{"type":"restricted","entries":[]}}),
+    ] {
+        append_codex(
+            e,
+            json!({"type":"event_msg","payload":{"type":"thread_settings_applied", "thread_settings":{"cwd":e.cwd,"permission_profile":profile}}}),
+        );
+        let observed = native_settings(e);
+        assert!(observed.permission_error.is_some(), "{profile}");
+        let mut saved = e.clone();
+        saved.settings.apply_native(observed);
+        assert!(native::resume_args(&saved).is_err());
+        assert!(
+            plan_in(&f.client, &f.snapshot, &f.runtime).unwrap()[0]
+                .reason
+                .contains("permissions cannot be restored")
+        );
+    }
+    // A subsequent representable policy clears the blocker, never sticks to it.
+    append_codex(
+        e,
+        json!({"type":"turn_context","payload":{"sandbox_policy":{"type":"read-only"}}}),
+    );
+    assert!(native_settings(e).permission_error.is_none());
+    assert!(
+        plan_in(&f.client, &f.snapshot, &f.runtime).unwrap()[0]
+            .target
+            .is_some()
+    );
+    assert_eq!(server.state.lock().unwrap().starts, 0);
+}
+
+#[test]
+fn claude_observations_preserve_registered_permissions_and_role_access() {
+    let mut f = Fixture::new();
+    let e = &mut f.snapshot.entries[1];
+    e.settings.permission = Some("plan".into());
+    e.settings.writable = vec![e.supervisor.as_ref().unwrap().state_dir.clone()];
+    e.settings.apply_native(
+        native::metadata(e.native_file.as_ref().unwrap(), "claude", CLAUDE_ID).unwrap(),
+    );
+    let args = native::resume_args(e).unwrap();
+    assert!(args.windows(2).any(|p| p == ["--permission-mode", "plan"]));
+    assert!(args.contains(&"--append-system-prompt-file".into()));
+    assert!(
+        args.contains(
+            &e.supervisor
+                .as_ref()
+                .unwrap()
+                .state_dir
+                .to_string_lossy()
+                .into_owned()
+        )
+    );
+    assert_eq!(args[1], CLAUDE_ID);
+}
+
+#[test]
+fn read_only_supervisor_restores_in_original_terminal_with_role_and_no_writes() {
+    let mut f = Fixture::new();
+    f.snapshot.entries[0].settings.sandbox = Some("read-only".into());
+    let server = Server::new(&f);
+    let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
+    let target = rows[0].target.clone().unwrap();
+    assert_eq!(
+        target,
+        Target::Original {
+            workspace: f.snapshot.entries[0].workspace.clone(),
+            tab: f.snapshot.entries[0].tab.clone(),
+            pane: f.snapshot.entries[0].pane.clone()
+        }
+    );
+    restore_in(
+        &f.client,
+        &f.snapshot,
+        &[(0, target, rows[0].differences.clone())],
+        &f.runtime,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let state = server.state.lock().unwrap();
+    assert_eq!(state.starts, 1);
+    assert!(!state.methods.iter().any(|m| m.contains("create")));
+    assert_eq!(state.agents[0]["pane_id"], f.snapshot.entries[0].pane);
+    assert_eq!(
+        state.agents[0]["workspace_id"],
+        f.snapshot.entries[0].workspace
+    );
+    assert_eq!(state.agents[0]["tab_id"], f.snapshot.entries[0].tab);
+}
+
+#[test]
+fn holds_survive_multiple_saves_partial_restore_continue_and_store_reopen() {
+    let mut f = Fixture::new();
+    let store = f.store();
+    store.save(&f.snapshot).unwrap();
+    let agents = dashboard_agents(&f.snapshot);
+    let mut older = f.snapshot.clone();
+    older.id.push_str("-second");
+    store.save(&older).unwrap();
+    let server = Server::new(&f);
+    let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
+    restore_in(
+        &f.client,
+        &f.snapshot,
+        &[(
+            0,
+            rows[0].target.clone().unwrap(),
+            rows[0].differences.clone(),
+        )],
+        &f.runtime,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(server.state.lock().unwrap().starts, 1);
+
+    // Save after the partial restore omits the skipped supervisor. Neither that
+    // omission nor replacing latest may release its uncontinued hold.
+    f.snapshot.id.push_str("-same-boot");
+    f.snapshot.boot = store::boot().unwrap();
+    f.snapshot.entries.truncate(1);
+    store.save(&f.snapshot).unwrap();
+    assert_eq!(held_projects(&f.client, &agents).unwrap().len(), 2);
+    assert!(
+        begin_delivery(
+            &store,
+            &f.snapshot.scope,
+            &agents[1].project_root,
+            &["kept-inbox".into()]
+        )
+        .is_err()
+    );
+    let first = BTreeSet::from([agents[0].project_root.clone()]);
+    continue_coordination(&f.client, &first).unwrap();
+    assert_eq!(
+        held_projects(&f.client, &agents).unwrap(),
+        BTreeSet::from([agents[1].project_root.clone()])
+    );
+    let journal = store.journal().unwrap();
+    assert!(
+        !journal.released.contains_key(&f.snapshot.id),
+        "Continue must not disarm a same-boot save for next boot"
+    );
+    assert_eq!(journal.released.len(), 2);
+    assert!(!journal.attempts.is_empty());
+    begin_delivery(
+        &store,
+        &f.snapshot.scope,
+        &agents[0].project_root,
+        &["still-quarantined".into()],
+    )
+    .unwrap();
+
+    // Reopen all handles from disk, as a new dashboard process would.
+    let client = HerdrClient::from_socket_path(f.client.socket_path().to_path_buf())
+        .with_marker_record(f.dir.join("state/markers/session.json"));
+    assert_eq!(
+        held_projects(&client, &agents).unwrap(),
+        BTreeSet::from([agents[1].project_root.clone()])
+    );
+    continue_coordination(&client, &BTreeSet::from([agents[1].project_root.clone()])).unwrap();
+    assert!(held_projects(&client, &agents).unwrap().is_empty());
+    assert!(
+        begin_delivery(
+            &store,
+            &f.snapshot.scope,
+            &agents[0].project_root,
+            &["still-quarantined".into()]
+        )
+        .is_err()
+    );
+    assert_eq!(
+        store.journal().unwrap().attempts.len(),
+        journal.attempts.len()
+    );
+    // A new prior-boot save arms the identities again, despite older releases.
+    older.id.push_str("-next-boot");
+    store.save(&older).unwrap();
+    assert_eq!(held_projects(&client, &agents).unwrap().len(), 2);
+}
+
+#[test]
+fn prior_boot_holds_do_not_depend_on_being_observed_before_save() {
+    let mut f = Fixture::new();
+    let store = f.store();
+    store.save(&f.snapshot).unwrap();
+    let agents = dashboard_agents(&f.snapshot);
+    f.snapshot.id.push_str("-same-boot");
+    f.snapshot.boot = store::boot().unwrap();
+    store.save(&f.snapshot).unwrap();
+    assert_eq!(held_projects(&f.client, &agents).unwrap().len(), 2);
+    assert!(
+        begin_delivery(
+            &store,
+            &f.snapshot.scope,
+            &agents[0].project_root,
+            &["inbox-id".into()]
+        )
+        .is_err()
+    );
+    continue_coordination(&f.client, &held_projects(&f.client, &agents).unwrap()).unwrap();
+    assert!(held_projects(&f.client, &agents).unwrap().is_empty());
+    begin_delivery(
+        &store,
+        &f.snapshot.scope,
+        &agents[0].project_root,
+        &["inbox-id".into()],
+    )
+    .unwrap();
+}
+
+#[test]
+fn independent_late_identity_after_unknown_start_only_reconciles_metadata() {
+    let f = Fixture::new();
+    let server = Server::new(&f);
+    server.state.lock().unwrap().unknown_start = true;
+    let row = plan_in(&f.client, &f.snapshot, &f.runtime)
+        .unwrap()
+        .remove(0);
+    restore_in(
+        &f.client,
+        &f.snapshot,
+        &[(0, row.target.unwrap(), row.differences)],
+        &f.runtime,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    // The start was accepted despite its lost acknowledgment. The integration
+    // reports exact identity later, after the first restore already returned.
+    let e = &f.snapshot.entries[0];
+    server.state.lock().unwrap().agents.push(json!({
+        "agent": e.kind, "name": e.name, "workspace_id": e.workspace,
+        "tab_id": e.tab, "pane_id": e.pane, "cwd": e.cwd,
+        "agent_status": "idle", "interactive_ready": true, "launch_pending": false,
+        "agent_session": {"agent": e.kind, "kind": "id", "value": e.native_id,
+                          "source": "herdr:test"}
+    }));
+    let row = plan_in(&f.client, &f.snapshot, &f.runtime)
+        .unwrap()
+        .remove(0);
+    assert!(matches!(row.target, Some(Target::Metadata { .. })));
+    restore_in(
+        &f.client,
+        &f.snapshot,
+        &[(0, row.target.unwrap(), row.differences)],
+        &f.runtime,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let state = server.state.lock().unwrap();
+    assert_eq!(state.starts, 1);
+    assert!(
+        state
+            .methods
+            .iter()
+            .all(|m| !m.contains("create") && !m.contains("prompt"))
+    );
+    assert_eq!(
+        f.store().journal().unwrap().attempts[&e.key()].phase,
+        "complete"
+    );
+}
+
+#[test]
+fn independent_partial_retry_does_not_restart_completed_entries() {
+    let f = Fixture::new();
+    let server = Server::new(&f);
+    for index in [0, 1] {
+        let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
+        if index == 1 {
+            assert!(rows[0].target.is_none());
+            assert!(rows[0].reason.contains("Already running"));
+        }
+        let row = &rows[index];
+        restore_in(
+            &f.client,
+            &f.snapshot,
+            &[(index, row.target.clone().unwrap(), row.differences.clone())],
+            &f.runtime,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+    }
+    assert_eq!(server.state.lock().unwrap().starts, 2);
+    assert!(
+        plan_in(&f.client, &f.snapshot, &f.runtime)
+            .unwrap()
+            .iter()
+            .all(|r| r.target.is_none())
+    );
+}
+
+#[test]
+fn independent_identity_elsewhere_is_reused_and_duplicate_live_ids_block() {
+    let f = Fixture::new();
+    let server = Server::new(&f);
+    let e = &f.snapshot.entries[0];
+    let elsewhere = json!({
+        "agent": e.kind, "name": "different-name", "workspace_id": "elsewhere",
+        "tab_id": "elsewhere:t1", "pane_id": "elsewhere:p1", "cwd": e.cwd,
+        "agent_status": "idle", "interactive_ready": true,
+        "agent_session": {"agent": e.kind, "kind": "id", "value": e.native_id,
+                          "source": "herdr:test"}
+    });
+    server.state.lock().unwrap().agents.push(elsewhere.clone());
+    let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
+    assert!(rows[0].target.is_none() && rows[0].alternative.is_none());
+    assert!(rows[0].reason.contains("Already running in elsewhere:p1"));
+    let mut duplicate = elsewhere;
+    duplicate["pane_id"] = json!(e.pane);
+    server.state.lock().unwrap().agents.push(duplicate);
+    let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
+    assert!(
+        rows[0]
+            .reason
+            .contains("duplicate live conversation identities")
+    );
+    assert_eq!(server.state.lock().unwrap().starts, 0);
 }
