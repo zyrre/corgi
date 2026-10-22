@@ -1345,6 +1345,11 @@ different identity path. Record manual hook/API identity reports as a fixture
 boundary: a hook browser's trusted/active status does not prove idle resume
 emitted an identity report. Check native argv, history and task counts as well.
 
+Recovery acknowledgment hints accept either letter case. Manual setup also
+accepts Space to toggle its single acknowledgment; Confirm explains a missing
+acknowledgment in the fixed footer so scrolling cannot hide the feedback.
+Toggling, navigation and repeat events never substitute for explicit confirmation.
+
 Manual setup has its own explicit confirmation and config check/backup/reload;
 startup, Save and browsing never edit Herdr configuration. Herdr 0.9.1 cannot
 report its loaded config path or an auto-resume barrier. Setup therefore needs
