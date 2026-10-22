@@ -38,6 +38,7 @@ pub(crate) struct Sessions {
     pub confirm: bool,
     pub acknowledged: bool,
     pub accepted_setup: bool,
+    setup_ack_missing: bool,
     pub saved: Option<Snapshot>,
     pub snapshots: Vec<Snapshot>,
     pub rows: Vec<Row>,
@@ -58,6 +59,7 @@ impl Default for Sessions {
             confirm: false,
             acknowledged: false,
             accepted_setup: false,
+            setup_ack_missing: false,
             saved: None,
             snapshots: Vec::new(),
             rows: Vec::new(),
@@ -153,11 +155,16 @@ impl Sessions {
             {
                 self.confirm = !self.confirm
             }
-            KeyCode::Char('o') if self.stage == Stage::Confirm => {
+            KeyCode::Char('o' | 'O') if self.stage == Stage::Confirm => {
                 self.acknowledged = !self.acknowledged
             }
-            KeyCode::Char('a') if matches!(self.stage, Stage::Confirm | Stage::Setup) => {
-                self.accepted_setup = !self.accepted_setup
+            KeyCode::Char('a' | 'A') if matches!(self.stage, Stage::Confirm | Stage::Setup) => {
+                self.accepted_setup = !self.accepted_setup;
+                self.setup_ack_missing = false;
+            }
+            KeyCode::Char(' ') if self.stage == Stage::Setup => {
+                self.accepted_setup = !self.accepted_setup;
+                self.setup_ack_missing = false;
             }
             KeyCode::Char('r') if self.stage == Stage::Save => return Action::Inventory(false),
             KeyCode::Char('w') if self.stage == Stage::Save => return Action::Inventory(true),
@@ -214,7 +221,7 @@ impl Sessions {
                 }
                 Stage::Save if self.confirm => return Action::Save(self.saved.clone().unwrap()),
                 Stage::Setup if self.confirm && self.accepted_setup => return Action::Apply,
-                Stage::Setup if self.confirm => {}
+                Stage::Setup if self.confirm => self.setup_ack_missing = true,
                 Stage::Continue if self.confirm => return Action::Continue,
                 Stage::Save | Stage::Setup | Stage::Continue | Stage::Result => {
                     return Action::Close;
@@ -393,10 +400,10 @@ impl Sessions {
                     );
                     lines.push("CLI startup hooks may run. Native history opens at its latest durable state.".into());
                     if self.old() {
-                        lines.push(format!("[{}] O: I reviewed this old/clock-different/previously restored snapshot",if self.acknowledged { "x" } else { " " }));
+                        lines.push(format!("[{}] O/o: I reviewed this old/clock-different/previously restored snapshot",if self.acknowledged { "x" } else { " " }));
                     }
                     if self.differences() {
-                        lines.push(format!("[{}] A: accept the listed unknown setup / interrupted-work differences",if self.accepted_setup { "x" } else { " " }));
+                        lines.push(format!("[{}] A/a: accept the listed unknown setup / interrupted-work differences",if self.accepted_setup { "x" } else { " " }));
                     }
                 }
             }
@@ -410,7 +417,7 @@ impl Sessions {
                     "Prepare before reboot. New recovery launches wait for the next normal Herdr start to exclude already-queued auto-resumes.".into(),
                     "Does not stop agents or restart Herdr. No edit occurs until this confirmation.".into()]);
                 lines.push(format!(
-                    "[{}] A: I verified this is the current Herdr session's configuration file",
+                    "[{}] A/a or Space: I verified this is the current Herdr session's configuration file",
                     if self.accepted_setup { "x" } else { " " }
                 ));
             }
@@ -429,8 +436,9 @@ impl Sessions {
     pub fn footer(&self) -> String {
         match self.stage {
             Stage::Save=>format!("{} Cancel    {} Save now (previous saves retained) · Tab choose · Enter · R refresh · W wait up to 30s",if self.confirm { " " } else { ">" },if self.confirm { ">" } else { " " }),
-            Stage::Confirm=>format!("{} Back/Cancel    {} Restore {} sessions · Tab choose · Enter · O old-save ack · A setup ack",if self.confirm { " " } else { ">" },if self.confirm { ">" } else { " " },self.selected.len()),
-            Stage::Setup|Stage::Continue=>format!("{} Cancel    {} Confirm · Tab choose · Enter",if self.confirm { " " } else { ">" },if self.confirm { ">" } else { " " }),
+            Stage::Confirm=>format!("{} Back/Cancel    {} Restore {} sessions · Tab choose · Enter · O/o old-save ack · A/a setup ack",if self.confirm { " " } else { ">" },if self.confirm { ">" } else { " " },self.selected.len()),
+            Stage::Setup=>format!("{}{} Cancel    {} Confirm · Tab choose · Enter\nA/a or Space: toggle acknowledgment",if self.setup_ack_missing { "Check the box first: A/a or Space.\n" } else { "" },if self.confirm { " " } else { ">" },if self.confirm { ">" } else { " " }),
+            Stage::Continue=>format!("{} Cancel    {} Confirm · Tab choose · Enter",if self.confirm { " " } else { ">" },if self.confirm { ">" } else { " " }),
             Stage::Working=>"Esc / S: stop scheduling (successful starts remain open)".into(),
             Stage::Select=>"↑/↓ select row · Space select ready · F new-placement offer · Enter review · R revalidate · Esc cancel".into(),
             _=>"↑/↓ browse/scroll · Enter · Esc close".into(),
@@ -609,6 +617,7 @@ impl App {
                 Ok(Event::Setup(change)) => {
                     form.change = Some(change);
                     form.accepted_setup = false;
+                    form.setup_ack_missing = false;
                     form.stage = Stage::Setup;
                 }
                 Ok(Event::Holds(projects)) => {
@@ -828,5 +837,177 @@ mod tests {
         assert!(matches!(form.key(key(KeyCode::Esc)), Action::None));
         assert!(form.stop.load(Ordering::Relaxed));
         assert_eq!(form.stage, Stage::Working);
+    }
+    #[test]
+    fn setup_acknowledgment_accepts_both_cases_and_space_without_applying() {
+        for code in ['a', 'A', ' '] {
+            for confirm in [false, true] {
+                let mut form = Sessions {
+                    stage: Stage::Setup,
+                    confirm,
+                    ..Sessions::default()
+                };
+                assert!(matches!(form.key(key(KeyCode::Char(code))), Action::None));
+                assert!(form.accepted_setup, "{code:?}");
+                assert_eq!(form.confirm, confirm);
+                assert!(form.lines().iter().any(|line| line.starts_with("[x]")));
+                assert!(matches!(form.key(key(KeyCode::Char(code))), Action::None));
+                assert!(!form.accepted_setup);
+                assert_eq!(form.stage, Stage::Setup);
+            }
+        }
+    }
+
+    #[test]
+    fn unchecked_setup_confirm_explains_the_missing_acknowledgment() {
+        let mut form = Sessions {
+            stage: Stage::Setup,
+            ..Sessions::default()
+        };
+        form.key(key(KeyCode::Tab));
+        for _ in 0..5 {
+            assert!(matches!(form.key(key(KeyCode::Enter)), Action::None));
+            assert!(!form.accepted_setup);
+            assert_eq!(form.stage, Stage::Setup);
+            assert!(form.footer().contains("Check the box first"));
+            assert!(form.footer().contains("A/a or Space"));
+        }
+        assert!(matches!(form.key(key(KeyCode::Char('A'))), Action::None));
+        assert!(!form.footer().contains("Check the box first"));
+        // Toggling alone never emits Apply; a separate Enter on Confirm does.
+        assert!(matches!(form.key(key(KeyCode::Enter)), Action::Apply));
+    }
+
+    #[test]
+    fn setup_cancel_navigation_and_repeat_cannot_apply() {
+        for code in ['a', 'A', ' '] {
+            let mut form = Sessions {
+                stage: Stage::Setup,
+                ..Sessions::default()
+            };
+            form.key(key(KeyCode::Char(code)));
+            for navigation in [
+                KeyCode::Up,
+                KeyCode::Down,
+                KeyCode::PageDown,
+                KeyCode::PageUp,
+            ] {
+                assert!(matches!(form.key(key(navigation)), Action::None));
+                assert!(!form.confirm);
+            }
+            assert!(matches!(form.key(key(KeyCode::Enter)), Action::Close));
+        }
+        let mut app = crate::test_support::test_app();
+        app.overlay = Overlay::Sessions(Sessions {
+            stage: Stage::Setup,
+            confirm: true,
+            accepted_setup: true,
+            ..Sessions::default()
+        });
+        for code in [KeyCode::Enter, KeyCode::Char('A'), KeyCode::Char(' ')] {
+            let mut repeat = key(code);
+            repeat.kind = KeyEventKind::Repeat;
+            app.handle_key(repeat);
+            assert!(!app.recovery_job.is_running());
+            assert!(
+                matches!(&app.overlay, Overlay::Sessions(f) if f.stage == Stage::Setup && f.accepted_setup)
+            );
+        }
+        let Overlay::Sessions(form) = &mut app.overlay else {
+            unreachable!()
+        };
+        form.can_confirm = false;
+        assert!(matches!(form.key(key(KeyCode::Enter)), Action::None));
+    }
+
+    #[test]
+    fn setup_space_does_not_change_other_recovery_acknowledgments_or_apply() {
+        for stage in [
+            Stage::Menu,
+            Stage::Save,
+            Stage::Browser,
+            Stage::Confirm,
+            Stage::Continue,
+            Stage::Result,
+            Stage::Working,
+        ] {
+            let mut form = Sessions {
+                stage,
+                confirm: true,
+                ..Sessions::default()
+            };
+            assert!(matches!(form.key(key(KeyCode::Char(' '))), Action::None));
+            assert!(!form.accepted_setup && !form.acknowledged);
+            assert_eq!(form.stage, stage);
+        }
+    }
+
+    #[test]
+    fn restore_acknowledgment_hints_accept_both_letter_cases() {
+        let (_scratch, _client, mut saved, _) = recovery::tests::hold_fixture();
+        saved.created = 1;
+        saved.entries[0].settings.unknown = true;
+        for (old, setup) in [('o', 'a'), ('O', 'A')] {
+            let mut form = Sessions {
+                stage: Stage::Confirm,
+                saved: Some(saved.clone()),
+                selected: BTreeMap::from([(
+                    0,
+                    Target::Original {
+                        workspace: "w1".into(),
+                        tab: "t1".into(),
+                        pane: "w1:p1".into(),
+                    },
+                )]),
+                rows: vec![Row {
+                    target: None,
+                    alternative: None,
+                    reason: String::new(),
+                    differences: Vec::new(),
+                }],
+                ..Sessions::default()
+            };
+            assert!(matches!(form.key(key(KeyCode::Char(old))), Action::None));
+            assert!(form.acknowledged);
+            assert!(matches!(form.key(key(KeyCode::Char(setup))), Action::None));
+            assert!(form.accepted_setup);
+            assert!(!form.confirm);
+            form.key(key(KeyCode::Tab));
+            assert!(matches!(form.key(key(KeyCode::Enter)), Action::Restore));
+            form.key(key(KeyCode::Char(old)));
+            assert!(matches!(form.key(key(KeyCode::Enter)), Action::None));
+            form.key(key(KeyCode::Char(old)));
+            form.key(key(KeyCode::Char(setup)));
+            assert!(matches!(form.key(key(KeyCode::Enter)), Action::None));
+        }
+    }
+
+    #[test]
+    fn setup_feedback_and_toggle_hint_stay_visible_on_short_scrolled_terminals() {
+        use crate::test_support::{buffer_text, test_terminal};
+        for (width, height) in [(50, 12), (80, 24), (120, 40)] {
+            let mut app = crate::test_support::test_app();
+            let mut form = Sessions {
+                stage: Stage::Setup,
+                cursor: 99,
+                ..Sessions::default()
+            };
+            form.key(key(KeyCode::Tab));
+            assert!(matches!(form.key(key(KeyCode::Enter)), Action::None));
+            app.overlay = Overlay::Sessions(form);
+            let mut terminal = test_terminal(width, height);
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            let screen = buffer_text(terminal.backend().buffer());
+            assert!(
+                screen.contains("Check the box first: A/a or Space."),
+                "{width}x{height}: {screen}"
+            );
+            assert!(
+                screen.contains("A/a or Space: toggle acknowledgment"),
+                "{width}x{height}: {screen}"
+            );
+        }
     }
 }

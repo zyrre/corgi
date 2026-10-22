@@ -21,9 +21,9 @@ Press **S** in the dashboard for Sessions. Nothing restores on startup.
 
 Before the first reboot, open Manual recovery setup. It shows the selected
 Herdr config path and configured auto-resume value. Herdr 0.9.1 does not expose
-the running server's loaded config path, so **A** explicitly acknowledges that
-this is the correct file. **Tab**, then **Enter**, confirms the change to
-`session.resume_agents_on_restore = false`. Corgi validates a staged file with
+the running server's loaded config path, so **A**, **a** or **Space** toggles the
+acknowledgment that this is the correct file. **Tab**, then **Enter**, separately
+confirms `session.resume_agents_on_restore = false`. Corgi validates a staged file with
 `herdr config check`, backs up the original, changes only that TOML value and
 requires a fully applied config reload. Layout restoration remains enabled.
 Opening this screen, Save and Restore never change configuration.
