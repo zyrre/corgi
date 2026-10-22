@@ -83,16 +83,16 @@ pub(crate) fn draw(frame: &mut Frame<'_>, app: &mut App) {
 fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let keys = match (app.expanded, app.compact) {
         (true, true) => {
-            "j/k select · space collapse · u/d scroll · p prompt · enter focus · q close"
+            "j/k select · space collapse · u/d scroll · p prompt · e edit · enter focus · q close"
         }
         (true, false) => {
-            "j/k select · space collapse · u/d scroll · p prompt · m merge · enter/f focus · x close agent · q close"
+            "j/k select · space collapse · u/d scroll · p prompt · e edit · m merge · enter/f focus · x close agent · q close"
         }
         (false, true) => {
-            "j/k select · →/← project · space session · p prompt · n new · t scratch · s supervisor · m merge · enter focus · x close · q close"
+            "j/k select · →/← project · space session · p prompt · n new · t scratch · s supervisor · e edit · m merge · enter focus · x close · q close"
         }
         (false, false) => {
-            "j/k select · →/← expand/collapse project · space session · p prompt · n new agent · t scratch · s supervisor · m merge · enter/f focus · x close agent · r refresh · q close"
+            "j/k select · →/← expand/collapse project · space session · p prompt · n new agent · t scratch · s supervisor · e edit · m merge · enter/f focus · x close agent · r refresh · q close"
         }
     };
     let lines = vec![

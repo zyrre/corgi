@@ -1,27 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="982" height="132" viewBox="0 0 982 132">
-<rect x="0.5" y="0.5" width="981" height="131" rx="10" fill="#1e1e2e" stroke="#313244"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1144" height="132" viewBox="0 0 1144 132">
+<rect x="0.5" y="0.5" width="1143" height="131" rx="10" fill="#1e1e2e" stroke="#313244"/>
 <g transform="translate(14 64)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', 'Liberation Mono', monospace" font-size="15">
 <rect x="36" y="0" width="81" height="18" fill="#f9e2af" shape-rendering="crispEdges"/>
 <rect x="0" y="0" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="0" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="45 54 63 72 81 90 99" y="13" fill="#45475a" font-weight="bold">BLOCKED</text>
-<text x="126" y="13" fill="#585b70">·</text>
-<text x="144 153 162 171 180" y="13" fill="#a6adc8" font-weight="bold">Retry</text>
-<text x="198 207 216 225 234 243" y="13" fill="#a6adc8" font-weight="bold">failed</text>
-<text x="261 270 279 288" y="13" fill="#a6adc8" font-weight="bold">card</text>
-<text x="306 315 324 333 342 351" y="13" fill="#a6adc8" font-weight="bold">payme…</text>
-<text x="369" y="13" fill="#585b70">·</text>
-<text x="387 396 405 414 423 432" y="13" fill="#ff8700">Sonnet</text>
-<text x="450" y="13" fill="#ff8700">5</text>
-<text x="468 477 486 495 504 513" y="13" fill="#94e2d5">medium</text>
-<text x="531" y="13" fill="#585b70">·</text>
-<text x="549 558 567" y="13" fill="#dce1b0">41%</text>
-<text x="585 594 603" y="13" fill="#dce1b0">ctx</text>
-<text x="621" y="13" fill="#585b70">·</text>
-<text x="639" y="13" fill="#f9e2af">⏱</text>
-<text x="657 666" y="13" fill="#f9e2af">3m</text>
-<text x="684 693 702 711 720" y="13" fill="#f9e2af">cache</text>
-<text x="738" y="13" fill="#585b70">·</text>
-<text x="756" y="13" fill="#94e2d5">⑂</text>
-<text x="774 783 792 801 810 819 828 837 846 855 864 873 882 891 900 909 918 927 936" y="13" fill="#585b70">checkout-retry-4b1e</text>
+<text x="126 135 144 153 162" y="13" fill="#585b70">14:29</text>
+<text x="180 189" y="13" fill="#585b70">20</text>
+<text x="207 216 225" y="13" fill="#585b70">Oct</text>
+<text x="243" y="13" fill="#585b70">·</text>
+<text x="261 270 279 288 297" y="13" fill="#a6adc8" font-weight="bold">Retry</text>
+<text x="315 324 333 342 351 360" y="13" fill="#a6adc8" font-weight="bold">failed</text>
+<text x="378 387 396 405" y="13" fill="#a6adc8" font-weight="bold">card</text>
+<text x="423 432 441 450 459 468 477 486" y="13" fill="#a6adc8" font-weight="bold">payments</text>
+<text x="504" y="13" fill="#585b70">·</text>
+<text x="522 531 540 549 558 567" y="13" fill="#ff8700">Sonnet</text>
+<text x="585" y="13" fill="#ff8700">5</text>
+<text x="603 612 621 630 639 648" y="13" fill="#94e2d5">medium</text>
+<text x="666" y="13" fill="#585b70">·</text>
+<text x="684 693 702" y="13" fill="#dce1b0">41%</text>
+<text x="720 729 738" y="13" fill="#dce1b0">ctx</text>
+<text x="756" y="13" fill="#585b70">·</text>
+<text x="774" y="13" fill="#f9e2af">⏱</text>
+<text x="792 801" y="13" fill="#f9e2af">3m</text>
+<text x="819 828 837 846 855" y="13" fill="#f9e2af">cache</text>
+<text x="873" y="13" fill="#585b70">·</text>
+<text x="891" y="13" fill="#94e2d5">⑂</text>
+<text x="909 918 927 936 945 954 963 972 981 990 999 1008 1017 1026 1035 1044 1053 1062 1071" y="13" fill="#585b70">checkout-retry-4b1e</text>
 <rect x="0" y="18" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><rect x="9" y="18" width="9" height="18" fill="#94e2d5" shape-rendering="crispEdges"/><text x="36" y="31" fill="#f9e2af" font-weight="bold">?</text>
 <text x="54 63 72 81 90" y="31" fill="#f9e2af">Allow</text>
 <text x="108 117 126 135 144" y="31" fill="#f9e2af">Bash:</text>
@@ -45,29 +48,33 @@
 </g>
 <path d="M49 -26V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="49" cy="2" r="2" fill="#fab387"/>
 <g transform="translate(0 -12)">
-<text x="144" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">task</text>
+<text x="126" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">last activity</text>
 </g>
-<path d="M148 -8V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="148" cy="2" r="2" fill="#fab387"/>
+<path d="M130 -8V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="130" cy="2" r="2" fill="#fab387"/>
 <g transform="translate(0 -30)">
-<text x="387" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">model</text>
+<text x="261" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">task</text>
 </g>
-<path d="M391 -26V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="391" cy="2" r="2" fill="#fab387"/>
+<path d="M265 -26V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="265" cy="2" r="2" fill="#fab387"/>
 <g transform="translate(0 -12)">
-<text x="468" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">effort</text>
+<text x="522" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">model</text>
 </g>
-<path d="M472 -8V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="472" cy="2" r="2" fill="#fab387"/>
+<path d="M526 -8V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="526" cy="2" r="2" fill="#fab387"/>
 <g transform="translate(0 -30)">
-<text x="549" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">context used</text>
+<text x="603" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">effort</text>
 </g>
-<path d="M553 -26V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="553" cy="2" r="2" fill="#fab387"/>
+<path d="M607 -26V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="607" cy="2" r="2" fill="#fab387"/>
 <g transform="translate(0 -12)">
-<text x="639" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">prompt cache left</text>
+<text x="684" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">context used</text>
 </g>
-<path d="M643 -8V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="643" cy="2" r="2" fill="#fab387"/>
+<path d="M688 -8V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="688" cy="2" r="2" fill="#fab387"/>
 <g transform="translate(0 -30)">
-<text x="756" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">worktree</text>
+<text x="774" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">prompt cache left</text>
 </g>
-<path d="M760 -26V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="760" cy="2" r="2" fill="#fab387"/>
+<path d="M778 -26V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="778" cy="2" r="2" fill="#fab387"/>
+<g transform="translate(0 -12)">
+<text x="891" y="0" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">worktree</text>
+</g>
+<path d="M895 -8V2" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="895" cy="2" r="2" fill="#fab387"/>
 <path d="M453 27L427 27" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="427" cy="27" r="2" fill="#fab387"/>
 <text x="459" y="31" fill="#fab387" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13">newest thing said: your prompt, its reply or thinking, or a question</text>
 <path d="M453 45L310 45" stroke="#fab387" stroke-width="1" stroke-dasharray="3 2"/><circle cx="310" cy="45" r="2" fill="#fab387"/>

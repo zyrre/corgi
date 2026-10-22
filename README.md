@@ -70,6 +70,7 @@ flowchart TD
 | `S` | Save sessions, restore saved conversations, or continue held coordination |
 | `m` | Merge and push an agent's worktree branch (asks first) |
 | `f` or `Enter` | Focus the selected agent's pane |
+| `e` | Open the selected agent's checkout in your editor, in a new tab of its workspace |
 | `x` | Close the selected agent, and delete its worktree checkout (asks first) |
 | `r` | Refresh now |
 | `Esc`, `q` | Collapse the transcript, or close Corgi; `q` always closes |
@@ -78,11 +79,25 @@ For a compact popup instead of a tab, open the `quick` pane: `herdr plugin pane 
 
 Corgi draws in your terminal's own colors, light or dark: the active theme of the [Omarchy](https://omarchy.org) Linux desktop, or else the palette your terminal (through Herdr) reports, with Catppuccin standing in when it reports none. Set `CORGI_THEME=catppuccin-mocha` or `catppuccin-latte` to force Catppuccin's own colors, or `CORGI_THEME=terminal` to ask the terminal even on an Omarchy machine (say, when you view it over SSH from another one).
 
+### Review an agent's changes in your editor
+
+`e` opens the selected agent's checkout in a new tab of that agent's workspace, named after its branch: the top of its Git work tree as it is on disk, uncommitted changes and all, so your editor's diff gutter shows what the agent changed (outside Git, its working directory). The tab's shell runs `$VISUAL`, else `$EDITOR`, else `vim`, as your shell config sets them, and is left in the checkout when you quit the editor.
+
+The plugin's `edit` action does the same from anywhere in Herdr: for the agent in the focused pane, for the agent selected in Corgi when the dashboard is focused, and for a plain shell's directory. Herdr plugins cannot bind keys, so add one to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
+
+```toml
+[[keys.command]]
+key = "prefix+e"
+type = "plugin_action"
+command = "io.github.zyrre.corgi.edit"
+description = "Corgi: edit agent checkout"
+```
+
 ### Reading a row
 
 In an expanded card, a project without a supervisor, and the scratch sessions, each agent has three rows:
 
-![One agent row, labelled: selection bar, state, task, model, effort, context used, prompt cache left, worktree, the newest thing said, and the command it runs](docs/images/row-anatomy.svg)
+![One agent row, labelled: selection bar, state, last activity, task, model, effort, context used, prompt cache left, worktree, the newest thing said, and the command it runs](docs/images/row-anatomy.svg)
 
 ### Read a session in place
 

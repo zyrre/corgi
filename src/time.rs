@@ -1,6 +1,7 @@
 //! Wall-clock time without a date crate: the Unix clock, RFC 3339 timestamps
-//! as the agent CLIs write them, and the compact UTC stamps Corgi names files
-//! with. Both directions of the calendar use Howard Hinnant's algorithms.
+//! as the agent CLIs write them, the compact UTC stamps Corgi names files
+//! with, and the local clock and date a row shows. Both directions of the
+//! calendar use Howard Hinnant's algorithms.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -80,6 +81,67 @@ pub fn rfc3339_utc(secs: u64) -> String {
     )
 }
 
+/// Month names as a row shows them, `DD Mon`.
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// A moment together with the offset from UTC the local clock had at it, so
+/// it can be shown on the wall clock without asking the system again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LocalTime {
+    /// Unix seconds.
+    pub secs: u64,
+    /// Seconds the local clock is ahead of UTC, negative west of Greenwich.
+    pub offset: i64,
+}
+
+impl LocalTime {
+    /// `secs` (Unix seconds) on this machine's local clock.
+    pub fn at(secs: u64) -> Self {
+        Self {
+            secs,
+            offset: local_offset(secs),
+        }
+    }
+
+    /// The local time and date as `HH:MM DD Mon`, such as `10:21 20 Oct`.
+    pub fn clock_and_date(self) -> String {
+        let local = self.secs as i64 + self.offset;
+        let (days, time) = (local.div_euclid(86_400), local.rem_euclid(86_400));
+        let (_, month, day) = civil_from_days(days);
+        format!(
+            "{:02}:{:02} {day:02} {}",
+            time / 3_600,
+            time / 60 % 60,
+            MONTHS[(month - 1) as usize]
+        )
+    }
+}
+
+/// Seconds the local clock was ahead of UTC at `secs`, by the system's time
+/// zone rules (`TZ`, else `/etc/localtime`), so a moment across a daylight
+/// saving change gets the offset it had then. Zero when the system cannot say.
+#[cfg(unix)]
+fn local_offset(secs: u64) -> i64 {
+    let Ok(time) = libc::time_t::try_from(secs) else {
+        return 0;
+    };
+    // SAFETY: `localtime_r` only writes the `tm` it is given, which is plain
+    // data for which all zeroes is a valid value.
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&time, &mut local) }.is_null() {
+        return 0;
+    }
+    // `c_long`, which is narrower than `i64` on 32-bit targets.
+    local.tm_gmtoff as i64
+}
+
+#[cfg(not(unix))]
+fn local_offset(_secs: u64) -> i64 {
+    0
+}
+
 /// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
 /// `days_from_civil`).
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
@@ -109,7 +171,13 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use super::{civil_from_days, days_from_civil, parse_rfc3339, rfc3339_utc, utc_stamp};
+    use super::{
+        LocalTime, civil_from_days, days_from_civil, parse_rfc3339, rfc3339_utc, utc_stamp,
+    };
+
+    fn at(text: &str) -> u64 {
+        parse_rfc3339(text).expect("timestamp")
+    }
 
     #[test]
     fn rfc3339_timestamps_parse_into_unix_seconds() {
@@ -148,5 +216,39 @@ mod tests {
                 "{year}-{month}-{day}"
             );
         }
+    }
+
+    #[test]
+    fn the_local_clock_and_date_shift_by_the_offset() {
+        let local = |text: &str, offset: i64| {
+            LocalTime {
+                secs: at(text),
+                offset,
+            }
+            .clock_and_date()
+        };
+        assert_eq!(local("2026-10-20T10:21:59Z", 0), "10:21 20 Oct");
+        assert_eq!(local("2026-10-20T08:21:00Z", 2 * 3_600), "10:21 20 Oct");
+        // An offset carries the clock across midnight in either direction,
+        // and the date across the end of a month and of a year.
+        assert_eq!(local("2026-10-20T23:30:00Z", 2 * 3_600), "01:30 21 Oct");
+        assert_eq!(local("2026-10-01T01:00:00Z", -5 * 3_600), "20:00 30 Sep");
+        assert_eq!(
+            local("2026-12-31T22:15:00Z", 5 * 3_600 + 1_800),
+            "03:45 01 Jan"
+        );
+        assert_eq!(local("2027-01-01T00:59:00Z", -3_600), "23:59 31 Dec");
+        assert_eq!(local("2028-02-28T23:00:00Z", 3_600), "00:00 29 Feb");
+        // Before 1970 in local time, the clock still reads forwards.
+        assert_eq!(local("1970-01-01T00:00:00Z", -3_600), "23:00 31 Dec");
+    }
+
+    #[test]
+    fn the_local_offset_comes_from_the_system() {
+        // Whatever this machine's zone, its offset is a whole number of
+        // minutes within a day, and the moment keeps its Unix seconds.
+        let now = LocalTime::at(at("2026-10-20T10:21:00Z"));
+        assert_eq!(now.secs, at("2026-10-20T10:21:00Z"));
+        assert!(now.offset.abs() < 86_400 && now.offset % 60 == 0, "{now:?}");
     }
 }
