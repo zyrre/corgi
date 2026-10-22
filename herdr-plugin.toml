@@ -22,6 +22,19 @@ description = "Opens the Corgi dashboard tab, or focuses the one already running
 contexts = ["workspace", "pane"]
 command = ["bash", "scripts/herdr-corgi-dashboard"]
 
+# Opens the focused agent's checkout, or the one selected in a focused Corgi
+# dashboard, in $VISUAL or $EDITOR in a new tab. Bind it like `open`:
+#   [[keys.command]]
+#   key = "prefix+e"
+#   type = "plugin_action"
+#   command = "io.github.zyrre.corgi.edit"
+[[actions]]
+id = "edit"
+title = "Corgi: edit agent checkout"
+description = "Opens the focused or selected agent's checkout in your editor in a new tab."
+contexts = ["workspace", "pane"]
+command = ["./target/release/corgi", "edit"]
+
 [[panes]]
 id = "dashboard"
 title = "Corgi"

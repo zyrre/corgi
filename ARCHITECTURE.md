@@ -16,6 +16,7 @@ Herdr session
        ├─ agent.focus ─────── focus an existing agent pane
        ├─ workspace.close ─── close a plain or unused Corgi project workspace
        ├─ tab.create/close ── open or close a shared-checkout agent's tab
+       ├─ pane.current, pane.send_input ── open an agent's checkout in the editor
        ├─ worktree.remove ─── delete a worktree checkout and close its workspace
        ├─ *.report_metadata ─ mark Corgi's project workspaces and the supervisor's pane,
        │                      and put those marks back after a Herdr restart
@@ -33,6 +34,9 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ created-projects ─── the projects Corgi created, whose folder trust it answers
   ├─ expanded-projects ── the projects whose dashboard card is expanded, one
   │                        heading per line; missing or unreadable is all collapsed
+  ├─ selection/<socket>.<pid> ─ the pane ID of the agent selected in the
+  │                        dashboard running as process <pid>, empty for none, for
+  │                        `corgi edit`; replaced through a rename, removed on quit
   ├─ wake/<socket>.lock ─ held by the one dashboard that wakes supervisors
   ├─ wake/<socket>.seen.json ─ what that dashboard last saw of each agent it
   │                        follows (pane, run of state changes, transitions), for the next one;
@@ -77,7 +81,9 @@ Headless launch and the supervisor
   ├─ corgi report ─── an agent's report: kept in an inbox, else its newest message
   ├─ corgi notify ─── add an item to a supervisor's inbox, text on stdin
   ├─ corgi inbox ──── a supervisor's undelivered inbox items, bounded
-  └─ corgi tag ────── tag an agent ready to merge (pane token), or clear it
+  ├─ corgi tag ────── tag an agent ready to merge (pane token), or clear it
+  └─ corgi edit ───── the plugin's `edit` action: open the focused or selected
+                       agent's checkout in the user's editor
 
 Setup (once, from a shell)
   ├─ corgi setup ──── append a key binding for the open action to Herdr's config.toml
@@ -383,6 +389,33 @@ submodules are split by flow, each adding methods to the one `App`.
   two full dashboards never both show it, and one older than five minutes is
   removed unread. The UI thread shows it as `Overlay::Notice`, once no other
   popup is open, a success whose check stamp plays once it has opened.
+- `edit.rs` is the dashboard's `e` key and `corgi edit`, which the plugin's
+  `edit` action runs (as `./target/release/corgi edit`, with the
+  `HERDR_SOCKET_PATH` Herdr gives every action). Both end in `open_checkout`:
+  the top of the agent's Git work tree as it is on disk
+  (`git rev-parse --show-toplevel`, else its working directory), a new tab
+  there in the agent's own workspace labelled with its branch (else the
+  directory's name), `pane.send_input` of
+  `sh -c 'exec ${VISUAL:-${EDITOR:-vim}} "$1"' corgi-edit <root>` into the
+  tab's shell, then the workspace and tab focused. The command is typed
+  into the user's interactive shell rather than started by Corgi, so the
+  `EDITOR` the shell's config sets applies though Herdr's own environment
+  lacks it, and quitting the editor leaves that shell in the checkout;
+  `sh -c` expands the variables the same way under bash, zsh or fish.
+  The action asks `pane.current` with no caller pane, which is the pane
+  focused in Herdr's UI. When that pane is a dashboard, the action uses the
+  dashboard's selection instead. A dashboard's pane ID changes when the
+  launcher moves it, and the action has no way to ask a running dashboard,
+  so each interactive dashboard (full or compact) writes the pane ID of its
+  selected agent to `selection/<socket>.<pid>` in the state directory,
+  keyed by its own process ID: at its first frame, and whenever the
+  selected agent changes, by a key or a refresh that moved the rows. The
+  action looks for that file under the pane's foreground process IDs from
+  `pane.process_info`, so it finds the right dashboard however many run. A
+  foreground `corgi` without one is a dashboard started before this
+  existed, which the action asks the user to reopen. Errors go to the
+  status line from the key, and to a Herdr notification and stderr from
+  the action.
 - `bar.rs` is the `--bar-*` endpoints of the Omarchy widget. Their JSON is
   that widget's contract, pinned by snapshot tests, and they drive the same
   forms, key handlers, and launch as the dashboard.
@@ -744,6 +777,12 @@ role. So Corgi keeps its own record and puts the tokens back.
   The usage cards, status fields, and dialog lines are also what
   `app/bar.rs` sends the Omarchy widget, so both show the same thing; the
   widget gets a dialog's keys as a line of words, since it draws no keycaps.
+  One function, `agent_status_line`, draws the identity line of worker rows,
+  supervisor cards, and the expanded view alike. Its leading part, the state
+  badge and the last-activity time, is never dropped; the `status_fields`
+  after the task are dropped from the right on a narrow row, and are what the
+  widget reads. A field meant for the dashboard alone therefore belongs in the
+  leading part.
 - Every popup shares one look inside its frame: a mark in the title (`◆`,
   `✓` or `✗` once it has an outcome), dimmed labels that line up beside
   bright values, the model and harness in their vendor's color, the keys as
@@ -870,10 +909,12 @@ What the README leaves out, as the dashboard shows and does it.
 
 ### Rows and their order
 
-Each agent takes three rows. The identity row holds its state, the task its
-CLI summarizes, model and effort, context used, the prompt cache, and its
-worktree checkout; a narrow pane drops these fields from the right before it
-clips the task. The message row is the newest thing said, with the live
+Each agent takes three rows. The identity row holds its state, the local time
+of its session's newest record (`HH:MM DD Mon`, absent for a harness whose
+transcript Corgi does not read), the task its CLI summarizes, model and
+effort, context used, the prompt cache, and its worktree checkout; a narrow
+pane drops the fields after the task from the right before it clips the task,
+and keeps the state and the time. The message row is the newest thing said, with the live
 terminal filling in what the session file lacks, such as a permission prompt.
 The tool row is the command or tool running or last run, with its whole
 argument. Their marker says what they show:

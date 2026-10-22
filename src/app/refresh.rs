@@ -31,7 +31,7 @@ use crate::{
     paths::{corgi_state_dir, is_home},
     session::SessionReader,
     supervisor::{self, is_supervisor},
-    time::{rfc3339_utc, unix_now},
+    time::{LocalTime, rfc3339_utc, unix_now},
 };
 
 use super::{
@@ -304,6 +304,7 @@ impl RefreshState {
             context_percent,
             context_tokens: facts.context_tokens,
             cache: facts.cache,
+            last_activity: facts.last_activity.map(LocalTime::at),
             message,
             tool,
             supervisor,

@@ -15,10 +15,12 @@
 //!   usage of that request; `text`, `thinking`, and `tool_use` blocks carry
 //!   the conversation. Every record is timestamped, and the usage says which
 //!   prompt-cache lifetime the request was written with, which together give
-//!   the moment the session's cache lapses.
+//!   the moment the session's cache lapses. The newest timestamp is also when
+//!   the session last did anything.
 //! - Codex appends `~/.codex/sessions/<y>/<m>/<d>/rollout-<stamp>-<thread>.jsonl`,
 //!   whose `token_count` events carry the usage together with the model's own
 //!   context window, and whose `response_item` records carry the conversation.
+//!   Every record is timestamped there too.
 //!   Its generated task name comes from the app server, but the first real user
 //!   prompt here is a safe cross-harness fallback while that name is pending.
 //!   OpenAI's prompt cache is automatic and its exact lifetime is not reported.
@@ -103,6 +105,9 @@ pub struct SessionFacts {
     /// When the prompt cache holding that context lapses, and how much it then
     /// costs to rebuild. Only Claude Code records enough to say.
     pub cache: Option<PromptCache>,
+    /// Unix seconds of the newest timestamped record of the session: when
+    /// the agent last did anything, or stopped.
+    pub last_activity: Option<u64>,
     /// The first human prompt in this session. This is a cross-harness fallback
     /// for a generated task title that is not available yet.
     pub task: Option<String>,
