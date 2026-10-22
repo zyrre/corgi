@@ -127,6 +127,55 @@ impl HerdrClient {
             }))
     }
 
+    /// The processes in a pane's foreground, by process ID and name, such
+    /// as a Corgi dashboard's.
+    pub(crate) fn foreground_processes(&self, pane_id: &str) -> Result<Vec<(u32, String)>> {
+        let mut result = self.request("pane.process_info", json!({ "pane_id": pane_id }))?;
+        expect_result_type(&result, "pane_process_info")?;
+        let processes: PaneProcessInfo = serde_json::from_value(result["process_info"].take())
+            .context("Herdr returned invalid pane process information")?;
+        Ok(processes
+            .foreground_processes
+            .iter()
+            .filter_map(|process| Some((process.pid?, process.name.clone())))
+            .collect())
+    }
+
+    /// The pane the user has focused in Herdr's UI, which is not
+    /// necessarily the caller's own.
+    pub(crate) fn focused_pane(&self) -> Result<PaneInfo> {
+        let mut result = self.request("pane.current", json!({}))?;
+        expect_result_type(&result, "pane_current")?;
+        serde_json::from_value(result["pane"].take()).context("Herdr returned an invalid pane")
+    }
+
+    /// One pane by its ID.
+    pub(crate) fn pane(&self, pane_id: &str) -> Result<PaneInfo> {
+        let mut result = self.request("pane.get", json!({ "pane_id": pane_id }))?;
+        expect_result_type(&result, "pane_info")?;
+        serde_json::from_value(result["pane"].take()).context("Herdr returned an invalid pane")
+    }
+
+    /// Types `command` into a pane and presses Enter, as `herdr pane run`
+    /// does, so the pane's own shell runs it.
+    pub(crate) fn run_in_pane(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.request(
+            "pane.send_input",
+            json!({ "pane_id": pane_id, "text": command, "keys": ["enter"] }),
+        )
+        .map(|_| ())
+    }
+
+    /// Shows a Herdr toast, for a command that has no window of its own to
+    /// say something in, such as a plugin action.
+    pub(crate) fn notify(&self, title: &str, body: &str) -> Result<()> {
+        let result = self.request(
+            "notification.show",
+            json!({ "title": title, "body": body, "sound": "none" }),
+        )?;
+        expect_result_type(&result, "notification_show")
+    }
+
     /// Every workspace in Herdr's own sidebar order. A session snapshot's
     /// `workspaces` happen to come back in that order too, but nothing
     /// documents that they must, so anything that needs the order itself
@@ -287,7 +336,7 @@ impl HerdrClient {
             .context("Herdr returned an invalid plugin pane")
     }
 
-    fn walk_to(&self, workspace_id: &str, tab_id: &str) -> Result<()> {
+    pub(crate) fn walk_to(&self, workspace_id: &str, tab_id: &str) -> Result<()> {
         if !workspace_id.is_empty() {
             self.focus_workspace(workspace_id)?;
         }
@@ -706,6 +755,8 @@ struct ForegroundProcess {
     name: String,
     cwd: String,
     argv: Vec<String>,
+    #[serde(default)]
+    pid: Option<u32>,
 }
 
 /// Location and identity of any pane in the session snapshot.
@@ -721,6 +772,10 @@ pub struct PaneInfo {
     pub label: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The directory of the pane's foreground process, which follows a `cd`
+    /// in its shell; the snapshot leaves it out.
+    #[serde(default)]
+    pub foreground_cwd: Option<String>,
     /// The metadata tokens every source set on the pane, the same ones an
     /// agent in it reports, and kept here when no agent is in it.
     #[serde(default)]

@@ -213,6 +213,51 @@ fn a_claude_transcript_says_when_its_prompt_cache_lapses() {
 }
 
 #[test]
+fn a_session_was_last_active_at_its_newest_timestamped_record() {
+    let directory = TempDir::new("last-activity");
+    let at = |text: &str| parse_rfc3339(text).expect("timestamp");
+
+    // A Claude subagent's record says nothing about the main session, nor
+    // does a record without a timestamp.
+    let path = directory.join("session.jsonl");
+    write(
+        &path,
+        &[
+            r#"{"type":"user","timestamp":"2026-10-20T08:00:00Z","message":{"role":"user","content":"Fix the cache column"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-20T08:21:30.512Z","message":{"content":[{"type":"text","text":"Done."}]}}"#,
+            r#"{"type":"assistant","isSidechain":true,"timestamp":"2026-10-20T08:25:00Z","message":{"content":[]}}"#,
+            r#"{"type":"last-prompt","lastPrompt":"unrelated"}"#,
+        ],
+    );
+    assert_eq!(
+        claude_facts(&path, None).last_activity,
+        Some(at("2026-10-20T08:21:30Z"))
+    );
+
+    // Every Codex record counts, whatever it carries.
+    let path = directory.join("rollout-2026-10-20T08-00-00-thread.jsonl");
+    write(
+        &path,
+        &[
+            r#"{"timestamp":"2026-10-20T08:00:00Z","type":"session_meta","payload":{"id":"thread","model":"gpt-5.6"}}"#,
+            r#"{"timestamp":"2026-10-20T08:04:00Z","type":"event_msg","payload":{"type":"agent_message","message":"Done."}}"#,
+            r#"{"timestamp":"2026-10-20T08:04:10Z","type":"turn_context","payload":{}}"#,
+        ],
+    );
+    assert_eq!(
+        codex_facts(&path).last_activity,
+        Some(at("2026-10-20T08:04:10Z"))
+    );
+
+    // A transcript without timestamps has no time to show.
+    write(
+        &path,
+        &[r#"{"type":"session_meta","payload":{"id":"thread"}}"#],
+    );
+    assert_eq!(codex_facts(&path).last_activity, None);
+}
+
+#[test]
 fn a_claude_transcript_reports_the_effort_recorded_beside_the_turn() {
     let directory = TempDir::new("claude-effort");
     let path = directory.join("session.jsonl");

@@ -37,7 +37,7 @@ use crate::{
     supervisor,
     test_support::{test_app, test_terminal},
     theme::{self, Theme},
-    time::unix_now,
+    time::{LocalTime, parse_rfc3339, unix_now},
     ui::draw,
     usage::{PlanUsage, Provider, UsageWindow},
 };
@@ -72,7 +72,7 @@ const FOREGROUND: &str = "#cdd6f4";
 
 /// The dashboard's size in the screenshots cut from it: wide enough for the
 /// header's whole band of cards, and tall enough for three projects.
-const WIDTH: u16 = 112;
+const WIDTH: u16 = 130;
 const HEIGHT: u16 = 44;
 /// The hero's height: the header and two collapsed project cards.
 const HERO_HEIGHT: u16 = 31;
@@ -271,12 +271,13 @@ fn row_anatomy() -> String {
     let callouts = [
         above("██", "selected", 0),
         above("BLOCKED", "state", 1),
-        above("Retry", "task", 0),
-        above("Sonnet", "model", 1),
-        above("medium", "effort", 0),
-        above("41%", "context used", 1),
-        above("⏱", "prompt cache left", 0),
-        above("⑂", "worktree", 1),
+        above("14:29", "last activity", 0),
+        above("Retry", "task", 1),
+        above("Sonnet", "model", 0),
+        above("medium", "effort", 1),
+        above("41%", "context used", 0),
+        above("⏱", "prompt cache left", 1),
+        above("⑂", "worktree", 0),
         right(
             1,
             "newest thing said: your prompt, its reply or thinking, or a question",
@@ -367,6 +368,9 @@ struct Agent {
     context: u8,
     /// Seconds the prompt cache stays warm, negative once it went cold.
     cache: Option<(i64, PromptCacheKind, u64)>,
+    /// When its session last wrote, as `MM-DDTHH:MM` on UTC clocks, so the
+    /// shots read the same wherever and whenever they are drawn.
+    last_active: &'static str,
     worktree: Option<&'static str>,
     message: (ActivityKind, &'static str),
     tool: (ActivityKind, &'static str),
@@ -414,6 +418,11 @@ impl Agent {
                 tokens,
                 kind,
             }),
+            last_activity: Some(LocalTime {
+                secs: parse_rfc3339(&format!("2026-{}:00Z", self.last_active))
+                    .expect("a made-up time"),
+                offset: 0,
+            }),
             message: activity(self.message),
             tool: activity(self.tool),
             supervisor: self.supervisor,
@@ -446,6 +455,7 @@ fn herd() -> Vec<Agent> {
             effort: Some("high"),
             context: 34,
             cache: Some((52 * 60 + 30, Exact, 68_000)),
+            last_active: "10-20T14:31",
             worktree: None,
             message: (
                 Message,
@@ -470,6 +480,7 @@ fn herd() -> Vec<Agent> {
             effort: Some("medium"),
             context: 41,
             cache: Some((3 * 60 + 30, Exact, 82_000)),
+            last_active: "10-20T14:29",
             worktree: Some("checkout-retry-4b1e"),
             message: (Question, "Allow Bash: npm run test:e2e -- checkout?"),
             tool: (Command, "npm run test:e2e -- checkout"),
@@ -485,6 +496,7 @@ fn herd() -> Vec<Agent> {
             effort: Some("high"),
             context: 22,
             cache: Some((18 * 60 + 30, Estimated, 44_000)),
+            last_active: "10-20T14:33",
             worktree: Some("cart-badge-9c07"),
             message: (
                 Thinking,
@@ -503,6 +515,7 @@ fn herd() -> Vec<Agent> {
             effort: Some("high"),
             context: 67,
             cache: Some((-9 * 60 - 30, Exact, 182_000)),
+            last_active: "10-20T13:58",
             worktree: Some("order-pages-2d5a"),
             message: (
                 Message,
@@ -521,6 +534,7 @@ fn herd() -> Vec<Agent> {
             effort: Some("high"),
             context: 51,
             cache: Some((44 * 60 + 30, Exact, 104_000)),
+            last_active: "10-20T14:33",
             worktree: None,
             message: (
                 Thinking,
@@ -540,6 +554,7 @@ fn herd() -> Vec<Agent> {
             effort: Some("medium"),
             context: 58,
             cache: Some((24 * 60 + 30, Estimated, 96_000)),
+            last_active: "10-20T14:32",
             worktree: Some("hourly-chart-71fa"),
             message: (
                 Prompt,
@@ -558,6 +573,7 @@ fn herd() -> Vec<Agent> {
             effort: None,
             context: 29,
             cache: Some((41 * 60 + 30, Exact, 51_000)),
+            last_active: "10-20T12:47",
             worktree: Some("api-cache-e3b8"),
             message: (
                 Message,
@@ -576,6 +592,7 @@ fn herd() -> Vec<Agent> {
             effort: Some("low"),
             context: 12,
             cache: None,
+            last_active: "10-19T17:42",
             worktree: Some("md-export-5a60"),
             message: (
                 Message,

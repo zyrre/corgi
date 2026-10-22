@@ -87,6 +87,10 @@ fn private_stdin_is_delivered_once_and_errors_never_echo_it() {
                 Err(error) => panic!("{error}"),
             }
         };
+        // On macOS, an accepted stream inherits O_NONBLOCK from the listener
+        // (unlike Linux), so read_line below would fail with WouldBlock
+        // instead of honoring the read timeout set here.
+        stream.set_nonblocking(false).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();

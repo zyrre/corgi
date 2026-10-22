@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::harness::Harness;
+use crate::{harness::Harness, time::LocalTime};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -175,6 +175,10 @@ pub struct DashboardAgent {
     /// let Corgi derive a conservative minimum lifetime from a cache hit or
     /// write in the rollout.
     pub cache: Option<PromptCache>,
+    /// When the session last did anything: the newest timestamped record of
+    /// its transcript, on the local clock. `None` for a harness whose session
+    /// file Corgi does not read or that records no time.
+    pub last_activity: Option<LocalTime>,
     /// The newest thing said in the session, whoever said it: the user's
     /// prompt, the assistant's reply, or the assistant's thinking.
     pub message: Activity,
