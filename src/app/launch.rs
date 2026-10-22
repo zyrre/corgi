@@ -507,6 +507,18 @@ pub(super) fn launch_agent(
         prompt.clone()
     };
     let started = start_agent_when_shell_ready(client, name, harness, &args, &pane_id, progress)?;
+    if let Err(error) = crate::recovery::record_launch(
+        client,
+        &started.agent,
+        model,
+        effort,
+        extra_args,
+        matches!(role, Role::Supervisor { .. }),
+    ) {
+        progress.report(format!(
+            "Recovery launch settings could not be recorded: {error}"
+        ));
+    }
     if prompt.trim().is_empty() {
         // A launch without a task, as a scratch agent may be, is an
         // interactive session the user types into.
@@ -522,6 +534,7 @@ pub(super) fn launch_agent(
         &prompt,
         name,
         matches!(role, Role::Supervisor { .. }),
+        Some(plan),
         progress,
     )?;
     Ok(LaunchedAgent {
@@ -539,6 +552,7 @@ fn prompt_launched_agent(
     prompt: &str,
     name: &str,
     is_supervisor: bool,
+    launch: Option<&LaunchPlan>,
     progress: &mut dyn Progress,
 ) -> Result<()> {
     if is_supervisor {
@@ -560,6 +574,17 @@ fn prompt_launched_agent(
         name,
         progress,
         |accepted| {
+            if let Some(plan) = launch {
+                // Optional metadata failure must not repeat an accepted prompt.
+                let _ = crate::recovery::record_launch(
+                    client,
+                    accepted,
+                    &plan.model,
+                    &plan.effort,
+                    &plan.extra_args,
+                    is_supervisor,
+                );
+            }
             // Herdr may first expose the session in its prompt acknowledgement,
             // after a naming plugin has already changed the presentation name.
             // The name marker above covers the interval before acceptance.
@@ -1210,6 +1235,7 @@ mod tests {
                 "Start your supervisor session",
                 "supervisor-m-ta-sverige",
                 true,
+                None,
                 &mut Silent,
             )
             .unwrap();

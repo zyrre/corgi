@@ -231,6 +231,19 @@ pub(super) fn session_of(agent: &AgentInfo) -> Option<&str> {
     supervisor::native_session(agent)
 }
 
+/// Request IDs have no identity in their token value. Recovery may carry one
+/// only when our durable marker record binds it to this live native session.
+pub(super) fn confirmed_request(client: &HerdrClient, agent: &AgentInfo) -> Option<String> {
+    let id = session_of(agent)?;
+    let record = read(client.marker_record()?);
+    let marks = record.panes.get(&agent.pane_id)?;
+    if marks.session.as_deref() != Some(id) {
+        return None;
+    }
+    let request = marks.tokens.get(CORGI_REQUEST_TOKEN)?;
+    (agent.tokens.get(CORGI_REQUEST_TOKEN) == Some(request)).then(|| request.clone())
+}
+
 /// The checkout Herdr reports for a workspace.
 pub(super) fn checkout_of(workspace: &WorkspaceInfo) -> Option<&str> {
     workspace
