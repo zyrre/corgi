@@ -22,6 +22,10 @@ cargo test
 cargo build --release
 ```
 
+Clippy lints code under `#[cfg(target_os = ...)]` only on that OS, so a lint
+can pass on your machine and fail CI on the other (a `return` left at the end
+of a macOS-only block did). CI runs on both Linux and macOS; check both jobs.
+
 On macOS the default `$TMPDIR` makes the fake Herdr socket path in
 `src/test_support.rs` exceed `SUN_LEN`, so run `TMPDIR=/tmp cargo test` there.
 
@@ -29,6 +33,12 @@ A test that polls a non-blocking listener's `accept()` must set the accepted
 stream back to blocking (`set_nonblocking(false)`) before relying on a read
 timeout: macOS/BSD sockets inherit `O_NONBLOCK` from the listener, Linux
 sockets do not, so the failure shows only on macOS CI.
+
+`App::new` loads the real `projects` list from Corgi's state directory;
+`test_app()` keeps an in-memory one, so build test apps with it. Saving the
+list drops directories that do not exist, so a test that saves it to a file
+must remember real directories (made in its `ScratchDir`), not made-up paths
+such as `/repos/a`.
 
 On macOS, copying a rebuilt binary over an existing file (say, a copy of
 `target/release/corgi` kept to compare before and after) gets it killed with

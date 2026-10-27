@@ -17,7 +17,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::Write,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
     thread,
     time::{Duration, Instant},
@@ -58,6 +58,12 @@ const WAKE_HOLD: Duration = Duration::from_secs(15);
 /// Past this size the refresh log starts over, the one before kept beside it
 /// with `.old` appended.
 const LOG_LIMIT: u64 = 256 * 1024;
+/// A refresh that takes this long is logged whatever it found; one usually
+/// takes a few milliseconds.
+const SLOW_REFRESH: Duration = Duration::from_millis(50);
+/// Set to `all`, this environment variable has the dashboard log every
+/// refresh, not only those worth reading.
+const LOG_ALL_VAR: &str = "CORGI_REFRESH_LOG";
 
 /// What a refresh carries from one to the next. Between refreshes the UI
 /// thread holds it; while one runs in the background, the job does.
@@ -74,6 +80,19 @@ pub(super) struct RefreshState {
     /// The project roots whose state directories this dashboard has checked
     /// for pre-rename state left beside them, so each is warned about once.
     state_dirs_checked: HashSet<String>,
+    /// What the last refresh found, as the log tells it: how many agents, or
+    /// why Herdr gave none.
+    found: Option<Result<usize, String>>,
+}
+
+/// Where the interactive dashboard logs its refreshes, and which.
+#[derive(Debug, Clone)]
+pub(super) struct RefreshLog {
+    path: PathBuf,
+    /// Every refresh, rather than those worth reading.
+    every: bool,
+    /// How long a refresh takes to be logged whatever it found.
+    slow: Duration,
 }
 
 /// What one refresh needs from the app besides its state, copied when it
@@ -121,13 +140,18 @@ struct Timings {
 }
 
 /// The refresh as a whole: everything slow, run on whichever thread calls it.
-fn run(inputs: &Inputs, mut state: RefreshState, log: Option<&Path>) -> Refreshed {
+fn run(inputs: &Inputs, mut state: RefreshState, log: Option<&RefreshLog>) -> Refreshed {
     let started = Instant::now();
     let mut timings = Timings::default();
     let view = state.refresh(inputs, &mut timings);
+    let found = match &view {
+        Ok(view) => Ok(view.agents.len()),
+        Err(error) => Err(error.clone()),
+    };
     if let Some(log) = log {
-        log_refresh(log, started.elapsed(), &timings, &view);
+        log.refresh(started.elapsed(), &timings, &found, state.found.as_ref());
     }
+    state.found = Some(found);
     let notice = inputs
         .notice_path
         .as_deref()
@@ -393,43 +417,73 @@ fn read_screen(client: &HerdrClient, info: &AgentInfo) -> Option<String> {
         .map(|read| read.text)
 }
 
-/// Where the interactive dashboard logs how long each refresh took:
-/// `refresh.log` in Corgi's state directory.
-pub(super) fn refresh_log_path() -> Option<PathBuf> {
-    corgi_state_dir().map(|dir| dir.join("refresh.log"))
-}
+impl RefreshLog {
+    /// The interactive dashboard's: `refresh.log` in Corgi's state
+    /// directory, with every refresh when [`LOG_ALL_VAR`] says so.
+    pub(super) fn from_env() -> Option<Self> {
+        let every = std::env::var_os(LOG_ALL_VAR).is_some_and(|value| value == "all");
+        corgi_state_dir().map(|dir| Self::new(dir.join("refresh.log"), every))
+    }
 
-/// Appends one line about a refresh to `log`: when it ended, the process,
-/// how long it took in all and in each step, and what it found. A log past
-/// [`LOG_LIMIT`] is moved aside first, so it never grows without bound. It is
-/// written from the refresh's own thread, and a failure to write it is
-/// ignored.
-fn log_refresh(log: &Path, took: Duration, timings: &Timings, view: &Result<View, String>) {
-    if fs::metadata(log).is_ok_and(|meta| meta.len() > LOG_LIMIT) {
-        let mut old = log.as_os_str().to_owned();
-        old.push(".old");
-        let _ = fs::rename(log, old);
+    pub(super) fn new(path: PathBuf, every: bool) -> Self {
+        Self {
+            path,
+            every,
+            slow: SLOW_REFRESH,
+        }
     }
-    if let Some(dir) = log.parent() {
-        let _ = fs::create_dir_all(dir);
+
+    /// Logs a refresh worth reading: one that took `slow` ([`SLOW_REFRESH`])
+    /// or more, or that found something else than the one before, `before`:
+    /// another number of agents, Herdr gone or back, or another error. The line
+    /// says when it ended, the process, how long it took in all and in each
+    /// step, and what it found. It is written from the refresh's own
+    /// thread, and a failure to write it is ignored.
+    fn refresh(
+        &self,
+        took: Duration,
+        timings: &Timings,
+        found: &Result<usize, String>,
+        before: Option<&Result<usize, String>>,
+    ) {
+        if !self.every && took < self.slow && before == Some(found) {
+            return;
+        }
+        let found = match found {
+            Ok(agents) => format!("{agents} agents"),
+            Err(error) => format!("Herdr unavailable: {error}"),
+        };
+        let millis = |duration: Duration| duration.as_millis();
+        self.append(&format!(
+            "refresh {} ms (herdr {}, marks {}, rows {}, wake {}): {found}",
+            millis(took),
+            millis(timings.herdr),
+            millis(timings.marks),
+            millis(timings.rows),
+            millis(timings.wake),
+        ));
     }
-    let found = match view {
-        Ok(view) => format!("{} agents", view.agents.len()),
-        Err(error) => format!("Herdr unavailable: {error}"),
-    };
-    let millis = |duration: Duration| duration.as_millis();
-    let line = format!(
-        "{} pid {} refresh {} ms (herdr {}, marks {}, rows {}, wake {}): {found}\n",
-        rfc3339_utc(unix_now()),
-        std::process::id(),
-        millis(took),
-        millis(timings.herdr),
-        millis(timings.marks),
-        millis(timings.rows),
-        millis(timings.wake),
-    );
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log) {
-        let _ = file.write_all(line.as_bytes());
+
+    /// Appends `line` to the log, after when and the process. A log past
+    /// [`LOG_LIMIT`] is moved aside first, so it never grows without bound.
+    pub(super) fn append(&self, line: &str) {
+        let log = &self.path;
+        if fs::metadata(log).is_ok_and(|meta| meta.len() > LOG_LIMIT) {
+            let mut old = log.as_os_str().to_owned();
+            old.push(".old");
+            let _ = fs::rename(log, old);
+        }
+        if let Some(dir) = log.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let line = format!(
+            "{} pid {} {line}\n",
+            rfc3339_utc(unix_now()),
+            std::process::id(),
+        );
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log) {
+            let _ = file.write_all(line.as_bytes());
+        }
     }
 }
 
@@ -495,7 +549,7 @@ impl App {
         let inputs = self.refresh_inputs();
         let state = self.take_refresh_state();
         let log = self.refresh_log.clone();
-        self.refresh_job = Job::spawn(move |_| run(&inputs, state, log.as_deref()));
+        self.refresh_job = Job::spawn(move |_| run(&inputs, state, log.as_ref()));
     }
 
     /// Puts a finished background refresh in place, if one has finished.
@@ -506,6 +560,9 @@ impl App {
             // Its state went with it; the next refresh starts as usual, from
             // a new one.
             Some(Err(_)) => {
+                if let Some(log) = &self.refresh_log {
+                    log.append("refresh panicked");
+                }
                 self.last_refresh = Some(Instant::now());
                 self.set_status("The refresh failed; trying again", None);
             }

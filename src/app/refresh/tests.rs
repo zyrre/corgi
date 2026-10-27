@@ -356,27 +356,61 @@ fn a_refresh_that_panics_is_reported_and_the_next_starts_afresh() {
 }
 
 #[test]
-fn every_refresh_is_logged_with_how_long_each_step_took() {
+fn a_refresh_is_logged_when_what_it_found_changes() {
     let scratch = ScratchDir::new("refresh-log");
     let herdr = SlowHerdr::new("refresh-log", weather_session());
     herdr.open();
     let mut app = test_app();
-    app.client = herdr.client();
-    app.refresh_log = Some(scratch.join("refresh.log"));
-    app.tick();
-    poll_until(&mut app, App::poll_refresh, |app| !app.refreshing());
-    app.client = HerdrClient::from_socket_path(scratch.join("gone.sock"));
-    app.request_refresh();
-    app.tick();
-    poll_until(&mut app, App::poll_refresh, |app| !app.refreshing());
+    let mut log = RefreshLog::new(scratch.join("refresh.log"), false);
+    // However slow the machine running the test, none counts as slow.
+    log.slow = Duration::MAX;
+    app.refresh_log = Some(log);
+    let refresh = |app: &mut App, client: HerdrClient| {
+        app.client = client;
+        app.request_refresh();
+        app.tick();
+        poll_until(app, App::poll_refresh, |app| !app.refreshing());
+    };
+    let gone = HerdrClient::from_socket_path(scratch.join("gone.sock"));
+    refresh(&mut app, herdr.client());
+    refresh(&mut app, herdr.client());
+    refresh(&mut app, gone.clone());
+    refresh(&mut app, gone);
+    refresh(&mut app, herdr.client());
 
     let log = std::fs::read_to_string(scratch.join("refresh.log")).expect("log");
     let lines: Vec<_> = log.lines().collect();
-    assert_eq!(lines.len(), 2, "{log}");
+    assert_eq!(lines.len(), 3, "{log}");
     assert!(lines[0].contains(" refresh "), "{log}");
     assert!(lines[0].contains("(herdr "), "{log}");
     assert!(lines[0].ends_with(": 3 agents"), "{log}");
     assert!(lines[1].contains(": Herdr unavailable: "), "{log}");
+    assert!(lines[2].ends_with(": 3 agents"), "{log}");
+}
+
+#[test]
+fn a_slow_refresh_is_logged_and_every_one_when_asked() {
+    let scratch = ScratchDir::new("refresh-log-slow");
+    let timings = Timings::default();
+    let read = |name: &str| std::fs::read_to_string(scratch.join(name)).unwrap_or_default();
+
+    let quiet = RefreshLog::new(scratch.join("quiet.log"), false);
+    let before = Ok(3);
+    quiet.refresh(Duration::from_millis(4), &timings, &Ok(3), Some(&before));
+    assert_eq!(read("quiet.log"), "");
+    quiet.refresh(SLOW_REFRESH, &timings, &Ok(3), Some(&before));
+    let log = read("quiet.log");
+    assert!(
+        log.contains(&format!(" refresh {} ms ", SLOW_REFRESH.as_millis())),
+        "{log}"
+    );
+    assert_eq!(log.lines().count(), 1, "{log}");
+
+    let every = RefreshLog::new(scratch.join("every.log"), true);
+    for _ in 0..3 {
+        every.refresh(Duration::from_millis(4), &timings, &Ok(3), Some(&before));
+    }
+    assert_eq!(read("every.log").lines().count(), 3);
 }
 
 #[test]
