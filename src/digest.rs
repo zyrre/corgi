@@ -4,7 +4,7 @@
 //! Everything here is pure text in, text out. The command in `app/cli.rs`
 //! reads the state directory, Git, and the fleet, and never writes anything.
 
-use std::{collections::HashMap, fmt::Write as _};
+use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
 
 pub mod search;
 
@@ -16,6 +16,17 @@ pub const MIN_RECENT_DECISIONS: usize = 3;
 pub const MAX_DECISION_TITLES: usize = 500;
 /// Finished ledger ids shown.
 pub const RECENT_FINISHED: usize = 10;
+/// Open work entries are shown up to this many bytes, newest first; those of
+/// running agents and those waiting on the user are shown whatever the size.
+pub const OPEN_WORK_BYTES: usize = 4 * 1024;
+/// A ledger summary or outcome is cut to this many characters in the digest;
+/// the ledger keeps it whole.
+pub const LEDGER_TEXT_CHARS: usize = 200;
+/// A `reported` entry whose agent is not running and whose newest line is at
+/// least this old is counted on one line instead of shown in full.
+pub const STALE_REPORTED_SECS: u64 = 2 * 24 * 3600;
+/// A list of ids in the digest stops near this many bytes.
+const ID_LIST_BYTES: usize = 2 * 1024;
 
 const SUPERSEDES: &str = "Supersedes:";
 
@@ -194,59 +205,127 @@ pub struct LedgerEntry {
 }
 
 impl LedgerEntry {
+    /// Statuses whose work needs nothing more: `done` is finished work with
+    /// nothing to merge (a check, a review, an investigation).
     fn finished(&self) -> bool {
-        matches!(self.status.as_str(), "merged" | "abandoned")
+        matches!(self.status.as_str(), "merged" | "abandoned" | "done")
     }
 }
 
+/// What one line of `ledger.jsonl` holds.
+enum LedgerLine {
+    Blank,
+    Entry(LedgerEntry),
+    /// Not a JSON object with an `id`, and why.
+    Unreadable(String),
+}
+
+/// Reads `line`, which is line `number` (from 1) of `ledger.jsonl`.
+fn read_ledger_line(line: &str, number: usize) -> LedgerLine {
+    if line.trim().is_empty() {
+        return LedgerLine::Blank;
+    }
+    let object = match serde_json::from_str(line) {
+        Ok(serde_json::Value::Object(object)) => object,
+        Ok(_) => return LedgerLine::Unreadable("is not a JSON object".into()),
+        Err(error) => return LedgerLine::Unreadable(format!("is not valid JSON ({error})")),
+    };
+    let field = |name: &str| match object.get(name) {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    };
+    let id = field("id");
+    if id.is_empty() {
+        return LedgerLine::Unreadable("has no \"id\"".into());
+    }
+    LedgerLine::Entry(LedgerEntry {
+        id,
+        ts: field("ts"),
+        agent: field("agent"),
+        status: field("status"),
+        branch: field("branch"),
+        summary: field("summary"),
+        outcome: field("outcome"),
+        questions: match object.get("questions") {
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .map(|item| match item {
+                    serde_json::Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+        line: number,
+    })
+}
+
 /// The newest line of each id in `ledger.jsonl`, in the order those lines
-/// appear. Lines that are not a JSON object with an `id` are skipped.
+/// appear. Lines that are not a JSON object with an `id` are skipped
+/// ([`unreadable_ledger_lines`] names them).
 pub fn parse_ledger(text: &str) -> Vec<LedgerEntry> {
-    let mut entries: Vec<(usize, LedgerEntry)> = Vec::new();
+    let mut entries: Vec<LedgerEntry> = Vec::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
-    for (line_number, line) in text.lines().enumerate() {
-        let Ok(serde_json::Value::Object(object)) = serde_json::from_str(line) else {
+    for (index, line) in text.lines().enumerate() {
+        let LedgerLine::Entry(entry) = read_ledger_line(line, index + 1) else {
             continue;
         };
-        let field = |name: &str| match object.get(name) {
-            Some(serde_json::Value::String(text)) => text.clone(),
-            Some(serde_json::Value::Null) | None => String::new(),
-            Some(other) => other.to_string(),
-        };
-        let id = field("id");
-        if id.is_empty() {
-            continue;
-        }
-        let entry = LedgerEntry {
-            id: id.clone(),
-            ts: field("ts"),
-            agent: field("agent"),
-            status: field("status"),
-            branch: field("branch"),
-            summary: field("summary"),
-            outcome: field("outcome"),
-            questions: match object.get("questions") {
-                Some(serde_json::Value::Array(items)) => items
-                    .iter()
-                    .map(|item| match item {
-                        serde_json::Value::String(text) => text.clone(),
-                        other => other.to_string(),
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            },
-            line: line_number + 1,
-        };
-        match by_id.get(&id) {
-            Some(&slot) => entries[slot] = (line_number, entry),
+        match by_id.get(&entry.id) {
+            Some(&slot) => entries[slot] = entry,
             None => {
-                by_id.insert(id, entries.len());
-                entries.push((line_number, entry));
+                by_id.insert(entry.id.clone(), entries.len());
+                entries.push(entry);
             }
         }
     }
-    entries.sort_by_key(|(line_number, _)| *line_number);
-    entries.into_iter().map(|(_, entry)| entry).collect()
+    entries.sort_by_key(|entry| entry.line);
+    entries
+}
+
+/// The lines of `ledger.jsonl` that are neither blank nor a JSON object with
+/// an `id`, as `(line from 1, what is wrong)`.
+pub fn unreadable_ledger_lines(text: &str) -> Vec<(usize, String)> {
+    text.lines()
+        .enumerate()
+        .filter_map(|(index, line)| match read_ledger_line(line, index + 1) {
+            LedgerLine::Unreadable(why) => Some((index + 1, why)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `ledger.jsonl` without its superseded lines, as `(kept, superseded)`, or
+/// `None` when it has none. A line is superseded when a later line has the
+/// same id. Every other line, blank and unreadable ones too, is kept as it
+/// was and where it was, so the newest lines keep their order and
+/// [`parse_ledger`] reads the same entries in the same order from `kept`.
+/// `superseded` has the lines dropped, in their order, each ending in a
+/// newline (a later line follows each, so each had one).
+pub fn compact_ledger(text: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let ids: Vec<Option<String>> = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| match read_ledger_line(line, index + 1) {
+            LedgerLine::Entry(entry) => Some(entry.id),
+            _ => None,
+        })
+        .collect();
+    let mut newest: HashMap<&str, usize> = HashMap::new();
+    for (index, id) in ids.iter().enumerate() {
+        if let Some(id) = id {
+            newest.insert(id, index);
+        }
+    }
+    let (mut kept, mut superseded) = (String::new(), String::new());
+    for (index, (line, id)) in lines.iter().zip(&ids).enumerate() {
+        match id {
+            Some(id) if newest[id.as_str()] != index => superseded.push_str(line),
+            _ => kept.push_str(line),
+        }
+    }
+    (!superseded.is_empty()).then_some((kept, superseded))
 }
 
 /// The questions the newest ledger entry of `agent` leaves open, or `None`
@@ -283,6 +362,8 @@ pub struct DigestInput<'a> {
     pub decisions: &'a str,
     pub ledger: &'a str,
     pub fleet: &'a [LiveAgent],
+    /// The wall clock in Unix seconds, to tell stale ledger entries.
+    pub now: u64,
     /// The command that prints one decision in full, with `<words>` in it.
     pub decision_command: &'a str,
     /// The command that searches all of the memory, with `<words>` in it.
@@ -364,35 +445,7 @@ pub fn render(input: &DigestInput) -> String {
     if open.is_empty() {
         out.push_str("none\n");
     }
-    for entry in open {
-        let live = input
-            .fleet
-            .iter()
-            .find(|agent| !entry.agent.is_empty() && agent.name == entry.agent);
-        let live = live.map_or_else(
-            || "**NOT RUNNING**".to_string(),
-            |agent| {
-                let context = agent
-                    .context_percent
-                    .map_or_else(|| "-".to_string(), |percent| format!("{percent}%"));
-                format!("{}, ctx {context}", agent.state)
-            },
-        );
-        let _ = writeln!(
-            out,
-            "- {} [{}] agent {}: {live}; branch {}",
-            entry.id,
-            or_dash(&entry.status),
-            or_dash(&entry.agent),
-            or_dash(&entry.branch)
-        );
-        if !entry.summary.is_empty() {
-            let _ = writeln!(out, "  summary: {}", entry.summary);
-        }
-        if !entry.outcome.is_empty() {
-            let _ = writeln!(out, "  outcome: {}", entry.outcome);
-        }
-    }
+    out.push_str(&open_work(&open, input.fleet, input.now));
 
     let _ = writeln!(out, "\n# Recently finished");
     let finished: Vec<_> = ledger
@@ -416,7 +469,7 @@ pub fn render(input: &DigestInput) -> String {
             or_dash(entry.ts.get(..10).unwrap_or(&entry.ts)),
             entry.status,
             or_dash(&entry.agent),
-            said
+            clip(said)
         );
     }
 
@@ -461,6 +514,140 @@ pub fn render(input: &DigestInput) -> String {
     );
     for warning in &view.warnings {
         let _ = writeln!(out, "warning: {warning}");
+    }
+    for (line, why) in unreadable_ledger_lines(input.ledger) {
+        let _ = writeln!(
+            out,
+            "warning: {}/ledger.jsonl:{line} {why}, so it is skipped; append a \
+             corrected line for its id",
+            input.state_dir
+        );
+    }
+    out
+}
+
+/// The entries of the "Open work" section, `open` in ledger order. A
+/// `reported` entry whose agent is not running and whose newest line is
+/// [`STALE_REPORTED_SECS`] old is only counted, on one line with the others
+/// like it. The rest are shown in full, newest first while they fit in
+/// [`OPEN_WORK_BYTES`] (an entry of a running agent, or one `needs-answer` or
+/// `blocked`, always), and listed in ledger order; one more line names those
+/// left out.
+fn open_work(open: &[&LedgerEntry], fleet: &[LiveAgent], now: u64) -> String {
+    let running = |entry: &LedgerEntry| {
+        fleet
+            .iter()
+            .find(|agent| !entry.agent.is_empty() && agent.name == entry.agent)
+    };
+    let stale = |entry: &LedgerEntry| {
+        entry.status == "reported"
+            && running(entry).is_none()
+            && crate::time::parse_rfc3339(&entry.ts)
+                .is_some_and(|ts| now.saturating_sub(ts) >= STALE_REPORTED_SECS)
+    };
+    let (stale, listed): (Vec<&LedgerEntry>, Vec<&LedgerEntry>) =
+        open.iter().copied().partition(|entry| stale(entry));
+    let blocks: Vec<(String, bool)> = listed
+        .iter()
+        .map(|entry| {
+            let live = running(entry);
+            let pinned =
+                live.is_some() || matches!(entry.status.as_str(), "needs-answer" | "blocked");
+            (open_entry(entry, live), pinned)
+        })
+        .collect();
+    let mut shown = vec![false; blocks.len()];
+    let mut bytes = 0;
+    let mut full = false;
+    for (index, (block, pinned)) in blocks.iter().enumerate().rev() {
+        if !*pinned && (full || bytes + block.len() > OPEN_WORK_BYTES) {
+            full = true;
+            continue;
+        }
+        bytes += block.len();
+        shown[index] = true;
+    }
+    let mut out = String::new();
+    for ((block, _), shown) in blocks.iter().zip(&shown) {
+        if *shown {
+            out.push_str(block);
+        }
+    }
+    if !stale.is_empty() {
+        let _ = writeln!(
+            out,
+            "- {} more `reported`, agent not running, newest line 2+ days old (set each \
+             `done` if it needs nothing more): {}",
+            stale.len(),
+            id_list(stale.iter().map(|entry| entry.id.as_str()))
+        );
+    }
+    let left_out: Vec<_> = listed
+        .iter()
+        .zip(&shown)
+        .filter(|(_, shown)| !**shown)
+        .map(|(entry, _)| entry.id.as_str())
+        .collect();
+    if !left_out.is_empty() {
+        let _ = writeln!(
+            out,
+            "- {} older left out for size (read one with --search): {}",
+            left_out.len(),
+            id_list(left_out.into_iter())
+        );
+    }
+    out
+}
+
+/// One entry of "Open work", joined with its running agent `live`, if any.
+fn open_entry(entry: &LedgerEntry, live: Option<&LiveAgent>) -> String {
+    let live = live.map_or_else(
+        || "**NOT RUNNING**".to_string(),
+        |agent| {
+            let context = agent
+                .context_percent
+                .map_or_else(|| "-".to_string(), |percent| format!("{percent}%"));
+            format!("{}, ctx {context}", agent.state)
+        },
+    );
+    let mut out = format!(
+        "- {} [{}] agent {}: {live}; branch {}\n",
+        entry.id,
+        or_dash(&entry.status),
+        or_dash(&entry.agent),
+        or_dash(&entry.branch)
+    );
+    if !entry.summary.is_empty() {
+        let _ = writeln!(out, "  summary: {}", clip(&entry.summary));
+    }
+    if !entry.outcome.is_empty() {
+        let _ = writeln!(out, "  outcome: {}", clip(&entry.outcome));
+    }
+    out
+}
+
+/// `text` cut to [`LEDGER_TEXT_CHARS`] characters, with `…` where it was cut.
+fn clip(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(LEDGER_TEXT_CHARS) {
+        Some((end, _)) => format!("{}…", text[..end].trim_end()).into(),
+        None => text.into(),
+    }
+}
+
+/// `ids` joined by commas, stopping near [`ID_LIST_BYTES`] with a count of
+/// the rest.
+fn id_list<'a>(ids: impl ExactSizeIterator<Item = &'a str>) -> String {
+    let total = ids.len();
+    let mut out = String::new();
+    for (index, id) in ids.enumerate() {
+        if !out.is_empty() && out.len() + id.len() > ID_LIST_BYTES {
+            let _ = write!(out, ", … and {} more", total - index);
+            break;
+        }
+        if !out.is_empty() {
+            out.push_str(", ");
+        }
+        out.push_str(id);
     }
     out
 }
@@ -644,6 +831,196 @@ not json
         assert_eq!(open_questions("not json\n{", "w-a"), None);
     }
 
+    /// 2026-10-27T12:00:00Z.
+    const NOW: u64 = 1_793_102_400;
+
+    fn line(id: &str, ts: &str, agent: &str, status: &str, outcome: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","ts":"{ts}","agent":"{agent}","status":"{status}","outcome":"{outcome}"}}"#
+        )
+    }
+
+    #[test]
+    fn done_work_is_finished_not_open() {
+        let ledger = [
+            line("a", "2026-10-26T09:00:00Z", "w-a", "reported", "checked"),
+            line("a", "2026-10-27T09:00:00Z", "w-a", "done", "all clear"),
+            line("b", "2026-10-27T10:00:00Z", "w-b", "dispatched", ""),
+        ]
+        .join("\n");
+        let rendered = render(&input("", &ledger, &[]));
+        assert!(rendered.contains("# Open work (1)\n- b [dispatched]"));
+        assert!(!rendered.contains("- a ["));
+        assert!(rendered.contains("# Recently finished\n- 2026-10-27  done  w-a  all clear\n"));
+    }
+
+    #[test]
+    fn stale_reported_work_of_a_stopped_agent_is_counted_on_one_line() {
+        let ledger = [
+            // Reported three days ago, its agent gone: collapsed.
+            line("old-1", "2026-10-24T09:00:00Z", "w-1", "reported", "one"),
+            line("old-2", "2026-10-25T11:59:00Z", "w-2", "reported", "two"),
+            // Its agent still runs, it is recent, it has no time, or it is
+            // not merely reported: shown in full.
+            line("live", "2026-10-20T09:00:00Z", "w-live", "reported", "live"),
+            line("new", "2026-10-26T09:00:00Z", "w-new", "reported", "new"),
+            line("no-ts", "", "w-x", "reported", "no time"),
+            line(
+                "ask",
+                "2026-10-01T09:00:00Z",
+                "w-ask",
+                "needs-answer",
+                "ask",
+            ),
+        ]
+        .join("\n");
+        let fleet = [LiveAgent {
+            name: "w-live".into(),
+            state: "idle".into(),
+            context_percent: None,
+        }];
+        let rendered = render(&input("", &ledger, &fleet));
+        assert!(rendered.contains("# Open work (6)\n"));
+        for shown in ["- live [", "- new [", "- no-ts [", "- ask ["] {
+            assert!(rendered.contains(shown), "{shown}");
+        }
+        assert!(!rendered.contains("- old-1 [") && !rendered.contains("outcome: one"));
+        assert!(rendered.contains(
+            "- 2 more `reported`, agent not running, newest line 2+ days old (set each `done` \
+             if it needs nothing more): old-1, old-2\n\n# Recently finished"
+        ));
+    }
+
+    #[test]
+    fn open_work_fills_its_bytes_newest_first_and_long_text_is_cut() {
+        let long = "word ".repeat(100);
+        let mut lines: Vec<String> = (0..40)
+            .map(|n| line(&format!("w{n:02}"), "", "", "ready-to-merge", &long))
+            .collect();
+        // The oldest waits on the user, so it is shown however full it is.
+        lines[0] = line("w00", "", "w-ask", "needs-answer", "Q1?");
+        let finished = line("m", "2026-10-27T09:00:00Z", "w-m", "merged", &long);
+        lines.push(finished);
+        let rendered = render(&input("", &lines.join("\n"), &[]));
+        let section = &rendered
+            [rendered.find("# Open work").unwrap()..rendered.find("# Recently finished").unwrap()];
+        let shown: Vec<_> = section
+            .lines()
+            .filter_map(|line| line.strip_prefix("- w"))
+            .map(|rest| &rest[..2])
+            .collect();
+        // w00 first, then the newest run that fits, in ledger order.
+        assert_eq!(shown[0], "00");
+        assert_eq!(shown.last(), Some(&"39"));
+        let kept = shown.len() - 1;
+        assert!(kept > 1 && kept < 39);
+        assert_eq!(shown[1], format!("{:02}", 40 - kept));
+        assert!(section.len() < OPEN_WORK_BYTES + 1024);
+        assert!(section.contains(&format!(
+            "- {} older left out for size (read one with --search): w01, w02, ",
+            39 - kept
+        )));
+        // Cut to 200 characters, the cut marked, in open and finished work.
+        let cut = format!("{}…", long[..LEDGER_TEXT_CHARS].trim_end());
+        assert!(section.contains(&format!("  outcome: {cut}\n")));
+        assert!(rendered.contains(&format!("merged  w-m  {cut}\n")));
+        assert_eq!(clip("short"), "short");
+        assert_eq!(
+            clip(&"é".repeat(LEDGER_TEXT_CHARS)),
+            "é".repeat(LEDGER_TEXT_CHARS)
+        );
+    }
+
+    #[test]
+    fn a_long_list_of_ids_stops_with_a_count() {
+        let ids: Vec<String> = (0..500).map(|n| format!("20261027-w-{n:03}")).collect();
+        let list = id_list(ids.iter().map(String::as_str));
+        assert!(list.len() < ID_LIST_BYTES + 32);
+        let shown = list.matches("20261027-w-").count();
+        assert!(list.ends_with(&format!(", … and {} more", 500 - shown)));
+    }
+
+    #[test]
+    fn unreadable_ledger_lines_are_warned_about_by_file_and_line() {
+        let ledger = "{\"id\":\"a\",\"status\":\"dispatched\"}\n\n\
+                      {\"id\":\"a\",\"outcome\":\"bad \\q escape\"}\n\
+                      [1]\n{\"status\":\"merged\"}\n";
+        assert_eq!(
+            unreadable_ledger_lines(ledger)
+                .iter()
+                .map(|(line, _)| *line)
+                .collect::<Vec<_>>(),
+            [3, 4, 5]
+        );
+        let rendered = render(&input("", ledger, &[]));
+        assert!(rendered.contains(
+            "warning: /state/supervisors/weather/ledger.jsonl:3 is not valid JSON (invalid \
+             escape at line 1 column "
+        ));
+        assert!(rendered.contains(
+            "warning: /state/supervisors/weather/ledger.jsonl:4 is not a JSON object, so it is \
+             skipped; append a corrected line for its id\n"
+        ));
+        assert!(rendered.contains("ledger.jsonl:5 has no \"id\", so"));
+        assert!(!render(&input("", "", &[])).contains("warning"));
+    }
+
+    #[test]
+    fn compaction_keeps_the_newest_line_of_each_id_and_every_unreadable_line() {
+        let ledger = format!(
+            "{}\n{}\nnot json\n\n{}\n{}\n{}\n{}",
+            line("a", "2026-10-01T00:00:00Z", "w-a", "dispatched", ""),
+            line("b", "2026-10-02T00:00:00Z", "w-b", "dispatched", ""),
+            line("a", "2026-10-03T00:00:00Z", "w-a", "reported", "first"),
+            r#"{"id":"b","agent":"w-b","status":"needs-answer","questions":["Q1: B?"]}"#,
+            line("c", "2026-10-04T00:00:00Z", "w-b", "dispatched", ""),
+            line("a", "2026-10-05T00:00:00Z", "w-a", "merged", "done"),
+        );
+        let (kept, superseded) = compact_ledger(&ledger).unwrap();
+        assert_eq!(
+            kept,
+            format!(
+                "not json\n\n{}\n{}\n{}",
+                r#"{"id":"b","agent":"w-b","status":"needs-answer","questions":["Q1: B?"]}"#,
+                line("c", "2026-10-04T00:00:00Z", "w-b", "dispatched", ""),
+                line("a", "2026-10-05T00:00:00Z", "w-a", "merged", "done"),
+            )
+        );
+        assert_eq!(
+            superseded,
+            format!(
+                "{}\n{}\n{}\n",
+                line("a", "2026-10-01T00:00:00Z", "w-a", "dispatched", ""),
+                line("b", "2026-10-02T00:00:00Z", "w-b", "dispatched", ""),
+                line("a", "2026-10-03T00:00:00Z", "w-a", "reported", "first"),
+            )
+        );
+        // The same entries, in the same order, and the same answers for tag.
+        let strip = |entries: Vec<LedgerEntry>| -> Vec<LedgerEntry> {
+            entries
+                .into_iter()
+                .map(|entry| LedgerEntry { line: 0, ..entry })
+                .collect()
+        };
+        assert_eq!(strip(parse_ledger(&kept)), strip(parse_ledger(&ledger)));
+        for agent in ["w-a", "w-b", "w-x"] {
+            assert_eq!(
+                open_questions(&kept, agent),
+                open_questions(&ledger, agent),
+                "{agent}"
+            );
+        }
+        let digest = |ledger: &str| {
+            let rendered = render(&input("", ledger, &[]));
+            rendered[..rendered.find("# Notes").unwrap()].to_string()
+        };
+        assert_eq!(digest(&kept), digest(&ledger));
+        // Once compacted, there is nothing more to do.
+        assert_eq!(compact_ledger(&kept), None);
+        assert_eq!(compact_ledger(""), None);
+        assert_eq!(compact_ledger("not json\n"), None);
+    }
+
     fn input<'a>(decisions: &'a str, ledger: &'a str, fleet: &'a [LiveAgent]) -> DigestInput<'a> {
         DigestInput {
             project: "/repos/weather",
@@ -657,6 +1034,7 @@ not json
             fleet,
             decision_command: "corgi digest /repos/weather --decision \"<words>\"",
             search_command: "corgi digest /repos/weather --search \"<words>\"",
+            now: NOW,
         }
     }
 

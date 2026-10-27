@@ -79,8 +79,16 @@ Your memory lives outside the repository, in `{{state}}`:
   ```
 
   Statuses: `dispatched`, `blocked`, `reported`, `needs-followup`,
-  `needs-answer`, `ready-to-merge`, `merged`, `abandoned`. Add `"outcome"` with one line
+  `needs-answer`, `ready-to-merge`, `merged`, `abandoned`, `done`. Add `"outcome"` with one line
   once a worker reports.
+
+  `done` is finished work with nothing to merge: a check, a watch, a review,
+  an investigation. Once such a report needs nothing more from you or the
+  user, append a line with status `done`; `reported` means you still owe it
+  something. The digest shows `reported` work whose agent is gone and whose
+  newest line is two days old only by its id, so do not leave work there.
+  When a session starts, Corgi moves every line but the newest of each `id`
+  to `ledger-archive.jsonl` beside it.
 
   `needs-answer` means the work waits on the user's answer to your
   questions about it; list them in `"questions"`, each as its number and

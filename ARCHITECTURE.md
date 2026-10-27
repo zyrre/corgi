@@ -55,7 +55,9 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   └─ supervisors/<project>/ ─ the supervisor's files, written by Corgi at launch
                           and by the supervisor: ROLE.md, launch.json,
                           decisions.md, ledger.jsonl, briefs/, handover.md
-                          while one is under way, handovers/;
+                          while one is under way, handovers/; at launch
+                          Corgi moves superseded ledger lines to
+                          ledger-archive.jsonl;
                           and by Corgi only (`src/inbox.rs`, under inbox.lock):
                           inbox.jsonl, and inbox-reports/ for long reports
 
@@ -1200,15 +1202,38 @@ grow. The digest only reads, and prints, in order: the project, its base
 branch and short HEAD; `handover.md` whole if it exists, else the "Open
 threads" section of the newest note in `handovers/`, labelled with its date
 as the previous session's; every ledger id whose
-newest line is not `merged` or `abandoned`, joined by agent name with the
-running agents (a missing one shows `**NOT RUNNING**`); the last 10 finished
-ids; the newest decisions in full, whole entries up to 12 KB but at least 3;
-the titles of the rest, at most 500 and a line counting any beyond; and a
+newest line is not `merged`, `abandoned` or `done` (finished work with
+nothing to merge), joined by agent name with the running agents (a missing
+one shows `**NOT RUNNING**`); the last 10 finished ids; the newest
+decisions in full, whole entries up to 12 KB but at least 3; the titles of
+the rest, at most 500 and a line counting any beyond; and a
 footer with the number of superseded entries hidden, how to read one in full,
-how to search, and warnings. A decision entry's `Supersedes: <heading>` line hides the
+how to search, and warnings, among them one per ledger line that is not a
+JSON object with an `id` (`file:line` and why), which every reader skips. A
+decision entry's `Supersedes: <heading>` line hides the
 earlier entry with exactly that heading (after `## `); one that matches none
 is warned about. `corgi digest --decision "<words>"` prints every entry,
 superseded or not, whose heading contains all the words.
+
+Open work is bounded like the decisions: a `reported` entry whose agent is
+not running and whose newest line is two days old is only named, on one line
+with the others like it, since a supervisor that forgot to mark finished
+work `done` once made the digest 49 KB; the rest are shown newest first up to
+4 KB, an entry of a running agent or one `needs-answer` or `blocked` always,
+and one line names those left out. Summaries and outcomes are cut to 200
+characters there and in the finished list; the ledger keeps them whole.
+
+The ledger is append-only for the supervisor, so most of its lines are
+superseded. `supervisor::prepare`, which runs before a session starts and
+so while none of the project runs, compacts it: every line that a later line
+of the same id supersedes moves, in order, to the end of
+`ledger-archive.jsonl` beside it (`digest::compact_ledger`). The rest stays
+where it was, unreadable and blank lines too, so the newest lines keep their
+order and the digest, search and `corgi tag` read the same entries before
+and after. The archive is written first and each file replaced through a
+temporary file and a rename, so a stop halfway loses no line (at worst some
+archive twice); a ledger with nothing superseded is not touched, and a
+failure is a launch warning, not an error.
 
 `corgi digest --search "<words>"` (`src/digest/search.rs`) looks in all of
 the memory, since a test showed a supervisor answering "don't know" to every
