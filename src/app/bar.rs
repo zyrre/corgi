@@ -309,14 +309,18 @@ fn bar_action_with(
             }
             Overlay::Merge(form) => {
                 let content = ui::merge_dialog_lines(form, crate::motion::SPINNER[0]);
-                let phase = match form.phase {
-                    MergePhase::Confirm => "confirm",
-                    MergePhase::Running(_) => "running",
-                    MergePhase::Succeeded => "succeeded",
-                    MergePhase::Failed(_) | MergePhase::Conflicted { .. } => "failed",
+                let (phase, confirm) = match form.phase {
+                    MergePhase::Confirm => ("confirm", "Merge + push"),
+                    MergePhase::Behind(_) => ("confirm", "Pull, merge + push"),
+                    MergePhase::FetchFailed(_) => ("confirm", "Merge + push anyway"),
+                    MergePhase::Running(_) => ("running", ""),
+                    MergePhase::Succeeded => ("succeeded", ""),
+                    MergePhase::Failed(_)
+                    | MergePhase::Conflicted { .. }
+                    | MergePhase::PushFailed { .. } => ("failed", ""),
                 };
                 state = popup_dialog_state(phase, content);
-                state["confirm"] = serde_json::json!("Merge + push");
+                state["confirm"] = serde_json::json!(confirm);
             }
             _ => {}
         }
@@ -339,7 +343,10 @@ fn bar_action_with(
                 };
                 let was_confirming = match &app.overlay {
                     Overlay::Close(_) => true,
-                    Overlay::Merge(form) => matches!(form.phase, MergePhase::Confirm),
+                    Overlay::Merge(form) => matches!(
+                        form.phase,
+                        MergePhase::Confirm | MergePhase::Behind(_) | MergePhase::FetchFailed(_)
+                    ),
                     _ => false,
                 };
                 app.handle_key(KeyEvent::from(code));

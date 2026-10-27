@@ -138,7 +138,7 @@ for limits, retry behavior and the Claude documentation/fixture verification.
 
 ### Merging
 
-`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout, and offers to close the worktree. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
+`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout, and offers to close the worktree. When the base branch has an upstream, it is fetched first: if it has commits the base lacks (pushed from another machine, say), the popup lists them and Enter pulls them into the base (a fast-forward when it can be, else a merge; a pull that conflicts is aborted for you to pull by hand) before merging, while Esc stops. A fetch that fails is shown, and Enter merges anyway. If the push still fails, the branch is merged all the same: the popup shows Git's error, and with a supervisor running, `s` asks it what the error means and what to run. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
 
 ## Install
 

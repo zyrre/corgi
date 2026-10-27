@@ -54,9 +54,14 @@ impl Overlay {
                 LaunchState::Failed(_) => Some(Outcome::Failure),
             },
             Self::Merge(form) => match form.phase {
-                MergePhase::Confirm | MergePhase::Running(_) => None,
+                MergePhase::Confirm
+                | MergePhase::Running(_)
+                | MergePhase::Behind(_)
+                | MergePhase::FetchFailed(_) => None,
                 MergePhase::Succeeded => Some(Outcome::Success),
-                MergePhase::Failed(_) | MergePhase::Conflicted { .. } => Some(Outcome::Failure),
+                MergePhase::Failed(_)
+                | MergePhase::Conflicted { .. }
+                | MergePhase::PushFailed { .. } => Some(Outcome::Failure),
             },
             _ => None,
         }

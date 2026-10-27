@@ -49,6 +49,8 @@ pub(crate) use close::{CloseTarget, CloseWorkspaceForm};
 #[cfg(test)]
 pub(crate) use form::Checkout;
 pub(crate) use form::{NewAgentForm, NewField};
+#[cfg(test)]
+pub(crate) use merge::Upstream;
 pub(crate) use merge::{ConflictHelp, MergePhase, MergeWorktreeForm};
 pub(crate) use overlay::Overlay;
 pub(crate) use prompt::PromptForm;
@@ -1610,6 +1612,7 @@ mod tests {
             target_branch: "main".into(),
             task: String::new(),
             commits: Vec::new(),
+            upstream: Default::default(),
             phase: MergePhase::Running(1),
         });
         app.merge_job = Job::spawn(|_| panic!("merge failed"));

@@ -483,6 +483,14 @@ the user runs from this checkout, say so, as they may need to rebuild or
 reload it. An agent you did not dispatch is the user's own session: stay
 quiet, and log a decision only for a significant change.
 
+When the push after the merge failed, that line ends `, but git push
+failed: <git's error>`, and when the user hands the failure to you from the
+merge popup, you get `[Corgi] The user asks for help with a failed push.`
+followed by the same facts. Either way the worker is merged: handle it as
+above. Tell the user in a line or two what the error means and what they
+can run, such as `git pull` in the primary checkout and then `git push`;
+never pull, push or merge yourself.
+
 ## When the user works with an agent directly
 
 The user also works with agents themselves: their own sessions in the
