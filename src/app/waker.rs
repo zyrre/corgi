@@ -373,7 +373,7 @@ impl SupervisorWaker {
             {
                 continue;
             }
-            let item = wake_item(&stop, report.map(|report| report.text), corgi_bin);
+            let item = wake_item(&stop, report, corgi_bin);
             if let Err(failed) = self.notify(item) {
                 let name = stop.name;
                 error = Some(format!(
@@ -696,7 +696,7 @@ fn own(agent: &DashboardAgent) -> bool {
 /// the report goes out with it instead. Its id names the agent's pane, run of
 /// state changes and state change, so the same stop is never added twice and
 /// a later one never taken for it.
-fn wake_item(stop: &Stop<'_>, report: Option<String>, corgi_bin: &Path) -> Item {
+fn wake_item(stop: &Stop<'_>, report: Option<Captured>, corgi_bin: &Path) -> Item {
     let Stop {
         agent, name, state, ..
     } = stop;
@@ -717,7 +717,9 @@ fn wake_item(stop: &Stop<'_>, report: Option<String>, corgi_bin: &Path) -> Item 
         key: name.to_string(),
         text: supervisor::wake_message(corgi_bin, name, *state),
         own: own(agent),
-        report,
+        request: agent.info.tokens.get(CORGI_REQUEST_TOKEN).cloned(),
+        said: report.as_ref().is_some_and(|report| report.transcript),
+        report: report.map(|report| report.text),
         ..Item::default()
     }
 }
@@ -1325,8 +1327,37 @@ mod tests {
         let inbox = Inbox::read(&dir);
         assert_eq!(
             inbox.newest_report("w-radar").unwrap().report_text(&dir),
-            Some(long)
+            Some(long.clone())
         );
+        // It is kept for good too, named by its time and request id.
+        let kept: Vec<_> = fs::read_dir(dir.join(inbox::KEPT_REPORTS_DIR))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].ends_with("-20261003-w-radar.md"), "{kept:?}");
+        let text = fs::read_to_string(dir.join(inbox::KEPT_REPORTS_DIR).join(&kept[0])).unwrap();
+        assert!(text.starts_with("# Report of w-radar (done), "));
+        assert!(text.contains("\nRequest: 20261003-w-radar\nProject: /repos/weather\n\nxxx"));
+        assert!(text.ends_with(&format!("{long}\n")));
+    }
+
+    #[test]
+    fn the_report_of_an_agent_the_user_started_is_not_kept_for_good() {
+        use AgentState::{Done, Idle, Working};
+        let scratch = ScratchDir::new("waker-users-report");
+        let mut waker = SupervisorWaker::in_dir(&scratch);
+        let agents = |state, change| {
+            [
+                weather_supervisor(Idle),
+                weather_worker("users-claude", state, change, false),
+            ]
+        };
+        wake_refresh(&mut waker, &agents(Working, 1), None, false);
+        wake_refresh(&mut waker, &agents(Done, 2), Some("my own session"), false);
+        let dir = scratch.join("weather");
+        assert!(Inbox::read(&dir).newest_report("users-claude").is_some());
+        assert!(!dir.join(inbox::KEPT_REPORTS_DIR).exists());
     }
 
     #[test]

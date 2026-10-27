@@ -38,6 +38,11 @@ pub const INBOX_FILE: &str = "inbox.jsonl";
 /// Where reports too long to keep in their item go, one file per item,
 /// beside the inbox.
 pub const REPORTS_DIR: &str = "inbox-reports";
+/// Where the reports of the workers a supervisor spawned are also kept for
+/// good, one file per report, named `YYYYMMDD-HHMMSS-<request id>.md` so the
+/// files sort by time. Compaction never touches it, so the supervisor's
+/// search finds a worker's report long after its inbox item is gone.
+pub const KEPT_REPORTS_DIR: &str = crate::digest::lookup::REPORTS_DIR;
 /// Taken by every write, so that appends and a compaction never interleave.
 const LOCK_FILE: &str = "inbox.lock";
 /// The longest report an item keeps inline, in bytes; a longer one goes to
@@ -126,6 +131,15 @@ pub struct Item {
     /// whose inline report goes out with the wake, in place of the command.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub own: bool,
+    /// The request id the supervisor spawned the agent with, for a wake of
+    /// one of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
+    /// Whether the report is the newest thing the agent said in its
+    /// transcript, not its screen. Only [`append`] reads it, to choose what
+    /// is kept in [`KEPT_REPORTS_DIR`], so the inbox file leaves it out.
+    #[serde(skip)]
+    pub said: bool,
     /// The agent's report, when it is at most [`INLINE_REPORT_MAX`] bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<String>,
@@ -362,6 +376,7 @@ pub fn append(dir: &Path, mut item: Item) -> Result<Option<Item>> {
     if item.key.is_empty() {
         item.key = item.id.clone();
     }
+    keep_report(dir, &item)?;
     if let Some(report) = item
         .report
         .take_if(|report| report.len() > INLINE_REPORT_MAX)
@@ -378,6 +393,61 @@ pub fn append(dir: &Path, mut item: Item) -> Result<Option<Item>> {
     append_line(dir, &serde_json::to_string(&item)?)?;
     compact_if_large(dir)?;
     Ok(Some(item))
+}
+
+/// Writes the report of the wake `item` to its own new file in
+/// [`KEPT_REPORTS_DIR`], with a heading naming the agent, its state and the
+/// time, and lines with its request id and project: only a report from the
+/// transcript of a worker the supervisor spawned, never a screen or the
+/// report of an agent the user started, whose sessions are not kept for
+/// good. Under the lock, so two writers of the same second take different
+/// names.
+fn keep_report(dir: &Path, item: &Item) -> Result<()> {
+    let (Kind::Wake, true, Some(agent), Some(request), Some(report)) = (
+        item.kind,
+        item.said,
+        &item.agent,
+        &item.request,
+        &item.report,
+    ) else {
+        return Ok(());
+    };
+    let reports = privacy::private_dir(dir, KEPT_REPORTS_DIR)?;
+    let secs = parse_rfc3339(&item.ts).unwrap_or_else(unix_now);
+    let stamp = utc_stamp(secs);
+    let subject = file_safe(request);
+    let state = item.state.as_deref().unwrap_or("stopped");
+    let time = rfc3339_utc(secs);
+    let mut text = format!(
+        "# Report of {agent} ({state}), {} {} UTC\n\n",
+        &time[..10],
+        &time[11..19]
+    );
+    text.push_str(&format!(
+        "Request: {request}\nProject: {}\n\n{}\n",
+        item.project,
+        report.trim_end()
+    ));
+    for attempt in 1.. {
+        let name = match attempt {
+            1 => format!("{stamp}-{subject}.md"),
+            n => format!("{stamp}-{subject}-{n}.md"),
+        };
+        let path = reports.join(&name);
+        match privacy::open(&path, OpenOptions::new().write(true).create_new(true)) {
+            Ok(mut file) => {
+                return file
+                    .write_all(text.as_bytes())
+                    .with_context(|| format!("write {}", path.display()));
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("some attempt finds a free name")
 }
 
 /// Records that the items `ids` went out to the supervisor `to`.
@@ -980,6 +1050,18 @@ mod tests {
         assert_eq!(ids("/oss/weather"), ["b"]);
     }
 
+    /// A wake of a worker the supervisor spawned, with `report` from its
+    /// transcript.
+    fn own_wake(agent: &str, id: &str, report: &str) -> Item {
+        Item {
+            own: true,
+            request: Some(format!("20261027-{agent}")),
+            said: true,
+            report: Some(report.into()),
+            ..wake(agent, id)
+        }
+    }
+
     #[test]
     fn a_large_inbox_is_compacted_keeping_every_undelivered_item() {
         let dir = ScratchDir::new("inbox-compact");
@@ -987,29 +1069,14 @@ mod tests {
         let mut delivered = Vec::new();
         for n in 0..200 {
             let id = format!("old{n}");
-            append(
-                &dir,
-                Item {
-                    report: Some(padding.clone()),
-                    report_file: None,
-                    ..wake("w-forecast", &id)
-                },
-            )
-            .unwrap();
+            append(&dir, own_wake("w-forecast", &id, &padding)).unwrap();
             delivered.push(id);
         }
         mark_delivered(&dir, &delivered, "supervisor-weather").unwrap();
         append(&dir, wake("w-radar", "fresh")).unwrap();
         // The next write finds the file past its limit.
         let big = "z".repeat(INLINE_REPORT_MAX + 1);
-        append(
-            &dir,
-            Item {
-                report: Some(big),
-                ..wake("w-radar", "fresher")
-            },
-        )
-        .unwrap();
+        append(&dir, own_wake("w-radar", "fresher", &big)).unwrap();
         let size = fs::metadata(dir.join(INBOX_FILE)).unwrap().len();
         assert!(size <= COMPACT_AT, "{size}");
         let inbox = Inbox::read(&dir);
@@ -1018,6 +1085,92 @@ mod tests {
         assert_eq!(inbox.delivered().len(), KEEP_DELIVERED);
         assert_eq!(inbox.delivered()[0].id, "old100");
         assert!(dir.join(REPORTS_DIR).join("fresher.md").is_file());
+        // Every report is still kept, those of the dropped items too, each
+        // in a file of its own though many came in the same second.
+        let mut kept: Vec<_> = fs::read_dir(dir.join(KEPT_REPORTS_DIR))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        kept.sort();
+        assert_eq!(kept.len(), 201);
+        assert_eq!(
+            kept.iter()
+                .filter(
+                    |name| fs::read_to_string(dir.join(KEPT_REPORTS_DIR).join(name))
+                        .unwrap()
+                        .contains(&padding)
+                )
+                .count(),
+            200
+        );
+        assert!(
+            kept.iter().all(|name| name.contains("-20261027-w-")),
+            "{kept:?}"
+        );
+    }
+
+    #[test]
+    fn only_a_spawned_workers_said_report_is_kept_and_kept_privately() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        let dir = ScratchDir::new("inbox-kept");
+        let report = "### Report\n- Result: done\n";
+        // Without a report; a note; an agent the user started; a worker's
+        // screen rather than what it said: none is kept.
+        append(&dir, wake("w-forecast", "bare")).unwrap();
+        for (id, item) in [
+            (
+                "note",
+                Item {
+                    kind: Kind::Note,
+                    ..own_wake("w-forecast", "", report)
+                },
+            ),
+            (
+                "users",
+                Item {
+                    own: false,
+                    request: None,
+                    ..own_wake("users-claude", "", report)
+                },
+            ),
+            (
+                "screen",
+                Item {
+                    said: false,
+                    ..own_wake("w-forecast", "", report)
+                },
+            ),
+        ] {
+            append(
+                &dir,
+                Item {
+                    id: id.into(),
+                    ..item
+                },
+            )
+            .unwrap();
+        }
+        assert!(!dir.join(KEPT_REPORTS_DIR).exists());
+        append(
+            &dir,
+            Item {
+                ts: "2026-10-27T10:15:00Z".into(),
+                ..own_wake("w-forecast", "said", report)
+            },
+        )
+        .unwrap();
+        let path = dir
+            .join(KEPT_REPORTS_DIR)
+            .join("20261027-101500-20261027-w-forecast.md");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# Report of w-forecast (done), 2026-10-27 10:15:00 UTC\n\n\
+             Request: 20261027-w-forecast\nProject: /repos/weather\n\n\
+             ### Report\n- Result: done\n"
+        );
+        assert_eq!(mode(&dir.join(KEPT_REPORTS_DIR)), 0o700);
+        assert_eq!(mode(&path), 0o600);
     }
 
     #[test]

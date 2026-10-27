@@ -30,6 +30,24 @@ stream back to blocking (`set_nonblocking(false)`) before relying on a read
 timeout: macOS/BSD sockets inherit `O_NONBLOCK` from the listener, Linux
 sockets do not, so the failure shows only on macOS CI.
 
+On macOS, copying a rebuilt binary over an existing file (say, a copy of
+`target/release/corgi` kept to compare before and after) gets it killed with
+exit 137, because the kernel caches the old file's code signature. `rm` the
+destination before copying.
+
+`corgi digest`'s lookups (`--search`, `--show`, `--ledger`, `--brief`,
+`--decision`) need Herdr only to find the project's state directory. Test
+them with a `ScratchDir` as the state directory through `digest_lookup` in
+`src/app/cli.rs`. To try them on real data, copy the state into a scratch
+directory and point `XDG_STATE_HOME` at it; never run a change against the
+real `~/.local/state/corgi`:
+
+```bash
+mkdir -p "$scratch/corgi/supervisors"
+cp -R ~/.local/state/corgi/supervisors/<project> "$scratch/corgi/supervisors/"
+XDG_STATE_HOME="$scratch" ./target/release/corgi digest <project dir> --search "<words>"
+```
+
 `rust-version` in `Cargo.toml` is the oldest Rust that builds Corgi: 1.89,
 set by std's `File::lock` (ratatui 0.30 alone needs 1.88). With it set,
 clippy's `incompatible_msrv` lint refuses a newer std API, so raise it
