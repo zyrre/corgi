@@ -1,0 +1,424 @@
+# A desktop GUI for Corgi on the Herdr backend
+
+Research study, October 2026, against Herdr 0.9.0 (installed) and its source
+at tag `v0.9.0` (current stable is 0.9.5). It answers what a desktop GUI for
+Corgi could cover, what Herdr offers it, which stack fits macOS and Linux, how
+to split Corgi's code, and what to build first. Nothing here is built.
+
+Evidence marks used below:
+
+- **[spike]**: run against a separate Herdr session (`herdr --session
+  corgigui-spike`, stopped and deleted afterwards); the user's live session
+  was only read (`herdr api snapshot`).
+- **[source]**: read in Herdr's source at `v0.9.0`
+  ([herdrdev/herdr](https://github.com/herdrdev/herdr), Apache-2.0); paths
+  are relative to that repository.
+- **[docs]**: Herdr's documentation as published in that repository
+  (`docs/next/website/src/content/docs/`, served at herdr.dev/docs).
+- **[web]**: third-party sources, linked; **[assumption]**: not verified.
+
+## Summary
+
+- Herdr already gives a GUI everything it needs except a documented
+  message-level spec for its own UI protocol. Lifecycle events are pushed, not
+  polled. Pane screens can be streamed, and input and resize can be sent.
+  Herdr's own UI is a "client-owned shell" over a stable, versioned endpoint
+  protocol, so a third-party client can draw panes exactly as Herdr's does.
+- A full Herdr replacement already exists: **Herdr UI**
+  ([penso/herdr-gpui](https://github.com/penso/herdr-gpui), Rust + GPUI,
+  Apache-2.0, about 1.7k stars, macOS/Linux/Windows). It paints Herdr's own
+  cells, with no second terminal emulator. Corgi should not rebuild that.
+- **Recommendation:** a hybrid GUI focused on what only Corgi has. That means
+  project cards, the supervisor, merges, the inbox, decisions, ledger, briefs
+  and reports. Agent terminals open on demand inside the GUI later, and until
+  then "focus" hands off to Herdr's TUI or Herdr UI. Build it in Rust with
+  **egui/eframe**. It talks to a new `corgi serve` JSON-lines endpoint that runs
+  on the Herdr host, locally or over `ssh`.
+- **First milestone:** `corgi serve` plus a GUI dashboard without embedded
+  terminals. That is about 3.5–5 worker-weeks for one or two workers.
+- **First spike:** terminal input fidelity, i.e. Shift+Enter and modifier keys
+  into Claude Code through each of Herdr's two terminal paths. That is the risk
+  most likely to change the plan.
+
+## 1. Scope options
+
+| Option | What it means for you | Cost | Overlap |
+| --- | --- | --- | --- |
+| **a. Corgi-only GUI** | A window with the dashboard, supervisor conversation, merges, reports, and a browser for decisions and memory. Terminals stay in Herdr's TUI; `f` focuses the pane there, and you switch windows yourself unless Corgi raises the terminal (it can on Hyprland, `src/app/navigate.rs`). | Smallest. No terminal rendering. | None. |
+| **b. Full frontend** | Replaces Herdr's TUI: workspaces, tabs, split panes, every terminal drawn by the GUI on top of the Herdr server. | Largest: endpoint protocol, cell renderer, layout, mouse, selection, graphics, copy mode. | Herdr UI already does exactly this. |
+| **c. Hybrid** | The Corgi GUI from (a), plus a terminal pane for the selected agent, opened on demand next to its card. Prompting, answering a question or watching a run happen without leaving Corgi. Herdr's TUI or Herdr UI remains the full workspace view. | (a) plus one terminal widget, without Herdr's layout and tab model. | Small. |
+
+Option (b) would duplicate Herdr UI. That app is growing its own
+orchestration crates too (`herdr-orchestrator`, `herdr-vcs`, `herdr-usage`,
+`herdr-github` in its workspace), so it will overlap Corgi from the other side.
+(c) gives the room asked for and keeps Corgi's identity. Start it as (a) and add
+terminals once the spike in §8 settles how.
+
+## 2. What Herdr's backend exposes
+
+Herdr has two sockets per session. Both are created with mode `0600`
+(`src/server/socket_paths.rs:12`) **[source]**:
+
+- `herdr.sock` is the JSON API: newline-delimited JSON requests and responses,
+  plus long-lived subscriptions. Corgi uses only this one today (`src/herdr.rs`).
+- `herdr-client.sock` is the UI client protocol: u32-length-prefixed bincode
+  frames (`src/protocol/wire.rs:20-35`, `:1602`) **[source]**. Herdr's TUI,
+  `herdr --remote`, saved SSH machines and the terminal bridges below use it.
+
+`herdr api schema --json` prints the JSON API's JSON Schema: protocol 22,
+schema version 1, 102 request methods **[spike]**.
+
+| Need | What Herdr has | Evidence |
+| --- | --- | --- |
+| Listing | `session.snapshot` and `workspace/tab/pane/agent/worktree.list`. On the live session (19 workspaces, 19 panes) a snapshot is 43.6 KB and takes about 10 ms. | [spike] |
+| Events | `events.subscribe` keeps the connection open and pushes events. Subscriptions cover `workspace.*`, `tab.*`, `pane.created/updated/closed/focused/moved/exited/agent_detected/scroll_changed`, `pane.agent_status_changed` (per pane), `pane.output_matched` (substring or regex, per pane), `layout.updated` and `worktree.*`. A split, a new tab and a printed marker produced `pane_created`, `layout_updated`, `tab_created` and `output_matched` within about 0.1 s. Events from before the subscription are not replayed. | [spike], [docs] `socket-api.mdx` "Event subscriptions" |
+| Pane output, snapshots | `pane.read` / `agent.read`: `visible`, `recent`, `recent_unwrapped` or `detection`, as `text` or `ansi`. This is what Corgi polls today. | [docs], `src/herdr.rs` |
+| Pane output, streaming | Not on the JSON socket. `herdr terminal session observe <pane> --cols N --rows N` streams JSON lines `{"type":"terminal.frame","seq","width","height","full","bytes":<base64 ANSI>}` and finally `terminal.closed`. A pane printing about 50 coloured lines a second gave 91 frames in 4 s (one full, the rest diffs), 25 KB/s, frames ≤ 2.5 KB. **The frames are Herdr's re-rendered cell diffs** (cursor moves, SGR, synchronized output), not the program's own bytes, so any small VT parser can apply them. Many observers may watch one pane. | [spike], [docs] `cli-reference.mdx` "Direct terminal attach", [source] `src/client/terminal_sessions.rs:122-157`, `src/protocol/render_ansi.rs:1-27` |
+| Input | JSON: `pane.send_text`, `pane.send_keys`, `pane.send_input`, `agent.prompt` (bracketed-paste aware, optional wait). Bridge: `herdr terminal session control <pane>` reads `terminal.input` (text or base64 bytes), `terminal.resize`, `terminal.scroll` and `terminal.release` on stdin. Typed input echoed back in a frame within 1.3 ms locally. Control-mode bytes go **raw** to the PTY; only a complete bracketed paste is re-encoded for the pane's mode. | [spike], [source] `src/server/pane_input.rs:187-201` |
+| Resize | `pane.resize` moves splits. A `control` session's viewport **resizes the PTY**: `stty size` read `30 100`, then `20 90` after `terminal.resize`, while Herdr's layout still said 60×40. The size stayed after release (headless session, no TUI attached). An observer never resizes; it gets frames at its own requested size (50×10 here), not the pane's. With several UI clients on one tab, "the last one to focus, select, or interact with it controls that tab's pane sizes". | [spike], [docs] `concepts.mdx` "Client and server" |
+| Create | `workspace.create`, `tab.create`, `pane.split`, `agent.start`, `worktree.create/list/open/remove`, `layout.apply`. Corgi already uses most of them. | [docs], `src/herdr.rs` |
+| Notifications | `notification.show` raises Herdr's toast. OS notifications would be the GUI's own job, driven by `pane.agent_status_changed`. | [docs] |
+| Attach like Herdr's client | Yes. Herdr's UI is a **client-owned shell** speaking "endpoint generation 1". Over `herdr-client.sock`, the client sends `ClientShellHello` (cell size, surface size, codecs) and receives a JSON snapshot (`shell.snapshot.v1`) and pane surface frames (`shell.surface.v1`: cells, patches, cursor, graphics). It sends **semantic** key, mouse and paste events (`shell.input.semantic.v1`), which the server encodes for each pane with its ghostty-vt encoder, kitty keyboard protocol included. Capabilities include `surface_interest` (stream only the selected machine's panes) and `health_check`. | [source] `src/protocol/endpoint.rs`, `src/protocol/wire.rs:470-625`, `:1081-1271`, `src/server/pane_input.rs:292-318`, `src/pane/terminal.rs:607` |
+| Stability | Endpoint generation 1 "must remain available indefinitely unless retired for a security reason"; new fields are optional and new enum values get an `Unknown` fallback. Client and server builds need not match. The numbered protocol (22) is private: same-install only, and it also covers raw `terminal attach`. JSON clients must ignore unknown fields and treat a missing method as a normal error. | [source] `src/protocol/endpoint.rs:1-9`, [docs] `socket-api.mdx` "Protocol stability" |
+
+What is missing or awkward:
+
+1. **No message-level specification of endpoint generation 1.** It is a
+   compatibility promise in a source comment plus Rust types. A client must
+   mirror those types, as Herdr UI does in its own `herdr-protocol` crate
+   (Apache-2.0, unpublished; a git dependency or a vendored copy).
+   kcosr/herdr-web vendors Herdr types and pins protocol 22
+   ([README](https://github.com/kcosr/herdr-web)), which breaks on upgrades
+   **[web]**.
+2. **The `control` bridge cannot carry modern key encoding.** Input is raw
+   bytes, and the frames do not tell the client which keyboard, mouse or paste
+   modes the program has enabled. A client therefore cannot send the kitty
+   keyboard protocol correctly; Shift+Enter in Claude Code is the obvious
+   casualty **[source; the user-visible effect is an assumption until §8's
+   spike]**. Mouse events on `control` were added after 0.9.0 (#4685) **[source:
+   git log]**.
+3. **One PTY, one size.** A GUI terminal and Herdr's TUI showing the same pane
+   at different sizes will fight over it. The GUI should take control only
+   while it has focus and release it afterwards, or use observe mode at the
+   pane's real size.
+4. **Upstream does not accept unsolicited pull requests**; feature requests go
+   to GitHub Discussions (`CONTRIBUTING.md`) **[source]**. A documented
+   endpoint spec, or semantic input on `terminal session control`, can be
+   asked for there. Plan on not getting either.
+
+## 3. Remote use
+
+Herdr's own remote paths **[docs]** `persistence-remote.mdx`,
+`connecting-machines.mdx`, **[source]** `src/remote/attach.rs`:
+
+- `herdr --remote <ssh-target>` runs a local UI against a remote server.
+  `ssh target herdr … remote-client-bridge` carries `herdr-client.sock` over
+  SSH stdio. It uses your OpenSSH config and agent, adds keepalives, and on
+  macOS and Linux reuses a private ControlMaster socket. Herdr installs or
+  updates a compatible remote binary only after asking.
+- `herdr machine add` saves SSH machines, and one Herdr window shows them all.
+  Each reconnects with bounded backoff, and quiet links are probed via
+  `health_check`. Only the selected machine streams pane screens. Disconnected
+  machines stay visible, dimmed and read-only. Profiles store no secrets.
+
+What this means for a Corgi GUI on a laptop with Herdr on another machine:
+
+- **Corgi's logic must run on the Herdr host.** It reads agent transcripts
+  (`~/.claude`, `~/.codex`), runs Git in worktrees, holds its state directory,
+  and its waker must survive the laptop sleeping. So the GUI should be a thin
+  client of a Corgi process on that host, not of Herdr's socket directly.
+- **Transport: SSH stdio, with no listening port.** The GUI spawns
+  `corgi serve` locally or `ssh host corgi serve` remotely and speaks JSON
+  lines over the pipe. Terminal panes use `ssh host herdr terminal session
+  control …`, or, with the endpoint protocol, the remote `herdr-client.sock`
+  over the same stdio bridge Herdr uses. One ControlMaster connection can
+  multiplex all of them.
+- **Unix socket forwarding** (`ssh -L local.sock:remote/herdr.sock`) also
+  works and is what herdrm uses ([README](https://github.com/missuo/herdrm))
+  **[web]**. It only reaches Herdr, though, not Corgi's files, so it suits
+  option (b), not Corgi.
+- **Security:** OpenSSH authentication, sockets at `0600`, nothing exposed on
+  the network, and no telemetry, which keeps Corgi's current promises. Never
+  bridge either socket to TCP or WebSocket.
+- **Latency and reconnects:** the stream is small (25 KB/s for a busy 80×24
+  pane), and echo was 1.3 ms locally **[spike]**. Over a real SSH link it was
+  not measured, because no SSH target was available **[assumption: one RTT per
+  keystroke, as with `ssh` itself]**. The GUI must reconnect with backoff, show
+  cached state dimmed while disconnected, as Herdr does, and never retry an
+  unconfirmed prompt.
+
+## 4. Stacks for macOS and Linux
+
+Requirements: Wayland (Hyprland) and X11 on Linux, plus macOS; keyboard first;
+system light/dark; Rust reuse; possibly many terminal panes later. Sizes marked
+\* are estimates. Also considered and set aside: Dioxus (desktop is the same
+WebKitGTK webview as Tauri; its native renderer is experimental), Qt via cxx-qt
+(C++/QML and Qt licensing for little Rust reuse), and Makepad, Xilem and Floem
+(immature, no terminal widget).
+
+| Stack | Terminal path | Keyboard / IME | System scheme | Accessibility | Size | Packaging | Maturity | Rust reuse |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **egui / eframe** 0.37 | Own cell-grid widget (egui_term is immature) | Raw press/release, IME ok | macOS via winit; Linux needs a portal reader | AccessKit | 5–15 MB\* | cargo-packager: .app/DMG, deb, AppImage, pacman. Notarize yourself | Mature, frequent releases | Highest; `egui_ratatui` can host ratatui widgets |
+| **GPUI** (Zed) | Zed-proven alacritty grid; Herdr UI paints endpoint cells | Good; Wayland IME being fixed | Manual | Experimental | 15–30 MB\* | DIY, as Herdr UI does: brew tap, deb/rpm/pacman | crates.io `gpui` stale (0.2.2); Herdr UI pins `gpui-pre =0.3.6`; upstream "Zed's needs first" | High |
+| **iced** 0.14 | iced_term (alacritty, maintained) | IME improved | Portal via `mundy` | None | 10–20 MB\* | cargo-packager | Slow releases | High |
+| **Slint** 1.16 | None; DIY | Shortcuts API | Portal accent on Linux | AccessKit | 5–10 MB\* | cargo-packager | Stable; GPLv3 or royalty-free licence | Medium (DSL) |
+| **Tauri 2** | xterm.js / ghostty-web | Browser-grade; xterm.js kitty keys only in 6.1+/7 | Linux `prefers-color-scheme` unreliable | Browser | 3–10 MB (AppImage ~76 MB) | Best bundler: DMG, notarization, deb, rpm, AppImage | Stable, but Linux WebKitGTK is fragile (Wayland, NVIDIA DMABUF, slow WebGL); the CEF runtime only exists in Tauri 3 alpha | Backend only |
+| **Electron** | xterm.js (VS Code-proven) | Good; Wayland IME behind a flag | Good | Good | 85–100 MB | electron-builder | Very mature | Low (sidecar or napi) |
+| **GTK4 + VTE** | VTE, mature and fast | Native, but **no kitty keyboard protocol** | Native on Linux, weak on macOS | AT-SPI | Small + GTK | Flatpak great, macOS poor | Mature | Medium |
+
+Terminal engines **[web]**:
+
+- **alacritty_terminal** 0.26: on crates.io, used by Zed and Warp. It has no
+  key encoder, so the embedder writes the kitty and legacy encoders.
+- **libghostty-vt**: Rust bindings 0.2, "API not yet stable", needs Zig 0.17.
+  It ships key and mouse encoders. Herdr itself is built on it (`ghostty-vt`
+  in Herdr's `Cargo.toml`) **[source]**.
+- **wezterm-term**: not on crates.io.
+- **vt100**: enough for snapshots.
+- **xterm.js**: limited by browsers to about 16 live WebGL contexts, so busy
+  dashboards give WebGL only to visible panes.
+- **VTE**: has no kitty keyboard support.
+
+Sources **[web]**: [alacritty_terminal](https://crates.io/crates/alacritty_terminal),
+[libghostty-vt](https://docs.rs/libghostty-vt),
+[Tauri Linux graphics](https://v2.tauri.app/develop/debug/linux-graphics/),
+[Tauri CEF](https://v3.tauri.app/develop/cef/),
+[egui](https://github.com/emilk/egui/releases),
+[gpui](https://crates.io/crates/gpui),
+[VTE kitty](https://gitlab.gnome.org/GNOME/vte/-/issues/2601),
+[xterm.js WebGL](https://github.com/rdfitted/hive-manager/issues/282),
+[cargo-packager](https://github.com/crabnebula-dev/cargo-packager).
+
+**Recommendation: egui/eframe.** Corgi's GUI is mostly lists, cards, forms and
+text, driven from the keyboard, which suits egui's immediate mode well. It
+keeps everything in Rust with one dependency tree, has AccessKit, and is the
+lowest-risk path on Hyprland and macOS. Herdr's endpoint protocol delivers
+ready-made cells, so the terminal widget is a cell painter, not an emulator. On
+the bridge path it is a small ANSI applier over `vt100` or alacritty_terminal.
+That removes the main reason to pick a terminal-centric toolkit.
+
+**Alternative: GPUI.** Choose it if you want to converge with Herdr UI: reuse
+its crates, look like it, or merge efforts. Its costs are a pinned pre-release
+GPUI, experimental accessibility, and an upstream focused on Zed.
+
+Avoid Tauri, Dioxus desktop and GTK+VTE as the primary stack, for the
+WebKitGTK and kitty-keyboard reasons above. Avoid Electron to keep Rust reuse
+and size.
+
+Theming in either Rust toolkit:
+
+- Reuse Corgi's palette resolution: Omarchy `alacritty.toml`, then the system
+  preference (macOS `defaults`, the freedesktop portal, `gsettings`), then
+  Catppuccin.
+- Drop the OSC terminal query (a GUI has no tty).
+- Watch the portal's `SettingChanged` signal and the Omarchy theme file so
+  colours follow live.
+- Brand colours stay fixed.
+
+## 5. Architecture: one core, several frontends
+
+The code is closer to this split than it looks. Outside `src/ui/`,
+`src/motion.rs`, `src/theme/mod.rs`, `src/app/mod.rs` and `src/app/bar.rs`,
+no non-test code uses ratatui. Neither the refresh pipeline nor the waker
+touches `App`.
+
+**Already core (no ratatui, no `App`):**
+
+- `herdr.rs`, `model.rs`, `activity.rs`, `harness.rs`, `session/`,
+  `supervisor.rs`
+- `inbox.rs`, `digest/`, `usage.rs`, `usage_cache.rs`, `projects.rs`
+- `choices.rs`, `defaults.rs`, `git.rs`, `paths.rs`, `time.rs`
+- `recovery/`, except that `recovery/mod.rs:460`, `:1147` and `:1240` call
+  back into `app/recovery.rs:649-710`. That dependency has to be inverted.
+
+**Core in all but location (under `src/app/`, no TUI):**
+
+- `waker.rs`, `markers.rs`, `rows.rs`, `draft.rs`, `first_prompt.rs`
+- `sweep.rs`, `notice.rs`, `progress.rs`, `setup.rs`
+- `RefreshState::run`/`refresh` (`refresh.rs:143-212`)
+
+**Mixed (`impl App` flows with crossterm keys inside):**
+
+- `form.rs`, `launch.rs`, `merge.rs`, `close.rs`, `prompt.rs`, `cards.rs`,
+  `app/recovery.rs`, `catalog.rs`
+- Their real work is already in free functions: `launch::launch_agent`
+  (`launch.rs:387`), the merge Git steps (`merge.rs:436-550`) and
+  `ModelCatalogs` (`catalog.rs:49-60`).
+- Lift those out, and leave the form state machines and key handling in each
+  frontend.
+
+**TUI-bound:**
+
+- `src/ui/*`, `motion.rs`, the event loop in `app/mod.rs:521-738`
+- `theme/mod.rs`, whose `Roles` are ratatui `Color`s. Split it into a core
+  palette with RGB roles plus a ratatui mapping. `Theme::rgb` (`:391-402`)
+  already does the conversion.
+
+**Existing second frontend:** the Omarchy widget reads `corgi --bar-stream`
+(a JSON snapshot every 2 s) and acts through `--bar-*` commands
+(`src/app/bar.rs`). Its JSON is serialised ratatui spans (`bar.rs:58-97`), so
+it is presentation, not data. It is the model to generalise.
+
+**Proposed shape:**
+
+```text
+corgi-core (lib)   Herdr client, rows/model, sessions, supervisor, waker,
+                   markers, inbox, digest, launch/merge/close, palette
+corgi              CLI + ratatui dashboard (unchanged behaviour)
+corgi serve        JSON-lines over stdio: snapshot + deltas of structured rows,
+                   commands (prompt, spawn, merge, close, tag, focus, digest…)
+corgi-gui          egui app; spawns `corgi serve` locally or via `ssh host`
+```
+
+**Where the background work lives.** Each process that runs the refresh
+pipeline already contends for a per-socket file lock
+(`$STATE/wake/<socket>.lock`, `waker.rs:267-275`, `:982-984`). Only the holder
+reconciles markers, wakes supervisors, delivers the inbox and runs handovers.
+Another process takes over when the holder exits, and it replays from
+`wake/<socket>.seen.json`. So:
+
+- **`corgi serve` runs the same refresh pipeline** and contends like a
+  dashboard does. The GUI, the TUI and the bar can run in any combination
+  without new coordination. The waker needs an explicit socket
+  (`HerdrClient::from_socket_path`) rather than `HERDR_SOCKET_PATH`
+  (`herdr.rs:57-63`).
+- **An optional `corgi daemon`** (`corgi serve` with no client) keeps wakes
+  flowing when no frontend is open. Today nothing wakes then
+  (ARCHITECTURE.md, "The supervisor"). It would run as a launchd or systemd user
+  unit, or start lazily from `corgi spawn`/`corgi supervisor`. This reverses
+  the documented "no daemon" stance, so it is your call (Open questions).
+- **The GUI holds no state of its own** beyond view preferences. The
+  `selection/<socket>.<pid>` file used by `corgi edit` becomes a `serve`
+  command.
+- Moving the Omarchy widget onto `corgi serve`'s structured rows later removes
+  the ratatui-span JSON.
+
+**Herdr events** (planned in ARCHITECTURE.md "Future extensions") would let
+`corgi serve` push changes at once instead of polling. It is optional, because
+a snapshot costs about 10 ms.
+
+## 6. Prior art
+
+| Project | Stack | Licence | Terminals or chat | Remote | Note |
+| --- | --- | --- | --- | --- | --- |
+| [Herdr UI (herdr-gpui)](https://github.com/penso/herdr-gpui) | Rust + GPUI | Apache-2.0 | Herdr's cells via endpoint protocol | Saved machines | Closest to option (b); adding orchestration features |
+| [herdrm](https://github.com/missuo/herdrm) | SwiftUI + libghostty, macOS | PolyForm NC | `herdr agent attach` PTYs | `ssh -L` socket forwarding | Transcript viewer |
+| [herdr-web](https://github.com/kcosr/herdr-web) | Rust bridge + React + ghostty-web | MIT | Herdr frames over WebSocket | Browser | Pins protocol 22; asks upstream for a public bridge |
+| [cmux](https://github.com/manaflow-ai/cmux) | Swift + libghostty | GPL-3.0 | Real terminals | SSH | Attention rings from OSC notifications |
+| [Claude Squad](https://github.com/smtg-ai/claude-squad) | Go TUI + tmux | AGPL-3.0 | Real terminals | No | Worktree per session |
+| [Pane](https://github.com/greenfield-inc/Pane) (Crystal fork) | Electron + xterm.js | AGPL-3.0 | Terminals | SSH/Tailscale | Merge, rebase, squash built in |
+| [Conductor](https://conductor.build) | Tauri, macOS only | Closed | Chat (SDK) + terminal panel | Cloud | Broad GitHub scopes criticised; chat "loses the feel" |
+| [vibe-kanban](https://github.com/BloopAI/vibe-kanban) | Rust + React web | Apache-2.0 | Kanban + logs | Proxy | Company sunset it; community-maintained |
+| [opcode](https://github.com/winfunc/opcode) | Tauri 2 + React | AGPL-3.0 | Chat over CLI | No | Stalled since Oct 2025 |
+| Claude Code desktop, Codex app, Cursor agents | Electron | Closed | Chat | SSH or cloud | State drift with many sessions; Mac-first launches criticised |
+
+All of these are **[web]**, gathered October 2026. Herdr UI's licence, stack
+and protocol use were checked against its repository. Herdr's own comparison
+page positions it as a runtime that keeps agents alive while every window is
+closed, unlike Conductor or Superset ([herdr.dev/compare](https://herdr.dev/compare/)).
+
+Lessons:
+
+1. **Real terminals beat chat wrappers** for CLI agents. Subscription logins
+   only work in the official CLIs
+   ([The Register](https://www.theregister.com/software/2026/02/20/anthropic-clarifies-ban-on-third-party-tool-access-to-claude/5014546)),
+   and wrappers lag new CLI features. Corgi's structured views add to the
+   terminal; they do not replace it.
+2. **Let the runtime own processes.** The GUI is disposable; Herdr and Corgi's
+   state survive it. Corgi already works this way.
+3. **Protocol coupling is the main technical risk.** herdr-web broke by
+   pinning the private protocol. Prefer the documented surfaces and the
+   endpoint generation, behind one adapter.
+4. **The gaps are review, merge and attention**, not "another terminal": diff
+   review with notes sent back to the agent, worktree hygiene (env files,
+   setup), and notifications that reach you. Corgi's supervisor, MERGE
+   badges, numbered questions and memory are exactly this, and no other tool
+   has them.
+5. **Remote is expected.** SSH-first, no exposed ports.
+6. **Longevity and licence matter.** Several tools died or were relicensed.
+   An MIT client (Corgi) on an Apache-2.0 runtime, with no cloud dependency,
+   is a strength.
+
+## 7. Recommendation and phased plan
+
+**Approach:** a hybrid Corgi GUI (option c) in egui/eframe, over a
+`corgi serve` JSON-lines protocol on the Herdr host, reached locally or by
+`ssh`. Terminals are on demand and come last. Herdr's TUI or Herdr UI stays
+the full workspace view.
+
+| Phase | Content | Effort | Workers |
+| --- | --- | --- | --- |
+| 0. Spike | See §8. Settles the terminal path and confirms egui on Hyprland and macOS. | 3–5 days | 1 |
+| 1. Core + `corgi serve` | Cargo workspace with `corgi-core`. Move `waker`, `markers`, `rows`, `draft`, `first_prompt`, `sweep`, `RefreshState` and the free launch, merge and close functions out of `src/app/`. Invert the recovery back-references. Split the palette from ratatui roles. Add `corgi serve` (structured snapshot, deltas and commands) with snapshot tests. The TUI behaves exactly as before. | 1.5–2 weeks | 1 |
+| 2. **First milestone: GUI dashboard** | egui app that spawns `corgi serve` locally or `ssh host corgi serve`:<br>• project cards and agent rows, plan usage header, expanded transcript tail<br>• prompt; new agent (preset defaults, inline lists); start or focus supervisor<br>• merge with confirmation and outcome; close; focus in Herdr<br>• answer numbered questions<br>• system light/dark; reconnect with dimmed cached state<br>• Linux tarball and pacman package, unsigned macOS build. | 2–3 weeks | 1–2 |
+| 3. Terminals on demand | One terminal pane beside the selected card, through the path chosen in phase 0. Take control while focused and release afterwards. Read-only previews for the rest. | 2–4 weeks | 1–2 |
+| 4. Corgi-only views | Decisions, ledger and brief browser (`corgi digest`), worker reports, inbox, diff review before merge, OS notifications from agent status, several hosts in one window. Optional `corgi daemon` unit. Signed and notarized macOS builds, Homebrew cask, AUR. | Ongoing, 1–2 weeks per feature | 1 |
+
+Phases 1 and 2 together are the first useful milestone: about 3.5–5
+worker-weeks. Phase 1 pays off even if the GUI stops there: it gives the
+Omarchy widget clean data and makes the optional daemon a small step.
+
+**Main risks:**
+
+- **Terminal input fidelity** on the bridge path (§2, item 2). This is the
+  first spike.
+- **Endpoint protocol coupling.** It is stable by promise but specified only
+  in Rust types, and upstream is closed to PRs. Keep it behind one adapter and
+  pin a tested Herdr version range.
+- **Overlap with Herdr UI**, which is adding orchestration. Corgi's value has
+  to stay in the supervisor and memory layer.
+- **Two frontends to maintain.** Phase 1's core split is what keeps the TUI
+  and GUI from drifting; frontend code should contain no Herdr calls.
+- **Signing and notarization** need an Apple Developer account (about $99 a
+  year) before wide macOS distribution.
+
+## 8. What to prototype first
+
+The biggest risk is the one that decides phase 3's design and whether (c) is
+worth it. Can a GUI-embedded terminal drive Claude Code and Codex as well as
+Herdr's TUI does?
+
+Spike, outside the repository, against a separate `herdr --session`:
+
+1. An eframe window with a cell-grid widget fed by
+   `herdr terminal session control <pane>`: frames into `vt100` or
+   alacritty_terminal, keys encoded by the GUI. Run Claude Code in the pane
+   and test the following:
+   - Shift+Enter, Alt and Ctrl combinations, Esc, paste of a long prompt;
+   - IME and dead keys on macOS and Hyprland;
+   - resize, scroll and selection.
+   Repeat through `ssh host herdr terminal session control …` and time the
+   keystroke echo.
+2. The same widget fed by endpoint generation 1, reusing Herdr UI's
+   `herdr-protocol` crate (git dependency, Apache-2.0). Hello, one pane's
+   surface frames, semantic key input. Compare input fidelity and how much
+   code it takes.
+3. Read the system scheme live: the portal `SettingChanged` signal on
+   Hyprland, the effective appearance on macOS.
+
+Outcome:
+
+- **If (1) passes**, use the documented bridge.
+- **If only (2) passes**, use the endpoint behind an adapter, and consider
+  asking upstream in a Discussion for semantic input on
+  `terminal session control`.
+- **If neither is good enough**, stay with option (a) and hand terminals to
+  Herdr's TUI or Herdr UI.
+
+## Open questions
+
+1. **Daemon.** Should Corgi get an optional long-running `corgi daemon` (a
+   systemd or launchd user unit) so supervisors are woken when no dashboard or
+   GUI is open? It reverses ARCHITECTURE.md's "no daemon". Recommended:
+   optional, off by default, added in phase 4.
+2. **Build our own versus join Herdr UI.** Herdr UI (Apache-2.0) already
+   covers option (b) and is adding orchestration. The alternatives are:
+   - (i) our own GUI as recommended;
+   - (ii) GPUI with Herdr UI's crates, for a shared look and future merging;
+   - (iii) no GUI, and make `corgi serve` a backend that other frontends,
+     Herdr UI included, could use.
+
+   Recommended: (i), keeping (iii) possible, since `corgi serve` is the same
+   work either way.
+3. **Stack.** egui is recommended; GPUI is the alternative if (ii) appeals.
+   Decide after the phase 0 spike.
