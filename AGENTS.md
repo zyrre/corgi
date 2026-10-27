@@ -22,6 +22,10 @@ cargo test
 cargo build --release
 ```
 
+Clippy lints code under `#[cfg(target_os = ...)]` only on that OS, so a lint
+can pass on your machine and fail CI on the other (a `return` left at the end
+of a macOS-only block did). CI runs on both Linux and macOS; check both jobs.
+
 On macOS the default `$TMPDIR` makes the fake Herdr socket path in
 `src/test_support.rs` exceed `SUN_LEN`, so run `TMPDIR=/tmp cargo test` there.
 
