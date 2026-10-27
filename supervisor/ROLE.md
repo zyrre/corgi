@@ -95,10 +95,11 @@ Your memory lives outside the repository, in `{{state}}`:
   (see *Handing over*); read notes are kept in `handovers/`.
 - `inbox.jsonl` and `inbox-reports/`: your inbox, which Corgi writes. Never
   edit them; read them through `inbox` and `report`.
-- `reports/`: every report Corgi captured when an agent of your project
-  stopped, one file each, named `YYYYMMDD-HHMMSS-<request id or agent>.md`.
-  Corgi writes them and never removes them, so a worker's report stays
-  searchable after its inbox item is gone. Never edit them.
+- `reports/`: the reports of the workers you spawned, as Corgi captured
+  them from their transcripts when they stopped, one file each, named
+  `YYYYMMDD-HHMMSS-<request id>.md`. Agents the user started are not kept
+  here. Corgi writes these files and never removes them, so a worker's
+  report stays searchable after its inbox item is gone. Never edit them.
 - `notes/`: your own working notes and artifacts (a plan you are drafting,
   a comparison, a patch a worker left for you to keep), in files and
   folders you name. `--search` covers them. Keep what should shape future

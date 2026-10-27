@@ -58,7 +58,7 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
                           while one is under way, handovers/, notes/;
                           and by Corgi only (`src/inbox.rs`, under inbox.lock):
                           inbox.jsonl, inbox-reports/ for long reports, and
-                          reports/, every wake's report kept for good
+                          reports/, spawned workers' reports kept for good
 
 Agent session files (per refresh, only the records appended since are parsed)
   ├─ {$CLAUDE_CONFIG_DIR,~/.claude}/projects/<slug>/<session>.jsonl ── model, token usage, cache lifetime
@@ -635,13 +635,18 @@ role. So Corgi keeps its own record and puts the tokens back.
   saved, so the next refresh finds the same stop and adds it.
 - When an agent rests, its report, what `corgi report` printed then (the
   newest thing said in its transcript, else its screen), goes into the item:
-  inline up to 4 KB, else in `inbox-reports/<id>.md`. The same report is
-  also written, under the inbox lock, to its own new file in `reports/`,
-  `YYYYMMDD-HHMMSS-<request id or agent>.md` (a `-2`, `-3` … when a name of
-  that second is taken), headed by the agent, its state, the time, the
-  request id and the project. Compaction never touches `reports/`, so a
-  worker's report stays searchable after its item is dropped; the file is
-  private like the inbox's (0700 directory, 0600 files). A wake's line names
+  inline up to 4 KB, else in `inbox-reports/<id>.md`. For a worker the
+  supervisor spawned (its wake carries the `request` id) whose report comes
+  from its transcript, the same report is also written, under the inbox
+  lock, to its own new file in `reports/`, `YYYYMMDD-HHMMSS-<request id>.md`
+  (a `-2`, `-3` … when a name of that second is taken), headed by the agent,
+  its state, the time, the request id and the project. A screen, and any
+  report of an agent the user started, is never kept there: the user's own
+  sessions are not stored for good. Whether the report came from the
+  transcript is a field of the item in memory only (`said`), not written to
+  the inbox. Compaction never touches `reports/`, so a worker's report stays
+  searchable after its item is dropped; the files are private like the
+  inbox's (0700 directory, 0600 files). A wake's line names
   the agent, its state, and the command to run next. When it goes out for
   one of the supervisor's own workers with an inline report, and the prompt's
   reports stay within 12 KB, the line says the report follows instead,

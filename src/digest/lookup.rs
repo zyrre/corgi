@@ -18,8 +18,9 @@ pub const LEDGER_FILE: &str = "ledger.jsonl";
 /// Older ledger lines, moved out of [`LEDGER_FILE`] once a newer line of their
 /// id superseded them: read as coming before every line of the ledger.
 pub const LEDGER_ARCHIVE_FILE: &str = "ledger-archive.jsonl";
-/// Every worker's report as the dashboard captured it when the worker
-/// stopped, kept for good (see `inbox::append`).
+/// The reports of the workers the supervisor spawned, as the dashboard
+/// captured them from their transcripts when they stopped, kept for good
+/// (see `inbox::append`).
 pub const REPORTS_DIR: &str = "reports";
 /// The supervisor's own working notes and artifacts.
 pub const NOTES_DIR: &str = "notes";
