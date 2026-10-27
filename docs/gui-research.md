@@ -15,6 +15,8 @@ Evidence marks used below:
   are relative to that repository.
 - **[docs]**: Herdr's documentation as published in that repository
   (`docs/next/website/src/content/docs/`, served at herdr.dev/docs).
+- **[spike 2]**: a standalone endpoint generation 1 client run against a
+  second separate session (`endpointspike`, also stopped and deleted), §8.
 - **[web]**: third-party sources, linked; **[assumption]**: not verified.
 
 ## Summary
@@ -36,9 +38,10 @@ Evidence marks used below:
   on the Herdr host, locally or over `ssh`.
 - **First milestone:** `corgi serve` plus a GUI dashboard without embedded
   terminals. That is about 3.5–5 worker-weeks for one or two workers.
-- **First spike:** terminal input fidelity, i.e. Shift+Enter and modifier keys
-  into Claude Code through each of Herdr's two terminal paths. That is the risk
-  most likely to change the plan.
+- **Terminals in the GUI:** use endpoint generation 1, behind one adapter.
+  A spike showed it encodes Shift+Enter and other keys correctly for each pane's
+  keyboard mode; the documented bridge cannot (§8). The bridge's `observe` stays
+  the fallback, and the way to show read-only previews.
 
 ## 1. Scope options
 
@@ -52,7 +55,7 @@ Option (b) would duplicate Herdr UI. That app is growing its own
 orchestration crates too (`herdr-orchestrator`, `herdr-vcs`, `herdr-usage`,
 `herdr-github` in its workspace), so it will overlap Corgi from the other side.
 (c) gives the room asked for and keeps Corgi's identity. Start it as (a) and add
-terminals once the spike in §8 settles how.
+terminals through the endpoint path compared in §8.
 
 ## 2. What Herdr's backend exposes
 
@@ -75,11 +78,35 @@ schema version 1, 102 request methods **[spike]**.
 | Pane output, snapshots | `pane.read` / `agent.read`: `visible`, `recent`, `recent_unwrapped` or `detection`, as `text` or `ansi`. This is what Corgi polls today. | [docs], `src/herdr.rs` |
 | Pane output, streaming | Not on the JSON socket. `herdr terminal session observe <pane> --cols N --rows N` streams JSON lines `{"type":"terminal.frame","seq","width","height","full","bytes":<base64 ANSI>}` and finally `terminal.closed`. A pane printing about 50 coloured lines a second gave 91 frames in 4 s (one full, the rest diffs), 25 KB/s, frames ≤ 2.5 KB. **The frames are Herdr's re-rendered cell diffs** (cursor moves, SGR, synchronized output), not the program's own bytes, so any small VT parser can apply them. Many observers may watch one pane. | [spike], [docs] `cli-reference.mdx` "Direct terminal attach", [source] `src/client/terminal_sessions.rs:122-157`, `src/protocol/render_ansi.rs:1-27` |
 | Input | JSON: `pane.send_text`, `pane.send_keys`, `pane.send_input`, `agent.prompt` (bracketed-paste aware, optional wait). Bridge: `herdr terminal session control <pane>` reads `terminal.input` (text or base64 bytes), `terminal.resize`, `terminal.scroll` and `terminal.release` on stdin. Typed input echoed back in a frame within 1.3 ms locally. Control-mode bytes go **raw** to the PTY; only a complete bracketed paste is re-encoded for the pane's mode. | [spike], [source] `src/server/pane_input.rs:187-201` |
-| Resize | `pane.resize` moves splits. A `control` session's viewport **resizes the PTY**: `stty size` read `30 100`, then `20 90` after `terminal.resize`, while Herdr's layout still said 60×40. The size stayed after release (headless session, no TUI attached). An observer never resizes; it gets frames at its own requested size (50×10 here), not the pane's. With several UI clients on one tab, "the last one to focus, select, or interact with it controls that tab's pane sizes". | [spike], [docs] `concepts.mdx` "Client and server" |
+| Resize | `pane.resize` moves splits. A `control` session's viewport **resizes the PTY**: `stty size` read `30 100`, then `20 90` after `terminal.resize`, while Herdr's layout still said 60×40. The size stayed after release (headless session, no TUI attached). An observer never resizes; it gets frames at its own requested size (50×10 here), not the pane's. When a client-owned shell is attached, it reclaims the size once the `control` session ends **[spike 2]**. With several UI clients on one tab, "the last one to focus, select, or interact with it controls that tab's pane sizes". | [spike], [docs] `concepts.mdx` "Client and server" |
 | Create | `workspace.create`, `tab.create`, `pane.split`, `agent.start`, `worktree.create/list/open/remove`, `layout.apply`. Corgi already uses most of them. | [docs], `src/herdr.rs` |
 | Notifications | `notification.show` raises Herdr's toast. OS notifications would be the GUI's own job, driven by `pane.agent_status_changed`. | [docs] |
-| Attach like Herdr's client | Yes. Herdr's UI is a **client-owned shell** speaking "endpoint generation 1". Over `herdr-client.sock`, the client sends `ClientShellHello` (cell size, surface size, codecs) and receives a JSON snapshot (`shell.snapshot.v1`) and pane surface frames (`shell.surface.v1`: cells, patches, cursor, graphics). It sends **semantic** key, mouse and paste events (`shell.input.semantic.v1`), which the server encodes for each pane with its ghostty-vt encoder, kitty keyboard protocol included. Capabilities include `surface_interest` (stream only the selected machine's panes) and `health_check`. | [source] `src/protocol/endpoint.rs`, `src/protocol/wire.rs:470-625`, `:1081-1271`, `src/server/pane_input.rs:292-318`, `src/pane/terminal.rs:607` |
+| Attach like Herdr's client | Yes. Herdr's UI is a **client-owned shell** speaking "endpoint generation 1". Over `herdr-client.sock`, the client sends a JSON hello (`endpoint.hello.v1` in an `EndpointControl` frame; the older `ClientShellHello` is rejected) and receives a JSON welcome (38 navigation and topology methods, no read methods), a JSON snapshot (`shell.snapshot.v1`) and pane surface frames (`shell.surface.v1`: cells, patches, cursor, graphics). A standalone client was built in about 730 lines of Rust **[spike 2, §8]**. It sends **semantic** key, mouse and paste events (`shell.input.semantic.v1`), which the server encodes for each pane with its ghostty-vt encoder, kitty keyboard protocol included. Capabilities include `surface_interest` (stream only the selected machine's panes) and `health_check`. | [source] `src/protocol/endpoint.rs`, `src/protocol/wire.rs:470-625`, `:1081-1271`, `src/server/pane_input.rs:292-318`, `src/pane/terminal.rs:607` |
 | Stability | Endpoint generation 1 "must remain available indefinitely unless retired for a security reason"; new fields are optional and new enum values get an `Unknown` fallback. Client and server builds need not match. The numbered protocol (22) is private: same-install only, and it also covers raw `terminal attach`. JSON clients must ignore unknown fields and treat a missing method as a normal error. | [source] `src/protocol/endpoint.rs:1-9`, [docs] `socket-api.mdx` "Protocol stability" |
+
+**Which path Herdr recommends.** The docs point third parties at the JSON API
+and, for terminals, at the bridges: "For third-party bridges that only need
+rendered terminal bytes, use a read-only terminal session observer… For an
+interactive bridge, use a writable terminal session controller"
+(`persistence-remote.mdx`). Endpoint generation 1 is described only as what
+"the client-rendered Herdr UI uses". Outside clients such as Herdr UI use it
+without Herdr's endorsement. No maintainer statement either way was found in
+Herdr's Discussions **[web]**.
+
+**Corgi's current features against Herdr.** Corgi calls 31 distinct
+JSON-API methods. All of them stay available to a GUI unchanged, and none
+needs the endpoint protocol or the bridges.
+
+| Feature | Herdr calls | In a GUI |
+| --- | --- | --- |
+| Rows, cards, plan usage, transcript tail | `session.snapshot`, `agent.read`, `pane.process_info`, `workspace/worktree.list`; session files | Unchanged |
+| Prompt, inbox wakes, draft detection, first prompt | `agent.prompt`, `pane.send_input`, `agent.send_keys`, `agent.read` (styled) | Unchanged |
+| New agent, spawn, supervisor, handover | `workspace.create`, `worktree.create`, `tab.create`, `agent.start`, `*.report_metadata`, `workspace.rename` | Unchanged |
+| Merge, close, edit, recovery | Git; `workspace.close`, `worktree.remove/open`, `tab.create/close`, `notification.show`, `server.reload_config` | Unchanged |
+| Focus (`f`/Enter) | `agent/workspace/tab/pane.focus`, then Hyprland raises the terminal window (`src/app/navigate.rs`) | The JSON `pane.focus` moves **every** attached UI client, the GUI included if it is one (`client_views.rs:165`) **[spike 2]**. Use it to send Herdr's window to an agent; move only the GUI's own view through its endpoint connection. |
+| Running inside a Herdr pane | `HERDR_SOCKET_PATH`/`HERDR_PANE_ID` (`src/herdr.rs:58`, `src/app/mod.rs:231`), `pane.current`, `plugin.pane.open/focus`, the `corgi setup` key binding | **Replaced**: find sockets with `herdr session list`, no own pane to hide, no plugin popup. |
+| Colours | Terminal query on `/dev/tty`, answered by Herdr (`src/theme/resolve.rs:211`) | **Replaced** by the system and Omarchy readers (§4) |
+| *New:* a live terminal in the GUI | — | Endpoint or bridge (§8) |
 
 What is missing or awkward:
 
@@ -94,8 +121,7 @@ What is missing or awkward:
    bytes, and the frames do not tell the client which keyboard, mouse or paste
    modes the program has enabled. A client therefore cannot send the kitty
    keyboard protocol correctly; Shift+Enter in Claude Code is the obvious
-   casualty **[source; the user-visible effect is an assumption until §8's
-   spike]**. Mouse events on `control` were added after 0.9.0 (#4685) **[source:
+   casualty **[source; confirmed by spike 2, §8]**. Mouse events on `control` were added after 0.9.0 (#4685) **[source:
    git log]**.
 3. **One PTY, one size.** A GUI terminal and Herdr's TUI showing the same pane
    at different sizes will fight over it. The GUI should take control only
@@ -348,10 +374,10 @@ the full workspace view.
 
 | Phase | Content | Effort | Workers |
 | --- | --- | --- | --- |
-| 0. Spike | See §8. Settles the terminal path and confirms egui on Hyprland and macOS. | 3–5 days | 1 |
+| 0. Spike | The rest of §8: egui cell painter over the endpoint, over SSH; system theme on Hyprland and macOS. | 3–5 days | 1 |
 | 1. Core + `corgi serve` | Cargo workspace with `corgi-core`. Move `waker`, `markers`, `rows`, `draft`, `first_prompt`, `sweep`, `RefreshState` and the free launch, merge and close functions out of `src/app/`. Invert the recovery back-references. Split the palette from ratatui roles. Add `corgi serve` (structured snapshot, deltas and commands) with snapshot tests. The TUI behaves exactly as before. | 1.5–2 weeks | 1 |
 | 2. **First milestone: GUI dashboard** | egui app that spawns `corgi serve` locally or `ssh host corgi serve`:<br>• project cards and agent rows, plan usage header, expanded transcript tail<br>• prompt; new agent (preset defaults, inline lists); start or focus supervisor<br>• merge with confirmation and outcome; close; focus in Herdr<br>• answer numbered questions<br>• system light/dark; reconnect with dimmed cached state<br>• Linux tarball and pacman package, unsigned macOS build. | 2–3 weeks | 1–2 |
-| 3. Terminals on demand | One terminal pane beside the selected card, through the path chosen in phase 0. Take control while focused and release afterwards. Read-only previews for the rest. | 2–4 weeks | 1–2 |
+| 3. Terminals on demand | One terminal pane beside the selected card, through the endpoint adapter (§8), with `observe` for previews. Take control while focused and release afterwards. Read-only previews for the rest. | 2–4 weeks | 1–2 |
 | 4. Corgi-only views | Decisions, ledger and brief browser (`corgi digest`), worker reports, inbox, diff review before merge, OS notifications from agent status, several hosts in one window. Optional `corgi daemon` unit. Signed and notarized macOS builds, Homebrew cask, AUR. | Ongoing, 1–2 weeks per feature | 1 |
 
 Phases 1 and 2 together are the first useful milestone: about 3.5–5
@@ -360,8 +386,8 @@ Omarchy widget clean data and makes the optional daemon a small step.
 
 **Main risks:**
 
-- **Terminal input fidelity** on the bridge path (§2, item 2). This is the
-  first spike.
+- **Terminal input fidelity.** The bridge path cannot encode keys for the
+  pane's mode (§8), so terminals depend on the endpoint adapter.
 - **Endpoint protocol coupling.** It is stable by promise but specified only
   in Rust types, and upstream is closed to PRs. Keep it behind one adapter and
   pin a tested Herdr version range.
@@ -372,38 +398,59 @@ Omarchy widget clean data and makes the optional daemon a small step.
 - **Signing and notarization** need an Apple Developer account (about $99 a
   year) before wide macOS distribution.
 
-## 8. What to prototype first
+## 8. Terminal paths compared, for Corgi
 
-The biggest risk is the one that decides phase 3's design and whether (c) is
-worth it. Can a GUI-embedded terminal drive Claude Code and Codex as well as
-Herdr's TUI does?
+A second spike built a standalone endpoint client (about 730 lines of Rust,
+under the session scratchpad, not in the repository) against a separate
+Herdr 0.9.0 session. It drove a key-logging program in a pane through both
+paths. All rows are **[spike 2]** unless marked otherwise.
 
-Spike, outside the repository, against a separate `herdr --session`:
+What Corgi needs from a GUI terminal:
+- one agent's terminal beside its card, with keys that work in Claude Code and
+  Codex;
+- the same remotely, over SSH;
+- no disturbance to your Herdr window;
+- low upkeep across Herdr upgrades.
 
-1. An eframe window with a cell-grid widget fed by
-   `herdr terminal session control <pane>`: frames into `vt100` or
-   alacritty_terminal, keys encoded by the GUI. Run Claude Code in the pane
-   and test the following:
-   - Shift+Enter, Alt and Ctrl combinations, Esc, paste of a long prompt;
-   - IME and dead keys on macOS and Hyprland;
-   - resize, scroll and selection.
-   Repeat through `ssh host herdr terminal session control …` and time the
-   keystroke echo.
-2. The same widget fed by endpoint generation 1, reusing Herdr UI's
-   `herdr-protocol` crate (git dependency, Apache-2.0). Hello, one pane's
-   surface frames, semantic key input. Compare input fidelity and how much
-   code it takes.
-3. Read the system scheme live: the portal `SettingChanged` signal on
-   Hyprland, the effective appearance on macOS.
+| | Bridge: `herdr terminal session observe` / `control` | Endpoint generation 1 |
+| --- | --- | --- |
+| Herdr's stance | Documented for third-party bridges, since 0.7.2 | Herdr's own UI; no stated support for outside clients |
+| Shift+Enter in a kitty-keyboard app | **Wrong**: the GUI must guess bytes. `\r` arrives as a plain Enter, and `\e[13;2u` reaches a legacy app untranslated. The frames don't say which mode the app chose. | **Right**: `\e[13;2u` (kitty) or `\e[27;2;13~` (legacy). Herdr encodes each key for the pane's mode, so keys behave exactly as in Herdr's TUI ([source] `pane_input.rs:314`). |
+| Paste | Bracketed only if the GUI sends a complete bracketed paste | Wrapped when the app enabled bracketed paste |
+| What it shows | One pane, at the size requested | The whole active tab of the client's own location, laid out at the client's size. One pane means cropping its rect, or a tab holding only that pane, as Corgi's agent tabs normally do. Zoom is tab-global, so other clients see it too. |
+| Data per busy pane | ANSI diffs, 25 KB/s | Cell patches, 79 KB/s at 29 frames/s. 0.9.0 has no scroll operation; 0.9.5 adds opt-in scroll and delta encodings. Bursts collapse to the latest frame. |
+| Echo, local | 1.3 ms | 0.3 ms (p50) |
+| GUI side | Small ANSI applier (`vt100` / alacritty_terminal) plus our own key encoder | Paint cells; no emulator, no key encoder |
+| Your Herdr window | `control` resizes the PTY while held; `observe` never resizes | The client that last interacted with a tab sets its size. Your TUI shows the GUI's size, cropped or padded, until you type there. Inherent to one PTY per pane. |
+| Navigation | n/a (targets a pane) | Per client through its own connection; the JSON `pane.focus` moves all clients |
+| Remote | `ssh host herdr terminal session control <pane>`: plain stdio, one channel per pane | Needs a byte pipe to the remote `herdr-client.sock`. Options are `ssh -L` socket forwarding, or a relay command such as a `corgi` subcommand. Health check and reconnection are built into the protocol. **[assumption: not tried over SSH]** |
+| Upgrade risk | The `herdr` CLI must speak the **exact** private protocol of the running server (`check_client_version`, `wire.rs:1749`). Fine on one host, but it breaks between `herdr update` and a server restart whenever 22 is bumped. | Message order is "frozen for endpoint generation 1" ([source] `wire.rs:467`, `:1326`). JSON parts tolerate new fields. Surface structs are positional bincode, so Herdr adds new encodings only behind hello flags, as 0.9.5 did. No written spec; upstream is closed to PRs. |
+| Code to own | About 200 lines (process, JSON, key encoder) **[assumption]** | About 730 lines of mirrored types and client (spike), or Herdr UI's `herdr-protocol` crate as a git dependency |
 
-Outcome:
+**For Corgi's use, the endpoint wins.** The deciding row is keys: an agent
+terminal where Shift+Enter or Ctrl+J does the wrong thing is worse than none.
+The endpoint makes the GUI behave exactly like Herdr's own window, and that is
+also the surest compatibility promise Herdr makes. Its costs are manageable:
+- **Unofficial use:** keep it behind one adapter, test against each Herdr
+  release, and pin a known-good range.
+- **Tab-shaped surfaces:** fine, because Corgi's agents normally have a tab
+  each (ARCHITECTURE.md:313-314).
+- **SSH plumbing:** one relay to build.
 
-- **If (1) passes**, use the documented bridge.
-- **If only (2) passes**, use the endpoint behind an adapter, and consider
-  asking upstream in a Discussion for semantic input on
-  `terminal session control`.
-- **If neither is good enough**, stay with option (a) and hand terminals to
-  Herdr's TUI or Herdr UI.
+Use the bridge's `observe` for read-only previews of other agents, since it is
+documented, cheap and never resizes, and as the fallback if an upgrade breaks
+the endpoint adapter. Keys then degrade to legacy encoding until the adapter is
+fixed.
+
+Worth asking upstream, as a Discussion: semantic input on
+`terminal session control`. With that, the documented path would be enough.
+
+**Still to prototype (phase 0):**
+1. The endpoint adapter over SSH, through `ssh -L` or a relay, with reconnect.
+2. An egui cell painter for the surface frames.
+3. A real Claude Code and Codex session: Shift+Enter, IME and dead keys on
+   macOS and Hyprland, scrolling.
+4. The system scheme read live on both platforms.
 
 ## Open questions
 
