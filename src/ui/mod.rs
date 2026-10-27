@@ -21,6 +21,7 @@ mod effects;
 mod header;
 mod new_agent;
 mod prompt;
+mod sessions;
 mod status;
 
 use agents::draw_agents;
@@ -94,14 +95,17 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "j/k select · →/← expand/collapse project · space session · p prompt · n new agent · t scratch · s supervisor · e edit · m merge · enter/f focus · x close agent · r refresh · q close"
         }
     };
-    let line = Line::from(vec![
-        Span::styled(
+    let lines = vec![
+        Line::styled(
             format!(" {} ", app.status),
             Style::default().fg(roles().accent),
         ),
-        Span::styled(format!("  {keys}"), Style::default().fg(roles().muted)),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+        Line::styled(
+            format!(" S sessions · {keys}"),
+            Style::default().fg(roles().muted),
+        ),
+    ];
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// Where a popup drew itself: its frame, the frame's color, and the caret
@@ -168,6 +172,7 @@ fn draw_popup(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Placed
         Overlay::Close(form) => draw_close_workspace(frame, area, form),
         Overlay::Merge(form) => draw_merge_worktree(frame, area, form, spinner),
         Overlay::Notice(message) => draw_notice(frame, area, message),
+        Overlay::Sessions(form) => sessions::draw(frame, area, form),
     };
     let color = effects::frame_color(drawn.color, motion.outcome_effect().or(success));
     let fade = motion.content_fade();

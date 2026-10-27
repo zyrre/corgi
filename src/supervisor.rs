@@ -283,11 +283,9 @@ fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Resul
     })
 }
 
-/// Where [`compact_ledger`] moves superseded ledger lines.
-pub const LEDGER_ARCHIVE: &str = "ledger-archive.jsonl";
-
 /// Rewrites `ledger.jsonl` in `state_dir` without the lines a later line of
-/// the same id supersedes, appending those to [`LEDGER_ARCHIVE`] (see
+/// the same id supersedes, appending those to
+/// [`LEDGER_ARCHIVE_FILE`](crate::digest::lookup::LEDGER_ARCHIVE_FILE) (see
 /// [`crate::digest::compact_ledger`]). The archive is written first and each file
 /// replaced whole, through a temporary file, so no line is lost when it stops
 /// halfway; at worst the archive gets some lines twice. Nothing is written
@@ -298,7 +296,7 @@ fn compact_ledger(state_dir: &Path) -> Result<()> {
     let Some((kept, superseded)) = crate::digest::compact_ledger(&text) else {
         return Ok(());
     };
-    let archive = state_dir.join(LEDGER_ARCHIVE);
+    let archive = state_dir.join(crate::digest::lookup::LEDGER_ARCHIVE_FILE);
     let mut archived = match fs::read_to_string(&archive) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -1342,13 +1340,20 @@ mod tests {
         )
         .unwrap();
         // An archive from before, its last line without a newline.
-        fs::write(dir.join(LEDGER_ARCHIVE), "{\"id\":\"z\"}").unwrap();
+        fs::write(
+            dir.join(crate::digest::lookup::LEDGER_ARCHIVE_FILE),
+            "{\"id\":\"z\"}",
+        )
+        .unwrap();
 
         let prepared = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
         assert_eq!(prepared.warning, None);
         let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap();
         assert_eq!(read("ledger.jsonl"), format!("{b1}\n{bad}\n{a2}\n"));
-        assert_eq!(read(LEDGER_ARCHIVE), format!("{{\"id\":\"z\"}}\n{a1}\n"));
+        assert_eq!(
+            read(crate::digest::lookup::LEDGER_ARCHIVE_FILE),
+            format!("{{\"id\":\"z\"}}\n{a1}\n")
+        );
         assert!(!dir.join("ledger.jsonl.tmp").exists());
         assert!(!dir.join("ledger-archive.jsonl.tmp").exists());
 

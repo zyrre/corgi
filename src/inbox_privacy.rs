@@ -84,11 +84,17 @@ fn repair_file(path: &Path) -> Result<()> {
 }
 
 pub(crate) fn reports_dir(dir: &Path) -> Result<PathBuf> {
-    let path = dir.join(crate::inbox::REPORTS_DIR);
+    private_dir(dir, crate::inbox::REPORTS_DIR)
+}
+
+/// The private directory `name` in the state directory `dir`, made 0700 if
+/// it is not there; like the reports directory, it must not be an alias.
+pub(crate) fn private_dir(dir: &Path, name: &str) -> Result<PathBuf> {
+    let path = dir.join(name);
     match DirBuilder::new().mode(0o700).create(&path) {
         Ok(()) => (),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
-        Err(e) => return Err(e).context("create private reports directory"),
+        Err(e) => return Err(e).with_context(|| format!("create private directory {name}")),
     }
     directory(&path)?;
     Ok(path)

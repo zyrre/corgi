@@ -6,6 +6,7 @@
 
 use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
 
+pub mod lookup;
 pub mod search;
 
 /// Full decision entries, newest first, are shown up to this many bytes...
@@ -183,6 +184,18 @@ pub fn matching_decisions<'a>(decisions: &[Decision<'a>], words: &str) -> Vec<&'
             let heading = decision.heading.to_lowercase();
             words.iter().all(|word| heading.contains(word.as_str()))
         })
+        .map(|decision| decision.text)
+        .collect()
+}
+
+/// The entries, superseded or not, whose text has every word of `words` as
+/// the start of one of its words, as `--search` matches, newest first: for
+/// `--decision` when no heading has the words.
+pub fn decisions_containing<'a>(decisions: &[Decision<'a>], words: &str) -> Vec<&'a str> {
+    decisions
+        .iter()
+        .rev()
+        .filter(|decision| search::has_every_word(decision.text, words))
         .map(|decision| decision.text)
         .collect()
 }
@@ -508,8 +521,8 @@ pub fn render(input: &DigestInput) -> String {
     let _ = writeln!(out, "Read any decision in full: {}", input.decision_command);
     let _ = writeln!(
         out,
-        "Search all of your memory (decisions, ledger, briefs, archived handovers) before \
-         you say something is unknown or never happened: {}",
+        "Search all of your memory (decisions, ledger, briefs, reports, notes, handover notes) \
+         before you say something is unknown or never happened: {}",
         input.search_command
     );
     for warning in &view.warnings {
@@ -798,6 +811,11 @@ not json
         assert!(found[0].contains("Decision: tabs"));
         assert_eq!(matching_decisions(&decisions, "use").len(), 2);
         assert!(matching_decisions(&decisions, "use rust").is_empty());
+        // In the text, words match as --search matches them.
+        let found = decisions_containing(&decisions, "SUPERSEDES indent");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].starts_with("## 2026-09-03: Use spaces"));
+        assert!(decisions_containing(&decisions, "dentation").is_empty());
     }
 
     #[test]

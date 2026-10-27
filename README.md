@@ -35,7 +35,7 @@ Each project can have one supervisor: a long-lived Claude Code or Codex session 
 - **Woken by its workers**: when a worker stops, the dashboard puts a `[Corgi]` line in the supervisor's inbox, with the worker's report quoted when it is short, and types it in once the supervisor is between turns. Wakes survive the dashboard closing; `corgi inbox` shows what has not been typed in yet, and scripts add lines with `corgi notify`.
 - **Questions you can answer at a glance**: anything that needs your judgement comes as a numbered question with options and a recommendation (`Q3: B` answers it), and a worker with an open question is not tagged for merge.
 - **MERGE when it is ready**: once a worker's report meets its brief and its branch merges cleanly, the supervisor runs `corgi tag NAME merge` and the dashboard shows it with a magenta `MERGE` badge instead of `DONE`. Your `m` merge tells the supervisor, which records it and re-checks its other tagged workers against the moved base branch; a conflicted merge is handed to it from the merge popup.
-- **Memory that outlives its context**: a decision log, a ledger of every worker, and every brief, kept outside the repository. `corgi digest` gives it a bounded summary at the start of each session, and `--search` and `--decision` find older history.
+- **Memory that outlives its context**: a decision log, a ledger of every worker, and every brief, kept outside the repository. `corgi digest` gives it a bounded summary at the start of each session; `--search` finds older history, including the report of every worker it spawned, and `--show`, `--ledger` and `--brief` print what it finds in full.
 - **Handover to a fresh session**: when its context passes 50%, or it has idled nearly until its prompt cache expires, the dashboard has it write a handover note and starts a fresh supervisor that picks up from it.
 - **Lessons kept in the repo**: what a worker learned the hard way goes into `AGENTS.md` or `ARCHITECTURE.md` as a commit on that worker's branch, so the next worker knows it.
 - **Cost-aware**: `corgi fleet` lists its agents with their context use and prompt cache, warm with the minutes left or cold with the tokens a follow-up would re-read, so it can start a fresh worker instead.
@@ -67,6 +67,7 @@ flowchart TD
 | `n` | Start a new agent in its own worktree |
 | `t` | Start a scratch session in your home directory |
 | `s` | Start or focus the supervisor of the selected agent's project |
+| `S` | Save sessions, restore saved conversations, or continue held coordination |
 | `m` | Merge and push an agent's worktree branch (asks first) |
 | `f` or `Enter` | Focus the selected agent's pane |
 | `e` | Open the selected agent's checkout in your editor, in a new tab of its workspace |
@@ -110,6 +111,31 @@ In an expanded card, a project without a supervisor, and the scratch sessions, e
 
 `n` opens the new-agent form with everything but the task preset: the selected agent's project, the default harness with its own model and effort, and a fresh worktree. Type the task and press `Enter`; `←` / `→` change a setting in place, and `Space` or typing opens its list. In a project with no agents yet, the first one is its supervisor. Each worker gets its own Git worktree on a fresh `worktree/<name>` branch; switch the Checkout row to work in the project directory as it is instead.
 
+### Save and restore sessions
+
+Press `S` before reboot to save supervisors, workers and scratch sessions. Save
+records private recovery references while agents keep running; it lists missing
+IDs, unsupported harnesses and interrupted work. Prepare **Manual recovery
+setup** once before reboot: its explicit confirmation disables Herdr's automatic
+agent resume while retaining layout restoration. Save reports when this setup
+is still needed.
+
+![Sessions menu with Save, Restore, manual setup and held coordination actions](docs/images/session-recovery.svg)
+
+After reboot, choose **Restore sessions**, browse a dated snapshot and select
+Codex or Claude Code conversations individually. Nothing is selected initially;
+launching requires a separate confirmation with Cancel focused. Corgi resumes
+inside the original Herdr-restored terminals, reuses matching running agents,
+and offers a new placement only when the original is missing or occupied and
+you explicitly select it. It sends no task. Restored supervisor coordination
+stays held until you choose **Continue held coordination**.
+
+Recovery needs the existing native conversation stores, repositories/worktrees
+and supervisor memory. It preserves recoverable setup, not running tools,
+unsent input or shell processes. Unknown settings and incomplete sessions stay
+visible. See the [recovery contract and verification](docs/session-recovery-design.md)
+for limits, retry behavior and the Claude documentation/fixture verification.
+
 ### Merging
 
 `m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout, and offers to close the worktree. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
@@ -143,7 +169,7 @@ description = "Corgi (open or focus)"
 
 ## Data and privacy
 
-Corgi talks only to the Herdr socket and sends no telemetry. It keeps no terminal output or prompt history; what it stores, in `~/.local/state/corgi` (or `$XDG_STATE_HOME/corgi`), is its own bookkeeping and each supervisor's memory and inbox, which holds the reports of workers that stopped. The only network use is the plan usage: `codex app-server` for Codex, and Claude Code's stored login sent to `api.anthropic.com` for Claude. Corgi reads that login from `.credentials.json` in Claude Code's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), or on macOS from the Keychain, which may ask you to allow it the first time. That Claude reading is unofficial and read-only, and may break if Anthropic changes the endpoint.
+Corgi talks only to the Herdr socket and sends no telemetry. It keeps no terminal output or prompt history; what it stores, in `~/.local/state/corgi` (or `$XDG_STATE_HOME/corgi`), is its own bookkeeping, private session recovery metadata and each supervisor's memory and inbox, which holds the reports of workers that stopped. The only network use is the plan usage: `codex app-server` for Codex, and Claude Code's stored login sent to `api.anthropic.com` for Claude. Corgi reads that login from `.credentials.json` in Claude Code's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), or on macOS from the Keychain, which may ask you to allow it the first time. That Claude reading is unofficial and read-only, and may break if Anthropic changes the endpoint.
 
 ## More
 

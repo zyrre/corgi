@@ -117,6 +117,7 @@ fn shots() -> Vec<Shot> {
             shot("dashboard", hero()),
             shot("row-anatomy", row_anatomy()),
             shot("expanded-session", expanded_session()),
+            shot("session-recovery", session_recovery()),
             shot(
                 "new-agent-form",
                 popup(&mut new_agent_form(), "◆ New agent"),
@@ -760,6 +761,13 @@ fn expanded() -> App {
         )),
     ]);
     app
+}
+
+/// The Sessions menu over the same made-up dashboard.
+fn session_recovery() -> String {
+    let mut app = dashboard();
+    app.overlay = Overlay::Sessions(crate::app::recovery::Sessions::default());
+    popup(&mut app, "◆ Sessions")
 }
 
 /// The new-agent form opened with `n` on the webshop supervisor, the task typed
