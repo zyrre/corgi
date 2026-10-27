@@ -83,10 +83,11 @@ mod markers;
 mod progress;
 mod project_main;
 mod refresh;
+mod sweep;
 mod waker;
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
 use progress::JobReport;
-use refresh::{QUIT_WAIT, RefreshState, Refreshed, refresh_log_path};
+use refresh::{QUIT_WAIT, RefreshLog, RefreshState, Refreshed};
 use waker::{Inboxes, SupervisorWaker};
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(850);
@@ -174,9 +175,9 @@ pub(crate) struct App {
     /// a refresh has it in the background, or after one panicked with it.
     refresh_state: Option<RefreshState>,
     refresh_job: Job<Refreshed>,
-    /// Where the snapshot refreshes log how long they took; only the
+    /// Where the snapshot refreshes log those worth reading; only the
     /// interactive dashboard logs them.
-    refresh_log: Option<std::path::PathBuf>,
+    refresh_log: Option<RefreshLog>,
     /// Where the snapshot refreshes look for a notice from `corgi setup`;
     /// only the full dashboard, not the compact Omarchy popup, takes them.
     notice_path: Option<std::path::PathBuf>,
@@ -632,8 +633,11 @@ pub fn run() -> Result<()> {
     let compact = env::args().any(|arg| arg == "--compact");
     let client = HerdrClient::from_env().context("Corgi must run inside a Herdr plugin pane")?;
     let mut app = App::new(client, compact);
+    if let Some(state) = crate::paths::corgi_state_dir() {
+        sweep::sweep(&state, app.client.socket_path());
+    }
     app.wake_with(SupervisorWaker::default());
-    app.refresh_log = refresh_log_path();
+    app.refresh_log = RefreshLog::from_env();
     if !compact {
         app.notice_path = notice::notice_path();
     }

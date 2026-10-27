@@ -30,13 +30,16 @@ Herdr session
 
 Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ projects ─────────── one absolute path per line, newest first; read at start,
-  │                        written when a project is used or seen open
+  │                        written when a project is used or seen open; never
+  │                        a path inside this directory, and a directory gone is
+  │                        dropped when it is written
   ├─ created-projects ─── the projects Corgi created, whose folder trust it answers
   ├─ expanded-projects ── the projects whose dashboard card is expanded, one
   │                        heading per line; missing or unreadable is all collapsed
   ├─ selection/<socket>.<pid> ─ the pane ID of the agent selected in the
   │                        dashboard running as process <pid>, empty for none, for
-  │                        `corgi edit`; replaced through a rename, removed on quit
+  │                        `corgi edit`; replaced through a rename, removed on quit,
+  │                        and by the next dashboard to start once <pid> is gone
   ├─ wake/<socket>.lock ─ held by the one dashboard that wakes supervisors
   ├─ wake/<socket>.seen.json ─ what that dashboard last saw of each agent it
   │                        follows (pane, run of state changes, transitions), for the next one;
@@ -48,10 +51,16 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ markers/<socket>.spawn-<hash>.lock ─ held by the `corgi spawn --request-id`
   │                        of one project, from its duplicate check until its
   │                        worker has started
+  │   A dashboard that starts removes the wake/ and markers/ files, but not
+  │   the spawn locks, of a Herdr session whose socket is gone, once they
+  │   have gone untouched for a week (`src/app/sweep.rs`).
   ├─ usage/<provider>.json ─ the last plan-usage reading every process shares,
   │                        when it was fetched, and the last fetch's error;
   │                        replaced whole through a temporary file and a rename
   ├─ usage/<provider>.lock ─ held by the one process fetching a new reading
+  ├─ refresh.log ──────── the interactive dashboard's slow refreshes, errors and
+  │                        changes in the number of agents (every refresh with
+  │                        CORGI_REFRESH_LOG=all); refresh.log.old past 256 KB
   └─ supervisors/<project>/ ─ the supervisor's files, written by Corgi at launch
                           and by the supervisor: ROLE.md, launch.json,
                           decisions.md, ledger.jsonl, briefs/, handover.md
@@ -238,10 +247,15 @@ submodules are split by flow, each adding methods to the one `App`.
   state with it; the next starts from a new one, a waker that takes the lock
   and the record up again included. Quitting waits up to two seconds for a
   refresh in flight, so a wake being typed is not cut off. The thread lives
-  in the dashboard's process and never outlives it. Each refresh appends
-  how long it took, in all and per step (Herdr's snapshot, marks and
-  relabelling, rows, wakes), to `refresh.log` in Corgi's state directory,
-  which is moved to `refresh.log.old` past 256 KB. The command-line tools
+  in the dashboard's process and never outlives it. A refresh worth
+  reading appends how long it took, in all and per step (Herdr's snapshot,
+  marks and relabelling, rows, wakes), and what it found to `refresh.log` in
+  Corgi's state directory, which is moved to `refresh.log.old` past 256 KB:
+  one that took 50 ms or more (`SLOW_REFRESH`), and one that found
+  something else than the refresh before, another number of agents, Herdr
+  gone or back, or another error; a panicked refresh is logged too. A
+  refresh usually takes a few milliseconds, so the log holds days.
+  `CORGI_REFRESH_LOG=all` logs every refresh, for debugging. The command-line tools
   and the Omarchy reader run the same refresh in place. The expanded
   transcript a key opens or moves to is read on the UI thread with a reader
   of its own, as before; the refresh rereads it with its own.
@@ -389,6 +403,14 @@ submodules are split by flow, each adding methods to the one `App`.
   two full dashboards never both show it, and one older than five minutes is
   removed unread. The UI thread shows it as `Overlay::Notice`, once no other
   popup is open, a success whose check stamp plays once it has opened.
+- `sweep.rs` sweeps the state directory as the dashboard starts: the
+  selection files of dashboards no longer running (`kill(pid, 0)`), and the
+  `markers/` and `wake/` files of Herdr sessions whose socket is gone. A
+  socket's file name cannot be turned back into its path, since every
+  character but a letter or digit is spelled `_`, so the sweep walks the
+  directories from `/` down to every entry that matches the spelling; a
+  file goes only when none matches, it is not the dashboard's own session's,
+  and it has gone untouched for a week.
 - `edit.rs` is the dashboard's `e` key and `corgi edit`, which the plugin's
   `edit` action runs (as `./target/release/corgi edit`, with the
   `HERDR_SOCKET_PATH` Herdr gives every action). Both end in `open_checkout`:
@@ -579,7 +601,11 @@ role. So Corgi keeps its own record and puts the tokens back.
   undelivered, and an id is added only once. Readers take no lock and skip
   a last line still being written; a writer that finds the last line cut
   short (a killed writer, a full disk) ends it with a newline before its
-  own. The dashboard reads each supervisor's inbox at each refresh. Past 256 KB,
+  own. The dashboard reads each supervisor's inbox at each refresh in which
+  its file changed: every write appends to it or replaces it by a rename, so
+  the waker keeps the inbox it parsed with the file's device, inode,
+  length, and modification and change times, and reads it again only when
+  one of them differs (`InboxCache`). Past 256 KB,
   a write rewrites the file with every undelivered item and the newest 100
   delivered ones, and removes the dropped items' report files. The
   dashboard adds wakes, the merge-conflict handoff and the merge line in
@@ -595,7 +621,8 @@ role. So Corgi keeps its own record and puts the tokens back.
   remove further owner permissions. Repairs only remove bits (directory mode
   AND 0700, file mode AND 0600), never grant missing owner access; an access
   failure stops writes. Existing HOME/XDG/shared parents are not chmodded.
-  Every inbox read (including dashboard polling and CLI reads), append,
+  Every inbox read (including the dashboard's, when the file changed, and
+  CLI reads), append,
   delivery write and saved-report read checks the state directory, reports
   directory, inbox, lock and interrupted compaction file. All old report files,
   including orphans, are swept on first access in a process and again when the
@@ -1087,7 +1114,9 @@ when other projects match); a full path, `~` included, puts it elsewhere, and
 with no known project it goes in the home directory. Its Checkout row is
 hidden, since there is nothing to branch from yet. Corgi remembers a project
 when it starts an agent there or sees it open in Herdr. The `projects` file
-can be edited or deleted freely; missing directories are skipped. To make a
+can be edited or deleted freely; missing directories are skipped, and
+dropped the next time it is written. Directories inside Corgi's state
+directory, such as a supervisor's, are never projects and never kept in it. To make a
 repository known without running anything in it, open a workspace for it:
 `herdr workspace create --cwd ~/repos/webshop --no-focus`.
 

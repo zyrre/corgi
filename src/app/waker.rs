@@ -69,6 +69,8 @@ pub(super) struct SupervisorWaker {
     /// recording them is retried; dropped once the inbox shows them
     /// delivered.
     unrecorded: HashMap<PathBuf, HashSet<String>>,
+    /// The inboxes as last read, by state directory.
+    read: InboxCache,
     /// Each project's supervisor handover, by project root.
     handovers: HashMap<String, supervisor::Handover>,
     /// Replacements running in the background, by project root, each ending
@@ -123,6 +125,70 @@ impl Inboxes {
             .into_iter()
             .map(|item| inbox::prompt_text(&[item]))
             .collect()
+    }
+}
+
+/// The inboxes as last read, by state directory, each with the stamp its
+/// file had then, so that an inbox nothing wrote to since is not read and
+/// parsed again at every refresh. Every write to an inbox appends to it or
+/// replaces it by a rename (compaction), whoever writes, so a file of the
+/// same device, inode, length, modification and change time holds what it
+/// held; the stamp is taken before the read, so a write during it only
+/// makes the next refresh read again.
+#[derive(Debug, Default)]
+struct InboxCache {
+    /// Each inbox with its file's stamp, `None` when that could not be
+    /// taken.
+    inboxes: HashMap<PathBuf, (Option<Option<InboxStamp>>, Inbox)>,
+    /// How many times an inbox was read from disk.
+    #[cfg(test)]
+    reads: usize,
+}
+
+/// What [`InboxCache`] compares of an inbox file: its device, inode,
+/// length, and modification and change times, or `None` when it does not
+/// exist.
+type InboxStamp = (u64, u64, u64, i64, i64, i64, i64);
+
+impl InboxCache {
+    /// The inbox in the state directory `dir`, as [`Inbox::read`] reads
+    /// it, read again only when its file changed since the last time.
+    fn read(&mut self, dir: &Path) -> &Inbox {
+        use std::os::unix::fs::MetadataExt;
+        let stamp = match fs::symlink_metadata(dir.join(inbox::INBOX_FILE)) {
+            Ok(meta) => Some(Some((
+                meta.dev(),
+                meta.ino(),
+                meta.len(),
+                meta.mtime(),
+                meta.mtime_nsec(),
+                meta.ctime(),
+                meta.ctime_nsec(),
+            ))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(None),
+            // Not known to be unchanged, so it is read every time.
+            Err(_) => None,
+        };
+        let unchanged = stamp.is_some()
+            && self
+                .inboxes
+                .get(dir)
+                .is_some_and(|(seen, _)| *seen == stamp);
+        if !unchanged {
+            #[cfg(test)]
+            {
+                self.reads += 1;
+            }
+            self.inboxes
+                .insert(dir.to_path_buf(), (stamp, Inbox::read(dir)));
+        }
+        &self.inboxes[dir].1
+    }
+
+    /// Forgets the inboxes not in `dirs`, those of projects without a
+    /// running supervisor.
+    fn retain(&mut self, dirs: &HashSet<PathBuf>) {
+        self.inboxes.retain(|dir, _| dirs.contains(dir));
     }
 }
 
@@ -532,6 +598,7 @@ impl SupervisorWaker {
     ) -> Option<String> {
         let mut error = None;
         let mut roots = HashSet::new();
+        let mut dirs = HashSet::new();
         for agent in agents
             .iter()
             .filter(|agent| agent.supervisor && !agent.scratch)
@@ -546,7 +613,8 @@ impl SupervisorWaker {
             let Some(dir) = self.inbox_dir(root) else {
                 continue;
             };
-            let inbox = Inbox::read(&dir);
+            dirs.insert(dir.clone());
+            let inbox = self.read.read(&dir);
             let undelivered = inbox.undelivered_for(root);
             let unrecorded = self.unrecorded.entry(dir.clone()).or_default();
             unrecorded.retain(|id| undelivered.iter().any(|item| item.id == *id));
@@ -573,6 +641,7 @@ impl SupervisorWaker {
                 ));
             }
         }
+        self.read.retain(&dirs);
         error
     }
 
@@ -1326,6 +1395,61 @@ mod tests {
         assert_eq!(
             inbox.newest_report("w-radar").unwrap().report_text(&dir),
             Some(long)
+        );
+    }
+
+    #[test]
+    fn an_unchanged_inbox_is_not_read_again_and_any_write_to_it_is_picked_up() {
+        use AgentState::{Idle, Working};
+        let scratch = ScratchDir::new("waker-inbox-cache");
+        let dir = scratch.join("weather");
+        let note = |text: &str| Item {
+            project: "/repos/weather".into(),
+            source: "notify".into(),
+            kind: Kind::Note,
+            text: text.into(),
+            ..Item::default()
+        };
+        let mut waker = SupervisorWaker::in_dir(&scratch);
+        let refresh = |waker: &mut SupervisorWaker, state| {
+            let sent = wake_refresh(waker, &[weather_supervisor(state)], None, false);
+            (sent, waker.read.reads)
+        };
+        // No inbox yet; then one that only waits while its supervisor works.
+        assert_eq!(refresh(&mut waker, Working), (vec![], 1));
+        assert_eq!(refresh(&mut waker, Working), (vec![], 1));
+        let first = inbox::append(&dir, note("[Corgi] first")).unwrap().unwrap();
+        assert_eq!(refresh(&mut waker, Working), (vec![], 2));
+        assert_eq!(refresh(&mut waker, Working), (vec![], 2));
+
+        // Another process takes it (`corgi inbox --take`): nothing goes out.
+        inbox::mark_delivered(&dir, std::slice::from_ref(&first.id), "corgi inbox --take").unwrap();
+        assert_eq!(refresh(&mut waker, Idle), (vec![], 3));
+
+        // An append goes out, and recording it is read back once.
+        inbox::append(&dir, note("[Corgi] second")).unwrap();
+        assert_eq!(
+            refresh(&mut waker, Idle),
+            (vec!["supervisor-weather: [Corgi] second".to_string()], 4)
+        );
+        assert_eq!(refresh(&mut waker, Idle), (vec![], 5));
+        assert_eq!(refresh(&mut waker, Idle), (vec![], 5));
+
+        // A compaction replaces the file by a rename, here with one of the
+        // same length holding a new undelivered item in place of the old.
+        let path = dir.join(inbox::INBOX_FILE);
+        let text = fs::read_to_string(&path).unwrap();
+        let compacted = text.replace("[Corgi] second", "[Corgi] thirds");
+        assert_eq!(compacted.len(), text.len());
+        // Its record of delivery names another id, so it is undelivered.
+        let record = compacted.rfind("\"delivered\":[\"").unwrap() + 14;
+        let compacted = format!("{}x{}", &compacted[..record], &compacted[record + 1..]);
+        let temporary = dir.join("compacted");
+        fs::write(&temporary, &compacted).unwrap();
+        fs::rename(&temporary, &path).unwrap();
+        assert_eq!(
+            refresh(&mut waker, Idle),
+            (vec!["supervisor-weather: [Corgi] thirds".to_string()], 6)
         );
     }
 

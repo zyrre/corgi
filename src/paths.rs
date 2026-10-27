@@ -86,12 +86,16 @@ pub fn dir_name<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
 /// in the state directory, the socket path spelled with only ASCII letters,
 /// digits and underscores, so that each Herdr session has its own.
 pub fn socket_state_file(kind: &str, socket: &Path, extension: &str) -> Option<PathBuf> {
-    let name: String = socket
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
+    let name = spelled(&socket.to_string_lossy());
     corgi_state_dir().map(|dir| dir.join(kind).join(format!("{name}.{extension}")))
+}
+
+/// `text` as [`socket_state_file`] spells a socket path: every character
+/// but an ASCII letter or digit made `_`.
+pub fn spelled(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 #[cfg(test)]

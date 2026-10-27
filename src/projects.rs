@@ -65,19 +65,31 @@ pub struct ProjectMemory {
     /// `None` keeps the list in memory only, which tests use.
     path: Option<PathBuf>,
     roots: Vec<String>,
+    /// Corgi's state directory, whose subdirectories, such as a
+    /// supervisor's, are never projects.
+    state_dir: Option<PathBuf>,
 }
 
 impl ProjectMemory {
     /// Reads the list from its file. A missing or unreadable file is an
     /// empty list, never an error: the projects on screen still work.
     pub fn load() -> Self {
-        let path = memory_path();
-        let roots = path
+        Self::load_from(memory_path(), corgi_state_dir())
+    }
+
+    /// The list in the file `path`, without what is inside `state_dir`.
+    fn load_from(path: Option<PathBuf>, state_dir: Option<PathBuf>) -> Self {
+        let mut roots = path
             .as_deref()
             .and_then(|path| fs::read_to_string(path).ok())
             .map(|text| parse_roots(&text))
             .unwrap_or_default();
-        Self { path, roots }
+        roots.retain(|root| !is_inside(root, state_dir.as_deref()));
+        Self {
+            path,
+            roots,
+            state_dir,
+        }
     }
 
     /// The remembered roots, most recently used first.
@@ -89,7 +101,7 @@ impl ProjectMemory {
     /// front of the list.
     pub fn remember(&mut self, root: &str) {
         let root = root.trim();
-        if root.is_empty() {
+        if root.is_empty() || is_inside(root, self.state_dir.as_deref()) {
             return;
         }
         if self.roots.first().is_some_and(|first| first == root) {
@@ -105,7 +117,10 @@ impl ProjectMemory {
     /// ones already known, so a refresh never reshuffles the project list.
     pub fn note(&mut self, root: &str) {
         let root = root.trim();
-        if root.is_empty() || self.roots.iter().any(|known| known == root) {
+        if root.is_empty()
+            || self.roots.iter().any(|known| known == root)
+            || is_inside(root, self.state_dir.as_deref())
+        {
             return;
         }
         self.roots.push(root.to_string());
@@ -113,8 +128,11 @@ impl ProjectMemory {
         self.save();
     }
 
-    fn save(&self) {
+    /// Writes the list to its file, without the directories that no longer
+    /// exist.
+    fn save(&mut self) {
         let Some(path) = &self.path else { return };
+        self.roots.retain(|root| Path::new(root).is_dir());
         if let Some(directory) = path.parent() {
             let _ = fs::create_dir_all(directory);
         }
@@ -122,6 +140,20 @@ impl ProjectMemory {
         text.push('\n');
         let _ = fs::write(path, text);
     }
+}
+
+/// Whether `root` is `dir` or inside it, as written or once symlinks are
+/// resolved.
+fn is_inside(root: &str, dir: Option<&Path>) -> bool {
+    let Some(dir) = dir else {
+        return false;
+    };
+    let root = Path::new(root);
+    root.starts_with(dir)
+        || matches!(
+            (root.canonicalize(), dir.canonicalize()),
+            (Ok(root), Ok(dir)) if root.starts_with(&dir)
+        )
 }
 
 /// The projects file: `$CORGI_PROJECTS_FILE`, else `corgi/projects` under
@@ -410,20 +442,67 @@ mod tests {
     fn the_memory_file_is_one_path_per_line_most_recent_first() {
         let dir = ScratchDir::new("projects-memory");
         let file = dir.join("projects");
-        let mut memory = ProjectMemory {
-            path: Some(file.clone()),
-            roots: Vec::new(),
-        };
+        let [a, b, c] = ["a", "b", "c"].map(|name| {
+            let root = dir.join("repos").join(name);
+            fs::create_dir_all(&root).expect("create project dir");
+            root.to_string_lossy().into_owned()
+        });
+        let mut memory = ProjectMemory::load_from(Some(file.clone()), None);
 
-        memory.note("/repos/a");
-        memory.note("/repos/b");
-        memory.remember("/repos/b");
-        memory.remember("/repos/c");
-        memory.note("/repos/a");
+        memory.note(&a);
+        memory.note(&b);
+        memory.remember(&b);
+        memory.remember(&c);
+        memory.note(&a);
 
         let text = fs::read_to_string(&file).expect("memory file written");
-        assert_eq!(text, "/repos/c\n/repos/b\n/repos/a\n");
+        assert_eq!(text, format!("{c}\n{b}\n{a}\n"));
         assert_eq!(parse_roots("# comment\n/x\n\n/x\n/y\n"), vec!["/x", "/y"]);
+    }
+
+    #[test]
+    fn the_memory_never_holds_corgis_own_state_or_a_directory_gone() {
+        let dir = ScratchDir::new("projects-memory-clean");
+        let file = dir.join("projects");
+        let state = dir.join("state/corgi");
+        let supervisor = state.join("supervisors/weather");
+        let [kept, gone, other] =
+            ["kept", "gone", "other"].map(|name| dir.join("repos").join(name));
+        for path in [&supervisor, &kept, &other] {
+            fs::create_dir_all(path).expect("create dir");
+        }
+        let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+        // The state directory as reached through a symlink.
+        let link = dir.join("state-link");
+        std::os::unix::fs::symlink(&state, &link).expect("symlink");
+        fs::write(
+            &file,
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n",
+                text(&supervisor),
+                text(&kept),
+                text(&gone),
+                text(&state.join("steward/corgi")),
+                text(&link.join("supervisors/weather")),
+            ),
+        )
+        .expect("write memory");
+
+        // What is inside the state directory is left out as the file is read.
+        let mut memory = ProjectMemory::load_from(Some(file.clone()), Some(state.clone()));
+        assert_eq!(memory.roots(), [text(&kept), text(&gone)]);
+        // ... and never noted or remembered.
+        memory.note(&text(&supervisor));
+        memory.remember(&text(&state));
+        assert_eq!(memory.roots(), [text(&kept), text(&gone)]);
+
+        // A save drops the directory that is gone.
+        memory.note(&text(&other));
+        assert_eq!(memory.roots(), [text(&kept), text(&other)]);
+        assert_eq!(
+            fs::read_to_string(&file).expect("memory file"),
+            format!("{}\n{}\n", text(&kept), text(&other))
+        );
     }
 
     #[test]
@@ -434,6 +513,7 @@ mod tests {
         let gone = dir.join("gone");
         let memory = ProjectMemory {
             path: None,
+            state_dir: None,
             roots: vec![
                 remembered.to_string_lossy().into_owned(),
                 gone.to_string_lossy().into_owned(),
