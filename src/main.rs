@@ -18,6 +18,7 @@ Commands:
   notify      Add an item to a supervisor's inbox
   inbox       Print what a supervisor's inbox holds
   tag         Tag an agent ready to merge, or clear its tag
+  role        Print a part of the supervisor's role it reads on demand
   edit        Open the focused or selected agent's checkout in your editor
 
 Run corgi COMMAND --help for a command's options, and corgi --version for the
@@ -56,6 +57,8 @@ fn main() -> Result<()> {
         Some("inbox") => corgi::app::inbox_command(&args[2..]),
         Some("tag") if help() => usage(corgi::app::TAG_USAGE),
         Some("tag") => corgi::app::tag_command(&args[2..]),
+        Some("role") if help() => usage(corgi::app::ROLE_USAGE),
+        Some("role") => corgi::app::role_command(&args[2..]),
         Some("edit") if help() => usage(corgi::app::EDIT_USAGE),
         Some("edit") => corgi::app::edit_command(&args[2..]),
         Some("setup") if help() => usage(corgi::app::SETUP_USAGE),

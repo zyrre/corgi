@@ -1265,12 +1265,15 @@ mod tests {
             Some(&MergePhase::Succeeded)
         );
         let commit = git_test_stdout(&repo, &["rev-parse", "--short", "main"]);
-        assert_eq!(
-            app.inboxes.as_ref().unwrap().pending_for(&root),
-            [format!(
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0].starts_with(&format!(
                 "[Corgi] The user merged w-reviewed-agent (task \"Make the status file say \
-                 agent\"), branch worktree/reviewed-agent, into main at {commit}."
-            )]
+                 agent\"), branch worktree/reviewed-agent, into main at {commit}. If \
+                 w-reviewed-agent is in your ledger"
+            )),
+            "{pending:?}"
         );
 
         remove_mergeable_repo(repo, worktree, remote);
@@ -1630,10 +1633,12 @@ mod tests {
             "{pending:?}"
         );
         assert!(
-            pending[0].ends_with(
-                "w-reviewed-agent is merged; tell the user what the error means and what \
-                 they can run."
-            ),
+            pending[0]
+                .contains("w-reviewed-agent is merged. If w-reviewed-agent is in your ledger"),
+            "{pending:?}"
+        );
+        assert!(
+            pending[0].ends_with("never pull, push or merge yourself."),
             "{pending:?}"
         );
 
@@ -1736,16 +1741,17 @@ mod tests {
             app.status
         );
         let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
-        assert_eq!(
-            pending,
-            [format!(
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0].starts_with(&format!(
                 "[Corgi] The user's merge of w-reviewed-agent (task \"Make the status file say agent\"), \
                  branch worktree/reviewed-agent in worktree {}, into main conflicted in: status.txt. \
                  Corgi aborted it, so the primary checkout is clean. Have w-reviewed-agent merge main \
                  into its own branch, resolve the conflicts there, rerun its checks and report; the \
-                 user then merges again with m.",
+                 user then merges again with m. ",
                 worktree.display()
-            )]
+            )),
+            "{pending:?}"
         );
 
         remove_conflicting_merge(repo, worktree);
