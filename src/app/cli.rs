@@ -621,8 +621,8 @@ session: the base branch, the handover note if there is one (else the open
 threads of the newest archived one), open ledger work joined with the
 running agents (about 4 KB; `reported` work whose agent is gone and whose
 newest line is 2+ days old is counted on one line), recently finished work,
-the newest decisions in full (about 12 KB, at least 3) and the titles of
-older ones. Decisions named by a later entry's `Supersedes:` line are left
+the newest decisions in full (about 8 KB, at least 3) and the titles of
+older ones (about 3 KB, and a line counting the rest). Decisions named by a later entry's `Supersedes:` line are left
 out, and unreadable ledger lines are warned about. Reads only; it never
 changes the state directory. When the supervisor has missed inbox items, a
 line on stderr says so.

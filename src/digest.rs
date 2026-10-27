@@ -10,11 +10,11 @@ pub mod lookup;
 pub mod search;
 
 /// Full decision entries, newest first, are shown up to this many bytes...
-pub const RECENT_DECISION_BYTES: usize = 12 * 1024;
+pub const RECENT_DECISION_BYTES: usize = 8 * 1024;
 /// ...but always at least this many, however long they are.
 pub const MIN_RECENT_DECISIONS: usize = 3;
-/// Titles of older decisions shown at most.
-pub const MAX_DECISION_TITLES: usize = 500;
+/// Titles of older decisions, newest first, are shown up to this many bytes.
+pub const DECISION_TITLE_BYTES: usize = 3 * 1024;
 /// Finished ledger ids shown.
 pub const RECENT_FINISHED: usize = 10;
 /// Open work entries are shown up to this many bytes, newest first; those of
@@ -133,7 +133,7 @@ pub(crate) fn superseded<'a>(decisions: &[Decision<'a>]) -> (Vec<Option<&'a str>
 pub struct DecisionView<'a> {
     pub recent: Vec<&'a str>,
     pub titles: Vec<String>,
-    /// Older titles beyond [`MAX_DECISION_TITLES`].
+    /// Older titles beyond [`DECISION_TITLE_BYTES`].
     pub titles_left_out: usize,
     pub superseded: usize,
     pub warnings: Vec<String>,
@@ -163,9 +163,13 @@ pub fn decision_view<'a>(decisions: &[Decision<'a>]) -> DecisionView<'a> {
         view.recent.push(decision.text);
         visible.next();
     }
+    let mut bytes = 0;
     for decision in visible {
-        if view.titles.len() < MAX_DECISION_TITLES {
-            view.titles.push(decision.title_line());
+        let title = decision.title_line();
+        // Each title is a line of its own.
+        if view.titles_left_out == 0 && bytes + title.len() < DECISION_TITLE_BYTES {
+            bytes += title.len() + 1;
+            view.titles.push(title);
         } else {
             view.titles_left_out += 1;
         }
@@ -725,13 +729,13 @@ mod tests {
     }
 
     #[test]
-    fn recent_decisions_fill_twelve_kilobytes_but_never_fewer_than_three() {
-        let big = "x".repeat(5000);
+    fn recent_decisions_fill_eight_kilobytes_but_never_fewer_than_three() {
+        let big = "x".repeat(3000);
         let text: String = (1..=6)
             .map(|day| entry(&format!("2026-09-0{day}: Big {day}"), &big))
             .collect();
         let view = decision_view(&parse_decisions(&text));
-        // Two fit in 12 KB; the third is shown anyway.
+        // Two fit in 8 KB; the third is shown anyway.
         assert_eq!(view.recent.len(), 3);
         assert!(view.recent[0].contains("Big 6"));
         assert_eq!(
@@ -758,18 +762,25 @@ mod tests {
     }
 
     #[test]
-    fn at_most_five_hundred_titles_and_a_line_for_the_rest() {
+    fn older_titles_fill_three_kilobytes_and_a_line_counts_the_rest() {
         let text: String = (0..600)
-            .map(|n| entry(&format!("2026-01-01: D{n}"), &"z".repeat(5000)))
+            .map(|n| entry(&format!("2026-01-01: D{n:03}"), &"z".repeat(5000)))
             .collect();
         let decisions = parse_decisions(&text);
         let view = decision_view(&decisions);
         assert_eq!(view.recent.len(), 3);
-        assert_eq!(view.titles.len(), MAX_DECISION_TITLES);
-        assert_eq!(view.titles_left_out, 97);
         assert_eq!(view.titles[0], "2026-01-01  D596");
+        // Each title and its newline is 17 bytes: 180 make 3060, 181 too many.
+        assert_eq!(view.titles.len(), 180);
+        assert_eq!(
+            view.titles.last().map(String::as_str),
+            Some("2026-01-01  D417")
+        );
+        assert_eq!(view.titles_left_out, 417);
+        let shown: usize = view.titles.iter().map(|title| title.len() + 1).sum();
+        assert!(shown <= DECISION_TITLE_BYTES);
         let rendered = render(&input(&text, "", &[]));
-        assert!(rendered.contains("\n... and 97 older titles left out\n"));
+        assert!(rendered.contains("\n2026-01-01  D417\n... and 417 older titles left out\n"));
     }
 
     #[test]

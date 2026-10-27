@@ -1218,8 +1218,8 @@ as the previous session's; every ledger id whose
 newest line is not `merged`, `abandoned` or `done` (finished work with
 nothing to merge), joined by agent name with the running agents (a missing
 one shows `**NOT RUNNING**`); the last 10 finished ids; the newest
-decisions in full, whole entries up to 12 KB but at least 3; the titles of
-the rest, at most 500 and a line counting any beyond; and a
+decisions in full, whole entries up to 8 KB but at least 3; the titles of
+the rest, newest first up to 3 KB, and a line counting any beyond; and a
 footer with the number of superseded entries hidden, how to read one in full,
 how to search, and warnings, among them one per ledger line that is not a
 JSON object with an `id` (`file:line` and why), which every reader skips. A
@@ -1249,7 +1249,10 @@ order and the digest, search and `corgi tag` read the same entries before
 and after. The archive is written first and each file replaced through a
 temporary file and a rename, so a stop halfway loses no line (at worst some
 archive twice); a ledger with nothing superseded is not touched, and a
-failure is a launch warning, not an error.
+failure is a launch warning, not an error. Lookups and search read
+`ledger-archive.jsonl` before `ledger.jsonl`, and compaction appends
+superseded lines in their original order, so each id's history reads oldest
+first.
 
 `corgi digest --search "<words>"` (`src/digest/search.rs`) looks in all of
 the memory, since a test showed a supervisor answering "don't know" to every
