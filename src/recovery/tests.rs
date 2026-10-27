@@ -172,6 +172,10 @@ impl Server {
                     }
                     Err(e) => panic!("{e}"),
                 };
+                // On macOS/BSD an accepted stream inherits O_NONBLOCK from the
+                // listener (unlike Linux), so read_line below would fail with
+                // WouldBlock instead of honoring the read timeout set here.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();
