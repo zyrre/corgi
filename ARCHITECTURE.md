@@ -658,7 +658,10 @@ role. So Corgi keeps its own record and puts the tokens back.
   `agent.prompt` once the supervisor is neither working nor blocked, so they
   arrive after its turn, the newest item of each key only (a newer wake for
   an agent replaces an unsent one, though one without a report does not
-  replace one with a report), then records all of them delivered. When
+  replace one with a report), then records all of them delivered. Items of
+  one key stay apart in the inbox and are reduced only here
+  (`inbox::coalesce`), so `Waker::pending_for` lists them all; a test of
+  what the supervisor gets checks what `coalesce` keeps. When
   that record cannot be written, the dashboard does not type those items
   in again, and tries the record again at each refresh.
   They also wait while the supervisor's input box
