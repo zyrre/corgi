@@ -188,7 +188,7 @@ pub(crate) fn boot() -> Result<String> {
             .args(["-n", "kern.boottime"])
             .output()?;
         ensure!(out.status.success(), "cannot identify this host boot");
-        return Ok(String::from_utf8(out.stdout)?.trim().to_string());
+        Ok(String::from_utf8(out.stdout)?.trim().to_string())
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     anyhow::bail!("host boot identity is unsupported")
