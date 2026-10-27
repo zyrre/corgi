@@ -800,14 +800,20 @@ pub fn merge_landed_message(merge: &MergeLanded<'_>) -> String {
     }
 }
 
-/// What a supervisor does once the user merged an agent's branch.
+/// What a supervisor does once the user merged an agent's branch. Quiet about
+/// the user's own session does not cover a failed push, which goes to the user.
 fn after_merge(merge: &MergeLanded<'_>) -> String {
     let MergeLanded { worker, base, .. } = merge;
+    let quiet = if merge.push_error.is_some() {
+        "stay quiet about the session (the failed push still goes to the user)"
+    } else {
+        "stay quiet"
+    };
     format!(
         "If {worker} is in your ledger, append a ledger line for it with status `merged`, go \
          on with what waited on this merge, and when the merge changed a tool the user runs \
          from this checkout, tell them they may need to rebuild or reload it; if it is not, \
-         it was the user's own session: stay quiet, and log a decision only for a \
+         it was the user's own session: {quiet}, and log a decision only for a \
          significant change. Either way {base} has moved: check every other agent you tagged \
          MERGE with `git -C <its cwd> merge-tree --write-tree {base} HEAD`, and for one that \
          no longer merges cleanly, clear its tag and have it merge {base} into its own \
@@ -1819,7 +1825,7 @@ mod tests {
         for rule in [
             "go on with what waited on this merge",
             "rebuild or reload",
-            "it was the user's own session: stay quiet",
+            "it was the user's own session: stay quiet, and log",
             "merge-tree --write-tree main HEAD",
             "clear its tag and have it merge main into its own branch",
         ] {
@@ -1874,6 +1880,12 @@ mod tests {
         for line in [landed, asked] {
             assert!(!line.contains('\n'), "{line}");
             assert!(line.contains("status `merged`"), "{line}");
+            assert!(
+                line.contains(
+                    "stay quiet about the session (the failed push still goes to the user)"
+                ),
+                "{line}"
+            );
             assert!(
                 line.ends_with(
                     "Tell the user in a line or two what the push error means and what they \
