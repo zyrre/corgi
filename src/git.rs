@@ -18,6 +18,16 @@ pub(crate) fn worktree_commits(cwd: &Path, target: &str, source: &str) -> Vec<St
         .unwrap_or_default()
 }
 
+/// The upstream `branch` pulls from and pushes to, as `origin/main`, or
+/// nothing when it has none.
+pub(crate) fn git_upstream(cwd: &Path, branch: &str) -> Option<String> {
+    let spec = format!("{branch}@{{upstream}}");
+    git_output(cwd, &["rev-parse", "--abbrev-ref", &spec])
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
 pub(crate) fn git_current_branch(cwd: &Path) -> Result<String> {
     let branch = git_output(cwd, &["branch", "--show-current"])?;
     let branch = branch.trim();

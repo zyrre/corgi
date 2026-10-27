@@ -1833,6 +1833,7 @@ mod tests {
             target_branch: "main".into(),
             task: String::new(),
             commits: Vec::new(),
+            upstream: Default::default(),
             phase: MergePhase::Running(2),
         });
         app.clear_merged_tag();

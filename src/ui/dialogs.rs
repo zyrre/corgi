@@ -21,6 +21,8 @@ use crate::theme::roles;
 // box for all the others.
 const MERGE_COMMIT_ROWS: usize = 10;
 const MERGE_SUBJECT_WIDTH: usize = 64;
+// The upstream's new commits are only a sample of what a pull brings in.
+const UPSTREAM_COMMIT_ROWS: usize = 5;
 
 pub(super) fn draw_close_workspace(
     frame: &mut Frame<'_>,
@@ -148,9 +150,18 @@ pub(crate) fn merge_dialog_lines<'a>(
     ]);
     let (mark, title, color, legend) = match &form.phase {
         MergePhase::Confirm => {
-            lines.extend(merge_commit_lines(&form.commits, &form.target_branch));
+            lines.extend(merge_commit_lines(
+                &form.commits,
+                MERGE_COMMIT_ROWS,
+                &form.target_branch,
+            ));
             lines.push(Line::styled(
-                "Runs git merge, then git push in the primary checkout.",
+                match form.upstream.name() {
+                    Some(upstream) => format!(
+                        "Fetches {upstream}, then runs git merge and git push in the primary checkout."
+                    ),
+                    None => "Runs git merge, then git push in the primary checkout.".into(),
+                },
                 Style::default().fg(roles().muted),
             ));
             lines.push(Line::styled(
@@ -217,6 +228,116 @@ pub(crate) fn merge_dialog_lines<'a>(
                 ],
             )
         }
+        MergePhase::Behind(commits) => {
+            let upstream = form.upstream.name().unwrap_or("The upstream");
+            lines.push(Line::styled(
+                format!(
+                    "{upstream} has commits {} lacks; a push now would be rejected.",
+                    form.target_branch
+                ),
+                bold(roles().warning),
+            ));
+            lines.push(Line::raw(""));
+            lines.extend(merge_commit_lines(
+                commits,
+                UPSTREAM_COMMIT_ROWS,
+                &form.target_branch,
+            ));
+            lines.push(Line::styled(
+                format!(
+                    "Enter pulls them into {} (a fast-forward when it can be), then merges and pushes.",
+                    form.target_branch
+                ),
+                Style::default().fg(roles().muted),
+            ));
+            lines.push(Line::styled(
+                "Nothing is merged yet.",
+                Style::default().fg(roles().muted),
+            ));
+            (
+                POPUP_MARK,
+                "Upstream moved on",
+                roles().warning,
+                vec![
+                    ("Enter", "pull, then merge + push", roles().success),
+                    ("Esc", "stop", roles().warning),
+                ],
+            )
+        }
+        MergePhase::FetchFailed(error) => {
+            let upstream = form.upstream.name().unwrap_or("the upstream");
+            lines.push(Line::styled(
+                format!("Could not fetch {upstream}."),
+                bold(roles().warning),
+            ));
+            lines.extend(error_lines(error));
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                format!("If {upstream} moved on, the push after the merge will be rejected."),
+                Style::default().fg(roles().muted),
+            ));
+            lines.push(Line::styled(
+                "Nothing is merged yet.",
+                Style::default().fg(roles().muted),
+            ));
+            (
+                POPUP_MARK,
+                "Upstream not checked",
+                roles().warning,
+                vec![
+                    ("Enter", "merge + push anyway", roles().success),
+                    ("Esc", "stop", roles().warning),
+                ],
+            )
+        }
+        MergePhase::PushFailed {
+            commit,
+            error,
+            help,
+        } => {
+            let at = if commit.is_empty() {
+                String::new()
+            } else {
+                format!(" at {commit}")
+            };
+            lines.push(outcome_line(
+                false,
+                format!(
+                    "Merged into {}{at}, but the push failed.",
+                    form.target_branch
+                ),
+            ));
+            lines.push(Line::raw(""));
+            lines.extend(error_lines(error));
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                match form.upstream.name() {
+                    Some(upstream) => format!(
+                        "The branch is merged locally; Enter fetches {upstream} and pushes again."
+                    ),
+                    None => "The branch is merged locally; Enter pushes again.".into(),
+                },
+                Style::default().fg(roles().muted),
+            ));
+            let mut legend = Vec::new();
+            match help {
+                ConflictHelp::Supervisor(_) => {
+                    lines.push(Line::styled(
+                        "Its supervisor can tell you what the error means and what to run.",
+                        Style::default().fg(roles().text),
+                    ));
+                    legend.push(("s", "ask the supervisor", roles().success));
+                }
+                ConflictHelp::NoSupervisor => lines.push(Line::styled(
+                    "No supervisor is running for this project.",
+                    Style::default().fg(roles().warning),
+                )),
+                ConflictHelp::Unavailable => {}
+            }
+            legend.push(("Enter", "retry", roles().success));
+            legend.push(("Esc", "close", roles().warning));
+            (FAILURE_MARK, "Push failed", roles().danger, legend)
+        }
         MergePhase::Conflicted { files, help } => {
             lines.push(outcome_line(false, "Merge stopped on conflicts.".into()));
             lines.push(Line::raw(""));
@@ -278,11 +399,23 @@ pub(crate) fn merge_dialog_lines<'a>(
     }
 }
 
+/// Git's error, a line of the dialog for each of its lines, left-aligned as
+/// Git wrote them.
+fn error_lines(error: &str) -> Vec<Line<'static>> {
+    error
+        .lines()
+        .map(|line| {
+            Line::styled(line.to_string(), Style::default().fg(roles().muted))
+                .alignment(Alignment::Left)
+        })
+        .collect()
+}
+
 /// The commits a merge brings in: a heading with their number, then the
 /// list itself, left-aligned so the hashes line up in a dialog that centres
-/// everything else. The list is cut off after a screenful so a long branch
+/// everything else. The list is cut off after `rows` so a long branch
 /// cannot push the keys out of view.
-fn merge_commit_lines(commits: &[String], target_branch: &str) -> Vec<Line<'static>> {
+fn merge_commit_lines(commits: &[String], rows: usize, target_branch: &str) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if commits.is_empty() {
         lines.push(Line::styled(
@@ -301,7 +434,7 @@ fn merge_commit_lines(commits: &[String], target_branch: &str) -> Vec<Line<'stat
         },
         Style::default().fg(roles().muted),
     ));
-    for commit in commits.iter().take(MERGE_COMMIT_ROWS) {
+    for commit in commits.iter().take(rows) {
         let (hash, subject) = split_commit(commit);
         lines.push(
             Line::from(vec![
@@ -314,10 +447,10 @@ fn merge_commit_lines(commits: &[String], target_branch: &str) -> Vec<Line<'stat
             .alignment(Alignment::Left),
         );
     }
-    if count > MERGE_COMMIT_ROWS {
+    if count > rows {
         lines.push(
             Line::styled(
-                format!("… and {} more", count - MERGE_COMMIT_ROWS),
+                format!("… and {} more", count - rows),
                 Style::default().fg(roles().muted),
             )
             .alignment(Alignment::Left),
@@ -369,7 +502,7 @@ fn split_commit(commit: &str) -> (&str, &str) {
 mod tests {
     use super::*;
     use crate::{
-        app::{MergeWorktreeForm, Overlay},
+        app::{MergeWorktreeForm, Overlay, Upstream},
         test_support::{buffer_rows, buffer_text, test_app, test_terminal},
         ui::draw_overlay,
     };
@@ -389,6 +522,7 @@ mod tests {
             target_branch: "main".into(),
             task: String::new(),
             commits: Vec::new(),
+            upstream: Default::default(),
             phase: MergePhase::Succeeded,
         });
         // The narrow terminal wraps the explanation, so the hints only survive
@@ -420,6 +554,7 @@ mod tests {
             target_branch: "main".into(),
             task: "Popup windows styling review".into(),
             commits: Vec::new(),
+            upstream: Default::default(),
             phase: MergePhase::Conflicted {
                 files: vec!["src/ui/dialogs.rs".into(), "README.md".into()],
                 help: ConflictHelp::Supervisor("supervisor-corgi".into()),
@@ -458,6 +593,92 @@ mod tests {
     }
 
     #[test]
+    fn the_upstream_popups_list_its_commits_and_say_what_failed() {
+        let mut app = test_app();
+        let commits: Vec<String> = (0..16)
+            .map(|index| format!("{index:07x} Pushed from elsewhere {index}"))
+            .collect();
+        app.overlay = Overlay::merge(MergeWorktreeForm {
+            label: "corgi/reviewed-agent".into(),
+            workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
+            project_root: PathBuf::from("/repos/corgi"),
+            worktree_checkout: PathBuf::from("/worktrees/corgi/worktree-reviewed-agent"),
+            source_branch: "worktree/reviewed-agent".into(),
+            target_branch: "main".into(),
+            task: "Popup windows styling review".into(),
+            commits: Vec::new(),
+            upstream: Upstream::Check("origin/main".into()),
+            phase: MergePhase::Behind(commits),
+        });
+        let mut terminal = test_terminal(120, 40);
+        let mut draw = |app: &mut crate::app::App| {
+            terminal
+                .draw(|frame| draw_overlay(frame, frame.area(), app))
+                .expect("draw merge dialog");
+            buffer_text(terminal.backend().buffer())
+        };
+        let rendered = draw(&mut app);
+        assert!(rendered.contains("Upstream moved on"), "{rendered}");
+        assert!(
+            rendered.contains("origin/main has commits main lacks"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("16 commits"), "{rendered}");
+        assert!(rendered.contains("Pushed from elsewhere 4"), "{rendered}");
+        assert!(!rendered.contains("Pushed from elsewhere 5"), "{rendered}");
+        assert!(rendered.contains("… and 11 more"), "{rendered}");
+        assert!(
+            rendered.contains(" Enter  pull, then merge + push"),
+            "{rendered}"
+        );
+        assert!(rendered.contains(" Esc  stop"), "{rendered}");
+
+        let form = app.overlay.merge_worktree_form_mut().expect("form");
+        form.phase = MergePhase::FetchFailed("git fetch origin: Could not resolve host".into());
+        let rendered = draw(&mut app);
+        assert!(
+            rendered.contains("Could not fetch origin/main."),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Could not resolve host"), "{rendered}");
+        assert!(
+            rendered.contains(" Enter  merge + push anyway"),
+            "{rendered}"
+        );
+
+        let form = app.overlay.merge_worktree_form_mut().expect("form");
+        form.phase = MergePhase::PushFailed {
+            commit: "06d069d".into(),
+            error: "! [rejected] main -> main (fetch first)\nerror: failed to push some refs"
+                .into(),
+            help: ConflictHelp::Supervisor("supervisor-corgi".into()),
+        };
+        let rendered = draw(&mut app);
+        assert!(rendered.contains("Push failed"), "{rendered}");
+        assert!(
+            rendered.contains("Merged into main at 06d069d, but the push failed."),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("main -> main (fetch first)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains(" s  ask the supervisor"), "{rendered}");
+        assert!(rendered.contains(" Enter  retry"), "{rendered}");
+
+        let form = app.overlay.merge_worktree_form_mut().expect("form");
+        form.phase = MergePhase::PushFailed {
+            commit: "06d069d".into(),
+            error: "fatal: unreachable".into(),
+            help: ConflictHelp::NoSupervisor,
+        };
+        let rendered = draw(&mut app);
+        assert!(rendered.contains("No supervisor is running"), "{rendered}");
+        assert!(!rendered.contains("ask the supervisor"), "{rendered}");
+    }
+
+    #[test]
     fn the_merge_confirmation_names_the_task_and_lists_its_commits() {
         let mut app = test_app();
         let commits: Vec<String> = (0..12)
@@ -473,6 +694,7 @@ mod tests {
             target_branch: "main".into(),
             task: "Popup windows styling review".into(),
             commits,
+            upstream: Default::default(),
             phase: MergePhase::Confirm,
         });
         let mut terminal = test_terminal(120, 40);

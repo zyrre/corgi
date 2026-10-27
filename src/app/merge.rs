@@ -1,5 +1,7 @@
 //! Merging an agent's clean worktree branch into the branch checked out in
 //! its project's primary checkout, then pushing it, once the user confirms.
+//! The base branch's upstream is fetched first, so a merge does not end
+//! with a push the remote rejects for commits pushed from elsewhere.
 
 use std::{
     fmt,
@@ -12,7 +14,11 @@ use anyhow::{Context, Result, bail};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{
-    git::{ensure_git_clean, git_current_branch, git_failure_detail, git_output, worktree_commits},
+    git::{
+        ensure_git_clean, git_current_branch, git_failure_detail, git_output, git_upstream,
+        worktree_commits,
+    },
+    inbox::{Item, Kind},
     job::{Job, Update},
     model::DashboardAgent,
     supervisor::{self, MergeConflict, MergeLanded},
@@ -47,7 +53,53 @@ pub(crate) struct MergeWorktreeForm {
     /// The commits the merge brings in, newest first, each as its short hash
     /// and subject. Empty when Git could not list them.
     pub(crate) commits: Vec<String>,
+    /// What the merge does about the target branch's upstream first.
+    pub(crate) upstream: Upstream,
     pub(crate) phase: MergePhase,
+}
+
+/// What a merge does about the target branch's upstream before it merges.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum Upstream {
+    /// The target branch has none, so nothing is fetched.
+    #[default]
+    None,
+    /// Fetch this upstream (`origin/main`), and stop when it has commits the
+    /// target branch lacks.
+    Check(String),
+    /// Fetch it and bring its commits into the target branch first.
+    Pull(String),
+    /// Merge without it, as the user chose after its fetch failed.
+    Skip(String),
+}
+
+impl Upstream {
+    fn of(name: Option<String>) -> Self {
+        name.map_or(Self::None, Self::Check)
+    }
+
+    /// The upstream's name, when the target branch has one.
+    pub(crate) fn name(&self) -> Option<&str> {
+        match self {
+            Self::None => None,
+            Self::Check(name) | Self::Pull(name) | Self::Skip(name) => Some(name),
+        }
+    }
+
+    /// Checked again, as a new attempt at the merge starts.
+    fn checked(&self) -> Self {
+        Self::of(self.name().map(str::to_string))
+    }
+
+    fn pulled(&self) -> Self {
+        self.name()
+            .map_or(Self::None, |name| Self::Pull(name.to_string()))
+    }
+
+    fn skipped(&self) -> Self {
+        self.name()
+            .map_or(Self::None, |name| Self::Skip(name.to_string()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,9 +115,22 @@ pub(crate) enum MergePhase {
         files: Vec<String>,
         help: ConflictHelp,
     },
+    /// The upstream has these commits the target branch lacks, newest first,
+    /// each as its short hash and subject; nothing was merged yet.
+    Behind(Vec<String>),
+    /// Fetching the upstream failed with this error; nothing was merged yet.
+    FetchFailed(String),
+    /// The branch was merged, the target branch now at `commit`, but
+    /// `git push` failed with `error`.
+    PushFailed {
+        commit: String,
+        error: String,
+        help: ConflictHelp,
+    },
 }
 
-/// Whether a conflicted merge can be handed to the project's supervisor.
+/// Whether a conflicted merge, or a push that failed after a merge, can be
+/// handed to the project's supervisor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConflictHelp {
     /// The project's supervisor, by name, which `s` asks.
@@ -83,7 +148,32 @@ pub(crate) enum MergeError {
     Failed(String),
     /// The merge stopped on conflicts in these files.
     Conflicts(Vec<String>),
+    /// The upstream has these commits the target branch lacks.
+    Behind(Vec<String>),
+    /// Fetching the upstream failed.
+    FetchFailed(String),
+    /// The merge landed at `commit`, but the push failed.
+    PushFailed {
+        commit: String,
+        error: String,
+    },
 }
+
+impl fmt::Display for MergeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Failed(error) => f.write_str(error),
+            Self::Conflicts(files) => write!(f, "conflicts in {}", files.join(", ")),
+            Self::Behind(commits) => write!(f, "the upstream has {} new commit(s)", commits.len()),
+            Self::FetchFailed(error) => write!(f, "fetch failed: {error}"),
+            Self::PushFailed { error, .. } => {
+                write!(f, "merge completed, but git push failed: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MergeError {}
 
 /// A merge that stopped on conflicts, carried out of
 /// [`merge_worktree_branch`] as its error.
@@ -107,12 +197,21 @@ impl std::error::Error for Conflicts {}
 
 impl MergeWorktreeForm {
     /// What a merge does, in order, as its dialog lists them while it runs.
-    pub(crate) fn steps(&self) -> [String; 3] {
-        [
-            "Check both worktrees".into(),
-            format!("Merge {} into {}", self.source_branch, self.target_branch),
-            format!("Push {}", self.target_branch),
-        ]
+    pub(crate) fn steps(&self) -> Vec<String> {
+        let mut steps = vec!["Check both worktrees".to_string()];
+        match &self.upstream {
+            Upstream::Check(upstream) => steps.push(format!("Fetch {upstream}")),
+            Upstream::Pull(upstream) => {
+                steps.push(format!("Pull {upstream} into {}", self.target_branch))
+            }
+            Upstream::None | Upstream::Skip(_) => {}
+        }
+        steps.push(format!(
+            "Merge {} into {}",
+            self.source_branch, self.target_branch
+        ));
+        steps.push(format!("Push {}", self.target_branch));
+        steps
     }
 }
 
@@ -134,6 +233,7 @@ impl App {
         match prepare_worktree_merge(&project_root, &worktree_checkout) {
             Ok((source_branch, target_branch)) => {
                 let commits = worktree_commits(&worktree_checkout, &target_branch, &source_branch);
+                let upstream = Upstream::of(git_upstream(&project_root, &target_branch));
                 self.overlay = Overlay::merge(MergeWorktreeForm {
                     label: agent.project.clone(),
                     workspace_id: agent.info.workspace_id.clone(),
@@ -148,6 +248,7 @@ impl App {
                     target_branch,
                     task: agent.task.clone(),
                     commits,
+                    upstream,
                     phase: MergePhase::Confirm,
                 });
             }
@@ -155,13 +256,16 @@ impl App {
         }
     }
 
-    fn start_merge_worktree(&mut self) {
+    /// Starts the merge, doing `upstream` of what the form's upstream is:
+    /// checking it, pulling it, or skipping it.
+    fn start_merge_worktree(&mut self, upstream: fn(&Upstream) -> Upstream) {
         if self.merge_job.is_running() {
             return;
         }
         let Some(form) = self.overlay.merge_worktree_form_mut() else {
             return;
         };
+        form.upstream = upstream(&form.upstream);
         form.phase = MergePhase::Running(0);
         let form = form.clone();
         self.status = format!("Merging {}…", form.source_branch);
@@ -190,7 +294,7 @@ impl App {
             match result {
                 Ok(commit) => {
                     self.clear_merged_tag();
-                    self.tell_supervisor_about_merge(&commit);
+                    self.tell_supervisor_about_merge(&commit, None);
                     if let Some(form) = self.overlay.merge_worktree_form_mut() {
                         form.phase = MergePhase::Succeeded;
                         self.status = format!(
@@ -200,13 +304,42 @@ impl App {
                     }
                     self.request_refresh();
                 }
-                Err(MergeError::Failed(error)) => {
+                Err(MergeError::PushFailed { commit, error }) => {
                     // Only the push failed: the branch is merged all the same.
-                    let pushing = self.overlay.merge_worktree_form().map(|form| &form.phase)
-                        == Some(&MergePhase::Running(2));
-                    if pushing {
-                        self.clear_merged_tag();
+                    self.clear_merged_tag();
+                    self.tell_supervisor_about_merge(&commit, Some(&error));
+                    let help = self.conflict_help();
+                    if let Some(form) = self.overlay.merge_worktree_form_mut() {
+                        self.status = format!(
+                            "Merged {} into {}, but the push failed",
+                            form.source_branch, form.target_branch
+                        );
+                        form.phase = MergePhase::PushFailed {
+                            commit,
+                            error,
+                            help,
+                        };
                     }
+                    self.request_refresh();
+                }
+                Err(MergeError::Behind(commits)) => {
+                    if let Some(form) = self.overlay.merge_worktree_form_mut() {
+                        self.status = format!(
+                            "{} has {} commit(s) {} lacks",
+                            form.upstream.name().unwrap_or("The upstream"),
+                            commits.len(),
+                            form.target_branch
+                        );
+                        form.phase = MergePhase::Behind(commits);
+                    }
+                }
+                Err(MergeError::FetchFailed(error)) => {
+                    self.status = format!("Fetch failed: {error}");
+                    if let Some(form) = self.overlay.merge_worktree_form_mut() {
+                        form.phase = MergePhase::FetchFailed(error);
+                    }
+                }
+                Err(MergeError::Failed(error)) => {
                     if let Some(form) = self.overlay.merge_worktree_form_mut() {
                         form.phase = MergePhase::Failed(error.clone());
                     }
@@ -258,11 +391,12 @@ impl App {
     }
 
     /// Adds a line to the inbox of the project's supervisor saying that the
-    /// open merge dialog's branch was merged into its base at `commit`, so the
-    /// supervisor records it and goes on with what waited on it. It is kept
-    /// for the supervisor's next turn when none runs now, and not written for
-    /// a project that never had one, nor from a dashboard without an inbox.
-    fn tell_supervisor_about_merge(&mut self, commit: &str) {
+    /// open merge dialog's branch was merged into its base at `commit`, and
+    /// that the push failed with `push_error` when it did, so the supervisor
+    /// records it and goes on with what waited on it. It is kept for the
+    /// supervisor's next turn when none runs now, and not written for a
+    /// project that never had one, nor from a dashboard without an inbox.
+    fn tell_supervisor_about_merge(&mut self, commit: &str, push_error: Option<&str>) {
         let (Some(form), Some(inboxes)) = (self.overlay.merge_worktree_form(), &self.inboxes)
         else {
             return;
@@ -273,21 +407,12 @@ impl App {
         {
             return;
         }
-        let item = crate::inbox::Item {
-            project,
-            source: "merge".into(),
-            kind: crate::inbox::Kind::Merge,
-            agent: Some(form.agent.clone()),
-            key: format!("{} merged", form.agent),
-            text: supervisor::merge_landed_message(&MergeLanded {
-                worker: &form.agent,
-                task: &form.task,
-                branch: &form.source_branch,
-                base: &form.target_branch,
-                commit,
-            }),
-            ..Default::default()
-        };
+        let item = merge_item(
+            form,
+            Kind::Merge,
+            merged_key(form),
+            supervisor::merge_landed_message(&landed(form, commit, push_error)),
+        );
         if let Err(error) = inboxes.notify(item) {
             self.set_status(
                 format!("Merged, but the supervisor could not be told: {error:#}"),
@@ -323,12 +448,7 @@ impl App {
             return;
         };
         let Some(supervisor) = project_supervisor(&self.agents, &form.project_root) else {
-            self.status = "The supervisor is no longer running".into();
-            if let Some(form) = self.overlay.merge_worktree_form_mut()
-                && let MergePhase::Conflicted { help, .. } = &mut form.phase
-            {
-                *help = ConflictHelp::NoSupervisor;
-            }
+            self.supervisor_gone();
             return;
         };
         if let Err(error) = abort_merge(&form.project_root) {
@@ -347,15 +467,12 @@ impl App {
             base: &form.target_branch,
             files,
         });
-        let item = crate::inbox::Item {
-            project: form.project_root.to_string_lossy().into_owned(),
-            source: "merge".into(),
-            kind: crate::inbox::Kind::Conflict,
-            agent: Some(form.agent.clone()),
-            key: format!("{} merge conflict", form.agent),
-            text: message,
-            ..Default::default()
-        };
+        let item = merge_item(
+            form,
+            Kind::Conflict,
+            format!("{} merge conflict", form.agent),
+            message,
+        );
         let mut status = format!(
             "Merge aborted; asked {supervisor} to have {} merge {} into its branch",
             form.agent, form.target_branch
@@ -369,6 +486,55 @@ impl App {
         self.motion.succeeded();
         self.set_status(status, Some(Duration::from_secs(15)));
         self.request_refresh();
+    }
+
+    /// Adds a line to the inbox of the project's supervisor handing it the
+    /// push that failed after the open merge dialog's merge, so it tells the
+    /// user what the error means and what to run. It shares the merged
+    /// line's key: it says the merge landed too, and stands in for that line
+    /// when it has not gone out yet.
+    fn ask_supervisor_about_push(&mut self) {
+        let Some(form) = self.overlay.merge_worktree_form() else {
+            return;
+        };
+        let MergePhase::PushFailed { commit, error, .. } = &form.phase else {
+            return;
+        };
+        let Some(supervisor) = project_supervisor(&self.agents, &form.project_root) else {
+            self.supervisor_gone();
+            return;
+        };
+        let item = merge_item(
+            form,
+            Kind::Merge,
+            merged_key(form),
+            supervisor::push_failed_message(&landed(form, commit, Some(error))),
+        );
+        let mut status = format!(
+            "Asked {supervisor} about the failed push of {}",
+            form.target_branch
+        );
+        if let Some(inboxes) = &self.inboxes
+            && let Err(error) = inboxes.notify(item)
+        {
+            status = format!("{supervisor} could not be asked about the push: {error:#}");
+        }
+        self.overlay = Overlay::None;
+        self.motion.succeeded();
+        self.set_status(status, Some(Duration::from_secs(15)));
+        self.request_refresh();
+    }
+
+    /// Takes the handoff key off the open merge dialog: the supervisor it
+    /// would go to has stopped since the dialog offered it.
+    fn supervisor_gone(&mut self) {
+        self.status = "The supervisor is no longer running".into();
+        if let Some(form) = self.overlay.merge_worktree_form_mut()
+            && let MergePhase::Conflicted { help, .. } | MergePhase::PushFailed { help, .. } =
+                &mut form.phase
+        {
+            *help = ConflictHelp::NoSupervisor;
+        }
     }
 
     fn dismiss_merge_worktree(&mut self) {
@@ -404,8 +570,19 @@ impl App {
     pub(super) fn handle_merge_worktree_key(&mut self, key: KeyEvent) -> bool {
         let phase = self.overlay.merge_worktree_form().map(|form| &form.phase);
         match (phase, key.code) {
-            (Some(MergePhase::Confirm), KeyCode::Esc) => self.cancel_editor(),
-            (Some(MergePhase::Confirm), KeyCode::Enter) => self.start_merge_worktree(),
+            (
+                Some(MergePhase::Confirm | MergePhase::Behind(_) | MergePhase::FetchFailed(_)),
+                KeyCode::Esc,
+            ) => self.cancel_editor(),
+            (Some(MergePhase::Confirm), KeyCode::Enter) => {
+                self.start_merge_worktree(Upstream::checked)
+            }
+            (Some(MergePhase::Behind(_)), KeyCode::Enter) => {
+                self.start_merge_worktree(Upstream::pulled)
+            }
+            (Some(MergePhase::FetchFailed(_)), KeyCode::Enter) => {
+                self.start_merge_worktree(Upstream::skipped)
+            }
             (Some(MergePhase::Running(_)), KeyCode::Esc) => {
                 self.status = "Merge and push are still running".into()
             }
@@ -413,12 +590,22 @@ impl App {
             (Some(MergePhase::Succeeded), KeyCode::Enter | KeyCode::Esc) => {
                 self.dismiss_merge_worktree()
             }
-            (Some(MergePhase::Failed(_) | MergePhase::Conflicted { .. }), KeyCode::Enter) => {
-                self.start_merge_worktree()
-            }
-            (Some(MergePhase::Failed(_) | MergePhase::Conflicted { .. }), KeyCode::Esc) => {
-                self.dismiss_merge_worktree()
-            }
+            (
+                Some(
+                    MergePhase::Failed(_)
+                    | MergePhase::Conflicted { .. }
+                    | MergePhase::PushFailed { .. },
+                ),
+                KeyCode::Enter,
+            ) => self.start_merge_worktree(Upstream::checked),
+            (
+                Some(
+                    MergePhase::Failed(_)
+                    | MergePhase::Conflicted { .. }
+                    | MergePhase::PushFailed { .. },
+                ),
+                KeyCode::Esc,
+            ) => self.dismiss_merge_worktree(),
             (
                 Some(MergePhase::Conflicted {
                     help: ConflictHelp::Supervisor(_),
@@ -426,9 +613,51 @@ impl App {
                 }),
                 KeyCode::Char('s'),
             ) => self.ask_supervisor_about_conflict(),
+            (
+                Some(MergePhase::PushFailed {
+                    help: ConflictHelp::Supervisor(_),
+                    ..
+                }),
+                KeyCode::Char('s'),
+            ) => self.ask_supervisor_about_push(),
             _ => {}
         }
         false
+    }
+}
+
+/// An inbox item about the merge in `form`, for its project's supervisor.
+fn merge_item(form: &MergeWorktreeForm, kind: Kind, key: String, text: String) -> Item {
+    Item {
+        project: form.project_root.to_string_lossy().into_owned(),
+        source: "merge".into(),
+        kind,
+        agent: Some(form.agent.clone()),
+        key,
+        text,
+        ..Default::default()
+    }
+}
+
+/// The key of the line saying `form`'s branch was merged, which a newer
+/// one about the same merge replaces while it waits.
+fn merged_key(form: &MergeWorktreeForm) -> String {
+    format!("{} merged", form.agent)
+}
+
+/// `form`'s merge, landed at `commit`, for a supervisor's line.
+fn landed<'a>(
+    form: &'a MergeWorktreeForm,
+    commit: &'a str,
+    push_error: Option<&'a str>,
+) -> MergeLanded<'a> {
+    MergeLanded {
+        worker: &form.agent,
+        task: &form.task,
+        branch: &form.source_branch,
+        base: &form.target_branch,
+        commit,
+        push_error,
     }
 }
 
@@ -472,21 +701,31 @@ fn prepare_worktree_merge(
     Ok((source_branch, target_branch))
 }
 
-/// Runs the merge job for `form`, telling conflicts from other failures.
+/// Runs the merge job for `form`, telling conflicts, the upstream and the
+/// push from other failures.
 fn run_merge(form: &MergeWorktreeForm, progress: &mut dyn Progress) -> Result<String, MergeError> {
-    merge_worktree_branch(form, progress).map_err(|error| match error.downcast::<Conflicts>() {
-        Ok(conflicts) => MergeError::Conflicts(conflicts.files),
-        Err(error) => MergeError::Failed(format!("{error:#}")),
+    merge_worktree_branch(form, progress).map_err(|error| {
+        let error = match error.downcast::<Conflicts>() {
+            Ok(conflicts) => return MergeError::Conflicts(conflicts.files),
+            Err(error) => error,
+        };
+        match error.downcast::<MergeError>() {
+            Ok(error) => error,
+            Err(error) => MergeError::Failed(format!("{error:#}")),
+        }
     })
 }
 
 /// Revalidates the reviewed merge immediately before changing Git state. This
 /// catches an agent resuming work, a user switching branches, or local edits
-/// made while the confirmation dialog was open. Returns the short hash of the
-/// commit the target branch points at after the merge, or nothing when Git
-/// could not tell it.
+/// made while the confirmation dialog was open. Then it fetches the target
+/// branch's upstream, as [`MergeWorktreeForm::upstream`] says, and stops
+/// when it has commits the target lacks, or pulls them in first. Returns the
+/// short hash of the commit the target branch points at after the merge, or
+/// nothing when Git could not tell it.
 fn merge_worktree_branch(form: &MergeWorktreeForm, progress: &mut dyn Progress) -> Result<String> {
-    progress.step(0);
+    let mut step = 0;
+    progress.step(step);
     progress.report("Checking both worktrees…".into());
     let (source_branch, target_branch) =
         prepare_worktree_merge(&form.project_root, &form.worktree_checkout)?;
@@ -496,7 +735,25 @@ fn merge_worktree_branch(form: &MergeWorktreeForm, progress: &mut dyn Progress) 
         );
     }
 
-    progress.step(1);
+    if let Upstream::Check(upstream) | Upstream::Pull(upstream) = &form.upstream {
+        step += 1;
+        progress.step(step);
+        progress.report(format!("Fetching {upstream}…"));
+        if let Err(error) = fetch_upstream(&form.project_root, &form.target_branch) {
+            return Err(MergeError::FetchFailed(format!("{error:#}")).into());
+        }
+        let behind = upstream_commits(&form.project_root, &form.target_branch)?;
+        if !behind.is_empty() {
+            if let Upstream::Check(_) = form.upstream {
+                return Err(MergeError::Behind(behind).into());
+            }
+            progress.report(format!("Pulling {upstream} into {}…", form.target_branch));
+            pull_upstream(&form.project_root, &form.target_branch, upstream)?;
+        }
+    }
+
+    step += 1;
+    progress.step(step);
     progress.report(format!(
         "Merging {} into {}…",
         form.source_branch, form.target_branch
@@ -532,7 +789,8 @@ fn merge_worktree_branch(form: &MergeWorktreeForm, progress: &mut dyn Progress) 
         .map(|hash| hash.trim().to_string())
         .unwrap_or_default();
 
-    progress.step(2);
+    step += 1;
+    progress.step(step);
     progress.report(format!("Pushing {}…", form.target_branch));
     let output = Command::new("git")
         .arg("-C")
@@ -541,12 +799,110 @@ fn merge_worktree_branch(form: &MergeWorktreeForm, progress: &mut dyn Progress) 
         .output()
         .with_context(|| format!("run git push in {}", form.project_root.display()))?;
     if !output.status.success() {
+        return Err(MergeError::PushFailed {
+            commit,
+            error: push_failure_detail(&output),
+        }
+        .into());
+    }
+    Ok(commit)
+}
+
+/// Git's reasons for a failed push, without its hints (which a cut-off
+/// detail would end mid-sentence in), one line of its output per line.
+fn push_failure_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("hint:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if detail.is_empty() {
+        git_failure_detail(output)
+    } else {
+        detail.chars().take(480).collect()
+    }
+}
+
+/// Fetches `branch`'s upstream from its remote, without asking for
+/// credentials on the terminal the dashboard draws on. An upstream in the
+/// same repository (remote `.`) has nothing to fetch.
+fn fetch_upstream(project_root: &Path, branch: &str) -> Result<()> {
+    let remote = git_output(
+        project_root,
+        &["config", &format!("branch.{branch}.remote")],
+    )?;
+    let merge = git_output(project_root, &["config", &format!("branch.{branch}.merge")])?;
+    let (remote, merge) = (remote.trim(), merge.trim());
+    if remote == "." {
+        return Ok(());
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["fetch", "--quiet", remote, merge])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .with_context(|| format!("run git fetch in {}", project_root.display()))?;
+    if !output.status.success() {
+        bail!("git fetch {remote}: {}", git_failure_detail(&output));
+    }
+    Ok(())
+}
+
+/// The commits `branch`'s upstream has that `branch` lacks, newest first,
+/// each as `<short hash> <subject>`.
+fn upstream_commits(project_root: &Path, branch: &str) -> Result<Vec<String>> {
+    let range = format!("{branch}..{branch}@{{upstream}}");
+    let log = git_output(project_root, &["log", "--format=%h %s", &range])?;
+    Ok(log.lines().map(str::to_string).collect())
+}
+
+/// Brings `upstream`'s commits into `branch`, checked out in
+/// `project_root`, as `git pull` would: a fast-forward when `branch` has
+/// nothing of its own, else a merge. A merge that conflicts is aborted, so
+/// the checkout is clean again, and the user is told to pull by hand.
+fn pull_upstream(project_root: &Path, branch: &str, upstream: &str) -> Result<()> {
+    let ahead = git_output(
+        project_root,
+        &[
+            "rev-list",
+            "--count",
+            &format!("{branch}@{{upstream}}..{branch}"),
+        ],
+    )?;
+    let how = if ahead.trim() == "0" {
+        "--ff-only"
+    } else {
+        "--no-edit"
+    };
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_root)
+        .args(["merge", how, upstream])
+        .output()
+        .with_context(|| format!("run git merge in {}", project_root.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let files = git_output(project_root, &["diff", "--name-only", "--diff-filter=U"])
+        .map(|paths| paths.lines().map(str::to_string).collect::<Vec<_>>())
+        .unwrap_or_default();
+    if files.is_empty() {
         bail!(
-            "merge completed, but git push failed: {}",
+            "pulling {upstream} into {branch}: {}",
             git_failure_detail(&output)
         );
     }
-    Ok(commit)
+    abort_merge(project_root)?;
+    bail!(
+        "pulling {upstream} into {branch} conflicted in {}, so Corgi aborted it and the \
+         primary checkout is clean. Pull by hand in {} with git pull, resolve the \
+         conflicts, then merge again with m.",
+        files.join(", "),
+        project_root.display()
+    )
 }
 
 #[cfg(test)]
@@ -625,6 +981,7 @@ mod tests {
                 agent: "w-reviewed-agent".into(),
                 project_root: repo.clone(),
                 worktree_checkout: worktree.clone(),
+                upstream: Upstream::of(git_upstream(&repo, &target_branch)),
                 source_branch,
                 target_branch,
                 task: String::new(),
@@ -682,6 +1039,7 @@ mod tests {
             target_branch: "main".into(),
             task: String::new(),
             commits: Vec::new(),
+            upstream: Upstream::None,
             phase: MergePhase::Succeeded,
         });
 
@@ -712,6 +1070,7 @@ mod tests {
             target_branch: "main".into(),
             task: String::new(),
             commits: Vec::new(),
+            upstream: Upstream::None,
             phase: MergePhase::Succeeded,
         });
 
@@ -763,6 +1122,7 @@ mod tests {
             target_branch: "main".into(),
             task: "Make the status\nfile say agent".into(),
             commits: Vec::new(),
+            upstream: Upstream::None,
             phase: MergePhase::Confirm,
         };
         (repo, worktree, form)
@@ -866,8 +1226,10 @@ mod tests {
             target_branch: "main".into(),
             task: "Make the status\nfile say agent".into(),
             commits: Vec::new(),
+            upstream: Upstream::of(git_upstream(&repo, "main")),
             phase: MergePhase::Confirm,
         };
+        assert_eq!(form.upstream, Upstream::Check("origin/main".into()));
         (repo, worktree, remote, form)
     }
 
@@ -969,16 +1331,16 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_or_cancelled_merge_tells_no_one() {
+    fn a_failed_fetch_or_cancelled_merge_tells_no_one() {
         let (repo, worktree, remote, form) = mergeable_repo("merge-landed-failed");
         let root = repo.to_string_lossy().into_owned();
-        // The push has nowhere to go.
+        // Neither the fetch nor the push has anywhere to go.
         fs::remove_dir_all(&remote).expect("remove test remote");
         let mut app =
             conflicted_dashboard(&form, vec![project_agent("supervisor-corgi", &repo, true)]);
         assert!(matches!(
             app.overlay.merge_worktree_form().map(|form| &form.phase),
-            Some(MergePhase::Failed(_))
+            Some(MergePhase::FetchFailed(_))
         ));
         assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
 
@@ -990,6 +1352,353 @@ mod tests {
 
         fs::create_dir_all(&remote).expect("recreate remote path");
         remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    /// Pushes a commit writing `contents` to `file` into `remote` from a
+    /// clone of its own, as another machine would, and removes the clone.
+    fn push_from_elsewhere(remote: &Path, file: &str, contents: &str, subject: &str) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time after epoch")
+            .as_nanos();
+        let clone = std::env::temp_dir().join(format!("corgi-merge-elsewhere-{nonce}"));
+        git_test(
+            &std::env::temp_dir(),
+            &["clone", remote.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+        git_test(&clone, &["config", "user.name", "Elsewhere"]);
+        git_test(&clone, &["config", "user.email", "elsewhere@example.test"]);
+        fs::write(clone.join(file), contents).expect("write elsewhere change");
+        git_test(&clone, &["add", file]);
+        git_test(&clone, &["commit", "-m", subject]);
+        git_test(&clone, &["push", "origin", "main"]);
+        fs::remove_dir_all(clone).expect("remove elsewhere clone");
+    }
+
+    /// Runs the merge the open dialog starts on `key`, to its end.
+    fn press_and_finish(app: &mut App, key: KeyCode) {
+        assert!(!app.handle_key(KeyEvent::from(key)));
+        poll_until(app, App::poll_merge, |app| !app.merge_job.is_running());
+    }
+
+    fn phase(app: &App) -> Option<&MergePhase> {
+        app.overlay.merge_worktree_form().map(|form| &form.phase)
+    }
+
+    #[test]
+    fn an_upstream_that_moved_on_is_listed_and_pulled_before_the_merge() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-upstream-ahead");
+        let root = repo.to_string_lossy().into_owned();
+        push_from_elsewhere(&remote, "notes.txt", "one\n", "Note one");
+        push_from_elsewhere(&remote, "notes.txt", "two\n", "Note two");
+        let before = git_test_stdout(&repo, &["rev-parse", "main"]);
+        assert_eq!(form.steps().len(), 4, "{:?}", form.steps());
+        assert_eq!(form.steps()[1], "Fetch origin/main");
+
+        let mut app =
+            conflicted_dashboard(&form, vec![project_agent("supervisor-corgi", &repo, true)]);
+        let Some(MergePhase::Behind(commits)) = phase(&app) else {
+            panic!("{:?}", app.overlay);
+        };
+        assert_eq!(commits.len(), 2, "{commits:?}");
+        assert!(commits[0].ends_with(" Note two"), "{commits:?}");
+        assert!(commits[1].ends_with(" Note one"), "{commits:?}");
+        assert_eq!(
+            git_test_stdout(&repo, &["rev-parse", "main"]),
+            before,
+            "nothing is merged before the user answers"
+        );
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
+
+        press_and_finish(&mut app, KeyCode::Enter);
+        assert_eq!(phase(&app), Some(&MergePhase::Succeeded), "{}", app.status);
+        assert_eq!(fs::read_to_string(repo.join("notes.txt")).unwrap(), "two\n");
+        assert_eq!(
+            fs::read_to_string(repo.join("status.txt")).unwrap(),
+            "agent\n"
+        );
+        assert_eq!(
+            git_test_stdout(&repo, &["rev-parse", "main"]),
+            git_test_stdout(&remote, &["rev-parse", "refs/heads/main"])
+        );
+        // The pull was a fast-forward: the merge's first parent is the
+        // upstream's head.
+        assert_eq!(
+            git_test_stdout(&repo, &["log", "-1", "--format=%s", "main^1"]),
+            "Note two"
+        );
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(pending[0].starts_with("[Corgi] The user merged w-reviewed-agent"));
+        assert!(!pending[0].contains("push failed"), "{pending:?}");
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_diverged_base_merges_its_upstream_before_the_merge() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-upstream-diverged");
+        push_from_elsewhere(&remote, "notes.txt", "elsewhere\n", "Note elsewhere");
+        fs::write(repo.join("local.txt"), "local\n").expect("write local change");
+        git_test(&repo, &["add", "local.txt"]);
+        git_test(&repo, &["commit", "-m", "Local only"]);
+
+        let mut app = conflicted_dashboard(&form, Vec::new());
+        assert!(matches!(phase(&app), Some(MergePhase::Behind(commits)) if commits.len() == 1));
+        press_and_finish(&mut app, KeyCode::Enter);
+        assert_eq!(phase(&app), Some(&MergePhase::Succeeded), "{}", app.status);
+        for (file, contents) in [
+            ("notes.txt", "elsewhere\n"),
+            ("local.txt", "local\n"),
+            ("status.txt", "agent\n"),
+        ] {
+            assert_eq!(fs::read_to_string(repo.join(file)).unwrap(), contents);
+        }
+        assert_eq!(
+            git_test_stdout(&repo, &["rev-parse", "main"]),
+            git_test_stdout(&remote, &["rev-parse", "refs/heads/main"])
+        );
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_pull_that_conflicts_is_aborted_and_left_to_the_user() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-upstream-conflict");
+        let root = repo.to_string_lossy().into_owned();
+        push_from_elsewhere(&remote, "notes.txt", "elsewhere\n", "Note elsewhere");
+        fs::write(repo.join("notes.txt"), "local\n").expect("write local change");
+        git_test(&repo, &["add", "notes.txt"]);
+        git_test(&repo, &["commit", "-m", "Note locally"]);
+        let before = git_test_stdout(&repo, &["rev-parse", "main"]);
+
+        let mut app =
+            conflicted_dashboard(&form, vec![project_agent("supervisor-corgi", &repo, true)]);
+        assert!(matches!(phase(&app), Some(MergePhase::Behind(_))));
+        press_and_finish(&mut app, KeyCode::Enter);
+        let Some(MergePhase::Failed(error)) = phase(&app) else {
+            panic!("{:?}", app.overlay);
+        };
+        assert!(
+            error.contains("pulling origin/main into main conflicted in notes.txt"),
+            "{error}"
+        );
+        assert!(error.contains("Pull by hand"), "{error}");
+        assert!(!merge_in_progress(&repo));
+        ensure_git_clean(&repo, "primary checkout").expect("the abort leaves it clean");
+        assert_eq!(git_test_stdout(&repo, &["rev-parse", "main"]), before);
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_failed_fetch_warns_and_lets_the_user_merge_anyway() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-fetch-failed");
+        // Fetching fails, but pushing still reaches the remote.
+        git_test(
+            &repo,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                remote.to_str().unwrap(),
+            ],
+        );
+        git_test(
+            &repo,
+            &["remote", "set-url", "origin", "/nonexistent/corgi-remote"],
+        );
+
+        let mut app = conflicted_dashboard(&form, Vec::new());
+        let Some(MergePhase::FetchFailed(error)) = phase(&app) else {
+            panic!("{:?}", app.overlay);
+        };
+        assert!(error.contains("git fetch origin"), "{error}");
+        assert!(!worktree_commits(&repo, "main", "worktree/reviewed-agent").is_empty());
+
+        press_and_finish(&mut app, KeyCode::Enter);
+        assert_eq!(phase(&app), Some(&MergePhase::Succeeded), "{}", app.status);
+        let form = app.overlay.merge_worktree_form().unwrap();
+        assert_eq!(form.upstream, Upstream::Skip("origin/main".into()));
+        assert_eq!(form.steps().len(), 3, "a skipped fetch is not a step");
+        assert_eq!(
+            git_test_stdout(&repo, &["rev-parse", "main"]),
+            git_test_stdout(&remote, &["rev-parse", "refs/heads/main"])
+        );
+
+        // Esc on the warning stops without merging.
+        let (repo2, worktree2, remote2, form2) = mergeable_repo("merge-fetch-failed-esc");
+        git_test(
+            &repo2,
+            &["remote", "set-url", "origin", "/nonexistent/corgi-remote"],
+        );
+        let before = git_test_stdout(&repo2, &["rev-parse", "main"]);
+        let mut app = conflicted_dashboard(&form2, Vec::new());
+        assert!(matches!(phase(&app), Some(MergePhase::FetchFailed(_))));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Esc)));
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(git_test_stdout(&repo2, &["rev-parse", "main"]), before);
+
+        remove_mergeable_repo(repo, worktree, remote);
+        remove_mergeable_repo(repo2, worktree2, remote2);
+    }
+
+    /// What the supervisor of `repo` would be sent now: its waiting lines,
+    /// a newer one standing in for an older one of the same key.
+    fn going_out(repo: &Path) -> Vec<String> {
+        let dir = repo
+            .join(".git")
+            .join("corgi-state")
+            .join(repo.file_name().unwrap());
+        let inbox = crate::inbox::Inbox::read(&dir);
+        let items = inbox.undelivered_for(&repo.to_string_lossy());
+        crate::inbox::coalesce(&items)
+            .into_iter()
+            .map(|item| item.text.clone())
+            .collect()
+    }
+
+    /// Makes `remote` refuse every push, as a protected branch would.
+    fn refuse_pushes(remote: &Path) {
+        let hook = remote.join("hooks").join("pre-receive");
+        fs::write(&hook, "#!/bin/sh\necho 'main is protected' >&2\nexit 1\n").expect("write hook");
+        let mut permissions = fs::metadata(&hook).expect("hook metadata").permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        fs::set_permissions(&hook, permissions).expect("make hook executable");
+    }
+
+    #[test]
+    fn a_failed_push_after_the_merge_tells_the_supervisor_and_offers_the_handoff() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-push-failed");
+        let root = repo.to_string_lossy().into_owned();
+        refuse_pushes(&remote);
+        let mut app = conflicted_dashboard(
+            &form,
+            vec![
+                project_agent("supervisor-corgi", &repo, true),
+                project_agent("w-reviewed-agent", &repo, false),
+            ],
+        );
+        let commit = git_test_stdout(&repo, &["rev-parse", "--short", "main"]);
+        let Some(MergePhase::PushFailed {
+            commit: merged,
+            error,
+            help,
+        }) = phase(&app)
+        else {
+            panic!("{:?}", app.overlay);
+        };
+        assert_eq!(merged, &commit);
+        assert!(error.contains("main is protected"), "{error}");
+        assert_eq!(help, &ConflictHelp::Supervisor("supervisor-corgi".into()));
+        assert_eq!(
+            fs::read_to_string(repo.join("status.txt")).unwrap(),
+            "agent\n"
+        );
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0].starts_with(&format!(
+                "[Corgi] The user merged w-reviewed-agent (task \"Make the status file say \
+                 agent\"), branch worktree/reviewed-agent, into main at {commit}, but git push \
+                 failed: "
+            )),
+            "{pending:?}"
+        );
+        assert!(pending[0].contains("main is protected"), "{pending:?}");
+
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
+        assert!(matches!(app.overlay, Overlay::None), "{:?}", app.overlay);
+        assert!(
+            app.status.contains("Asked supervisor-corgi"),
+            "{}",
+            app.status
+        );
+        // The handoff says the merge landed too, so it stands in for the
+        // merged line that has not gone out yet.
+        assert_eq!(app.inboxes.as_ref().unwrap().pending_for(&root).len(), 2);
+        let pending = going_out(&repo);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0].starts_with(&format!(
+                "[Corgi] The user asks for help with a failed push. The user merged \
+                 w-reviewed-agent (task \"Make the status file say agent\"), branch \
+                 worktree/reviewed-agent, into main at {commit}, and git push failed: "
+            )),
+            "{pending:?}"
+        );
+        assert!(
+            pending[0].ends_with(
+                "w-reviewed-agent is merged; tell the user what the error means and what \
+                 they can run."
+            ),
+            "{pending:?}"
+        );
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_failed_push_without_a_running_supervisor_still_reports_the_merge() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-push-failed-queued");
+        let root = repo.to_string_lossy().into_owned();
+        prepare_supervisor_state(&repo);
+        refuse_pushes(&remote);
+        let mut app =
+            conflicted_dashboard(&form, vec![project_agent("w-reviewed-agent", &repo, false)]);
+        assert!(matches!(
+            phase(&app),
+            Some(MergePhase::PushFailed {
+                help: ConflictHelp::NoSupervisor,
+                ..
+            })
+        ));
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(pending[0].contains("but git push failed"), "{pending:?}");
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
+        assert!(
+            app.overlay.merge_worktree_form().is_some(),
+            "s is not offered"
+        );
+
+        // Once the remote takes pushes again, Enter fetches and pushes.
+        fs::remove_file(remote.join("hooks").join("pre-receive")).expect("remove hook");
+        press_and_finish(&mut app, KeyCode::Enter);
+        assert_eq!(phase(&app), Some(&MergePhase::Succeeded), "{}", app.status);
+        assert_eq!(
+            git_test_stdout(&repo, &["rev-parse", "main"]),
+            git_test_stdout(&remote, &["rev-parse", "refs/heads/main"])
+        );
+        let pending = going_out(&repo);
+        assert_eq!(pending.len(), 1, "the pushed line replaces the unsent one");
+        assert!(!pending[0].contains("push failed"), "{pending:?}");
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_base_without_an_upstream_merges_without_fetching() {
+        let (repo, worktree, mut form) = conflicting_merge("merge-no-upstream");
+        assert_eq!(git_upstream(&repo, "main"), None);
+        form.upstream = Upstream::of(git_upstream(&repo, "main"));
+        assert_eq!(form.upstream, Upstream::None);
+        assert_eq!(
+            form.steps(),
+            [
+                "Check both worktrees",
+                "Merge worktree/reviewed-agent into main",
+                "Push main"
+            ]
+        );
+        // No fetch stands in the way: the merge runs, and stops on its
+        // conflicts as before.
+        let app = conflicted_dashboard(&form, Vec::new());
+        assert!(matches!(phase(&app), Some(MergePhase::Conflicted { .. })));
+
+        remove_conflicting_merge(repo, worktree);
     }
 
     #[test]

@@ -816,6 +816,7 @@ fn merge(phase: MergePhase) -> App {
             "3f2a9c1 Test the first and last page of the order history".into(),
             "b71e04d Paginate the order history with a stable cursor".into(),
         ],
+        upstream: Default::default(),
         phase,
     });
     app

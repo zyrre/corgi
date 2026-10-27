@@ -377,7 +377,8 @@ submodules are split by flow, each adding methods to the one `App`.
   merge of an agent's clean worktree branch into the branch already checked
   out in the repository's primary checkout, then a push through that branch's
   configured upstream, or, when the user hands a conflicted merge to the
-  supervisor, the `git merge --abort` of that merge. The agent never
+  supervisor, the `git merge --abort` of that merge. Before the merge it
+  fetches that upstream and, when the user asks, pulls it into the branch. The agent never
   performs the merge, and Corgi never changes the user's checked-out branch.
 - `waker.rs` is `SupervisorWaker`, which wakes supervisors through their inboxes,
   puts the merge and merge-conflict lines in them, and hands them over, as
@@ -684,7 +685,10 @@ role. So Corgi keeps its own record and puts the tokens back.
   `agent.prompt` once the supervisor is neither working nor blocked, so they
   arrive after its turn, the newest item of each key only (a newer wake for
   an agent replaces an unsent one, though one without a report does not
-  replace one with a report), then records all of them delivered. When
+  replace one with a report), then records all of them delivered. Items of
+  one key stay apart in the inbox and are reduced only here
+  (`inbox::coalesce`), so `Waker::pending_for` lists them all; a test of
+  what the supervisor gets checks what `coalesce` keeps. When
   that record cannot be written, the dashboard does not type those items
   in again, and tries the record again at each refresh.
   They also wait while the supervisor's input box
@@ -1045,17 +1049,21 @@ it still shows MERGE until it works again. A merge with `m` clears the
 merged worker's tag too, also when only its push failed, since the branch
 is merged by then.
 
-A merge with `m` that succeeds, push included, also tells the project's
-supervisor (`App::tell_supervisor_about_merge`): one inbox item of kind
-`merge`, keyed `<agent> merged`, naming the agent, its task, branch, base
-branch and the short hash of the base's HEAD after the merge, which the
-merge job reads before pushing. It goes in whether or not a supervisor runs
+A merge with `m` that lands locally also tells the project's supervisor
+(`App::tell_supervisor_about_merge`): one inbox item of kind `merge`, keyed
+`<agent> merged`, naming the agent, its task, branch, base branch and the
+short hash of the base's HEAD after the merge, which the merge job reads
+before pushing. When the push then fails, the line ends with Git's error
+(`MergeLanded::push_error`) instead of leaving the supervisor unaware of the
+merge. It goes in whether or not a supervisor runs
 now, to be delivered when one does, but only for a project with a running
 supervisor or a `ROLE.md` in its state directory (`Inboxes::has_supervisor`),
 so a project that never had one gets no inbox. A failed, conflicted or
-cancelled merge sends nothing, and neither does the Omarchy popup, which has
-no inbox. A push that failed and is retried with Enter merges nothing new
-and sends the line then. The supervisor marks a worker in its ledger
+cancelled merge sends nothing, nor does a merge stopped before merging by
+the upstream check, and neither does the Omarchy popup, which has no inbox.
+A push that failed and is retried with Enter merges nothing new and sends
+the line again, which replaces the failed push's line if that has not gone
+out yet. The supervisor marks a worker in its ledger
 `merged` and re-checks the other workers tagged MERGE against the moved
 base.
 
@@ -1165,6 +1173,33 @@ checkouts are checked clean before it asks and again after `Enter`, and then
 spinner and each step. An error leaves the popup open with `Enter` to retry.
 Corgi never switches branches and never removes the worktree by itself: the
 finished popup offers `x` to close it, or keeps it open.
+
+A push the remote rejects because its branch moved on would leave the
+merge done locally and the user to sort it out, so when the target branch
+has an upstream (`git::git_upstream`, kept in `MergeWorktreeForm::upstream`)
+the job first fetches it (`git fetch <remote> <merge ref>` from the
+branch's config, with `GIT_TERMINAL_PROMPT=0` so no credential prompt lands
+on the dashboard's terminal; an upstream in the same repository is not
+fetched). A target branch without one merges as before, with no fetch step.
+When the upstream has commits the target lacks, the job stops before
+merging (`MergeError::Behind`), and the popup lists them, five at most,
+with `Enter` to pull and `Esc` to stop. The pull runs as the fetch step of a
+new job (`Upstream::Pull`): `git merge --ff-only <upstream>` when the target
+has no commits of its own, else `git merge --no-edit <upstream>`, then the
+worker's merge and the push as usual. A pull that conflicts is aborted,
+the checkout checked clean, and the error tells the user to pull by hand.
+A fetch that fails (offline, auth) stops the same way (`FetchFailed`), and
+`Enter` merges without it (`Upstream::Skip`). Every retry checks the
+upstream again.
+
+A push that fails after the merge (`MergeError::PushFailed`, carrying the
+merge commit and Git's error without its hints) clears the worker's merge
+tag and sends the supervisor the merged line with the error, as above. The
+popup shows the error, and offers `s` on the same terms as the conflict
+handoff: it adds a second item of kind `merge` under the same `<agent>
+merged` key (`supervisor::push_failed_message`), asking the supervisor to
+tell the user what the error means and what to run, and standing in for
+the merged line if that has not been delivered.
 
 A merge that stops on conflicts leaves the primary checkout mid-merge, and
 the popup lists the conflicted files (`git diff --name-only

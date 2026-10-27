@@ -705,16 +705,46 @@ pub struct MergeLanded<'a> {
     pub base: &'a str,
     /// The commit `base` points at after the merge; empty when unknown.
     pub commit: &'a str,
+    /// Git's error when the push after the merge failed.
+    pub push_error: Option<&'a str>,
 }
 
-/// The line that tells a supervisor that the user merged an agent's branch.
+/// The line that tells a supervisor that the user merged an agent's branch,
+/// and, when the push after it failed, why.
 pub fn merge_landed_message(merge: &MergeLanded<'_>) -> String {
+    let merged = merged_clause(merge);
+    match merge.push_error {
+        None => format!("{WAKE_PREFIX} {merged}."),
+        Some(error) => format!(
+            "{WAKE_PREFIX} {merged}, but git push failed: {}",
+            one_line(error)
+        ),
+    }
+}
+
+/// The line that hands a supervisor the push that failed after the user's
+/// merge, at the user's request, so it explains the error to them.
+pub fn push_failed_message(merge: &MergeLanded<'_>) -> String {
+    let merged = merged_clause(merge);
+    let error = one_line(merge.push_error.unwrap_or_default());
+    format!(
+        "{WAKE_PREFIX} The user asks for help with a failed push. {merged}, and git push \
+         failed: {error} {} is merged; tell the user what the error means and what they \
+         can run.",
+        merge.worker
+    )
+}
+
+/// `The user merged <worker> (task "…"), branch <branch>, into <base> at
+/// <commit>`, the part both merge lines share.
+fn merged_clause(merge: &MergeLanded<'_>) -> String {
     let MergeLanded {
         worker,
         task,
         branch,
         base,
         commit,
+        ..
     } = merge;
     let task = task_clause(task);
     let at = if commit.is_empty() {
@@ -722,7 +752,18 @@ pub fn merge_landed_message(merge: &MergeLanded<'_>) -> String {
     } else {
         format!(" at {commit}")
     };
-    format!("{WAKE_PREFIX} The user merged {worker}{task}, branch {branch}, into {base}{at}.")
+    format!("The user merged {worker}{task}, branch {branch}, into {base}{at}")
+}
+
+/// Git's output on one line, ending in a full stop, so it can go in a
+/// `[Corgi]` line.
+fn one_line(text: &str) -> String {
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.ends_with('.') {
+        text
+    } else {
+        format!("{text}.")
+    }
 }
 
 /// What a wake is about. Done and idle are one: the agent has stopped, and
@@ -1626,6 +1667,7 @@ mod tests {
                 branch: "worktree/silver-river-fa87",
                 base: "main",
                 commit,
+                push_error: None,
             })
         };
         assert_eq!(
@@ -1640,6 +1682,38 @@ mod tests {
         assert!(ROLE.contains("[Corgi] The user merged w-fleet-json"));
         assert!(ROLE.contains("append a ledger line with status `merged`"));
         assert!(ROLE.contains("clear its tag and have\nit merge the base branch"));
+    }
+
+    #[test]
+    fn a_failed_push_is_one_line_in_both_merge_lines() {
+        let merge = MergeLanded {
+            worker: "w-fleet-cache",
+            task: "Cache the fleet rows",
+            branch: "worktree/silver-river-fa87",
+            base: "main",
+            commit: "06d069d",
+            push_error: Some(
+                "To github.com:zyrre/corgi.git\n ! [rejected]        main -> main (fetch first)\n\
+                 error: failed to push some refs to 'github.com:zyrre/corgi.git'",
+            ),
+        };
+        assert_eq!(
+            merge_landed_message(&merge),
+            "[Corgi] The user merged w-fleet-cache (task \"Cache the fleet rows\"), branch \
+             worktree/silver-river-fa87, into main at 06d069d, but git push failed: To \
+             github.com:zyrre/corgi.git ! [rejected] main -> main (fetch first) error: failed \
+             to push some refs to 'github.com:zyrre/corgi.git'."
+        );
+        assert_eq!(
+            push_failed_message(&merge),
+            "[Corgi] The user asks for help with a failed push. The user merged w-fleet-cache \
+             (task \"Cache the fleet rows\"), branch worktree/silver-river-fa87, into main at \
+             06d069d, and git push failed: To github.com:zyrre/corgi.git ! [rejected] main -> \
+             main (fetch first) error: failed to push some refs to \
+             'github.com:zyrre/corgi.git'. w-fleet-cache is merged; tell the user what the \
+             error means and what they can run."
+        );
+        assert!(ROLE.contains("[Corgi] The user asks for help with a failed push."));
     }
 
     #[test]

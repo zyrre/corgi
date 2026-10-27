@@ -709,6 +709,7 @@ mod tests {
                 "cf87db5 Merge branch 'worktree/clear-field-df92'".into(),
                 "ec5e620 Lay the header out as one band and shorten the wordmark".into(),
             ],
+            upstream: Default::default(),
             phase: MergePhase::Confirm,
         });
         let prompt = Overlay::Prompt(crate::app::PromptForm {
@@ -841,6 +842,7 @@ mod tests {
             target_branch: "main".into(),
             task: String::new(),
             commits: Vec::new(),
+            upstream: Default::default(),
             phase: MergePhase::Running(1),
         };
         app.overlay = Overlay::merge(form);
@@ -907,6 +909,7 @@ mod tests {
             target_branch: "main".into(),
             task: String::new(),
             commits: Vec::new(),
+            upstream: Default::default(),
             phase: MergePhase::Running(2),
         });
         let mut terminal = test_terminal(100, 30);
