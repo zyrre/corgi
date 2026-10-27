@@ -17,6 +17,8 @@ Evidence marks used below:
   (`docs/next/website/src/content/docs/`, served at herdr.dev/docs).
 - **[spike 2]**: a standalone endpoint generation 1 client run against a
   second separate session (`endpointspike`, also stopped and deleted), §8.
+- **[spike 3]**: an egui prototype and protocol follow-ups, each against its
+  own separate session (`guiproto`, `endpointspike2`, both deleted), §9.
 - **[web]**: third-party sources, linked; **[assumption]**: not verified.
 
 ## Summary
@@ -374,7 +376,7 @@ the full workspace view.
 
 | Phase | Content | Effort | Workers |
 | --- | --- | --- | --- |
-| 0. Spike | The rest of §8: egui cell painter over the endpoint, over SSH; system theme on Hyprland and macOS. | 3–5 days | 1 |
+| 0. Spike | Mostly done (§9). Left: real SSH, Linux/Hyprland, IME and dead keys typed by hand, Codex, system theme live. | 2–3 days | 1 |
 | 1. Core + `corgi serve` | Cargo workspace with `corgi-core`. Move `waker`, `markers`, `rows`, `draft`, `first_prompt`, `sweep`, `RefreshState` and the free launch, merge and close functions out of `src/app/`. Invert the recovery back-references. Split the palette from ratatui roles. Add `corgi serve` (structured snapshot, deltas and commands) with snapshot tests. The TUI behaves exactly as before. | 1.5–2 weeks | 1 |
 | 2. **First milestone: GUI dashboard** | egui app that spawns `corgi serve` locally or `ssh host corgi serve`:<br>• project cards and agent rows, plan usage header, expanded transcript tail<br>• prompt; new agent (preset defaults, inline lists); start or focus supervisor<br>• merge with confirmation and outcome; close; focus in Herdr<br>• answer numbered questions<br>• system light/dark; reconnect with dimmed cached state<br>• Linux tarball and pacman package, unsigned macOS build. | 2–3 weeks | 1–2 |
 | 3. Terminals on demand | One terminal pane beside the selected card, through the endpoint adapter (§8), with `observe` for previews. Take control while focused and release afterwards. Read-only previews for the rest. | 2–4 weeks | 1–2 |
@@ -415,20 +417,23 @@ What Corgi needs from a GUI terminal:
 | | Bridge: `herdr terminal session observe` / `control` | Endpoint generation 1 |
 | --- | --- | --- |
 | Herdr's stance | Documented for third-party bridges, since 0.7.2 | Herdr's own UI; no stated support for outside clients |
-| Shift+Enter in a kitty-keyboard app | **Wrong**: the GUI must guess bytes. `\r` arrives as a plain Enter, and `\e[13;2u` reaches a legacy app untranslated. The frames don't say which mode the app chose. | **Right**: `\e[13;2u` (kitty) or `\e[27;2;13~` (legacy). Herdr encodes each key for the pane's mode, so keys behave exactly as in Herdr's TUI ([source] `pane_input.rs:314`). |
+| Shift+Enter | **Guessed** by the GUI; the frames don't say which mode the app chose. In Claude Code 2.1.280 `\e[13;2u`, `\e[27;2;13~`, `\e\r` and `\n` all gave a new line, because it enables kitty flags 5 and modifyOtherKeys 2 (spike 3). A plain `\r` submits, and `\e[13;2u` reaches a legacy-mode program untranslated. | **Right**: `\e[13;2u` (kitty) or `\e[27;2;13~` (legacy). Herdr encodes each key for the pane's mode, so keys behave exactly as in Herdr's TUI ([source] `pane_input.rs:314`). |
 | Paste | Bracketed only if the GUI sends a complete bracketed paste | Wrapped when the app enabled bracketed paste |
 | What it shows | One pane, at the size requested | The whole active tab of the client's own location, laid out at the client's size. One pane means cropping its rect, or a tab holding only that pane, as Corgi's agent tabs normally do. Zoom is tab-global, so other clients see it too. |
 | Data per busy pane | ANSI diffs, 25 KB/s | Cell patches, 79 KB/s at 29 frames/s. 0.9.0 has no scroll operation; 0.9.5 adds opt-in scroll and delta encodings. Bursts collapse to the latest frame. |
 | Echo, local | 1.3 ms | 0.3 ms (p50) |
 | GUI side | Small ANSI applier (`vt100` / alacritty_terminal) plus our own key encoder | Paint cells; no emulator, no key encoder |
-| Your Herdr window | `control` resizes the PTY while held; `observe` never resizes | The client that last interacted with a tab sets its size. Your TUI shows the GUI's size, cropped or padded, until you type there. Inherent to one PTY per pane. |
+| Your Herdr window | `control` resizes the PTY while held, and in spike 3 also other tabs' panes; `observe` never resizes | The client that last interacted with a tab sets its size. Your TUI shows the GUI's size, cropped or padded, until you type there. Inherent to one PTY per pane. |
 | Navigation | n/a (targets a pane) | Per client through its own connection; the JSON `pane.focus` moves all clients |
 | Remote | `ssh host herdr terminal session control <pane>`: plain stdio, one channel per pane | Needs a byte pipe to the remote `herdr-client.sock`. Options are `ssh -L` socket forwarding, or a relay command such as a `corgi` subcommand. Health check and reconnection are built into the protocol. **[assumption: not tried over SSH]** |
 | Upgrade risk | The `herdr` CLI must speak the **exact** private protocol of the running server (`check_client_version`, `wire.rs:1749`). Fine on one host, but it breaks between `herdr update` and a server restart whenever 22 is bumped. | Message order is "frozen for endpoint generation 1" ([source] `wire.rs:467`, `:1326`). JSON parts tolerate new fields. Surface structs are positional bincode, so Herdr adds new encodings only behind hello flags, as 0.9.5 did. No written spec; upstream is closed to PRs. |
 | Code to own | About 200 lines (process, JSON, key encoder) **[assumption]** | About 730 lines of mirrored types and client (spike), or Herdr UI's `herdr-protocol` crate as a git dependency |
 
-**For Corgi's use, the endpoint wins.** The deciding row is keys: an agent
-terminal where Shift+Enter or Ctrl+J does the wrong thing is worse than none.
+**For Corgi's use, the endpoint wins**, by a smaller margin than first
+thought. Keys are still the deciding row. Claude Code accepts guessed key
+sequences, but every other program in a pane (shells, editors, Codex) depends
+on the guess too. An agent terminal where Shift+Enter or Ctrl+J does the wrong
+thing is worse than none.
 The endpoint makes the GUI behave exactly like Herdr's own window, and that is
 also the surest compatibility promise Herdr makes. Its costs are manageable:
 - **Unofficial use:** keep it behind one adapter, test against each Herdr
@@ -451,6 +456,104 @@ Worth asking upstream, as a Discussion: semantic input on
 3. A real Claude Code and Codex session: Shift+Enter, IME and dead keys on
    macOS and Hyprland, scrolling.
 4. The system scheme read live on both platforms.
+
+## 9. Prototype and protocol tests (spike 3)
+
+The focus-view design was then tested. The GUI would be mostly a Corgi
+overview, with one terminal, at most two, in a focus view, laid out with tiles.
+Two throwaway tests ran against separate Herdr 0.9.0 sessions, both stopped and
+deleted afterwards, on an Apple M5 with a 3440×1440 60 Hz display:
+
+1. **An egui prototype.** It is about 2,000 lines of Rust: eframe and egui 0.37
+   with egui_tiles 0.18. It has a mock overview, an open-questions panel,
+   transcript tiles, and one or two live terminal tiles. Each tile is its own
+   endpoint connection to its own single-pane Herdr tab.
+2. **Protocol follow-ups.** Two connections on two tabs, warm connections, a
+   real Claude Code input box, and a byte relay standing in for SSH.
+
+**Performance: not sluggish.**
+
+| Measure | Result |
+| --- | --- |
+| Two 150×60 terminals both redrawing the full screen 60×/s, plus the overview (window) | 60 fps; frame p50 5.0 ms, p95 6.6 ms; app CPU 34 %, Herdr 20 % |
+| One 200×60 terminal under a scrolling flood (window) | frame p95 4.3 ms; app CPU 10 % |
+| Idle | 0 frames, 0 % CPU (repaints only on new surfaces or input) |
+| Keystroke to painted frame, local (window) | p50 1.9 ms, p90 2.7 ms, plus up to one display refresh. With the other pane redrawing at full speed, Herdr itself adds up to about 13–19 ms before the echo. |
+| Resize to a correctly sized screen | about 68 ms, 40 ms of it the debounce, which can be shortened |
+| Cold start to first terminal | 250–390 ms |
+| Memory, binary | 104–208 MB resident with a window; 15 MB unstripped |
+| Warm connection activated | p50 3.4 ms (cold connect: about 275 ms, because Herdr checks for new connections every 250 ms) |
+
+**What the prototype got wrong, all fixable on our side:**
+
+- **egui's system font fallback blocked the first frame for up to 3.3 s.** The
+  fix is to ship or name fonts (CJK, emoji, a Nerd Font) and load them off the
+  UI thread.
+- **Box-drawing lines had gaps,** because the glyphs are shorter than the cell.
+  Draw them as shapes, as terminal emulators do.
+- **Emoji and Nerd Font icons were blank** without fallback fonts.
+- **Rows are laid out as text again on every change.** That costs about 4 ms a
+  frame with two full-screen redraws. A glyph-atlas renderer (a wgpu paint
+  callback) would leave room for more terminals or a slower machine.
+- Colours, bold, italic, underline, strikethrough, dim and reverse were right.
+  Wide CJK characters were right once their width came from Unicode tables:
+  Herdr sends the second half of a wide character as an ordinary space.
+
+**Herdr behaviours the GUI must design around [spike 3; source at v0.9.0]:**
+
+- **Navigation from outside.** The JSON focus calls, creates with
+  `focus: true`, and closing the tab a connection shows all move connections
+  (`client_views.rs:165`, `clients.rs:109-129`). A moved connection that later
+  interacts claims its new tab's size.
+  - The GUI must treat any change of its `focused_tab_id` that it didn't ask
+    for as a lost tab, and park the connection.
+  - Corgi's creates already pass `focus: false` (`src/herdr.rs:331`, `:430`,
+    `:451`, `:506`). In the GUI, Corgi must not call `*.focus` at all.
+- **Activation claims the connection's current tab.** It gets that tab's size
+  before `tab.focus` can follow, and `tab.focus` is refused while inactive.
+  Use one empty **park tab**: park a connection there before deactivating, and
+  send `surface.set` plus `tab.focus` together.
+- **Keep two connections warm, parked and inactive.** Inactive connections
+  claim no size but still receive status snapshots (about 9.6 KB each, no
+  deltas). Entering the focus view then takes milliseconds.
+- **With one active connection, every tab follows its size**
+  (`client_views.rs:571-583`). So resizing the focus view resizes every agent's
+  terminal, exactly as a single Herdr TUI window does today.
+- **Switching typing between two connections** sends one full frame (34 KB at
+  120×40). That is harmless.
+
+**Claude Code input (2.1.280).** Through the endpoint, Shift+Enter, Alt+Enter
+and Ctrl+J each gave a new line without submitting. Through the bridge, the
+CSI-u, modifyOtherKeys, `\e\r` and `\n` sequences did too. Nothing was
+submitted in either test. Codex was not installed.
+
+**Remote (relay stand-in; real SSH was not available).** The protocol worked
+unchanged through a stdio byte relay.
+
+| Link (one-way delay) | Keystroke echo p50 |
+| --- | --- |
+| Direct | 0.4 ms |
+| Relay, no delay | 0.5 ms |
+| Relay, 20 ms | 47 ms |
+| Relay, 60 ms | 127 ms |
+
+- Echo is round-trip time plus about 5 ms; no client-side cost was added.
+- On a slow link (1 MB/s), Herdr coalesces full-screen redraws to about 5 fps.
+- Large relay buffers queue control messages behind frame data: ping rose to
+  800 ms with 1 MB of buffering, 310 ms with 32 KB. So the relay should buffer
+  little and let Herdr's single-slot render lane drop stale frames.
+- A local full-screen redraw at 200×60 is 8.5 MB/s. A scrolling flood is
+  165 KB/s.
+
+**Verdict.** The proposed stack is fast enough:
+- egui with egui_tiles;
+- endpoint generation 1;
+- one connection per visible terminal, plus two warm parked connections.
+
+The work left is ordinary terminal-renderer craft (fonts, box drawing, a glyph
+atlas) and the connection-management rules above, not a change of approach.
+Still unverified: real SSH, Codex, IME and dead keys typed by a person, and
+Linux/Hyprland.
 
 ## Open questions
 
