@@ -64,9 +64,10 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   └─ supervisors/<project>/ ─ the supervisor's files, written by Corgi at launch
                           and by the supervisor: ROLE.md, launch.json,
                           decisions.md, ledger.jsonl, briefs/, handover.md
-                          while one is under way, handovers/;
+                          while one is under way, handovers/, notes/;
                           and by Corgi only (`src/inbox.rs`, under inbox.lock):
-                          inbox.jsonl, and inbox-reports/ for long reports
+                          inbox.jsonl, inbox-reports/ for long reports, and
+                          reports/, spawned workers' reports kept for good
 
 Agent session files (per refresh, only the records appended since are parsed)
   ├─ {$CLAUDE_CONFIG_DIR,~/.claude}/projects/<slug>/<session>.jsonl ── model, token usage, cache lifetime
@@ -596,7 +597,8 @@ role. So Corgi keeps its own record and puts the tokens back.
   `inbox.lock`: items (`id`, `ts`, `project`, `source`, `kind` of `wake`,
   `conflict`, `merge` or `note`, `agent`, `state`, for a wake the agent's `pane` and
   `change` (its `state_change_seq`), a coalescing `key`, the `[Corgi]`
-  `text`, `own`, and the agent's report inline or as `report_file`), and
+  `text`, `own`, the spawn's `request` id for one of the supervisor's own,
+  and the agent's report inline or as `report_file`), and
   records naming the ids delivered. An item no record names is
   undelivered, and an id is added only once. Readers take no lock and skip
   a last line still being written; a writer that finds the last line cut
@@ -660,7 +662,18 @@ role. So Corgi keeps its own record and puts the tokens back.
   saved, so the next refresh finds the same stop and adds it.
 - When an agent rests, its report, what `corgi report` printed then (the
   newest thing said in its transcript, else its screen), goes into the item:
-  inline up to 4 KB, else in `inbox-reports/<id>.md`. A wake's line names
+  inline up to 4 KB, else in `inbox-reports/<id>.md`. For a worker the
+  supervisor spawned (its wake carries the `request` id) whose report comes
+  from its transcript, the same report is also written, under the inbox
+  lock, to its own new file in `reports/`, `YYYYMMDD-HHMMSS-<request id>.md`
+  (a `-2`, `-3` … when a name of that second is taken), headed by the agent,
+  its state, the time, the request id and the project. A screen, and any
+  report of an agent the user started, is never kept there: the user's own
+  sessions are not stored for good. Whether the report came from the
+  transcript is a field of the item in memory only (`said`), not written to
+  the inbox. Compaction never touches `reports/`, so a worker's report stays
+  searchable after its item is dropped; the files are private like the
+  inbox's (0700 directory, 0600 files). A wake's line names
   the agent, its state, and the command to run next. When it goes out for
   one of the supervisor's own workers with an inline report, and the prompt's
   reports stay within 12 KB, the line says the report follows instead,
@@ -1237,19 +1250,39 @@ footer with the number of superseded entries hidden, how to read one in full,
 how to search, and warnings. A decision entry's `Supersedes: <heading>` line hides the
 earlier entry with exactly that heading (after `## `); one that matches none
 is warned about. `corgi digest --decision "<words>"` prints every entry,
-superseded or not, whose heading contains all the words.
+superseded or not, whose heading contains all the words; when no heading
+does, those whose text has them all (as `--search` matches a word); when
+none does, it says so and runs `--search` instead, since a question number
+is often only in a handover note.
 
 `corgi digest --search "<words>"` (`src/digest/search.rs`) looks in all of
 the memory, since a test showed a supervisor answering "don't know" to every
 question about older history with the digest alone: decision entries
-(superseded ones marked), the newest ledger line of each id, and the
-paragraphs and list items of briefs and archived handover notes. A word hits
-a block that has a word starting with it, ignoring case. Hits are ranked by
-how many of the words they have, then newest first, with a file's hits past
-its first two moved behind every other file's; each shows `file:line`, its
-date (a handover note's in full, since a stale note misled the test's
-answers) and up to three lines of context, and the output stops near 5 KB
-with a line counting the hits left out. No index: the files are small enough
+(superseded ones marked); each ledger id, all its lines in
+`ledger-archive.jsonl` and `ledger.jsonl` searched together and placed at
+its newest; and the paragraphs and list items of briefs, `reports/`,
+`notes/` (any UTF-8 file up to 1 MB, links not followed), `handover.md` and
+archived handover notes. A word hits a block that has a word starting with
+it, ignoring case. Blocks with the words as a phrase (in a row, only
+punctuation between) come first, then those with the most words, then
+those with the most on one line, then the newest; a file's hits past its
+first two go behind every other file's. A block whose words (numbers made
+alike) are at least four fifths in a better hit's, and which is at least a
+third its size, folds into it and is named under it: an investigation of
+63 supervisor transcripts found daily briefs repeating a paragraph filling
+the top hits. Decisions and ledger ids never fold. At most six hits are
+shown, each as a `file:line` handle, its date (a handover note's in full,
+since a stale note misled the test's answers) and up to ten lines or
+1.2 KB of the block around its best line, lines cut at 500 bytes; the
+output stops near 7 KB with a line counting the hits left out.
+
+`--show <file:line>`, `--ledger <id or agent>` and `--brief <id>`
+(`src/digest/lookup.rs`) print one item whole, since the same
+investigation found a third of search hits followed by a raw read of the
+file: the decision entry, the ledger line with its id's history, a brief
+or report whole, or the section of any other Markdown file under its
+nearest heading. A handle must stay inside the state directory and not
+name the inbox. No index: the files are small enough
 to read on each search. Like `fleet`, it
 needs Herdr to resolve the project and its agents. `corgi` alone, or with
 `--compact`, opens the dashboard; any other word it does not know prints the
@@ -1337,6 +1370,68 @@ retiring that repository's agentless project parent. It keeps the parent if an
 agent, a linked worktree workspace, or an extra tab remains; it also keeps the
 parent when it sees a workspace it did not create. That conservative rule
 means Corgi never closes a project resource it cannot prove is idle and owned.
+
+### Confirmed conversation recovery
+
+`S` opens `app/recovery.rs`'s cancel-first Sessions flow. Save writes immutable
+versioned metadata in `recovery/` under the state home; `recovery/store.rs`
+serializes mutations, uses owner-only files and fsync/rename, and keeps a
+monotonic save sequence. Native conversation stores and supervisor memory stay
+separate: the manifest references their current durable state, never copies
+transcript/task text or rewinds memory. `recovery/native.rs` verifies exact UUIDs
+without the display reader's newest-by-cwd fallback and builds prompt-free
+Codex and Claude resume arguments. Codex permission records replace the whole
+previous policy in transcript order: current `thread_settings_applied` profiles
+supersede older `turn_context` policies, including empty roots and network/temp
+restrictions. Capture replaces launch-profile permissions as a unit. The adapter
+reconstructs Codex's built-in `.git`/`.agents`/`.codex`/`.aws` read guards and
+blocks policies it cannot express faithfully (custom read restrictions, deny
+rules and external enforcement); explicit review cannot override that block.
+Read-only supervisors retain role instructions and state read access without
+`--add-dir`, which requests writes. Observed writable roots are never expanded
+for supervisor memory; registered launch profiles retain their intended state
+root. Unknown other settings require explicit review.
+
+Herdr owns layout restoration. Recovery validates saved workspace/tab/pane IDs,
+checkout and `pane.process_info`'s foreground shell, then calls `agent.start`
+in the original pane. The normal path creates no placement. Only an explicitly
+selected missing/occupied-destination alternative creates a tab or opens an
+existing directory/worktree. A durable native-identity intent precedes each
+mutation. Unconfirmed launches are reconciled, not repeated; a confirmed native
+identity permits metadata-only retry. Sequence-dependent merge and handover
+claims are not restored. See [the recovery contract](docs/session-recovery-design.md).
+
+Lifecycle tests must preserve a live native reference at disposable-server
+shutdown. Quitting the harness first clears that reference and exercises a
+different identity path. Record manual hook/API identity reports as a fixture
+boundary: a hook browser's trusted/active status does not prove idle resume
+emitted an identity report. Check native argv, history and task counts as well.
+
+Recovery acknowledgment hints accept either letter case. Manual setup also
+accepts Space to toggle its single acknowledgment; Confirm explains a missing
+acknowledgment in the fixed footer so scrolling cannot hide the feedback.
+Toggling, navigation and repeat events never substitute for explicit confirmation.
+
+Manual setup has its own explicit confirmation and config check/backup/reload;
+startup, Save and browsing never edit Herdr configuration. Herdr 0.9.1 cannot
+report its loaded config path or an auto-resume barrier. Setup therefore needs
+user acknowledgment of the displayed path and a subsequent normal server start
+before new recovery launches; Corgi never restarts it. Layout restore remains on.
+
+A committed Save arms next-boot supervisor holds; the waker checks them before
+its first observation/delivery/handover. Same-boot Save does not pause normal
+coordination. Every retained prior-boot manifest contributes unreleased holds,
+independently of the newest Save and before any observation. Continue records
+per-manifest acknowledgments for all matching prior-boot identities in selected
+projects, leaving same-boot saves armed for next boot. Delivery checks use the
+same retained manifests, including pending inbox quarantines. Explicit restore
+also holds before launch. Observation baselines
+advance while held, so Continue does not replay stops. Continue is separately
+confirmed. Delivery IDs are persisted before inbox sends; uncertain sends and
+saved pre-reboot pending IDs remain quarantined, with inbox bytes intact.
+Old coordinating binaries cannot enforce these holds: use the updated build
+for all coordinating dashboards after activation. Holds do not stop native
+hooks, pending work, direct input or coordination already in flight.
 
 ## Future extensions
 

@@ -15,6 +15,7 @@ pub mod paths;
 pub mod projects;
 #[cfg(test)]
 mod readme_shots;
+pub(crate) mod recovery;
 pub mod session;
 pub mod supervisor;
 #[cfg(test)]

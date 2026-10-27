@@ -35,6 +35,7 @@ pub(crate) enum Overlay {
     /// A message another command left for the dashboard, such as
     /// `corgi setup`'s outcome, until Enter or Esc.
     Notice(String),
+    Sessions(super::recovery::Sessions),
 }
 
 impl Overlay {
@@ -66,6 +67,7 @@ impl Overlay {
         match self {
             Self::Launch(launch) => matches!(launch.state, LaunchState::Running { .. }),
             Self::Merge(form) => matches!(form.phase, MergePhase::Running(_)),
+            Self::Sessions(form) => form.stage == super::recovery::Stage::Working,
             _ => false,
         }
     }
