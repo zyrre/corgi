@@ -619,11 +619,13 @@ Prints a bounded digest of the memory of PROJECT's supervisor (default: the
 project containing the current directory), for the start of a supervisor's
 session: the base branch, the handover note if there is one (else the open
 threads of the newest archived one), open ledger work joined with the
-running agents, recently finished work, the newest decisions in full (about
-12 KB, at least 3) and the titles of older ones. Decisions named by a later
-entry's `Supersedes:` line are left out. Reads only; it never changes the
-state directory. When the supervisor has missed inbox items, a line on
-stderr says so.
+running agents (about 4 KB; `reported` work whose agent is gone and whose
+newest line is 2+ days old is counted on one line), recently finished work,
+the newest decisions in full (about 8 KB, at least 3) and the titles of
+older ones (about 3 KB, and a line counting the rest). Decisions named by a later entry's `Supersedes:` line are left
+out, and unreadable ledger lines are warned about. Reads only; it never
+changes the state directory. When the supervisor has missed inbox items, a
+line on stderr says so.
 
 Options:
   --decision WORDS   Print in full every decision, superseded or not, whose
@@ -739,6 +741,7 @@ pub fn digest(args: &[String]) -> Result<()> {
             decisions: &decisions,
             ledger: &ledger,
             fleet: &fleet,
+            now: crate::time::unix_now(),
             decision_command: &decision_command,
             search_command: &search_command,
         })

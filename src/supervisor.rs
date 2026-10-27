@@ -231,6 +231,9 @@ pub fn corgi_bin(installed_plugin_root: Option<&Path>) -> Result<PathBuf> {
 /// has exited, as a handover asks it to before its successor is prepared,
 /// so no running session, whose harness may have resolved the old path for
 /// its sandbox, has its files moved away from under it.
+///
+/// It also compacts the ledger (see [`compact_ledger`]), for the same reason:
+/// no session of the project is running to append to it meanwhile.
 pub fn prepare(project_root: &str, corgi_bin: &Path) -> Result<Prepared> {
     prepare_at(&state_base()?, project_root, corgi_bin)
 }
@@ -240,7 +243,7 @@ fn prepare_at(base: &Path, project_root: &str, corgi_bin: &Path) -> Result<Prepa
     let (dir, old) = state_dirs_in(base, project_root);
     let (state_dir, warning) = migrate_state_dir(dir, &old)?;
     let mut prepared = prepare_in(state_dir, project_root, corgi_bin)?;
-    prepared.warning = warning;
+    prepared.warning = joined(warning.into_iter().chain(prepared.warning.take()));
     Ok(prepared)
 }
 
@@ -265,6 +268,10 @@ fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Resul
     if !ledger.exists() {
         fs::write(&ledger, "").with_context(|| format!("create {}", ledger.display()))?;
     }
+    // A ledger that cannot be compacted still works; the launch goes on.
+    let warning = compact_ledger(&state_dir)
+        .err()
+        .map(|error| format!("The ledger was not compacted: {error:#}"));
     let role_file = state_dir.join(ROLE_FILE);
     let role = role(corgi_bin, &state_dir);
     fs::write(&role_file, &role).with_context(|| format!("write {}", role_file.display()))?;
@@ -272,8 +279,48 @@ fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Resul
         state_dir,
         role_file,
         role,
-        warning: None,
+        warning,
     })
+}
+
+/// Rewrites `ledger.jsonl` in `state_dir` without the lines a later line of
+/// the same id supersedes, appending those to
+/// [`LEDGER_ARCHIVE_FILE`](crate::digest::lookup::LEDGER_ARCHIVE_FILE) (see
+/// [`crate::digest::compact_ledger`]). The archive is written first and each file
+/// replaced whole, through a temporary file, so no line is lost when it stops
+/// halfway; at worst the archive gets some lines twice. Nothing is written
+/// when no line is superseded.
+fn compact_ledger(state_dir: &Path) -> Result<()> {
+    let ledger = state_dir.join("ledger.jsonl");
+    let text = fs::read_to_string(&ledger).with_context(|| format!("read {}", ledger.display()))?;
+    let Some((kept, superseded)) = crate::digest::compact_ledger(&text) else {
+        return Ok(());
+    };
+    let archive = state_dir.join(crate::digest::lookup::LEDGER_ARCHIVE_FILE);
+    let mut archived = match fs::read_to_string(&archive) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error).with_context(|| format!("read {}", archive.display())),
+    };
+    if !archived.is_empty() && !archived.ends_with('\n') {
+        archived.push('\n');
+    }
+    archived.push_str(&superseded);
+    replace_file(&archive, &archived)?;
+    replace_file(&ledger, &kept)
+}
+
+/// Writes `text` to `path` through a temporary file beside it, renamed over it.
+fn replace_file(path: &Path, text: &str) -> Result<()> {
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    let mut file =
+        fs::File::create(&temporary).with_context(|| format!("write {}", temporary.display()))?;
+    std::io::Write::write_all(&mut file, text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("write {}", temporary.display()))?;
+    fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))
 }
 
 /// How a supervisor was launched, kept in its state directory so the supervisor
@@ -1317,6 +1364,44 @@ mod tests {
         HandlerAfterSteward,
         /// In `steward/`, never moved.
         Steward,
+    }
+
+    #[test]
+    fn prepare_moves_superseded_ledger_lines_to_the_archive_once() {
+        let base = StateBase::new("state-compact");
+        let (dir, _) = state_dirs_in(&base.0, "/repos/weather");
+        fs::create_dir_all(&dir).unwrap();
+        let a1 = r#"{"id":"a","status":"dispatched"}"#;
+        let b1 = r#"{"id":"b","status":"dispatched"}"#;
+        let bad = r#"{"id":"a","outcome":"bad \q escape"}"#;
+        let a2 = r#"{"id":"a","status":"done"}"#;
+        fs::write(
+            dir.join("ledger.jsonl"),
+            format!("{a1}\n{b1}\n{bad}\n{a2}\n"),
+        )
+        .unwrap();
+        // An archive from before, its last line without a newline.
+        fs::write(
+            dir.join(crate::digest::lookup::LEDGER_ARCHIVE_FILE),
+            "{\"id\":\"z\"}",
+        )
+        .unwrap();
+
+        let prepared = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+        assert_eq!(prepared.warning, None);
+        let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap();
+        assert_eq!(read("ledger.jsonl"), format!("{b1}\n{bad}\n{a2}\n"));
+        assert_eq!(
+            read(crate::digest::lookup::LEDGER_ARCHIVE_FILE),
+            format!("{{\"id\":\"z\"}}\n{a1}\n")
+        );
+        assert!(!dir.join("ledger.jsonl.tmp").exists());
+        assert!(!dir.join("ledger-archive.jsonl.tmp").exists());
+
+        // A second launch finds nothing to move and leaves both as they are.
+        let before = files(&dir);
+        prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+        assert_eq!(files(&dir), before);
     }
 
     #[test]
