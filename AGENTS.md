@@ -135,6 +135,19 @@ from that primary checkout with `cargo build --release` and
 metadata changed. Quit and reopen only the Corgi dashboard when the running
 process must pick up a rebuilt binary; do not restart Herdr.
 
+## Session recovery checks
+
+`cargo test recovery` uses isolated native-store/config fixtures and fake Herdr
+sockets, including both Codex and Claude resume adapters. Keep the normal-path
+assertions: unchanged original workspace/tab/pane IDs, zero placement creation,
+and no prompt. Never substitute newest-by-cwd display discovery for recovery
+identity, and never use installed configuration or real conversations as failure
+fixtures. `CORGI_RECOVERY_PREVIEW=1` disables the preview dashboard's waker;
+combine it with a fake socket, private synthetic HOME/state/native stores and
+CLI overrides for a safe labeled UI preview. It is not a production hold switch.
+The [recovery contract](docs/session-recovery-design.md) records compatibility
+limits and the user-waived live-Claude check; do not retry authentication errors.
+
 ## README screenshots and animation
 
 The images in `docs/images/` are drawn by Corgi's own UI code from made-up

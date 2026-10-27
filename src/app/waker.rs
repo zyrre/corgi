@@ -74,6 +74,9 @@ pub(super) struct SupervisorWaker {
     /// Replacements running in the background, by project root, each ending
     /// with its status line or error.
     replacements: Vec<(String, Job<Result<String>>)>,
+    /// Recovery holds suppress outgoing work while preserving observed baselines.
+    recovery_held: HashSet<String>,
+    recovery_store: Option<crate::recovery::Store>,
 }
 
 /// The supervisors' inboxes, a directory per project. The waker delivers
@@ -348,6 +351,7 @@ impl SupervisorWaker {
             self.agents.insert(name.to_string(), next);
             let root = agent.project_root.as_str();
             if let Some(state) = woke
+                && !self.recovery_held.contains(root)
                 && (supervisors.contains(root) || self.handing_over(root) || own(agent))
             {
                 stops.push(Stop {
@@ -561,16 +565,31 @@ impl SupervisorWaker {
             if pending.is_empty()
                 || matches!(agent.info.state, AgentState::Working | AgentState::Blocked)
                 || drafting(agent)
-                || !prompt(supervisor, &inbox::prompt_text(&pending))
             {
                 continue;
             }
             let ids: Vec<String> = pending.iter().map(|item| item.id.clone()).collect();
+            let scope = self
+                .socket
+                .as_deref()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if let Some(store) = &self.recovery_store
+                && let Err(failed) = crate::recovery::begin_delivery(store, &scope, root, &ids)
+            {
+                error = Some(format!("Coordination: {failed}"));
+                continue;
+            }
+            if !prompt(supervisor, &inbox::prompt_text(&pending)) {
+                continue;
+            }
             if let Err(failed) = inbox::mark_delivered(&dir, &ids, supervisor) {
                 unrecorded.extend(ids);
                 error = Some(format!(
                     "Could not record the delivery to {supervisor}: {failed:#}"
                 ));
+            } else if let Some(store) = &self.recovery_store {
+                let _ = crate::recovery::finish_delivery(store, &scope, root, &ids);
             }
         }
         error
@@ -589,6 +608,24 @@ impl SupervisorWaker {
         if !self.leads(client) {
             return None;
         }
+        // Check durable recovery holds before observation can enqueue stop
+        // reports, before handover, and before any inbox delivery. A malformed
+        // hold record fails closed rather than waking a restored supervisor.
+        let held = match crate::recovery::held_projects(client, agents) {
+            Ok(held) => held,
+            Err(_) => {
+                return Some(
+                    "Recovery state could not be read; supervisor coordination held".into(),
+                );
+            }
+        };
+        self.recovery_held = held.iter().cloned().collect();
+        self.recovery_store = crate::recovery::Store::for_client(client);
+        let available: Vec<_> = agents
+            .iter()
+            .filter(|a| !held.contains(&a.project_root))
+            .cloned()
+            .collect();
         self.socket
             .get_or_insert_with(|| client.socket_path().to_path_buf());
         let corgi_bin = self.corgi_bin.get_or_insert_with(|| {
@@ -618,7 +655,7 @@ impl SupervisorWaker {
         }
         let percent = supervisor::handover_percent();
         let actions = self.hand_over(
-            agents,
+            &available,
             percent,
             supervisor::handover_idle_secs,
             unix_now(),
@@ -678,11 +715,18 @@ impl SupervisorWaker {
             }
         }
         let undelivered = self.deliver(
-            agents,
+            &available,
             |supervisor| holds_draft(client, supervisor),
             |supervisor, text| client.prompt_agent(supervisor, text).is_ok(),
         );
-        status.or(undelivered)
+        status.or(undelivered).or_else(|| {
+            (!held.is_empty()).then(|| {
+                format!(
+                    "{} recovered project(s): coordination held · S sessions",
+                    held.len()
+                )
+            })
+        })
     }
 }
 
@@ -1983,6 +2027,53 @@ mod tests {
             wake_lock_path(Path::new("/tmp/herdr.sock"))
                 .and_then(|path| path.file_name().map(|name| name.to_owned())),
             Some("_tmp_herdr_sock.lock".into())
+        );
+    }
+
+    #[test]
+    fn next_boot_recovery_hold_precedes_wakes_and_keeps_observation_baselines() {
+        let (scratch, client, saved, mut agents) = crate::recovery::tests::hold_fixture();
+        let store = crate::recovery::Store::for_client(&client).unwrap();
+        store.save(&saved).unwrap();
+        for agent in &mut agents {
+            agent.info.state = AgentState::Idle;
+        }
+        let mut worker = weather_worker("fixture-worker", AgentState::Working, 1, true);
+        worker.project_root = agents[0].project_root.clone();
+        agents.push(worker);
+        let mut waker = SupervisorWaker::in_dir(&scratch.join("inboxes"));
+        waker.corgi_bin = Some("/usr/bin/true".into());
+        assert!(waker.lead(&scratch.join("test.lock")));
+        // No server: any handover/metadata/prompt API call would fail. A report
+        // callback must not be invoked for a stop while coordination is held.
+        waker.tick(&client, &agents, |_| panic!("held report captured"));
+        agents.last_mut().unwrap().info.state = AgentState::Done;
+        agents.last_mut().unwrap().info.state_change_seq = 2;
+        let status = waker.tick(&client, &agents, |_| panic!("held report captured"));
+        assert!(status.unwrap().contains("held"));
+        assert_eq!(waker.recovery_held.len(), 2);
+        assert_eq!(waker.agents["fixture-worker"].change, 2);
+        assert!(
+            waker
+                .inboxes
+                .pending_for(&agents[0].project_root)
+                .is_empty()
+        );
+        let held = crate::recovery::held_projects(&client, &agents).unwrap();
+        crate::recovery::continue_coordination(&client, &held).unwrap();
+        waker.recovery_held.clear();
+        assert!(
+            waker
+                .observe(&agents, Path::new("/usr/bin/true"), |_| panic!(
+                    "old stop replayed"
+                ))
+                .is_none()
+        );
+        assert!(
+            waker
+                .inboxes
+                .pending_for(&agents[0].project_root)
+                .is_empty()
         );
     }
 

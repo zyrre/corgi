@@ -546,11 +546,11 @@ impl HerdrClient {
         expect_result_type(&result, "tab_closed")
     }
 
-    fn request(&self, method: &str, params: Value) -> Result<Value> {
+    pub(crate) fn request(&self, method: &str, params: Value) -> Result<Value> {
         self.request_with_timeout(method, params, REQUEST_TIMEOUT)
     }
 
-    fn request_with_timeout(
+    pub(crate) fn request_with_timeout(
         &self,
         method: &str,
         params: Value,
@@ -760,7 +760,7 @@ struct ForegroundProcess {
 }
 
 /// Location and identity of any pane in the session snapshot.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PaneInfo {
     #[serde(default)]
     pub pane_id: String,
@@ -780,6 +780,8 @@ pub struct PaneInfo {
     /// agent in it reports, and kept here when no agent is in it.
     #[serde(default)]
     pub tokens: BTreeMap<String, String>,
+    #[serde(default)]
+    pub agent_session: Option<crate::model::AgentSession>,
 }
 
 /// Location and identity of any tab in the session snapshot.
