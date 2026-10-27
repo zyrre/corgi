@@ -40,6 +40,13 @@ list drops directories that do not exist, so a test that saves it to a file
 must remember real directories (made in its `ScratchDir`), not made-up paths
 such as `/repos/a`.
 
+The supervisor's role and the `[Corgi]` lines Corgi types into its box
+(handover requests, merge, conflict and push lines) are pinned by tests in
+`src/supervisor.rs`, and the merge lines also by the exact-inbox-text tests
+in `src/app/merge.rs`: change the wording, update both. Line breaks in
+`supervisor/ROLE.md` and `supervisor/HANDOVER.md` matter, since those tests
+match their text with `contains`.
+
 On macOS, copying a rebuilt binary over an existing file (say, a copy of
 `target/release/corgi` kept to compare before and after) gets it killed with
 exit 137, because the kernel caches the old file's code signature. `rm` the

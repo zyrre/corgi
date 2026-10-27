@@ -1,6 +1,6 @@
 //! The command-line tools: `corgi spawn`, `corgi supervisor`, `corgi fleet`,
-//! `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
-//! `corgi tag`.
+//! `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox`,
+//! `corgi tag` and `corgi role`.
 
 use std::{
     env, fs, io,
@@ -1106,6 +1106,43 @@ fn notify_text(text: &str) -> String {
     }
 }
 
+pub const ROLE_USAGE: &str = "\
+Usage: corgi role handover [PROJECT]
+
+Prints the part of the supervisor's role it reads only when it needs it.
+handover: how a supervisor hands over to a fresh session when the Corgi
+dashboard asks it to, with the paths of the state directory of PROJECT's
+supervisor (default: the project containing the current directory) and of
+this Corgi binary filled in. Reads only.";
+
+/// `corgi role handover [PROJECT]`: the project, if one is named.
+fn role_args(args: &[String]) -> Result<Option<&str>> {
+    match args {
+        [part, rest @ ..] if part == "handover" => match rest {
+            [] => Ok(None),
+            [option] if option.starts_with('-') => {
+                bail!("unknown option {option:?}\n\n{ROLE_USAGE}")
+            }
+            [project] => Ok(Some(project.as_str())),
+            _ => bail!("{ROLE_USAGE}"),
+        },
+        _ => bail!("{ROLE_USAGE}"),
+    }
+}
+
+/// `corgi role`: a part of the supervisor's role, printed on demand.
+pub fn role_command(args: &[String]) -> Result<()> {
+    let project = role_args(args)?;
+    let root = project_root(project)?;
+    let state_dir = crate::supervisor::state_dir(&root)?;
+    let corgi_bin = env::current_exe().context("find the Corgi binary")?;
+    print!(
+        "{}",
+        crate::supervisor::handover_instructions(&corgi_bin, &state_dir)
+    );
+    Ok(())
+}
+
 pub const INBOX_USAGE: &str = "\
 Usage: corgi inbox [PROJECT] [--delivered] [--take]
 
@@ -1394,6 +1431,25 @@ mod tests {
         assert_eq!(row(Some(cache(NOW + 2 * 3_600, Estimated))), "warm? 2h");
         assert_eq!(row(Some(cache(NOW - 1, Estimated))), "cold? 180k");
         assert_eq!(row(None), "-");
+    }
+
+    #[test]
+    fn corgi_role_prints_only_the_handover_part_for_at_most_one_project() {
+        let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert_eq!(role_args(&args(&["handover"])).unwrap(), None);
+        assert_eq!(
+            role_args(&args(&["handover", "/repos/weather"])).unwrap(),
+            Some("/repos/weather")
+        );
+        for wrong in [
+            &[][..],
+            &["merge"],
+            &["handover", "--all"],
+            &["handover", "/a", "/b"],
+        ] {
+            let error = role_args(&args(wrong)).expect_err("refused");
+            assert!(error.to_string().contains(ROLE_USAGE), "{wrong:?}");
+        }
     }
 
     #[test]

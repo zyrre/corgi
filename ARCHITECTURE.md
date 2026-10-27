@@ -94,6 +94,7 @@ Headless launch and the supervisor
   ├─ corgi notify ─── add an item to a supervisor's inbox, text on stdin
   ├─ corgi inbox ──── a supervisor's undelivered inbox items, bounded
   ├─ corgi tag ────── tag an agent ready to merge (pane token), or clear it
+  ├─ corgi role ───── the part of the supervisor's role it reads on demand (handover)
   └─ corgi edit ───── the plugin's `edit` action: open the focused or selected
                        agent's checkout in the user's editor
 
@@ -387,8 +388,8 @@ submodules are split by flow, each adding methods to the one `App`.
   described below; `draft.rs` tells it whether a supervisor's input box holds
   the user's draft.
 - `cli.rs` is `corgi spawn`, `corgi supervisor`, `corgi fleet`,
-  `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox` and
-  `corgi tag`. The
+  `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox`,
+  `corgi tag` and `corgi role`. The
   digest's parsing and caps are pure functions in `src/digest.rs`.
 - `setup.rs` is `corgi setup`. Herdr plugins cannot declare key bindings,
   so it appends one for the plugin's `open` action to the end of Herdr's
@@ -513,7 +514,11 @@ role. So Corgi keeps its own record and puts the tokens back.
   from `supervisor/ROLE.md`, embedded in the binary and written into the
   project's supervisor directory with the path of the Corgi binary that launches
   it; that directory's files; the first prompt; and the pure state machines
-  behind waking and handover. A supervisor runs on Claude Code, the default, or
+  behind waking and handover. The role is loaded into every turn, so what a
+  supervisor needs only at one moment is not in it: how to hand over is
+  `supervisor/HANDOVER.md`, which `corgi role handover` prints and the
+  handover request names, and what to do after a merge, a conflicted merge
+  or a failed push is in the `[Corgi]` line that reports it. A supervisor runs on Claude Code, the default, or
   Codex, which `Harness` gives the role arguments of.
   Claude Code appends the role file to its system prompt.
   Codex takes the role inline as `-c developer_instructions`, which adds to
@@ -545,9 +550,8 @@ role. So Corgi keeps its own record and puts the tokens back.
   moves the marker to `corgi_handler`, in Herdr and in Corgi's record. A
   project workspace still labelled `<project> corgi`, `<project> handler` or
   `<project> steward` is relabelled `<project> supervisor`;
-  `CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN` are still read;
-  and the role tells `[corgi]`, `[handler]` and `[steward]` prompts on a
-  worker's screen as its own. The dashboard's own lines start with
+  and `CORGI_HANDLER_BIN` and `CORGI_STEWARD_BIN` are still read. The
+  dashboard's own lines start with
   `[Corgi]`, the app's name, so they are never taken for the supervisor's
   `[supervisor]`; `corgi notify` turns a leading `[corgi]`, as a script
   written for an older Corgi adds it, into `[Corgi]`.
@@ -723,8 +727,8 @@ role. So Corgi keeps its own record and puts the tokens back.
   context is half full, since compaction would lose what only its
   conversation holds (`supervisor::Handover`, once per harness session). A
   supervisor that is idle or done, never working or blocked, at 50% or more
-  gets one `[Corgi]` line asking it to write `handover.md` in its state
-  directory and end its turn, held like a wake while its input box holds a
+  gets one `[Corgi]` line asking it to run `corgi role handover <root>`,
+  write `handover.md` in its state directory as that prints, and end its turn, held like a wake while its input box holds a
   draft and asked at a later refresh; the request is recorded as a
   `corgi_handover` pane token (`<unix seconds> <session>`), so a dashboard
   that takes over the wake lock during that turn adopts it instead of
@@ -738,7 +742,9 @@ role. So Corgi keeps its own record and puts the tokens back.
   the agent, and runs the usual supervisor launch in that same pane under the
   same name: the role is prepared again, the marker set again, and the
   first prompt has the new session do the start-of-session reading, then
-  read the note and move it to `handovers/<YYYYMMDD-HHMMSS>.md`. It starts
+  read the note and move it to `handovers/<YYYYMMDD-HHMMSS>.md`, and
+  instead of a greeting say in one line that it took over, restate in full
+  each open question the note hands on, and sum up what else is open. It starts
   on the harness, model, effort, and extra arguments the launch recorded in
   `launch.json`, or the harness's defaults without one. A supervisor seen at
   work after its note was found (a turn the user sent from the draft that
@@ -1065,9 +1071,12 @@ cancelled merge sends nothing, nor does a merge stopped before merging by
 the upstream check, and neither does the Omarchy popup, which has no inbox.
 A push that failed and is retried with Enter merges nothing new and sends
 the line again, which replaces the failed push's line if that has not gone
-out yet. The supervisor marks a worker in its ledger
-`merged` and re-checks the other workers tagged MERGE against the moved
-base.
+out yet. The line itself tells the supervisor what to do, since the role
+leaves it out: mark a worker in its ledger `merged`, stay quiet about an
+agent it did not dispatch, re-check the other workers tagged MERGE against
+the moved base, and, after a failed push, explain the error to the user
+without pulling or pushing itself. The conflict line likewise carries how to
+hand the conflict to the worker.
 
 A worker whose tag applies shows a magenta ` MERGE ` badge instead of
 ` DONE ` or ` IDLE `; a busy one shows its real state. Magenta is the one

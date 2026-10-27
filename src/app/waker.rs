@@ -743,7 +743,10 @@ impl SupervisorWaker {
             match step {
                 supervisor::HandoverStep::Ask(at, trigger) => {
                     let asked = supervisor::state_dir(&action.root).and_then(|dir| {
-                        client.prompt_agent(name, &supervisor::handover_request(&dir, trigger))
+                        client.prompt_agent(
+                            name,
+                            &supervisor::handover_request(&corgi_bin, &action.root, &dir, trigger),
+                        )
                     });
                     status = Some(match asked {
                         Ok(_) => {

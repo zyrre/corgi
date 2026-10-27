@@ -31,6 +31,11 @@ use crate::{
 /// and the project's state directory.
 const ROLE: &str = include_str!("../supervisor/ROLE.md");
 
+/// How to hand over to a fresh session, which `corgi role handover` prints
+/// when the dashboard asks for it rather than the role holding it all the
+/// time. The same placeholders as [`ROLE`].
+const HANDOVER: &str = include_str!("../supervisor/HANDOVER.md");
+
 /// Where one project's supervisor keeps its decisions, briefs, and ledger:
 /// `supervisors/<project>` in Corgi's state directory. Until [`prepare`] moves
 /// it there, a directory left from before a rename is used where it is,
@@ -365,7 +370,17 @@ pub fn launch_of(state_dir: &Path, harness: &Harness) -> Launch {
 }
 
 fn role(corgi_bin: &Path, state_dir: &Path) -> String {
-    ROLE.replace("{{corgi}}", &corgi_bin.to_string_lossy())
+    filled(ROLE, corgi_bin, state_dir)
+}
+
+/// The role's section on handing over, for the supervisor in `state_dir`
+/// whose commands call `corgi_bin`.
+pub fn handover_instructions(corgi_bin: &Path, state_dir: &Path) -> String {
+    filled(HANDOVER, corgi_bin, state_dir)
+}
+
+fn filled(text: &str, corgi_bin: &Path, state_dir: &Path) -> String {
+    text.replace("{{corgi}}", &corgi_bin.to_string_lossy())
         .replace("{{state}}", &state_dir.to_string_lossy())
 }
 
@@ -393,7 +408,8 @@ pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String 
 
 /// The first prompt of a supervisor that takes over from a previous session:
 /// the usual start-of-session reading, whose digest includes the note that
-/// session left, which it archives as `archive`. A short word to the user replaces the greeting.
+/// session left, which it archives as `archive`. Instead of the greeting it
+/// tells the user it took over, then restates the questions it inherited.
 pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> String {
     let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
     let state = state_dir.display();
@@ -401,9 +417,9 @@ pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> 
         "Start your supervisor session for {project}. Project directory: {project_root}. \
          State directory: {state}. You take over from the previous supervisor session. \
          Do the start-of-session reading; the digest shows the note it left, \
-         {}: move it to {}, as your role's section on handing over says. Skip the \
-         greeting: tell the user in at most three lines that you took over, and what \
-         is open.",
+         {}: move it to {}, as your role says. Skip the greeting: tell the user in \
+         one line that you took over, then restate in full each open question the note \
+         hands on, in your role's question form, then what else is open in a few lines.",
         state_dir.join(HANDOVER_NOTE).display(),
         archive.display()
     )
@@ -616,14 +632,21 @@ pub fn is_supervisor(info: &AgentInfo) -> bool {
         .is_some_and(|name| !name.is_empty() && marker == name)
 }
 
-/// The line that asks a supervisor for its handover note, saying why.
-pub fn handover_request(state_dir: &Path, trigger: Trigger) -> String {
+/// The line that asks the supervisor of `project_root` for its handover
+/// note, saying why, and naming the command that prints how to write it.
+pub fn handover_request(
+    corgi_bin: &Path,
+    project_root: &str,
+    state_dir: &Path,
+    trigger: Trigger,
+) -> String {
     let note = state_dir.join(HANDOVER_NOTE);
+    let how = format!("`{} role handover {project_root}`", corgi_bin.display());
     let why = match trigger {
         Trigger::Update => {
             return format!(
                 "{WAKE_PREFIX} You worked after writing your handover note; bring {} up to \
-                 date with what happened since you wrote it, then end your turn.",
+                 date with what happened since you wrote it, as {how} says, then end your turn.",
                 note.display()
             );
         }
@@ -634,8 +657,8 @@ pub fn handover_request(state_dir: &Path, trigger: Trigger) -> String {
         ),
     };
     format!(
-        "{WAKE_PREFIX} {why}, so a fresh supervisor session takes over from you. Write {} \
-         as your role's section on handing over says, then end your turn.",
+        "{WAKE_PREFIX} {why}, so a fresh supervisor session takes over from you. Run {how} \
+         and write {} as it says, then end your turn.",
         note.display()
     )
 }
@@ -699,8 +722,9 @@ pub struct MergeConflict<'a> {
 }
 
 /// The line that tells a supervisor that the user's merge of a worker's branch
-/// stopped on conflicts, which Corgi aborted, and that the worker is to merge
-/// the base branch into its own branch and resolve them there.
+/// stopped on conflicts, which Corgi aborted, that the worker is to merge
+/// the base branch into its own branch and resolve them there, and how the
+/// supervisor sees to that.
 pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
     let MergeConflict {
         worker,
@@ -724,7 +748,13 @@ pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
         "{WAKE_PREFIX} The user's merge of {worker}{task}, branch {branch} in worktree {}, \
          into {base} conflicted in: {named}. Corgi aborted it, so the primary checkout is \
          clean. Have {worker} merge {base} into its own branch, resolve the conflicts \
-         there, rerun its checks and report; the user then merges again with m.",
+         there, rerun its checks and report; the user then merges again with m. The user \
+         asked for this by pressing the key, so do it even for an agent the user started: \
+         prompt it with [supervisor], append a ledger line for it with status \
+         `needs-followup` (with a new entry if the ledger has none), and tell the user in \
+         one line that it is on it. When it reports, check it as for done, and recommend \
+         ready to merge only once it merges cleanly. Never resolve the conflict or merge \
+         yourself.",
         worktree.display()
     )
 }
@@ -757,17 +787,44 @@ pub struct MergeLanded<'a> {
 }
 
 /// The line that tells a supervisor that the user merged an agent's branch,
-/// and, when the push after it failed, why.
+/// and what to do about it, and, when the push after it failed, why.
 pub fn merge_landed_message(merge: &MergeLanded<'_>) -> String {
     let merged = merged_clause(merge);
+    let after = after_merge(merge);
     match merge.push_error {
-        None => format!("{WAKE_PREFIX} {merged}."),
+        None => format!("{WAKE_PREFIX} {merged}. {after}"),
         Some(error) => format!(
-            "{WAKE_PREFIX} {merged}, but git push failed: {}",
+            "{WAKE_PREFIX} {merged}, but git push failed: {} {after} {PUSH_FAILED}",
             one_line(error)
         ),
     }
 }
+
+/// What a supervisor does once the user merged an agent's branch. Quiet about
+/// the user's own session does not cover a failed push, which goes to the user.
+fn after_merge(merge: &MergeLanded<'_>) -> String {
+    let MergeLanded { worker, base, .. } = merge;
+    let quiet = if merge.push_error.is_some() {
+        "stay quiet about the session (the failed push still goes to the user)"
+    } else {
+        "stay quiet"
+    };
+    format!(
+        "If {worker} is in your ledger, append a ledger line for it with status `merged`, go \
+         on with what waited on this merge, and when the merge changed a tool the user runs \
+         from this checkout, tell them they may need to rebuild or reload it; if it is not, \
+         it was the user's own session: {quiet}, and log a decision only for a \
+         significant change. Either way {base} has moved: check every other agent you tagged \
+         MERGE with `git -C <its cwd> merge-tree --write-tree {base} HEAD`, and for one that \
+         no longer merges cleanly, clear its tag and have it merge {base} into its own \
+         branch."
+    )
+}
+
+/// What a supervisor tells the user about a push that failed after a merge.
+const PUSH_FAILED: &str = "Tell the user in a line or two what the push error means and \
+     what they can run, such as git pull in the primary checkout and then git push; never \
+     pull, push or merge yourself.";
 
 /// The line that hands a supervisor the push that failed after the user's
 /// merge, at the user's request, so it explains the error to them.
@@ -776,9 +833,9 @@ pub fn push_failed_message(merge: &MergeLanded<'_>) -> String {
     let error = one_line(merge.push_error.unwrap_or_default());
     format!(
         "{WAKE_PREFIX} The user asks for help with a failed push. {merged}, and git push \
-         failed: {error} {} is merged; tell the user what the error means and what they \
-         can run.",
-        merge.worker
+         failed: {error} {} is merged. {} {PUSH_FAILED}",
+        merge.worker,
+        after_merge(merge)
     )
 }
 
@@ -1744,7 +1801,7 @@ mod tests {
     }
 
     #[test]
-    fn a_landed_merge_is_one_line_the_role_says_how_to_handle() {
+    fn a_landed_merge_is_one_line_that_says_how_to_handle_it() {
         let merged = |task, commit| {
             merge_landed_message(&MergeLanded {
                 worker: "w-fleet-cache",
@@ -1755,18 +1812,34 @@ mod tests {
                 push_error: None,
             })
         };
-        assert_eq!(
-            merged("Cache the\nfleet  rows", "06d069d"),
-            "[Corgi] The user merged w-fleet-cache (task \"Cache the fleet rows\"), \
-             branch worktree/silver-river-fa87, into main at 06d069d."
+        let line = merged("Cache the\nfleet  rows", "06d069d");
+        assert!(!line.contains('\n'), "{line}");
+        assert!(
+            line.starts_with(
+                "[Corgi] The user merged w-fleet-cache (task \"Cache the fleet rows\"), \
+                 branch worktree/silver-river-fa87, into main at 06d069d. If w-fleet-cache is \
+                 in your ledger, append a ledger line for it with status `merged`"
+            ),
+            "{line}"
         );
-        assert_eq!(
-            merged("", ""),
-            "[Corgi] The user merged w-fleet-cache, branch worktree/silver-river-fa87, into main."
+        for rule in [
+            "go on with what waited on this merge",
+            "rebuild or reload",
+            "it was the user's own session: stay quiet, and log",
+            "merge-tree --write-tree main HEAD",
+            "clear its tag and have it merge main into its own branch",
+        ] {
+            assert!(line.contains(rule), "{rule}");
+        }
+        assert!(!line.contains("git pull"), "{line}");
+        assert!(merged("", "").starts_with(
+            "[Corgi] The user merged w-fleet-cache, branch worktree/silver-river-fa87, \
+                 into main. If"
+        ));
+        // The role leaves the rest to the line.
+        assert!(
+            ROLE.contains("Corgi sends one `[Corgi]` line saying what happened and what\nto do")
         );
-        assert!(ROLE.contains("[Corgi] The user merged w-fleet-json"));
-        assert!(ROLE.contains("append a ledger line with status `merged`"));
-        assert!(ROLE.contains("clear its tag and have\nit merge the base branch"));
     }
 
     #[test]
@@ -1782,23 +1855,79 @@ mod tests {
                  error: failed to push some refs to 'github.com:zyrre/corgi.git'",
             ),
         };
-        assert_eq!(
-            merge_landed_message(&merge),
-            "[Corgi] The user merged w-fleet-cache (task \"Cache the fleet rows\"), branch \
-             worktree/silver-river-fa87, into main at 06d069d, but git push failed: To \
-             github.com:zyrre/corgi.git ! [rejected] main -> main (fetch first) error: failed \
-             to push some refs to 'github.com:zyrre/corgi.git'."
+        let landed = merge_landed_message(&merge);
+        assert!(
+            landed.starts_with(
+                "[Corgi] The user merged w-fleet-cache (task \"Cache the fleet rows\"), branch \
+                 worktree/silver-river-fa87, into main at 06d069d, but git push failed: To \
+                 github.com:zyrre/corgi.git ! [rejected] main -> main (fetch first) error: \
+                 failed to push some refs to 'github.com:zyrre/corgi.git'. If w-fleet-cache"
+            ),
+            "{landed}"
         );
-        assert_eq!(
-            push_failed_message(&merge),
-            "[Corgi] The user asks for help with a failed push. The user merged w-fleet-cache \
-             (task \"Cache the fleet rows\"), branch worktree/silver-river-fa87, into main at \
-             06d069d, and git push failed: To github.com:zyrre/corgi.git ! [rejected] main -> \
-             main (fetch first) error: failed to push some refs to \
-             'github.com:zyrre/corgi.git'. w-fleet-cache is merged; tell the user what the \
-             error means and what they can run."
+        let asked = push_failed_message(&merge);
+        assert!(
+            asked.starts_with(
+                "[Corgi] The user asks for help with a failed push. The user merged \
+                 w-fleet-cache (task \"Cache the fleet rows\"), branch \
+                 worktree/silver-river-fa87, into main at 06d069d, and git push failed: To \
+                 github.com:zyrre/corgi.git ! [rejected] main -> main (fetch first) error: \
+                 failed to push some refs to 'github.com:zyrre/corgi.git'. w-fleet-cache is \
+                 merged. If w-fleet-cache"
+            ),
+            "{asked}"
         );
-        assert!(ROLE.contains("[Corgi] The user asks for help with a failed push."));
+        for line in [landed, asked] {
+            assert!(!line.contains('\n'), "{line}");
+            assert!(line.contains("status `merged`"), "{line}");
+            assert!(
+                line.contains(
+                    "stay quiet about the session (the failed push still goes to the user)"
+                ),
+                "{line}"
+            );
+            assert!(
+                line.ends_with(
+                    "Tell the user in a line or two what the push error means and what they \
+                     can run, such as git pull in the primary checkout and then git push; \
+                     never pull, push or merge yourself."
+                ),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_conflicted_merge_says_how_to_hand_it_to_the_worker() {
+        let files = ["src/app/cli.rs".to_string()];
+        let line = merge_conflict_message(&MergeConflict {
+            worker: "w-fleet-json",
+            task: "Add --json to fleet",
+            branch: "worktree/w-fleet-json",
+            worktree: Path::new("/wt/worktree-w-fleet-json"),
+            base: "main",
+            files: &files,
+        });
+        assert!(
+            line.starts_with(
+                "[Corgi] The user's merge of w-fleet-json (task \"Add --json to fleet\"), \
+                 branch worktree/w-fleet-json in worktree /wt/worktree-w-fleet-json, into main \
+                 conflicted in: src/app/cli.rs. Corgi aborted it, so the primary checkout is \
+                 clean. Have w-fleet-json merge main into its own branch, resolve the \
+                 conflicts there, rerun its checks and report; the user then merges again \
+                 with m."
+            ),
+            "{line}"
+        );
+        for rule in [
+            "even for an agent the user started",
+            "`needs-followup` (with a new entry if the ledger has none)",
+            "tell the user in one line",
+            "only once it merges cleanly",
+            "Never resolve the conflict or merge yourself.",
+        ] {
+            assert!(line.contains(rule), "{rule}");
+        }
     }
 
     #[test]
@@ -2274,10 +2403,16 @@ mod tests {
             ]),
             [None, None, None, ASK_IDLE, None]
         );
-        let request = handover_request(Path::new("/state"), Trigger::Idle(50));
+        let request = handover_request(
+            Path::new("/opt/corgi/corgi"),
+            "/repos/weather",
+            Path::new("/state"),
+            Trigger::Idle(50),
+        );
         assert!(request.starts_with(
             "[Corgi] You have been idle for 50 minutes and your prompt cache is about to \
-             expire, so a fresh supervisor session takes over from you. Write /state/handover.md"
+             expire, so a fresh supervisor session takes over from you. Run \
+             `/opt/corgi/corgi role handover /repos/weather` and write /state/handover.md"
         ));
     }
 
@@ -2485,41 +2620,57 @@ mod tests {
              /state/supervisors/weather/handovers/20260924-150405.md"
         ));
         assert!(prompt.contains("Skip the greeting"));
-        let request = handover_request(state, Trigger::Full(50));
+        assert!(prompt.contains("one line that you took over"));
+        assert!(prompt.contains("restate in full each open question"));
+        let bin = Path::new("/opt/corgi/corgi");
+        let request = handover_request(bin, "/repos/weather", state, Trigger::Full(50));
         assert!(request.starts_with("[Corgi] Your context is past 50%"));
-        assert!(request.contains("Write /state/supervisors/weather/handover.md"));
+        assert!(request.contains(
+            "Run `/opt/corgi/corgi role handover /repos/weather` and write \
+             /state/supervisors/weather/handover.md as it says"
+        ));
         assert_eq!(
-            handover_request(state, Trigger::Update),
+            handover_request(bin, "/repos/weather", state, Trigger::Update),
             "[Corgi] You worked after writing your handover note; bring \
              /state/supervisors/weather/handover.md up to date with what happened since you \
-             wrote it, then end your turn."
+             wrote it, as `/opt/corgi/corgi role handover /repos/weather` says, then end your \
+             turn."
         );
     }
 
     #[test]
     fn the_role_says_how_to_hand_over_and_how_to_take_over() {
-        let role = role(Path::new("/opt/corgi/corgi"), Path::new("/state"));
-        assert!(role.contains(&handover_request(
-            Path::new("/state"),
-            Trigger::Full(HANDOVER_PERCENT)
-        )));
-        assert!(role.contains(&handover_request(
-            Path::new("/state"),
-            Trigger::Idle(CLAUDE_IDLE_SECS / 60)
-        )));
-        assert!(role.contains(&handover_request(Path::new("/state"), Trigger::Update)));
+        let bin = Path::new("/opt/corgi/corgi");
+        let role = role(bin, Path::new("/state"));
+        assert!(role.contains("run\n`/opt/corgi/corgi role handover <project dir>`"));
         assert!(role.contains("`/state/handover.md` exists"));
-        assert!(role.contains("under 6 KB"));
         assert!(role.contains("Supersedes: YYYY-MM-DD: <short title"));
         assert!(role.contains("`/state/handovers/<YYYYMMDD-HHMMSS>.md`"));
+        assert!(role.contains("restate each\n   open question inherited from the note in full"));
+        // What a session needs only while it hands over is printed on demand.
+        assert!(!role.contains("under 6 KB"));
+        let handover = handover_instructions(bin, Path::new("/state"));
+        assert!(!handover.contains("{{"));
+        assert!(handover.contains("write `/state/handover.md`"));
+        assert!(handover.contains("under 6 KB"));
+        assert!(handover.contains("do not run\n`/opt/corgi/corgi inbox --take`"));
+        assert!(handover.contains("do not check the\nnumbers"));
+        assert!(handover.contains("bring the note up to date"));
         for section in [
             "Open threads with the user",
             "Proposed plans not yet approved",
             "`[supervisor]` prompts since each worker's last wake",
             "Promises to the user",
         ] {
-            assert!(role.contains(section), "{section}");
+            assert!(handover.contains(section), "{section}");
         }
+    }
+
+    #[test]
+    fn the_role_is_a_third_shorter_than_before_the_on_demand_parts_left_it() {
+        // 34,516 bytes before `corgi role handover` and the merge lines took
+        // over what a session needs only at those moments.
+        assert!(ROLE.len() <= 34_516 * 3 / 4, "{}", ROLE.len());
     }
 
     #[test]
