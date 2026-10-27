@@ -30,6 +30,12 @@ stream back to blocking (`set_nonblocking(false)`) before relying on a read
 timeout: macOS/BSD sockets inherit `O_NONBLOCK` from the listener, Linux
 sockets do not, so the failure shows only on macOS CI.
 
+`App::new` loads the real `projects` list from Corgi's state directory;
+`test_app()` keeps an in-memory one, so build test apps with it. Saving the
+list drops directories that do not exist, so a test that saves it to a file
+must remember real directories (made in its `ScratchDir`), not made-up paths
+such as `/repos/a`.
+
 `rust-version` in `Cargo.toml` is the oldest Rust that builds Corgi: 1.89,
 set by std's `File::lock` (ratatui 0.30 alone needs 1.88). With it set,
 clippy's `incompatible_msrv` lint refuses a newer std API, so raise it
