@@ -717,6 +717,7 @@ fn wake_item(stop: &Stop<'_>, report: Option<String>, corgi_bin: &Path) -> Item 
         key: name.to_string(),
         text: supervisor::wake_message(corgi_bin, name, *state),
         own: own(agent),
+        request: agent.info.tokens.get(CORGI_REQUEST_TOKEN).cloned(),
         report,
         ..Item::default()
     }
@@ -1325,8 +1326,19 @@ mod tests {
         let inbox = Inbox::read(&dir);
         assert_eq!(
             inbox.newest_report("w-radar").unwrap().report_text(&dir),
-            Some(long)
+            Some(long.clone())
         );
+        // It is kept for good too, named by its time and request id.
+        let kept: Vec<_> = fs::read_dir(dir.join(inbox::KEPT_REPORTS_DIR))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].ends_with("-20261003-w-radar.md"), "{kept:?}");
+        let text = fs::read_to_string(dir.join(inbox::KEPT_REPORTS_DIR).join(&kept[0])).unwrap();
+        assert!(text.starts_with("# Report of w-radar (done), "));
+        assert!(text.contains("\nRequest: 20261003-w-radar\nProject: /repos/weather\n\nxxx"));
+        assert!(text.ends_with(&format!("{long}\n")));
     }
 
     #[test]

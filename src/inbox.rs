@@ -38,6 +38,11 @@ pub const INBOX_FILE: &str = "inbox.jsonl";
 /// Where reports too long to keep in their item go, one file per item,
 /// beside the inbox.
 pub const REPORTS_DIR: &str = "inbox-reports";
+/// Where every wake's report is also kept for good, one file per report,
+/// named `YYYYMMDD-HHMMSS-<request id or agent>.md` so the files sort by
+/// time. Compaction never touches it, so the supervisor's search finds a
+/// worker's report long after its inbox item is gone.
+pub const KEPT_REPORTS_DIR: &str = crate::digest::lookup::REPORTS_DIR;
 /// Taken by every write, so that appends and a compaction never interleave.
 const LOCK_FILE: &str = "inbox.lock";
 /// The longest report an item keeps inline, in bytes; a longer one goes to
@@ -126,6 +131,10 @@ pub struct Item {
     /// whose inline report goes out with the wake, in place of the command.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub own: bool,
+    /// The request id the supervisor spawned the agent with, for a wake of
+    /// one of its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request: Option<String>,
     /// The agent's report, when it is at most [`INLINE_REPORT_MAX`] bytes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub report: Option<String>,
@@ -362,6 +371,7 @@ pub fn append(dir: &Path, mut item: Item) -> Result<Option<Item>> {
     if item.key.is_empty() {
         item.key = item.id.clone();
     }
+    keep_report(dir, &item)?;
     if let Some(report) = item
         .report
         .take_if(|report| report.len() > INLINE_REPORT_MAX)
@@ -378,6 +388,55 @@ pub fn append(dir: &Path, mut item: Item) -> Result<Option<Item>> {
     append_line(dir, &serde_json::to_string(&item)?)?;
     compact_if_large(dir)?;
     Ok(Some(item))
+}
+
+/// Writes the report of the wake `item`, if it has one, to its own new file
+/// in [`KEPT_REPORTS_DIR`], with a heading naming the agent, its state and
+/// the time, and lines with its request id and project. Under the lock, so
+/// two writers of the same second take different names.
+fn keep_report(dir: &Path, item: &Item) -> Result<()> {
+    let (Kind::Wake, Some(agent), Some(report)) = (item.kind, &item.agent, &item.report) else {
+        return Ok(());
+    };
+    let reports = privacy::private_dir(dir, KEPT_REPORTS_DIR)?;
+    let secs = parse_rfc3339(&item.ts).unwrap_or_else(unix_now);
+    let stamp = utc_stamp(secs);
+    let subject = file_safe(item.request.as_deref().unwrap_or(agent));
+    let state = item.state.as_deref().unwrap_or("stopped");
+    let time = rfc3339_utc(secs);
+    let mut text = format!(
+        "# Report of {agent} ({state}), {} {} UTC\n\n",
+        &time[..10],
+        &time[11..19]
+    );
+    if let Some(request) = &item.request {
+        text.push_str(&format!("Request: {request}\n"));
+    }
+    text.push_str(&format!(
+        "Project: {}\n\n{}\n",
+        item.project,
+        report.trim_end()
+    ));
+    for attempt in 1.. {
+        let name = match attempt {
+            1 => format!("{stamp}-{subject}.md"),
+            n => format!("{stamp}-{subject}-{n}.md"),
+        };
+        let path = reports.join(&name);
+        match privacy::open(&path, OpenOptions::new().write(true).create_new(true)) {
+            Ok(mut file) => {
+                return file
+                    .write_all(text.as_bytes())
+                    .with_context(|| format!("write {}", path.display()));
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("some attempt finds a free name")
 }
 
 /// Records that the items `ids` went out to the supervisor `to`.
@@ -1018,6 +1077,62 @@ mod tests {
         assert_eq!(inbox.delivered().len(), KEEP_DELIVERED);
         assert_eq!(inbox.delivered()[0].id, "old100");
         assert!(dir.join(REPORTS_DIR).join("fresher.md").is_file());
+        // Every report is still kept, those of the dropped items too, each
+        // in a file of its own though many came in the same second.
+        let mut kept: Vec<_> = fs::read_dir(dir.join(KEPT_REPORTS_DIR))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        kept.sort();
+        assert_eq!(kept.len(), 201);
+        assert_eq!(
+            kept.iter()
+                .filter(
+                    |name| fs::read_to_string(dir.join(KEPT_REPORTS_DIR).join(name))
+                        .unwrap()
+                        .contains(&padding)
+                )
+                .count(),
+            200
+        );
+        assert!(kept.iter().all(|name| name.contains("-w-")), "{kept:?}");
+    }
+
+    #[test]
+    fn only_a_wake_with_a_report_is_kept_and_kept_privately() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        let dir = ScratchDir::new("inbox-kept");
+        append(&dir, wake("w-forecast", "bare")).unwrap();
+        append(
+            &dir,
+            Item {
+                kind: Kind::Note,
+                report: Some("a note's text".into()),
+                ..wake("w-forecast", "note")
+            },
+        )
+        .unwrap();
+        assert!(!dir.join(KEPT_REPORTS_DIR).exists());
+        append(
+            &dir,
+            Item {
+                ts: "2026-10-27T10:15:00Z".into(),
+                report: Some("### Report\n- Result: done\n".into()),
+                ..wake("w-forecast", "said")
+            },
+        )
+        .unwrap();
+        let path = dir
+            .join(KEPT_REPORTS_DIR)
+            .join("20261027-101500-w-forecast.md");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# Report of w-forecast (done), 2026-10-27 10:15:00 UTC\n\n\
+             Project: /repos/weather\n\n### Report\n- Result: done\n"
+        );
+        assert_eq!(mode(&dir.join(KEPT_REPORTS_DIR)), 0o700);
+        assert_eq!(mode(&path), 0o600);
     }
 
     #[test]
