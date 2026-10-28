@@ -18,13 +18,14 @@ use crate::{
 };
 
 use super::{
-    App, SUPERVISOR_NAME,
+    App,
     catalog::{ModelCatalogUpdate, effort_choices, harness_choices, model_choices},
     close::CloseTarget,
-    form::{Checkout, NewField},
-    launch::LaunchState,
+    form::NewField,
+    launch::{Checkout, LaunchState},
     merge::MergePhase,
     overlay::Overlay,
+    rows::SUPERVISOR_NAME,
 };
 
 /// The same newest-first session history Space opens in the dashboard, read

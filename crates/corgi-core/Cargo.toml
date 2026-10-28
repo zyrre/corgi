@@ -1,0 +1,25 @@
+[package]
+name = "corgi-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Corgi's frontend-independent core: Herdr, agents' sessions, supervisors and their flows"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[features]
+# Test helpers (scratch directories, a fake Herdr socket) for the frontends'
+# own tests.
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

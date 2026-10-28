@@ -20,12 +20,14 @@ use serde_json::{Value, json};
 use super::*;
 use crate::{
     app::{
-        Overlay,
+        Overlay, notice,
         test_helpers::{poll_until, press},
     },
+    herdr::HerdrClient,
     inbox::{Item, Kind},
     supervisor::{SUPERVISOR_TOKEN, marker},
     test_support::{ScratchDir, buffer_text, fake_herdr, test_app, test_terminal},
+    time::unix_now,
     ui,
 };
 
@@ -386,31 +388,6 @@ fn a_refresh_is_logged_when_what_it_found_changes() {
     assert!(lines[0].ends_with(": 3 agents"), "{log}");
     assert!(lines[1].contains(": Herdr unavailable: "), "{log}");
     assert!(lines[2].ends_with(": 3 agents"), "{log}");
-}
-
-#[test]
-fn a_slow_refresh_is_logged_and_every_one_when_asked() {
-    let scratch = ScratchDir::new("refresh-log-slow");
-    let timings = Timings::default();
-    let read = |name: &str| std::fs::read_to_string(scratch.join(name)).unwrap_or_default();
-
-    let quiet = RefreshLog::new(scratch.join("quiet.log"), false);
-    let before = Ok(3);
-    quiet.refresh(Duration::from_millis(4), &timings, &Ok(3), Some(&before));
-    assert_eq!(read("quiet.log"), "");
-    quiet.refresh(SLOW_REFRESH, &timings, &Ok(3), Some(&before));
-    let log = read("quiet.log");
-    assert!(
-        log.contains(&format!(" refresh {} ms ", SLOW_REFRESH.as_millis())),
-        "{log}"
-    );
-    assert_eq!(log.lines().count(), 1, "{log}");
-
-    let every = RefreshLog::new(scratch.join("every.log"), true);
-    for _ in 0..3 {
-        every.refresh(Duration::from_millis(4), &timings, &Ok(3), Some(&before));
-    }
-    assert_eq!(read("every.log").lines().count(), 3);
 }
 
 #[test]

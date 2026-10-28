@@ -25,11 +25,10 @@ use crate::{
 use super::{
     App,
     catalog::{EFFORT_LEVELS, default_harness},
-    form::Checkout,
     launch::{
-        CORGI_REQUEST_TOKEN, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL, calling_supervisor_harness,
-        launch_agent, sanitize_agent_name, supervisor_harness_error, supervisor_plan,
-        unique_agent_name,
+        CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL,
+        calling_supervisor_harness, launch_agent, sanitize_agent_name, supervisor_harness_error,
+        supervisor_plan, unique_agent_name,
     },
     markers,
     progress::Stderr,
@@ -193,7 +192,7 @@ pub fn spawn(args: &[String]) -> Result<()> {
     if let Some(warning) = calling_supervisor_state_conflict(&app, pane_id.as_deref()) {
         eprintln!("warning: {warning}");
     }
-    let supervisor_harness = calling_supervisor_harness(&app, pane_id.as_deref());
+    let supervisor_harness = calling_supervisor_harness(&app.agents, pane_id.as_deref());
     let harness = spawn_harness(options.harness, supervisor_harness, default_harness);
     anyhow::ensure!(
         options.effort.is_empty() || harness.supports_effort(),
@@ -370,7 +369,14 @@ pub fn supervisor_command(args: &[String]) -> Result<()> {
 
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    let mut plan = supervisor_plan(&app, &root, harness, options.model, options.effort, task)?;
+    let mut plan = supervisor_plan(
+        &app.agents,
+        &root,
+        harness,
+        options.model,
+        options.effort,
+        task,
+    )?;
     if let Some(requested) = options.name.as_deref() {
         plan.name = free_agent_name(&client, requested)?;
     }

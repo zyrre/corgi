@@ -26,7 +26,7 @@ use super::{
         model_choices, supported_model,
     },
     launch::{
-        LaunchPlan, Role, starts_supervisor, supervisor_harness_error, supervisor_plan,
+        Checkout, LaunchPlan, Role, starts_supervisor, supervisor_harness_error, supervisor_plan,
         unique_agent_name,
     },
     overlay::Overlay,
@@ -63,62 +63,6 @@ impl NewField {
     /// Whether the row chooses from a list rather than taking typed text.
     fn is_selector(self) -> bool {
         self != Self::Task
-    }
-}
-
-/// Where a new agent's workspace is rooted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum Checkout {
-    /// A fresh Git worktree of the project's repository, so every agent edits
-    /// its own checkout. Falls back to the directory itself outside Git.
-    #[default]
-    Worktree,
-    /// The project directory as it is, shared with whatever already runs there.
-    Directory,
-    /// The root tab of the project's Corgi workspace itself, in the primary
-    /// checkout. That tab is where a coordinating agent such as the supervisor lives,
-    /// so only `corgi spawn` offers it; the form's list does not.
-    ProjectRoot,
-}
-
-impl Checkout {
-    fn toggle(self) -> Self {
-        match self {
-            Self::Worktree => Self::Directory,
-            Self::Directory | Self::ProjectRoot => Self::Worktree,
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Worktree => "New Git worktree",
-            Self::Directory => "Project directory as is",
-            Self::ProjectRoot => "Project root tab",
-        }
-    }
-
-    /// What the choice means, shown after the label in a quieter colour.
-    pub(crate) fn detail(self) -> &'static str {
-        match self {
-            Self::Worktree => "own branch and checkout",
-            Self::Directory => "shared checkout, own tab",
-            Self::ProjectRoot => "primary checkout, the project's own tab",
-        }
-    }
-
-    /// The token the checkout selector stores for this choice.
-    pub(super) fn value(self) -> &'static str {
-        match self {
-            Self::Worktree => "worktree",
-            Self::Directory => "directory",
-            Self::ProjectRoot => "root",
-        }
-    }
-
-    pub(super) fn from_value(value: &str) -> Option<Self> {
-        [Self::Worktree, Self::Directory, Self::ProjectRoot]
-            .into_iter()
-            .find(|checkout| checkout.value().eq_ignore_ascii_case(value.trim()))
     }
 }
 
@@ -634,7 +578,7 @@ impl App {
         // form, like a worker, on a harness it can run on.
         let plan = if harness.supports_supervisor() {
             let root = project.to_string_lossy().into_owned();
-            supervisor_plan(self, &root, harness, model, effort, prompt)
+            supervisor_plan(&self.agents, &root, harness, model, effort, prompt)
                 .map_err(|error| (None, format!("{error:#}")))
         } else {
             Err((Some(NewField::Harness), supervisor_harness_error(&harness)))
