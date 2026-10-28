@@ -199,6 +199,12 @@ monospace fonts, so it needs no tool beyond Cargo. It takes about half a
 minute; keep the GIF well under 2 MB. Delete an image the README stops
 using.
 
+Since the GIF's text comes from the system's fonts, `merge-outcomes.gif`
+differs from machine to machine. To check that a change left it alone,
+compare it with one drawn from a build of the base commit on the same
+machine, not with the committed file (`git archive <base>` into a scratch
+directory gives that build without touching a checkout).
+
 ## Releasing
 
 Bump `version` in the root `Cargo.toml` (`[workspace.package]`, which both
