@@ -770,6 +770,80 @@ fractional scaling; dead keys.
 **Verdict: GPUI.** It passes check 2 of the stack question. Check 1 is still
 open: the painter on the `gpui-pre` version that gpui-component's dock needs.
 
+## 13. Herdr as the always-on backend: plugin hooks (spike 6)
+
+Instead of a Corgi daemon, Herdr could run a short `corgi hook` command per
+event. The plugin manifest declares `[[startup]]` and `[[events]]` hooks, on
+`pane.agent_detected`, `pane.agent_status_changed`, `pane.exited`,
+`workspace.closed` and so on.
+
+This was tested against a private Herdr 0.9.0, isolated under its own `HOME`
+and `XDG_*` directories, because plugin registrations are per user, not per
+session. The live session's plugin and session lists were unchanged
+afterwards. The hook was a small compiled Rust program.
+
+**It works, and it's fast [spike 6].**
+
+| Measure | Result |
+| --- | --- |
+| Status change to hook start | p50 6.6 ms, p90 7.8 ms |
+| Worker reports idle → wake text typed into an idle supervisor pane | p50 10.7 ms, p90 24.7 ms; 35 of 35 delivered |
+| Herdr server CPU per hook | about 0.9 ms |
+| Steady 1 event/s | 0.43 % server CPU |
+| Hook process spawn and exit | about 2.5 ms |
+
+More observations:
+
+- **No window needed.** Hooks ran with a headless server and no client
+  attached.
+- **Restarts are covered.** The startup hook ran 41–47 ms after the server
+  started, and re-applied Corgi's tokens by about 50 ms. It ran again after a
+  live handoff (`herdr server live-handoff`), 131 ms after the request.
+  Without it, tokens and reported agent state were gone after both a restart
+  and a handoff.
+
+**Limits, and the design rules they imply:**
+
+1. **Bursts drop events.** Herdr runs at most 32 plugin commands at once,
+   across all plugins (`runtime.rs:12`). Beyond that it drops the event
+   rather than queueing it. At about 100 events/s nothing was lost; at
+   400–800/s, 34–59 of 100 were dropped.
+   - A hung hook holds a slot forever: 0.9.0 has no timeout.
+   - Hooks start in parallel and can finish out of order.
+
+   **Rule:** treat an event as a trigger, not as data. Every hook reconciles
+   from Herdr's snapshot and Corgi's records, as the waker already does with
+   `seen.json`, so a dropped event is caught by the next one. Hooks must be
+   quick and enforce their own time limit. One hook at a time reconciles
+   under a lock; a hook that finds the lock taken marks the state as changed
+   and exits, and the running hook goes round once more.
+2. **The event JSON is thin.** It has the pane, workspace, agent and new
+   status, but no previous status, no `state_change_seq` and no session. One
+   `agent.get` (about 0.6 ms) or the snapshot fills that in. An unseen idle
+   arrives as `done`; Corgi already treats `done` and `idle` as one.
+3. **Gaps the startup hook must cover.** Events while Herdr is down are
+   lost, so the startup hook reconciles everything. `pane.closed` fires only
+   for an explicit close; a shell exit gives only `pane.exited`. Token
+   changes trigger no hooks.
+4. **No timers.** Neither token expiry nor time passing triggers hooks. That
+   affects one feature, the idle prompt-cache handover: it either becomes
+   lazy (at the next event or when the app opens) or needs a small
+   Herdr-hosted pane.
+5. **An unexplained 100 ms stall** on some API calls after a quiet period.
+   Minor; not investigated.
+
+**Result.** With the "trigger, then reconcile" rule, Herdr's hooks can do all
+of Corgi's always-on work without a Corgi process:
+
+- restore markers after restarts and handoffs;
+- record new sessions at once;
+- queue and deliver wakes;
+- start context handovers;
+- do the bookkeeping when panes exit and workspaces close.
+
+The GUI, TUI and widget can then be closed at will and read the state when
+opened.
+
 ## Decisions (2026-10-28)
 
 - **The terminal sits inside the GUI;** performance comes second. External
@@ -794,7 +868,9 @@ open: the painter on the `gpui-pre` version that gpui-component's dock needs.
 
 ## Open questions
 
-1. **Daemon.** Should Corgi get an optional long-running `corgi daemon` (a
+1. **Daemon.** Superseded by §13: Herdr's plugin hooks can do the always-on
+   work with no Corgi process, which is the recommendation. The original
+   question was whether Corgi should get an optional long-running `corgi daemon` (a
    systemd or launchd user unit) so supervisors are woken when no dashboard or
    GUI is open? It reverses ARCHITECTURE.md's "no daemon". Recommended:
    optional, off by default, added in phase 4.
