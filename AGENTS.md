@@ -194,15 +194,30 @@ build; delete the session afterwards and check `herdr session list`. Then:
   volatile state directory, so no wake is typed in. `tests/hook.rs` keeps
   its state under `CARGO_TARGET_TMPDIR` for the same reason.
 - Herdr types into an agent (`agent.prompt`) only while the agent is the
-  pane's foreground process. A fake agent is a copy of `/bin/cat` named
-  `claude`, signed with `codesign -s - -f` (an unsigned copy is killed).
+  pane's foreground process. A fake agent is a small program compiled with
+  `rustc` and installed as `claude` (and `codex`) in a directory of its own:
+  it ignores its arguments, echoes each line, prints Claude Code's working
+  line (`⏵⏵ working · esc to interrupt`: Herdr's pattern needs whitespace,
+  `·` or the line's end after "interrupt") for a few seconds per prompt so
+  Herdr sees a turn, writes the handover note when a line asks for one, and
+  exits on `/exit`. A copied system binary must be signed with
+  `codesign -s - -f`, or macOS kills it.
+- Keep the real agent CLIs unreachable. A login bash runs macOS's
+  `path_helper`, which puts `/etc/paths.d/homebrew` (`/opt/homebrew/bin`,
+  where `claude` lives) ahead of anything prepended to `PATH`, so set the
+  server's `SHELL` to a wrapper that runs `bash --noprofile --norc -i` with
+  `PATH` the fakes' directory and the system's, and keep the server's own
+  `PATH` the same. Before typing into a pane, check with
+  `herdr pane process-info --pane <id>` that each foreground process's
+  executable (`lsof -a -p <pid> -d txt`, not `ps -o comm`, which gives only
+  the name it was started by) is a fake, and run a loop that kills any
+  other `claude`, `codex` or `node` of the private home.
 - Report fake agents' states with a test `--source`. Only
   `--source herdr:claude` keeps an `--agent-session-id`, and Herdr then
   ignores the test source's states for that pane. **A pane with a
   `herdr:claude` session comes back after a Herdr restart or live handoff
-  running the real `claude --resume <id>`** from the server's `PATH`. Put
-  the fake `claude` first on that `PATH`, or keep real agent CLIs off it,
-  before restarting, and check `ps` before typing into any pane.
+  running the real `claude --resume <id>`** through the pane's shell, so
+  the fakes must win on that shell's `PATH` (above) before any restart.
 - `herdr plugin log list --plugin io.github.zyrre.corgi` shows each hook's
   line, its exit code and its time.
 
