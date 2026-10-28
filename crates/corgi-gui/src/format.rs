@@ -169,6 +169,16 @@ pub fn worker_summary(counts: &WorkerCounts) -> Vec<Piece> {
     pieces
 }
 
+/// A project's inbox items held back because Herdr never confirmed their
+/// delivery, `None` when there are none: nothing more is typed into its
+/// supervisor until they are read with `corgi inbox <root> --take`.
+pub fn held(count: usize) -> Option<Piece> {
+    (count > 0).then(|| {
+        let items = if count == 1 { "item" } else { "items" };
+        Piece::new(format!("⏸ {count} inbox {items} held"), Tone::Warning).bold()
+    })
+}
+
 /// The HERD counts over every agent: working, blocked, merge, done, idle.
 pub fn herd(agents: &[Agent]) -> Vec<Piece> {
     let count = |wanted: AgentState| {
@@ -375,6 +385,13 @@ mod tests {
             ]
         );
         assert_eq!(marker(Activity::default().kind), "○");
+    }
+
+    #[test]
+    fn held_inbox_items_show_only_when_there_are_some() {
+        assert_eq!(held(0), None);
+        assert_eq!(held(1).unwrap().text, "⏸ 1 inbox item held");
+        assert_eq!(held(3).unwrap().tone, Tone::Warning);
     }
 
     #[test]

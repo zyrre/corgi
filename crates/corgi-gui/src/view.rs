@@ -451,6 +451,7 @@ impl CorgiWindow {
                     .text_color(colors.roles.muted)
                     .child(corgi_core::paths::tilde(&project.root)),
             )
+            .children(format::held(project.held).map(|held| self.piece(&held, None)))
             .when(project.card, |heading| {
                 heading
                     .child(div().flex_1())
@@ -791,6 +792,22 @@ impl CorgiWindow {
                         .child(project.group.clone()),
                 ),
         );
+        if let Some(held) = format::held(project.held) {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_2()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(colors.roles.warning)
+                    .child(self.piece(&held, None))
+                    .child(div().text_color(colors.roles.muted).child(format!(
+                        "Herdr never confirmed their delivery, so they may already be in the supervisor's box. Nothing more is typed in until they are read: corgi inbox {} --take",
+                        corgi_core::paths::tilde(&project.root)
+                    ))),
+            );
+        }
         let supervisor = project
             .supervisor
             .as_deref()
