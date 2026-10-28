@@ -21,6 +21,9 @@ use crate::{
 };
 
 const TEXT_SIZE: f32 = 13.0;
+
+/// What a toolbar button does.
+type Action = fn(&mut CorgiWindow, &mut Window, &mut Context<CorgiWindow>);
 const PIXEL: f32 = 4.0;
 
 /// The dashboard's corgi, two pixels a terminal cell there, one square
@@ -98,7 +101,11 @@ impl Render for CorgiWindow {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.end_drag()),
             )
-            .child(self.header(cx))
+            .child(
+                div()
+                    .when(!connected, |header| header.opacity(0.45))
+                    .child(self.header(cx)),
+            )
             .child(self.toolbar(cx))
             .when(!connected, |root| {
                 root.child(self.connection_banner(has_state, cx))
@@ -182,6 +189,7 @@ impl CorgiWindow {
         div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .items_center()
             .gap_4()
             .px_4()
@@ -229,18 +237,14 @@ impl CorgiWindow {
         let mut bar = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .items_center()
             .gap_2()
             .px_4()
             .py_1()
             .border_b_1()
             .border_color(self.colors.roles.rule);
-        let buttons: [(
-            &str,
-            &str,
-            bool,
-            fn(&mut CorgiWindow, &mut Window, &mut Context<CorgiWindow>),
-        ); 7] = [
+        let buttons: [(&str, &str, bool, Action); 7] = [
             ("n", "New agent", true, |this, _, cx| this.new_agent(cx)),
             ("p", "Prompt", can_prompt, |this, window, cx| {
                 this.open_prompt(None, window, cx)
@@ -540,12 +544,14 @@ impl CorgiWindow {
         } else {
             colors.roles.text
         };
+        // A narrow window wraps the fields after the task onto the next
+        // line rather than cutting them off.
         let mut identity = div()
             .flex()
             .flex_row()
+            .flex_wrap()
             .items_center()
-            .gap_2()
-            .overflow_hidden()
+            .gap_x_2()
             .child(
                 div()
                     .px_1()
@@ -567,6 +573,8 @@ impl CorgiWindow {
                     .when(selected || agent.supervisor, |d| {
                         d.font_weight(FontWeight::BOLD)
                     })
+                    .min_w_0()
+                    .max_w_full()
                     .truncate()
                     .child(if agent.task.is_empty() {
                         agent.name.clone()
@@ -575,15 +583,20 @@ impl CorgiWindow {
                     }),
             );
         for piece in format::fields(agent, now) {
-            identity = identity
-                .child(div().text_color(colors.roles.muted).child("·"))
-                .child(
-                    div()
-                        .flex_none()
-                        .text_color(self.tone(piece.tone, Some(model)))
-                        .when(piece.bold, |d| d.font_weight(FontWeight::BOLD))
-                        .child(piece.text),
-                );
+            identity = identity.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .gap_2()
+                    .child(div().text_color(colors.roles.muted).child("·"))
+                    .child(
+                        div()
+                            .text_color(self.tone(piece.tone, Some(model)))
+                            .when(piece.bold, |d| d.font_weight(FontWeight::BOLD))
+                            .child(piece.text),
+                    ),
+            );
         }
         let pane_id = agent.pane_id.clone();
         div()
@@ -937,7 +950,7 @@ impl CorgiWindow {
                                         question.id.clone()
                                     }),
                             )
-                            .child(div().flex_1().child(question.title.clone())),
+                            .child(div().flex_1().min_w_0().child(question.title.clone())),
                     )
                     .when(!question.agent.is_empty(), |card| {
                         card.child(
@@ -1493,7 +1506,15 @@ impl CorgiWindow {
                     }),
             );
         if merge.stage != MergeStage::Confirm {
-            dialog = dialog.child(self.steps(&merge.progress, running));
+            // A merge that succeeded went through every step.
+            let mut progress = merge.progress.clone();
+            if matches!(
+                merge.stage,
+                MergeStage::Outcome(MergeOutcome::Succeeded { .. })
+            ) {
+                progress.step = Some(progress.steps.len());
+            }
+            dialog = dialog.child(self.steps(&progress, running));
         }
         match &merge.stage {
             MergeStage::Outcome(outcome) => {

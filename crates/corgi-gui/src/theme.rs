@@ -28,6 +28,16 @@ pub fn is_light(appearance: WindowAppearance) -> bool {
     )
 }
 
+/// `CORGI_GUI_APPEARANCE`: `light` or `dark` overrides the system's
+/// scheme; anything else follows it.
+pub fn forced_light(value: Option<&str>) -> Option<bool> {
+    match value?.trim().to_ascii_lowercase().as_str() {
+        "light" => Some(true),
+        "dark" => Some(false),
+        _ => None,
+    }
+}
+
 impl Colors {
     /// The palette's colors for `light`: the server's, or, before its first
     /// snapshot, Catppuccin Latte or Mocha as Corgi derives them itself.
@@ -187,6 +197,10 @@ mod tests {
         assert_eq!(light.background, hsla((0xef, 0xf1, 0xf5)));
         assert_eq!(dark.background, hsla((0x1e, 0x1e, 0x2e)));
         assert!(is_light(WindowAppearance::VibrantLight));
+        assert_eq!(forced_light(Some("Light")), Some(true));
+        assert_eq!(forced_light(Some("dark")), Some(false));
+        assert_eq!(forced_light(Some("system")), None);
+        assert_eq!(forced_light(None), None);
         assert!(!is_light(WindowAppearance::Dark));
     }
 

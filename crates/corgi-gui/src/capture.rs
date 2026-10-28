@@ -12,7 +12,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use gpui::{App, Keystroke, WindowHandle};
+use gpui::{AnyWindowHandle, App, AppContext, Keystroke, WindowHandle};
 
 use crate::window::CorgiWindow;
 
@@ -21,6 +21,7 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
         return;
     };
     let dir = PathBuf::from(std::env::var("CORGI_GUI_CAPTURE_DIR").unwrap_or_else(|_| ".".into()));
+    let any: AnyWindowHandle = window.into();
     cx.spawn(async move |cx| {
         for step in script
             .split(';')
@@ -51,12 +52,15 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                             .collect()
                     };
                     for key in keys {
-                        let _ = window.update(cx, |_, window, cx| match Keystroke::parse(&key) {
-                            Ok(keystroke) => {
-                                window.dispatch_keystroke(keystroke, cx);
-                            }
-                            Err(error) => eprintln!("capture: bad key {key}: {error}"),
-                        });
+                        // The untyped handle leaves the root view free for the
+                        // key's listeners to update.
+                        let _ =
+                            cx.update_window(any, |_, window, cx| match Keystroke::parse(&key) {
+                                Ok(keystroke) => {
+                                    window.dispatch_keystroke(keystroke, cx);
+                                }
+                                Err(error) => eprintln!("capture: bad key {key}: {error}"),
+                            });
                         cx.background_executor()
                             .timer(Duration::from_millis(30))
                             .await;
@@ -64,12 +68,12 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                 }
                 "shot" => {
                     // Let the last change draw first.
-                    let _ = window.update(cx, |_, window, _| window.refresh());
+                    let _ = cx.update_window(any, |_, window, _| window.refresh());
                     cx.background_executor()
                         .timer(Duration::from_millis(300))
                         .await;
                     let path = dir.join(format!("{argument}.png"));
-                    let _ = window.update(cx, |_, window, _| match window.render_to_image() {
+                    let _ = cx.update_window(any, |_, window, _| match window.render_to_image() {
                         Ok(image) => match image.save(&path) {
                             Ok(()) => eprintln!("capture: wrote {}", path.display()),
                             Err(error) => eprintln!("capture: {}: {error}", path.display()),
@@ -78,7 +82,7 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                     });
                 }
                 "quit" => {
-                    let _ = cx.update(|cx| cx.quit());
+                    cx.update(|cx| cx.quit());
                 }
                 other => eprintln!("capture: unknown step {other}"),
             }

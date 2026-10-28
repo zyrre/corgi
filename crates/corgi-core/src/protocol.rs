@@ -138,7 +138,7 @@ fn replace_keyed<T>(items: &mut Vec<T>, item: T, key: impl Fn(&T) -> &String) {
 
 /// Puts `items` in the order of `keys`; an item `keys` lacks goes last, in
 /// its old order.
-fn reorder<T>(items: &mut Vec<T>, keys: &[String], key: impl Fn(&T) -> &String) {
+fn reorder<T>(items: &mut [T], keys: &[String], key: impl Fn(&T) -> &String) {
     let position = |item: &T| {
         keys.iter()
             .position(|wanted| wanted == key(item))

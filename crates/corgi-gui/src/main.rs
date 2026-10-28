@@ -58,6 +58,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // For test runs: open without taking focus from the app in front.
+    let background = std::env::var_os("CORGI_GUI_BACKGROUND").is_some();
     gpui_platform::application().run(move |cx: &mut App| {
         text_input::bind_keys(cx);
         window::bind_app_keys(cx);
@@ -78,6 +80,7 @@ fn main() -> ExitCode {
                         ..Default::default()
                     }),
                     window_min_size: Some(size(px(640.), px(420.))),
+                    focus: !background,
                     ..Default::default()
                 },
                 |window, cx| {
@@ -98,7 +101,9 @@ fn main() -> ExitCode {
             )
             .expect("the window opens");
         cx.on_window_closed(|cx, _| cx.quit()).detach();
-        cx.activate(true);
+        if !background {
+            cx.activate(true);
+        }
         #[cfg(feature = "capture")]
         capture::start(window, cx);
         let _ = window;

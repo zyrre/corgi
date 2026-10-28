@@ -18,7 +18,7 @@ use crate::{
     options::Options,
     store::{Connection, Outbox, Purpose, Received, Store},
     text_input::{FieldColors, TextInput},
-    theme::{Colors, is_light},
+    theme::{Colors, forced_light, is_light},
 };
 
 /// A split being dragged, and where the pointer was last.
@@ -71,7 +71,8 @@ impl CorgiWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let system_light = is_light(window.appearance());
+        let forced_light = forced_light(std::env::var("CORGI_GUI_APPEARANCE").ok().as_deref());
+        let system_light = forced_light.unwrap_or_else(|| is_light(window.appearance()));
         let store = Store::default();
         let colors = Colors::new(&store.state.palette, system_light);
         let field = field_colors(&colors);
@@ -120,9 +121,11 @@ impl CorgiWindow {
         });
 
         let subscriptions = vec![
-            cx.observe_window_appearance(window, |this, window, cx| {
-                this.system_light = is_light(window.appearance());
-                this.recolor(cx);
+            cx.observe_window_appearance(window, move |this, window, cx| {
+                if forced_light.is_none() {
+                    this.system_light = is_light(window.appearance());
+                    this.recolor(cx);
+                }
             }),
             cx.observe_window_visibility(window, |this, visibility, _, cx| {
                 this.set_visible(visibility == WindowVisibility::Visible, cx);
@@ -397,6 +400,15 @@ impl CorgiWindow {
             return;
         }
         self.visible = visible;
+        // Said on stderr, for checking the pause on a compositor.
+        eprintln!(
+            "corgi-gui: window {}",
+            if visible {
+                "shown: drawing and reading the transcript again"
+            } else {
+                "hidden: drawing and the transcript paused"
+            }
+        );
         self.sync_watch();
         if visible {
             cx.notify();
@@ -891,7 +903,7 @@ impl CorgiWindow {
                         true
                     }
                     form::Effect::Reload { harness, model } => {
-                        let project = Some(new.project.clone()).filter(|_| !new.new_project);
+                        let project = (!new.new_project).then(|| new.project.clone());
                         self.send(
                             Command::NewAgentForm {
                                 pane_id: None,
