@@ -24,6 +24,7 @@ pub mod markers;
 pub mod merge;
 pub mod model;
 pub mod notice;
+pub mod palette;
 pub mod paths;
 pub mod progress;
 pub mod project_main;

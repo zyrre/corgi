@@ -63,7 +63,7 @@ pub fn resolve() -> Theme {
 /// Omarchy renders for every theme and which hold the whole terminal
 /// palette, already resolved. Omarchy 4 keeps the current theme under
 /// `~/.local/state`, earlier versions under `~/.config`.
-fn omarchy_palette() -> Option<Palette> {
+pub fn omarchy_palette() -> Option<Palette> {
     let home = PathBuf::from(env::var_os("HOME")?);
     [
         ".local/state/omarchy/current/theme/alacritty.toml",
@@ -80,7 +80,7 @@ fn read_alacritty(path: &Path) -> Option<Palette> {
 /// The palette in an Alacritty config: `[colors.primary]`, `[colors.normal]`
 /// and `[colors.bright]`, each color written `#rrggbb` or `0xrrggbb`. A
 /// config without the bright colors repeats the normal ones.
-pub(crate) fn parse_alacritty(text: &str) -> Option<Palette> {
+pub fn parse_alacritty(text: &str) -> Option<Palette> {
     let config: toml::Table = toml::from_str(text).ok()?;
     let colors = config.get("colors")?.as_table()?;
     let color = |section: &str, name: &str| -> Option<Rgb> {
@@ -115,7 +115,7 @@ fn parse_hex(text: &str) -> Option<Rgb> {
 
 /// What the terminal said of its colors.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Reply {
+pub struct Reply {
     pub foreground: Option<Rgb>,
     pub background: Option<Rgb>,
     pub ansi: [Option<Rgb>; 16],
@@ -140,7 +140,7 @@ impl Reply {
 /// sixteen ANSI colors (OSC 4), then for the terminal's attributes (DA1),
 /// which every terminal answers, so the end of its answer says that every
 /// color it was going to tell has arrived.
-pub(super) fn queries() -> String {
+pub fn queries() -> String {
     let mut queries = String::from("\x1b]10;?\x1b\\\x1b]11;?\x1b\\");
     for index in 0..16 {
         queries.push_str(&format!("\x1b]4;{index};?\x1b\\"));
@@ -150,7 +150,7 @@ pub(super) fn queries() -> String {
 }
 
 /// Whether `bytes` hold the end of the answer to DA1, `ESC [ ? … c`.
-pub(super) fn answered(bytes: &[u8]) -> bool {
+pub fn answered(bytes: &[u8]) -> bool {
     bytes.windows(3).enumerate().any(|(start, window)| {
         window == b"\x1b[?"
             && bytes[start + 3..]
@@ -163,7 +163,7 @@ pub(super) fn answered(bytes: &[u8]) -> bool {
 /// The colors in the terminal's answers: `OSC 10 ; spec`, `OSC 11 ; spec`
 /// and `OSC 4 ; index ; spec`, each ended by BEL or ST. Anything else, such
 /// as the DA1 answer, is passed over.
-pub(crate) fn parse_reply(bytes: &[u8]) -> Reply {
+pub fn parse_reply(bytes: &[u8]) -> Reply {
     let mut reply = Reply::default();
     let text = String::from_utf8_lossy(bytes);
     for answer in text.split("\x1b]").skip(1) {
@@ -276,7 +276,7 @@ fn readable(fd: std::os::fd::RawFd, timeout: Duration) -> bool {
 
 /// Whether the system prefers a light appearance, when it says: macOS's
 /// appearance, else the freedesktop portal's or GNOME's color scheme.
-fn system_prefers_light() -> Option<bool> {
+pub fn system_prefers_light() -> Option<bool> {
     if cfg!(target_os = "macos") {
         // The key is only there in dark mode.
         let output = run(
