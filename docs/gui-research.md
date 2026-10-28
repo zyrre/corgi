@@ -770,6 +770,28 @@ fractional scaling; dead keys.
 **Verdict: GPUI.** It passes check 2 of the stack question. Check 1 is still
 open: the painter on the `gpui-pre` version that gpui-component's dock needs.
 
+## Decisions (2026-10-28)
+
+- **The terminal sits inside the GUI;** performance comes second. External
+  terminal windows and embedding your own terminal app are out (§8–§11).
+- **Terminals come through Herdr's endpoint protocol** (generation 1),
+  painted natively with no client-side emulator. Only the GUI's own
+  connections navigate; Corgi does not call Herdr's JSON focus methods in GUI
+  mode. Connections are deactivated while the window is hidden (§9, §12).
+- **Toolkit: GPUI,** with Herdr UI's terminal painter (Apache-2.0) on the
+  `gpui-pre` version it pins. It passed on macOS and Hyprland (§10, §12).
+- **No dock library.** Layouts are fixed: an overview, a focus view with one
+  or two terminals, and side panels such as the supervisor and open
+  questions. Splits are resizable and sidebars can be opened and closed, with
+  sizes remembered. That is plain GPUI layout, so gpui-component's dock and
+  its version conflict are not needed. A dock can be added later if free
+  arrangement is ever wanted.
+- **Still to build or check during the work:**
+  - the interactive layer (selection, links, IME, scrolling, copy beyond the
+    screen read from Herdr);
+  - a font chosen per platform;
+  - flicker during compositor resizes, judged by eye.
+
 ## Open questions
 
 1. **Daemon.** Should Corgi get an optional long-running `corgi daemon` (a
@@ -785,7 +807,8 @@ open: the painter on the `gpui-pre` version that gpui-component's dock needs.
 
    Recommended: (i), keeping (iii) possible, since `corgi serve` is the same
    work either way.
-3. **Stack** (§10). The options:
+3. **Stack:** decided: GPUI, with fixed layouts and no dock (see Decisions).
+   The options were (§10):
    - **GPUI with Herdr UI's painter:** less rendering work, pre-release
      toolkit.
    - **egui with our own painter:** a more mature toolkit, lower latency.
