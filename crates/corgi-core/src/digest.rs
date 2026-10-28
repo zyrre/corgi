@@ -359,6 +359,24 @@ pub fn open_questions(ledger: &str, agent: &str) -> Option<Vec<String>> {
     (entry.status == "needs-answer" || !entry.questions.is_empty()).then_some(entry.questions)
 }
 
+/// Every question the ledger leaves open, as `(agent, question)` in the
+/// order of the ledger's ids: the `questions` of each id's newest line whose
+/// work is not finished, each question once.
+pub fn all_open_questions(ledger: &str) -> Vec<(String, String)> {
+    let mut open: Vec<(String, String)> = Vec::new();
+    for entry in parse_ledger(ledger) {
+        if entry.finished() {
+            continue;
+        }
+        for question in entry.questions {
+            if !open.iter().any(|(_, known)| *known == question) {
+                open.push((entry.agent.clone(), question));
+            }
+        }
+    }
+    open
+}
+
 /// A running agent of the project, as `corgi fleet` shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveAgent {
@@ -828,6 +846,27 @@ not json
         assert_eq!(found.len(), 1);
         assert!(found[0].starts_with("## 2026-09-03: Use spaces"));
         assert!(decisions_containing(&decisions, "dentation").is_empty());
+    }
+
+    #[test]
+    fn all_open_questions_are_the_unfinished_newest_lines_questions_once_each() {
+        let ledger = [
+            r#"{"id":"a","agent":"w-a","status":"needs-answer","questions":["Q2: Keep the flag?"]}"#,
+            r#"{"id":"b","agent":"w-b","status":"needs-answer","questions":["Q3: Rename it?","Q2: Keep the flag?"]}"#,
+            r#"{"id":"c","agent":"w-c","status":"needs-answer","questions":["Q1: Old?"]}"#,
+            r#"{"id":"c","agent":"w-c","status":"reported","questions":[]}"#,
+            r#"{"id":"d","agent":"w-d","status":"merged","questions":["Q4: Stale?"]}"#,
+            "not json",
+        ]
+        .join("\n");
+        assert_eq!(
+            all_open_questions(&ledger),
+            [
+                ("w-a".to_string(), "Q2: Keep the flag?".to_string()),
+                ("w-b".to_string(), "Q3: Rename it?".to_string()),
+            ]
+        );
+        assert!(all_open_questions("").is_empty());
     }
 
     #[test]

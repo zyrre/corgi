@@ -29,6 +29,7 @@ pub mod paths;
 pub mod progress;
 pub mod project_main;
 pub mod projects;
+pub mod protocol;
 pub mod recovery;
 pub mod refresh;
 pub mod rows;

@@ -602,17 +602,28 @@ pub fn digest(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
+    print!("{}", digest_summary(&root, &state_dir, &app.agents));
+    print_inbox_footer(&root);
+    Ok(())
+}
+
+/// `corgi digest`'s summary of the memory of `root`'s supervisor in
+/// `state_dir`, with `agents` as the project's running fleet.
+pub(crate) fn digest_summary(
+    root: &str,
+    state_dir: &Path,
+    agents: &[crate::model::DashboardAgent],
+) -> String {
     let read = |name: &str| fs::read_to_string(state_dir.join(name)).ok();
     let decisions = read("decisions.md").unwrap_or_default();
     let state = state_dir.to_string_lossy();
     let handovers = markdown_files(&state_dir.join(crate::supervisor::HANDOVERS_DIR));
-    let root_path = std::path::Path::new(&root);
+    let root_path = Path::new(root);
     let branch = git_current_branch(root_path).unwrap_or_else(|_| "(detached)".to_string());
     let head = git_output(root_path, &["rev-parse", "--short", "HEAD"])
         .map(|head| head.trim().to_string())
         .unwrap_or_else(|_| "(no commit)".to_string());
-    let fleet: Vec<_> = app
-        .agents
+    let fleet: Vec<_> = agents
         .iter()
         .filter(|agent| agent.project_root == root)
         .map(|agent| digest::LiveAgent {
@@ -630,25 +641,20 @@ pub fn digest(args: &[String]) -> Result<()> {
         .last()
         .map(|(name, text)| (name.as_str(), text.as_str()));
     let ledger = read(digest::lookup::LEDGER_FILE).unwrap_or_default();
-    print!(
-        "{}",
-        digest::render(&digest::DigestInput {
-            project: &root,
-            branch: &branch,
-            head: &head,
-            state_dir: &state,
-            handover: handover.as_deref(),
-            previous_handover,
-            decisions: &decisions,
-            ledger: &ledger,
-            fleet: &fleet,
-            now: crate::time::unix_now(),
-            decision_command: &decision_command,
-            search_command: &search_command,
-        })
-    );
-    print_inbox_footer(&root);
-    Ok(())
+    digest::render(&digest::DigestInput {
+        project: root,
+        branch: &branch,
+        head: &head,
+        state_dir: &state,
+        handover: handover.as_deref(),
+        previous_handover,
+        decisions: &decisions,
+        ledger: &ledger,
+        fleet: &fleet,
+        now: crate::time::unix_now(),
+        decision_command: &decision_command,
+        search_command: &search_command,
+    })
 }
 
 pub const REPORT_USAGE: &str = "\

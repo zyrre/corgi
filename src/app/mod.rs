@@ -62,12 +62,14 @@ mod cli;
 mod navigate;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
+pub(crate) use cli::digest_summary;
 pub use cli::{
     DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, REPORT_USAGE, ROLE_USAGE, SPAWN_USAGE,
     SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify, report, role_command, spawn,
     supervisor_command, tag_command,
 };
 pub use edit::{EDIT_USAGE, edit_command};
+pub(crate) use edit::{open_checkout, selection_file, write_selection};
 pub use navigate::bar_navigate;
 use rows::codex_thread_id;
 pub use setup::{SETUP_USAGE, setup};

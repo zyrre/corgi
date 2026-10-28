@@ -96,7 +96,7 @@ pub(crate) fn selection_file(socket: &Path, pid: u32) -> Option<PathBuf> {
 
 /// Writes `pane_id` to `path` through a temporary file renamed over it, so
 /// `corgi edit` never reads half of it.
-fn write_selection(path: &Path, pane_id: &str) -> io::Result<()> {
+pub(crate) fn write_selection(path: &Path, pane_id: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }

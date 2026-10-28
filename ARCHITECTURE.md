@@ -79,6 +79,11 @@ Plan usage (once a minute per machine, only for CLIs Corgi can find)
   ├─ codex app-server ────── account/rateLimits/read over JSON-RPC
   └─ curl api.anthropic.com/api/oauth/usage ── with Claude Code's stored token
 
+Optional desktop GUI (local, or over ssh)
+  └─ corgi serve ──── JSON lines on stdio: a hello, a snapshot of the rows,
+                      cards, usage and palette as data, then deltas; commands
+                      for the dashboard's actions (docs/serve-protocol.md)
+
 Optional Omarchy widget
   ├─ corgi --bar-stream <socket> ── newline-delimited dashboard rows and usage
   ├─ corgi --bar-transcript/--bar-new-*/--bar-action ── expand, create, merge, close
@@ -160,7 +165,11 @@ What a frontend other than the dashboard calls, with no `App`:
   and `HerdrClient`'s own `prompt_agent` and `go_to_agent`;
 - the memory: `digest::render` and `digest::memory::digest_lookup`;
 - the colors: `palette::resolve()`, and `palette::Theme::rgb_roles` for a
-  frontend that paints its own pixels.
+  frontend that paints its own pixels;
+- the new-agent form's checks: `launch::new_agent_plan`, which the
+  dashboard's form and `corgi serve` both call;
+- the wire format of `corgi serve`, `protocol`: serde types a desktop
+  frontend deserializes into rather than defining its own.
 
 Every one of them takes a `HerdrClient`, which `HerdrClient::from_socket_path`
 makes for any Herdr socket; only `HerdrClient::from_env` reads
@@ -518,6 +527,49 @@ Its submodules are split by flow, each adding methods to the one `App`.
 - `bar.rs` is the `--bar-*` endpoints of the Omarchy widget. Their JSON is
   that widget's contract, pinned by snapshot tests, and they drive the same
   forms, key handlers, and launch as the dashboard.
+
+### `corgi serve`: `src/serve/`
+
+`corgi serve` is the data source of a frontend that draws its own window,
+the desktop GUI, run locally or as `ssh HOST corgi serve`. It speaks the
+protocol of `corgi_core::protocol` as JSON lines over stdin and stdout,
+documented message by message in [docs/serve-protocol.md](docs/serve-protocol.md):
+a hello with the protocol version and which commands touch Herdr's focus, a
+snapshot of the whole state, then a delta whenever a refresh changed it.
+Only protocol lines go to stdout; anything else goes to stderr. It exits
+when stdin closes and no command is still running.
+
+- It runs the dashboard's refresh pipeline (`refresh::run`) with a
+  `SupervisorWaker`, so it contends for the per-socket wake lock like any
+  dashboard and, holding it, restores marks, wakes supervisors and delivers
+  their inboxes. It takes no part in deciding who holds it.
+- `state.rs` turns the refresh's rows into the protocol's data: each row,
+  the project cards with their worker counts and blocked workers (the
+  dashboard's `project_runs` and `is_card`), each supervisor's open
+  numbered questions from its ledger (`digest::all_open_questions`), the
+  usage cards, the watched transcript and the palette, whose roles it sends
+  in RGB for light and dark (the Omarchy theme, else Catppuccin), never
+  querying the terminal, since stdio carries the protocol. It also computes
+  a delta: rows and projects replaced whole by key, removals, and the order
+  whenever it changed.
+- `commands.rs` maps each command onto the core flow the dashboard's key
+  runs: `prompt_agent` (never retried, never echoing the text), the
+  new-agent form's presets and `launch::new_agent_plan` then
+  `launch_agent`, `dashboard_supervisor_plan`, `merge_form`/`run_merge`
+  with the dashboard's follow-ups (clear the tag, tell the supervisor, hand
+  a conflict or failed push over), `close_form`/`close`, `tag_agent`,
+  `go_to_agent`, `open_checkout` and the digest lookups. Quick commands run
+  on the loop's thread; those that wait on Herdr, Git or a harness run on
+  one of their own and reply from there, a panic becoming an error reply.
+  Merges in progress are kept by pane between `merge_check`, `merge` and
+  `merge_handoff`.
+- `focus` and `edit` are the commands that call Herdr's focus methods,
+  which move every attached client; the hello marks them so a GUI never
+  sends them. `select` writes `selection/<socket>.<pid>` as a dashboard
+  does, for `corgi edit` when `serve` runs in a pane.
+- Its tests (`src/serve/tests.rs`) run the server against a fake Herdr that
+  answers every request from a snapshot the test changes, with real Git
+  repositories for the merges, and keep every file in a scratch directory.
 
 ### Herdr restarts
 

@@ -873,6 +873,102 @@ pub fn starts_supervisor(new_project: bool, project: &str, agents: &[DashboardAg
                 .any(|agent| agent.project_root.trim_end_matches('/') == project))
 }
 
+/// The row of the new-agent form a refused launch points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormRow {
+    Task,
+    Harness,
+    Project,
+}
+
+/// The new-agent form's values, as every frontend's form holds them.
+#[derive(Debug, Clone, Copy)]
+pub struct NewAgentValues<'a> {
+    pub project: &'a str,
+    /// The project is a directory to create ([`is_new_project`]).
+    pub new_project: bool,
+    /// The harness, as typed or chosen.
+    pub kind: &'a str,
+    pub model: &'a str,
+    pub effort: &'a str,
+    pub prompt: &'a str,
+    pub checkout: Checkout,
+}
+
+/// Whether `project`, chosen from the project list as a new one
+/// (`chosen_new`), is a directory that does not exist yet and is created, as
+/// a fresh Git repository, when the agent starts. Only a deliberate choice
+/// creates a directory, never a stale preset.
+pub fn is_new_project(project: &str, chosen_new: bool) -> bool {
+    let project = Path::new(project.trim());
+    chosen_new && project.is_absolute() && !project.exists()
+}
+
+/// What the filled-in new-agent form launches among `agents`: a worker, or
+/// the project's supervisor when the project has no agent yet. A value
+/// missing or invalid is refused with the row to point at, when there is
+/// one, and why.
+pub fn new_agent_plan(
+    values: &NewAgentValues,
+    agents: &[DashboardAgent],
+) -> Result<LaunchPlan, (Option<FormRow>, String)> {
+    let trimmed = values.project.trim();
+    let project = PathBuf::from(trimmed);
+    // A scratch agent may start without a task, as a session the user
+    // types into; every other agent is briefed first.
+    let problem = if values.prompt.trim().is_empty() && !is_home(trimmed) {
+        Some((
+            FormRow::Task,
+            "Describe the first task before creating the agent",
+        ))
+    } else if values.kind.trim().is_empty() {
+        Some((FormRow::Harness, "Choose a harness"))
+    } else if trimmed.is_empty() {
+        Some((FormRow::Project, "Choose a project"))
+    } else if !project.is_absolute() || !(project.is_dir() || values.new_project) {
+        Some((
+            FormRow::Project,
+            "Project must be an existing absolute directory",
+        ))
+    } else {
+        None
+    };
+    if let Some((row, message)) = problem {
+        return Err((Some(row), message.into()));
+    }
+    let harness = Harness::from_typed(values.kind);
+    let model = values.model.trim().to_string();
+    let effort = values.effort.trim().to_string();
+    let prompt = values.prompt.trim().to_string();
+    if !starts_supervisor(values.new_project, trimmed, agents) {
+        return Ok(LaunchPlan {
+            name: unique_agent_name(agents, &project),
+            harness,
+            model,
+            effort,
+            prompt,
+            project,
+            new_project: values.new_project,
+            checkout: values.checkout,
+            extra_args: Vec::new(),
+            role: Role::Worker,
+            request_id: None,
+        });
+    }
+    // The supervisor takes the harness, model, and effort chosen in the
+    // form, like a worker, on a harness it can run on.
+    if !harness.supports_supervisor() {
+        return Err((Some(FormRow::Harness), supervisor_harness_error(&harness)));
+    }
+    let root = project.to_string_lossy().into_owned();
+    supervisor_plan(agents, &root, harness, model, effort, prompt)
+        .map(|plan| LaunchPlan {
+            new_project: values.new_project,
+            ..plan
+        })
+        .map_err(|error| (None, format!("{error:#}")))
+}
+
 /// Why a supervisor cannot start on `harness`.
 pub fn supervisor_harness_error(harness: &Harness) -> String {
     format!(
