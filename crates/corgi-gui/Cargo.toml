@@ -1,0 +1,39 @@
+[package]
+name = "corgi-gui"
+version.workspace = true
+edition.workspace = true
+# GPUI needs a newer Rust than the rest of Corgi. This crate is outside the
+# workspace's default members, so the `corgi` binary and the core keep the
+# workspace's older `rust-version`.
+rust-version = "1.96"
+description = "Corgi's desktop window, drawn with GPUI and fed by `corgi serve`"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[[bin]]
+name = "corgi-gui"
+path = "src/main.rs"
+
+[features]
+# In-app screenshots through GPUI's `Window::render_to_image`, for checking
+# the window without screen-recording permission (`CORGI_GUI_CAPTURE`).
+capture = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+
+[dependencies]
+anyhow.workspace = true
+corgi-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Pinned to the version Herdr UI's terminal painter uses, so the terminals of
+# a later phase can add it without a version conflict.
+gpui = { package = "gpui-pre", version = "=0.3.6" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", features = ["font-kit", "runtime_shaders", "wayland"] }
+futures = "0.3"
+unicode-segmentation = "1.12"
+# Only to write the `capture` feature's screenshots; GPUI already uses it.
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

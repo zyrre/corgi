@@ -1,0 +1,1651 @@
+//! What the window draws: the header (the corgi, the herd's counts, plan
+//! usage), the overview of project cards and agent rows, the transcript
+//! under it, the supervisor's side panel, the status bar and the dialogs.
+//! Every color comes from `theme::Colors`.
+
+use corgi_core::protocol::{Activity, Agent, MergeOutcome, Project};
+use gpui::{
+    AnyElement, ClickEvent, Context, CursorStyle, FontWeight, Hsla, InteractiveElement,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, relative,
+};
+
+use crate::{
+    dialogs::{Dialog, Merge, MergeStage, Steps, outcome_line},
+    form::Row,
+    format::{self, Piece, Tone},
+    layout::{Split, TRANSCRIPT_MIN},
+    store::Connection,
+    theme,
+    window::{CorgiWindow, Drag},
+};
+
+const TEXT_SIZE: f32 = 13.0;
+const PIXEL: f32 = 4.0;
+
+/// The dashboard's corgi, two pixels a terminal cell there, one square
+/// here. Kept in step with `CORGI_PIXELS` in `src/ui/header.rs`: `o` coat,
+/// `d` inner ear, `w` blaze, `k` eyes and nose, `h` glint, `p` tongue.
+const CORGI_PIXELS: [&str; 14] = [
+    "................",
+    ".o............o.",
+    ".oo..........oo.",
+    ".odo........odo.",
+    ".oddo......oddo.",
+    ".oooooooooooooo.",
+    ".ookkoowwookkoo.",
+    ".ookhoowwoohkoo.",
+    ".wwooowwwwoooww.",
+    ".wwwwwwkkwwwwww.",
+    "..wwwwkwwkwwww..",
+    "...wwwwppwwww...",
+    ".....wwwwww.....",
+    "................",
+];
+
+impl Render for CorgiWindow {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.take_refocus() {
+            self.focus_dialog_now(window, cx);
+        }
+        let colors = self.colors.clone();
+        let connected = self.store.connected();
+        let has_state = self.store.seq.is_some() || !self.store.state.agents.is_empty();
+        let dialog = self.dialogs.open.is_some();
+        let viewport = window.viewport_size();
+
+        let body = div()
+            .flex()
+            .flex_row()
+            .flex_1()
+            .min_h_0()
+            .when(!connected, |body| body.opacity(0.45))
+            .child(self.main_column(f32::from(viewport.height), cx))
+            .when(self.layout.side_open, |body| {
+                body.child(self.divider(Split::Side, cx))
+                    .child(self.side_panel(window, cx))
+            });
+
+        div()
+            .id("corgi")
+            .key_context("Corgi")
+            .track_focus(&self.focus)
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(colors.background)
+            .text_color(colors.roles.text)
+            .font_family(self.font.clone())
+            .text_size(px(TEXT_SIZE))
+            .line_height(px(TEXT_SIZE * 1.45))
+            .on_key_down(cx.listener(|this, event, window, cx| {
+                if this.dialogs.open.is_some() {
+                    this.dialog_key(event, window, cx);
+                } else {
+                    this.overview_key(event, window, cx);
+                }
+            }))
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if this.drag.is_some() {
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        this.end_drag();
+                    } else {
+                        this.drag_to(event.position, cx);
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.end_drag()),
+            )
+            .child(self.header(cx))
+            .child(self.toolbar(cx))
+            .when(!connected, |root| {
+                root.child(self.connection_banner(has_state, cx))
+            })
+            .child(body)
+            .child(self.status_bar(cx))
+            .when(dialog, |root| root.child(self.dialog_layer(window, cx)))
+    }
+}
+
+impl CorgiWindow {
+    fn tone(&self, tone: Tone, model: Option<&str>) -> Hsla {
+        let colors = &self.colors;
+        match tone {
+            Tone::Text => colors.roles.text,
+            Tone::Muted => colors.roles.muted,
+            Tone::Accent => colors.roles.accent,
+            Tone::Success => colors.roles.success,
+            Tone::Warning => colors.roles.warning,
+            Tone::Danger => colors.roles.danger,
+            Tone::Merge => colors.roles.merge,
+            Tone::Model => model.and_then(theme::vendor).unwrap_or(colors.roles.muted),
+            Tone::Context(percent) => colors.context(percent),
+            Tone::State(state) => colors.state(state, false),
+        }
+    }
+
+    fn piece(&self, piece: &Piece, model: Option<&str>) -> AnyElement {
+        div()
+            .text_color(self.tone(piece.tone, model))
+            .when(piece.bold, |d| d.font_weight(FontWeight::BOLD))
+            .child(piece.text.clone())
+            .into_any_element()
+    }
+
+    // ---- Header ----
+
+    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let now = self.store.now();
+        let state = &self.store.state;
+        let herd = format::herd(&state.agents);
+        let card = |title: SharedString, title_color: Hsla, lines: Vec<AnyElement>| {
+            div()
+                .flex()
+                .flex_col()
+                .px_3()
+                .py_1()
+                .min_w(px(150.))
+                .border_1()
+                .border_color(title_color.opacity(0.6))
+                .rounded_md()
+                .child(
+                    div()
+                        .text_color(title_color)
+                        .font_weight(FontWeight::BOLD)
+                        .child(title),
+                )
+                .children(lines)
+        };
+        let herd_card = card(
+            "HERD".into(),
+            colors.roles.warning,
+            herd.iter().map(|piece| self.piece(piece, None)).collect(),
+        );
+        let usage_cards = state.usage.iter().map(|usage| {
+            let lines = format::usage_lines(usage, now)
+                .into_iter()
+                .map(|line| {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .children(line.iter().map(|piece| self.piece(piece, None)))
+                        .into_any_element()
+                })
+                .collect();
+            let title_color = theme::vendor(&usage.title).unwrap_or(colors.roles.accent);
+            card(usage.title.clone().into(), title_color, lines)
+        });
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_4()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(colors.roles.rule)
+            .child(corgi_art())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(34.))
+                            .line_height(px(38.))
+                            .font_weight(FontWeight::BLACK)
+                            .text_color(colors.supervisor())
+                            .child("CORGI"),
+                    )
+                    .child(
+                        div()
+                            .text_color(colors.roles.muted)
+                            .child(format!("on {}", self.options.place())),
+                    ),
+            )
+            .child(div().flex_1())
+            .child(herd_card)
+            .children(usage_cards)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.focus, cx);
+                }),
+            )
+    }
+
+    // ---- Toolbar ----
+
+    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let selected = self.selected_agent();
+        let can_prompt = selected.is_some_and(|agent| agent.can_prompt);
+        let can_merge = selected.is_some_and(|agent| agent.can_merge);
+        let tagged = selected.is_some_and(|agent| agent.ready_to_merge);
+        let has_agent = selected.is_some();
+        let mut bar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_1()
+            .border_b_1()
+            .border_color(self.colors.roles.rule);
+        let buttons: [(
+            &str,
+            &str,
+            bool,
+            fn(&mut CorgiWindow, &mut Window, &mut Context<CorgiWindow>),
+        ); 7] = [
+            ("n", "New agent", true, |this, _, cx| this.new_agent(cx)),
+            ("p", "Prompt", can_prompt, |this, window, cx| {
+                this.open_prompt(None, window, cx)
+            }),
+            ("s", "Supervisor", has_agent, |this, _, cx| {
+                this.start_supervisor(cx)
+            }),
+            ("m", "Merge", can_merge, |this, _, cx| this.merge_check(cx)),
+            (
+                "t",
+                if tagged { "Untag" } else { "Tag merge" },
+                has_agent,
+                |this, _, cx| this.toggle_tag(cx),
+            ),
+            ("x", "Close", has_agent, |this, _, cx| {
+                this.close_check(None, cx)
+            }),
+            ("r", "Refresh", true, |this, _, cx| this.refresh(cx)),
+        ];
+        for (key, label, enabled, action) in buttons {
+            bar =
+                bar.child(
+                    self.button(key, label, enabled, false, cx, move |this, window, cx| {
+                        action(this, window, cx)
+                    }),
+                );
+        }
+        bar.child(div().flex_1())
+            .child(self.button(
+                "↵",
+                "Transcript",
+                true,
+                self.layout.transcript_open,
+                cx,
+                |this, _, cx| this.toggle_transcript(cx),
+            ))
+            .child(self.button(
+                "\\",
+                "Side panel",
+                true,
+                self.layout.side_open,
+                cx,
+                |this, _, cx| this.toggle_side(cx),
+            ))
+    }
+
+    /// A button with its key drawn on a cap before its label.
+    fn button(
+        &self,
+        key: &str,
+        label: &str,
+        enabled: bool,
+        on: bool,
+        cx: &mut Context<Self>,
+        action: impl Fn(&mut CorgiWindow, &mut Window, &mut Context<CorgiWindow>) + 'static,
+    ) -> impl IntoElement {
+        let colors = &self.colors;
+        let text = if enabled {
+            colors.roles.text
+        } else {
+            colors.roles.muted
+        };
+        div()
+            .id(SharedString::from(format!("button-{label}")))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .rounded_sm()
+            .when(on, |b| b.bg(colors.roles.focus_bar))
+            .when(enabled, |b| {
+                b.cursor(CursorStyle::PointingHand)
+                    .hover(|style| style.bg(colors.roles.keycap))
+            })
+            .child(keycap(key, colors.roles.keycap, colors.roles.accent))
+            .child(div().text_color(text).child(label.to_string()))
+            .when(enabled, |b| {
+                b.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    action(this, window, cx);
+                    cx.stop_propagation();
+                }))
+            })
+    }
+
+    fn connection_banner(&self, has_state: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let (text, retry) = match self.connection() {
+            Connection::Connecting => (
+                format!("Connecting to corgi serve on {}…", self.options.place()),
+                false,
+            ),
+            Connection::Connected => (String::new(), false),
+            Connection::Lost { why, retry_at } => {
+                let seconds = retry_at
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_secs()
+                    + 1;
+                let shown = if has_state {
+                    " · showing the last state"
+                } else {
+                    ""
+                };
+                (
+                    format!(
+                        "Disconnected from corgi serve{shown} · reconnecting in {seconds}s · {}",
+                        why.lines().last().unwrap_or_default()
+                    ),
+                    true,
+                )
+            }
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .py_1()
+            .bg(colors.roles.warning.opacity(0.18))
+            .text_color(colors.roles.warning)
+            .child(div().flex_1().truncate().child(text))
+            .when(retry, |banner| {
+                banner.child(
+                    self.button("⏎", "Retry now", true, false, cx, |this, _, cx| {
+                        this.retry_now(cx)
+                    }),
+                )
+            })
+    }
+
+    // ---- The overview and the transcript ----
+
+    fn main_column(&self, window_height: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let transcript_open = self.layout.transcript_open;
+        // The header, toolbar and status bar take about this much.
+        let available = (window_height - 180.0).max(TRANSCRIPT_MIN * 2.0);
+        let transcript_height = self.layout.transcript_height_in(available);
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .child(self.overview(cx))
+            .when(transcript_open, |column| {
+                column
+                    .child(self.divider(Split::Transcript, cx))
+                    .child(self.transcript(transcript_height))
+            })
+    }
+
+    fn overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let state = &self.store.state;
+        let mut list = div()
+            .id("overview")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .gap_3()
+            .p_3()
+            .overflow_y_scroll()
+            .track_scroll(&self.overview_scroll);
+        if state.agents.is_empty() {
+            let text = if self.store.seq.is_none() {
+                "Waiting for corgi serve…"
+            } else {
+                "No agents. Press n to start one."
+            };
+            return list.child(div().text_color(self.colors.roles.muted).child(text));
+        }
+        for project in &state.projects {
+            list = list.child(self.project(project, cx));
+        }
+        list
+    }
+
+    fn project(&self, project: &Project, cx: &mut Context<Self>) -> AnyElement {
+        let colors = &self.colors;
+        let collapsed = project.card && self.collapsed.contains(&project.group);
+        let rows: Vec<AnyElement> = project
+            .agents
+            .iter()
+            .filter(|id| !collapsed || project.supervisor.as_deref() == Some(id.as_str()))
+            .filter_map(|id| self.store.agent(id))
+            .map(|agent| self.agent_row(agent, cx))
+            .collect();
+        let title_color = if project.card {
+            colors.supervisor()
+        } else {
+            colors.roles.accent
+        };
+        let group = project.group.clone();
+        let heading = div()
+            .id(SharedString::from(format!("heading-{}", project.group)))
+            .flex()
+            .flex_row()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .text_color(title_color)
+                    .font_weight(FontWeight::BOLD)
+                    .child(project.group.clone()),
+            )
+            .child(
+                div()
+                    .text_color(colors.roles.muted)
+                    .child(corgi_core::paths::tilde(&project.root)),
+            )
+            .when(project.card, |heading| {
+                heading
+                    .child(div().flex_1())
+                    .child(div().text_color(colors.roles.muted).child(if collapsed {
+                        "→ expand"
+                    } else {
+                        "← collapse"
+                    }))
+                    .cursor(CursorStyle::PointingHand)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.toggle_card(&group, cx);
+                    }))
+            });
+        if !project.card {
+            return div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(heading)
+                .children(rows)
+                .into_any_element();
+        }
+        let footer = collapsed.then(|| {
+            div()
+                .flex()
+                .flex_col()
+                .pt_1()
+                .border_t_1()
+                .border_color(colors.roles.rule)
+                .child(
+                    div().flex().flex_row().gap_4().children(
+                        format::worker_summary(&project.workers)
+                            .iter()
+                            .map(|piece| self.piece(piece, None)),
+                    ),
+                )
+                .children(project.blocked.iter().map(|blocked| {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_color(colors.roles.warning)
+                                .font_weight(FontWeight::BOLD)
+                                .child("▲ blocked:"),
+                        )
+                        .child(
+                            div()
+                                .font_weight(FontWeight::BOLD)
+                                .child(blocked.task.clone()),
+                        )
+                        .child(div().text_color(colors.roles.muted).child("—"))
+                        .child(
+                            div()
+                                .text_color(colors.roles.warning)
+                                .truncate()
+                                .child(blocked.waiting_on.clone()),
+                        )
+                }))
+        });
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2()
+            .rounded_md()
+            .border_1()
+            .border_color(colors.roles.rule)
+            .bg(colors.panel)
+            .child(heading)
+            .children(rows)
+            .children(footer)
+            .into_any_element()
+    }
+
+    fn agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
+        let colors = &self.colors;
+        let now = self.store.now();
+        let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
+        let (badge, badge_tone) = format::badge(agent);
+        let badge_color = self.tone(badge_tone, None);
+        let model = agent.model.as_deref().unwrap_or(&agent.harness);
+        let task_color = if agent.supervisor {
+            colors.supervisor()
+        } else {
+            colors.roles.text
+        };
+        let mut identity = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .overflow_hidden()
+            .child(
+                div()
+                    .px_1()
+                    .min_w(px(68.))
+                    .flex()
+                    .justify_center()
+                    .bg(badge_color)
+                    .text_color(colors.roles.badge_text)
+                    .font_weight(FontWeight::BOLD)
+                    .child(badge),
+            )
+            .children(
+                format::last_activity(agent)
+                    .map(|time| div().text_color(colors.roles.muted).child(time)),
+            )
+            .child(
+                div()
+                    .text_color(task_color)
+                    .when(selected || agent.supervisor, |d| {
+                        d.font_weight(FontWeight::BOLD)
+                    })
+                    .truncate()
+                    .child(if agent.task.is_empty() {
+                        agent.name.clone()
+                    } else {
+                        agent.task.clone()
+                    }),
+            );
+        for piece in format::fields(agent, now) {
+            identity = identity
+                .child(div().text_color(colors.roles.muted).child("·"))
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(self.tone(piece.tone, Some(model)))
+                        .when(piece.bold, |d| d.font_weight(FontWeight::BOLD))
+                        .child(piece.text),
+                );
+        }
+        let pane_id = agent.pane_id.clone();
+        div()
+            .id(SharedString::from(format!("row-{}", agent.pane_id)))
+            .flex()
+            .flex_col()
+            .pl_2()
+            .py_1()
+            .rounded_sm()
+            .border_l_4()
+            .border_color(if agent.supervisor {
+                colors.supervisor()
+            } else if selected {
+                colors.roles.accent
+            } else {
+                gpui::transparent_black()
+            })
+            .when(selected, |row| row.bg(colors.roles.focus_bar))
+            .cursor(CursorStyle::PointingHand)
+            .child(identity)
+            .child(self.activity_line(&agent.message, 2))
+            .child(self.activity_line(&agent.tool, 1))
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.select(pane_id.clone(), cx);
+                window.focus(&this.focus, cx);
+                if event.click_count() == 2 {
+                    this.open_prompt(Some(pane_id.clone()), window, cx);
+                }
+            }))
+            .into_any_element()
+    }
+
+    fn activity_line(&self, activity: &Activity, lines: usize) -> impl IntoElement {
+        let marker_color = self.tone(format::marker_tone(activity.kind), None);
+        let text_color = match activity.kind {
+            corgi_core::protocol::ActivityKind::Thinking => self.colors.roles.thinking,
+            corgi_core::protocol::ActivityKind::Question => self.colors.roles.warning,
+            corgi_core::protocol::ActivityKind::Ready => self.colors.roles.muted,
+            _ => self.colors.roles.text,
+        };
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(12.))
+                    .text_color(marker_color)
+                    .child(format::marker(activity.kind)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(text_color)
+                    .line_clamp(lines)
+                    .when(lines == 1, |d| d.truncate())
+                    .child(if activity.text.is_empty() {
+                        "nothing yet".to_string()
+                    } else {
+                        activity.text.clone()
+                    }),
+            )
+    }
+
+    fn transcript(&self, height: f32) -> impl IntoElement {
+        let colors = &self.colors;
+        let agent = self.selected_agent();
+        let title = agent.map_or("No agent selected".to_string(), |agent| {
+            format!(
+                "Session · {}",
+                agent.herdr_name.clone().unwrap_or(agent.name.clone())
+            )
+        });
+        let transcript = self
+            .store
+            .state
+            .transcript
+            .as_ref()
+            .filter(|transcript| Some(&transcript.pane_id) == self.selected.as_ref());
+        let entries: Vec<AnyElement> = match transcript {
+            None if agent.is_some() => vec![
+                div()
+                    .text_color(colors.roles.muted)
+                    .child("Reading the session…")
+                    .into_any_element(),
+            ],
+            None => Vec::new(),
+            Some(transcript) if transcript.entries.is_empty() => vec![
+                div()
+                    .text_color(colors.roles.muted)
+                    .child("Corgi cannot read this harness's session file.")
+                    .into_any_element(),
+            ],
+            Some(transcript) => transcript
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    // The newest turn in full, older ones two lines each.
+                    let lines = if index == 0 { 0 } else { 2 };
+                    self.transcript_entry(entry, lines)
+                })
+                .collect(),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .h(px(height))
+            .flex_none()
+            .child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_color(colors.roles.accent)
+                    .font_weight(FontWeight::BOLD)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .id("transcript")
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_2()
+                    .px_3()
+                    .pb_2()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.transcript_scroll)
+                    .children(entries),
+            )
+    }
+
+    fn transcript_entry(&self, entry: &Activity, lines: usize) -> AnyElement {
+        let colors = &self.colors;
+        let text_color = match entry.kind {
+            corgi_core::protocol::ActivityKind::Prompt => colors.roles.accent,
+            corgi_core::protocol::ActivityKind::Command
+            | corgi_core::protocol::ActivityKind::Tool => colors.roles.quiet,
+            _ => colors.roles.text,
+        };
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(12.))
+                    .text_color(self.tone(format::marker_tone(entry.kind), None))
+                    .child(format::marker(entry.kind)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_color(text_color)
+                    .when(lines > 0, |d| d.line_clamp(lines))
+                    .child(entry.text.clone()),
+            )
+            .into_any_element()
+    }
+
+    // ---- The side panel ----
+
+    fn side_panel(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _ = window;
+        let colors = &self.colors;
+        let project = self
+            .selected
+            .as_deref()
+            .and_then(|id| self.store.project_of(id));
+        let mut panel = div()
+            .id("side")
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(self.layout.side_width))
+            .gap_2()
+            .p_3()
+            .bg(colors.panel)
+            .overflow_y_scroll();
+        let Some(project) = project else {
+            return panel.child(
+                div()
+                    .text_color(colors.roles.muted)
+                    .child("Select an agent to see its project's supervisor."),
+            );
+        };
+        panel = panel.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(colors.supervisor())
+                        .font_weight(FontWeight::BOLD)
+                        .child("SUPERVISOR"),
+                )
+                .child(
+                    div()
+                        .text_color(colors.roles.muted)
+                        .child(project.group.clone()),
+                ),
+        );
+        let supervisor = project
+            .supervisor
+            .as_deref()
+            .and_then(|id| self.store.agent(id));
+        match supervisor {
+            Some(supervisor) => {
+                let pane_id = supervisor.pane_id.clone();
+                let prompt_id = pane_id.clone();
+                let now = self.store.now();
+                let model = supervisor.model.as_deref().unwrap_or(&supervisor.harness);
+                let (badge, tone) = format::badge(supervisor);
+                panel = panel
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .px_1()
+                                    .bg(self.tone(tone, None))
+                                    .text_color(colors.roles.badge_text)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(badge),
+                            )
+                            .children(format::fields(supervisor, now).into_iter().map(|piece| {
+                                div()
+                                    .text_color(self.tone(piece.tone, Some(model)))
+                                    .child(piece.text)
+                            })),
+                    )
+                    .child(self.activity_block(&supervisor.message))
+                    .child(self.activity_line(&supervisor.tool, 2))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(self.button(
+                                "p",
+                                "Prompt it",
+                                supervisor.can_prompt,
+                                false,
+                                cx,
+                                move |this, window, cx| {
+                                    this.open_prompt(Some(prompt_id.clone()), window, cx)
+                                },
+                            ))
+                            .child(self.button(
+                                "",
+                                "Select it",
+                                true,
+                                false,
+                                cx,
+                                move |this, _, cx| this.select(pane_id.clone(), cx),
+                            )),
+                    );
+            }
+            None if project.scratch => {
+                panel = panel.child(
+                    div()
+                        .text_color(colors.roles.muted)
+                        .child("Scratch sessions belong to no project and have no supervisor."),
+                );
+            }
+            None => {
+                panel = panel
+                    .child(
+                        div()
+                            .text_color(colors.roles.muted)
+                            .child("No supervisor runs for this project."),
+                    )
+                    .child(self.button(
+                        "s",
+                        "Start its supervisor",
+                        true,
+                        false,
+                        cx,
+                        |this, _, cx| this.start_supervisor(cx),
+                    ));
+            }
+        }
+
+        // The numbered questions, each answered in place.
+        panel = panel.child(section_title(
+            format!("OPEN QUESTIONS ({})", project.questions.len()),
+            colors.roles.warning,
+        ));
+        if project.questions.is_empty() {
+            panel = panel.child(div().text_color(colors.roles.muted).child("None open."));
+        }
+        let root = project.root.clone();
+        for (index, question) in project.questions.iter().enumerate() {
+            let key = if index < 9 {
+                (index + 1).to_string()
+            } else {
+                String::new()
+            };
+            let (root, asked) = (root.clone(), question.clone());
+            panel = panel.child(
+                div()
+                    .id(SharedString::from(format!("question-{index}")))
+                    .flex()
+                    .flex_col()
+                    .p_2()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(colors.roles.rule)
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|style| style.bg(colors.roles.focus_bar))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .when(!key.is_empty(), |row| {
+                                row.child(keycap(&key, colors.roles.keycap, colors.roles.accent))
+                            })
+                            .child(
+                                div()
+                                    .text_color(colors.roles.warning)
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(if question.id.is_empty() {
+                                        "—".to_string()
+                                    } else {
+                                        question.id.clone()
+                                    }),
+                            )
+                            .child(div().flex_1().child(question.title.clone())),
+                    )
+                    .when(!question.agent.is_empty(), |card| {
+                        card.child(
+                            div()
+                                .text_color(colors.roles.muted)
+                                .child(format!("about {}", question.agent)),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.open_answer(root.clone(), asked.clone(), window, cx);
+                    })),
+            );
+        }
+
+        if !project.blocked.is_empty() {
+            panel = panel.child(section_title("BLOCKED".into(), colors.roles.warning));
+            for blocked in &project.blocked {
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .font_weight(FontWeight::BOLD)
+                                .child(format!("▲ {}", blocked.task)),
+                        )
+                        .child(
+                            div()
+                                .text_color(colors.roles.warning)
+                                .child(blocked.waiting_on.clone()),
+                        ),
+                );
+            }
+        }
+        panel
+    }
+
+    fn activity_block(&self, activity: &Activity) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(12.))
+                    .text_color(self.tone(format::marker_tone(activity.kind), None))
+                    .child(format::marker(activity.kind)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .line_clamp(12)
+                    .child(activity.text.clone()),
+            )
+    }
+
+    /// The handle between two panes, dragged to resize them.
+    fn divider(&self, split: Split, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let dragging = self.drag.is_some_and(|drag| drag.split == split);
+        let line = if dragging {
+            colors.roles.accent
+        } else {
+            colors.roles.rule
+        };
+        let handle = div()
+            .id(SharedString::from(format!("divider-{split:?}")))
+            .flex_none()
+            .bg(line)
+            .hover(|style| style.bg(colors.roles.accent))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    let last = match split {
+                        Split::Side => event.position.x,
+                        Split::Transcript => event.position.y,
+                    };
+                    this.drag = Some(Drag { split, last });
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            );
+        match split {
+            Split::Side => handle
+                .w(px(4.))
+                .h_full()
+                .cursor(CursorStyle::ResizeLeftRight),
+            Split::Transcript => handle.h(px(4.)).w_full().cursor(CursorStyle::ResizeUpDown),
+        }
+    }
+
+    // ---- The status bar ----
+
+    fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let state = &self.store.state;
+        let (dot, dot_color, place) = match self.connection() {
+            Connection::Connected => ("●", colors.roles.success, self.options.place()),
+            Connection::Connecting => ("○", colors.roles.warning, "connecting".into()),
+            Connection::Lost { .. } => ("○", colors.roles.danger, "disconnected".into()),
+        };
+        let herdr = (!state.herdr.connected && self.store.seq.is_some()).then(|| {
+            div().text_color(colors.roles.danger).child(format!(
+                "Herdr not answering: {}",
+                state.herdr.error.clone().unwrap_or_default()
+            ))
+        });
+        let flash = self
+            .dialogs
+            .flash
+            .as_ref()
+            .filter(|flash| flash.at.elapsed().as_secs() < 8)
+            .map(|flash| {
+                div()
+                    .text_color(if flash.error {
+                        colors.roles.danger
+                    } else {
+                        colors.roles.success
+                    })
+                    .truncate()
+                    .child(flash.text.clone())
+            });
+        let status = state.status.clone().map(|status| {
+            div()
+                .text_color(colors.roles.muted)
+                .truncate()
+                .child(status)
+        });
+        let count = state.agents.len();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .py_1()
+            .border_t_1()
+            .border_color(colors.roles.rule)
+            .child(div().text_color(dot_color).child(dot))
+            .child(div().text_color(colors.roles.muted).child(place))
+            .child(div().text_color(colors.roles.text).child(format!(
+                "{count} agent{}",
+                if count == 1 { "" } else { "s" }
+            )))
+            .children(herdr)
+            .children(flash.or(status))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_color(colors.roles.muted)
+                    .child("j/k select · ←/→ card · 1–9 answer"),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.focus, cx);
+                }),
+            )
+    }
+
+    // ---- Dialogs ----
+
+    fn dialog_layer(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let content = match &self.dialogs.open {
+            Some(Dialog::Prompt {
+                agent,
+                sending,
+                error,
+                ..
+            }) => self.text_dialog(format!("Prompt {agent}"), None, *sending, error.as_deref()),
+            Some(Dialog::Answer {
+                question,
+                sending,
+                error,
+                ..
+            }) => self.text_dialog(
+                format!(
+                    "Answer {}",
+                    if question.id.is_empty() {
+                        "the question"
+                    } else {
+                        &question.id
+                    }
+                ),
+                Some(question.title.clone()),
+                *sending,
+                error.as_deref(),
+            ),
+            Some(Dialog::NewAgent(new)) => self.form_dialog(new, cx),
+            Some(Dialog::Merge(merge)) => self.merge_dialog(merge, cx),
+            Some(Dialog::Close(close)) => self.close_dialog(close, cx),
+            None => div().into_any_element(),
+        };
+        let _ = window;
+        div()
+            .id("dialog-layer")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(110.))
+            .bg(colors.background.opacity(0.55))
+            .occlude()
+            .child(
+                div()
+                    .id("dialog")
+                    .key_context("Dialog")
+                    .track_focus(&self.form_focus)
+                    .w(px(720.))
+                    .max_w(relative(0.92))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(colors.roles.accent)
+                    .bg(colors.roles.popup_fill)
+                    .shadow_lg()
+                    .child(content),
+            )
+    }
+
+    fn dialog_title(&self, title: String) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .text_color(self.colors.roles.accent)
+            .font_weight(FontWeight::BOLD)
+            .child("◆")
+            .child(title)
+    }
+
+    fn field_box(&self, field: AnyElement) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(self.colors.roles.rule)
+            .bg(self.colors.background)
+            .child(field)
+    }
+
+    fn hints(&self, hints: &[(&str, &str)]) -> impl IntoElement {
+        let colors = &self.colors;
+        div()
+            .flex()
+            .flex_row()
+            .gap_3()
+            .pt_1()
+            .border_t_1()
+            .border_color(colors.roles.rule)
+            .children(hints.iter().map(|(key, label)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .child(keycap(key, colors.roles.keycap, colors.roles.accent))
+                    .child(
+                        div()
+                            .text_color(colors.roles.muted)
+                            .child(label.to_string()),
+                    )
+            }))
+    }
+
+    fn text_dialog(
+        &self,
+        title: String,
+        question: Option<String>,
+        sending: bool,
+        error: Option<&str>,
+    ) -> AnyElement {
+        let colors = &self.colors;
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(self.dialog_title(title))
+            .children(question.map(|question| div().child(question)))
+            .child(self.field_box(self.prompt_input.clone().into_any_element()))
+            .when(sending, |d| {
+                d.child(div().text_color(colors.roles.muted).child("Sending…"))
+            })
+            .children(error.map(|error| {
+                div()
+                    .text_color(colors.roles.danger)
+                    .child(error.to_string())
+            }))
+            .child(self.hints(&[("↵", "send"), ("Esc", "cancel")]))
+            .into_any_element()
+    }
+
+    fn form_dialog(&self, new: &crate::form::NewAgent, cx: &mut Context<Self>) -> AnyElement {
+        let colors = &self.colors;
+        let mut rows = div().flex().flex_col();
+        for row in new.rows() {
+            let focused = new.row == row;
+            let value: AnyElement = match row {
+                Row::Task => self
+                    .field_box(self.task_input.clone().into_any_element())
+                    .into_any_element(),
+                _ => {
+                    let shown = new.shown(row);
+                    let color = match row {
+                        Row::Harness | Row::Model => {
+                            let name = if row == Row::Model && new.model.is_empty() {
+                                new.form
+                                    .default_model
+                                    .clone()
+                                    .unwrap_or(new.harness.clone())
+                            } else if row == Row::Model {
+                                new.model.clone()
+                            } else {
+                                new.harness.clone()
+                            };
+                            theme::vendor(&name).unwrap_or(colors.roles.text)
+                        }
+                        _ => colors.roles.text,
+                    };
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(div().text_color(color).child(shown))
+                        .child(div().text_color(colors.roles.muted).child("▾"))
+                        .child(
+                            div()
+                                .text_color(colors.roles.muted)
+                                .truncate()
+                                .child(new.detail(row)),
+                        )
+                        .into_any_element()
+                }
+            };
+            rows = rows.child(
+                div()
+                    .id(SharedString::from(format!("form-{}", row.label())))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_1()
+                    .py(px(2.))
+                    .rounded_sm()
+                    .when(focused, |r| r.bg(colors.roles.focus_bar))
+                    .child(
+                        div()
+                            .w(px(12.))
+                            .text_color(colors.roles.accent)
+                            .child(if focused { "▶" } else { "" }),
+                    )
+                    .child(
+                        div()
+                            .w(px(80.))
+                            .flex_none()
+                            .text_color(if focused {
+                                colors.roles.text
+                            } else {
+                                colors.roles.muted
+                            })
+                            .when(focused, |d| d.font_weight(FontWeight::BOLD))
+                            .child(row.label()),
+                    )
+                    .child(div().flex_1().min_w_0().child(value))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        if let Some(Dialog::NewAgent(new)) = &mut this.dialogs.open
+                            && new.running.is_none()
+                        {
+                            new.row = row;
+                            new.picker = None;
+                        }
+                        this.focus_dialog_now(window, cx);
+                        cx.notify();
+                    })),
+            );
+            if focused && new.picker.is_some() {
+                rows = rows.child(self.picker(new));
+            }
+        }
+        let starts = new
+            .form
+            .starts_supervisor
+            .then(|| {
+                div().text_color(colors.supervisor()).child(
+                    "This project has no agent yet: this starts its supervisor, with the task as its first request.",
+                )
+            });
+        let running = new.running.as_ref().map(|steps| self.steps(steps, true));
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(self.dialog_title(new.title().to_string()))
+            .child(rows)
+            .children(starts)
+            .children(
+                new.error
+                    .as_ref()
+                    .map(|error| div().text_color(colors.roles.danger).child(error.clone())),
+            )
+            .children(running)
+            .child(self.hints(&[
+                ("↵", "create agent"),
+                ("↑↓ ⇥", "rows"),
+                ("←→", "change"),
+                ("Space", "list"),
+                ("Esc", "cancel"),
+            ]))
+            .into_any_element()
+    }
+
+    /// The focused row's list, inline under it.
+    fn picker(&self, new: &crate::form::NewAgent) -> AnyElement {
+        let colors = &self.colors;
+        let picker = new.picker.as_ref().expect("an open list");
+        let rows = new.picker_rows();
+        let cursor = picker.cursor.min(rows.len().saturating_sub(1));
+        div()
+            .flex()
+            .flex_col()
+            .ml(px(104.))
+            .mb_1()
+            .p_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(colors.roles.accent)
+            .bg(colors.background)
+            .child(
+                div()
+                    .text_color(colors.roles.muted)
+                    .child(format!("filter: {}▏", picker.filter)),
+            )
+            .when(rows.is_empty(), |list| {
+                list.child(
+                    div()
+                        .text_color(colors.roles.muted)
+                        .child("nothing matches"),
+                )
+            })
+            .children(rows.iter().enumerate().take(12).map(|(index, choice)| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .px_1()
+                    .when(index == cursor, |row| row.bg(colors.roles.focus_bar))
+                    .child(div().child(choice.label.clone()))
+                    .child(
+                        div()
+                            .text_color(colors.roles.muted)
+                            .truncate()
+                            .child(choice.detail.clone()),
+                    )
+                    .when(!choice.badge.is_empty(), |row| {
+                        row.child(
+                            div()
+                                .px_1()
+                                .rounded_sm()
+                                .bg(colors.roles.keycap)
+                                .text_color(colors.roles.accent)
+                                .child(choice.badge.clone()),
+                        )
+                    })
+            }))
+            .into_any_element()
+    }
+
+    /// A command's steps: done, running, still to come.
+    fn steps(&self, steps: &Steps, running: bool) -> AnyElement {
+        let colors = &self.colors;
+        div()
+            .flex()
+            .flex_col()
+            .children(steps.steps.iter().enumerate().map(|(index, step)| {
+                let (mark, color) = match steps.step {
+                    Some(at) if index < at => ("✓", colors.roles.success),
+                    Some(at) if index == at && running => ("●", colors.roles.accent),
+                    _ => ("○", colors.roles.muted),
+                };
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(div().text_color(color).child(mark))
+                    .child(step.clone())
+            }))
+            .children(
+                steps
+                    .status
+                    .as_ref()
+                    .filter(|_| running)
+                    .map(|status| div().text_color(colors.roles.muted).child(status.clone())),
+            )
+            .into_any_element()
+    }
+
+    fn merge_dialog(&self, merge: &Merge, cx: &mut Context<Self>) -> AnyElement {
+        let colors = &self.colors;
+        let form = &merge.form;
+        let running = merge.stage == MergeStage::Running;
+        let mut dialog = div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(self.dialog_title(format!("Merge {}", form.agent)))
+            .child(div().font_weight(FontWeight::BOLD).child(form.task.clone()))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_color(colors.roles.accent)
+                            .child(form.source_branch.clone()),
+                    )
+                    .child(div().text_color(colors.roles.muted).child("→"))
+                    .child(
+                        div()
+                            .text_color(colors.roles.success)
+                            .child(form.target_branch.clone()),
+                    )
+                    .children(form.upstream.as_ref().map(|upstream| {
+                        div()
+                            .text_color(colors.roles.muted)
+                            .child(format!("(checks {upstream} first)"))
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .children(form.commits.iter().take(8).map(|commit| {
+                        div()
+                            .text_color(colors.roles.quiet)
+                            .child(format!("  {commit}"))
+                    }))
+                    .when(form.commits.len() > 8, |d| {
+                        d.child(
+                            div()
+                                .text_color(colors.roles.muted)
+                                .child(format!("  … and {} more", form.commits.len() - 8)),
+                        )
+                    }),
+            );
+        if merge.stage != MergeStage::Confirm {
+            dialog = dialog.child(self.steps(&merge.progress, running));
+        }
+        match &merge.stage {
+            MergeStage::Outcome(outcome) => {
+                let good = matches!(outcome, MergeOutcome::Succeeded { .. });
+                let color = if good {
+                    colors.roles.success
+                } else {
+                    colors.roles.warning
+                };
+                dialog = dialog.child(
+                    div()
+                        .p_2()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(color)
+                        .text_color(color)
+                        .font_weight(FontWeight::BOLD)
+                        .child(format!(
+                            "{} {}",
+                            if good { "✓" } else { "!" },
+                            outcome_line(outcome)
+                        )),
+                );
+                if let MergeOutcome::Behind { commits } = outcome {
+                    dialog = dialog.children(commits.iter().take(6).map(|commit| {
+                        div()
+                            .text_color(colors.roles.quiet)
+                            .child(format!("  {commit}"))
+                    }));
+                }
+            }
+            MergeStage::Failed(error) => {
+                dialog = dialog.child(div().text_color(colors.roles.danger).child(error.clone()));
+            }
+            MergeStage::Running => {
+                dialog = dialog.child(
+                    div()
+                        .text_color(colors.roles.muted)
+                        .child("Merging… Esc hides this; the outcome shows when it ends."),
+                );
+            }
+            MergeStage::Confirm => {}
+        }
+        let actions = merge.actions();
+        let mut buttons = div().flex().flex_row().gap_2().pt_1();
+        for (index, (label, action)) in actions.into_iter().enumerate() {
+            let key = if index == 0 { "↵" } else { "" };
+            buttons =
+                buttons.child(
+                    self.button(key, label, true, index == 0, cx, move |this, _, cx| {
+                        this.merge_action(action, cx)
+                    }),
+                );
+        }
+        dialog.child(buttons).into_any_element()
+    }
+
+    fn close_dialog(&self, close: &crate::dialogs::Close, cx: &mut Context<Self>) -> AnyElement {
+        let colors = &self.colors;
+        let form = &close.form;
+        let what = match form.target.as_str() {
+            "worktree" => format!(
+                "Removes the worktree {} from disk; its branch stays.",
+                form.checkout.clone().unwrap_or_default()
+            ),
+            "tab" => "Closes the agent's tab in its project's workspace.".to_string(),
+            _ => "Closes the agent's workspace.".to_string(),
+        };
+        let confirm = if close.dirty.is_some() {
+            "Discard changes and close".to_string()
+        } else {
+            form.confirm.clone()
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(self.dialog_title(format!("Close {}", form.label)))
+            .child(div().child(what))
+            .children(close.dirty.as_ref().map(|dirty| {
+                div()
+                    .text_color(colors.roles.danger)
+                    .font_weight(FontWeight::BOLD)
+                    .child(dirty.clone())
+            }))
+            .children(
+                close
+                    .error
+                    .as_ref()
+                    .map(|error| div().text_color(colors.roles.danger).child(error.clone())),
+            )
+            .when(close.running, |d| {
+                d.child(div().text_color(colors.roles.muted).child("Closing…"))
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .pt_1()
+                    .child(
+                        self.button("↵", &confirm, !close.running, true, cx, |this, _, cx| {
+                            this.confirm_close(cx)
+                        }),
+                    )
+                    .child(
+                        self.button("Esc", "Cancel", true, false, cx, |this, _, cx| {
+                            this.dialogs.open = None;
+                            cx.notify();
+                        }),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+fn section_title(text: String, color: Hsla) -> impl IntoElement {
+    div()
+        .pt_2()
+        .text_color(color)
+        .font_weight(FontWeight::BOLD)
+        .child(text)
+}
+
+fn keycap(key: &str, fill: Hsla, text: Hsla) -> AnyElement {
+    if key.is_empty() {
+        return div().into_any_element();
+    }
+    div()
+        .px_1()
+        .rounded_sm()
+        .bg(fill)
+        .text_color(text)
+        .font_weight(FontWeight::BOLD)
+        .child(key.to_string())
+        .into_any_element()
+}
+
+/// The corgi in the brand's fixed colors, one square per pixel.
+fn corgi_art() -> impl IntoElement {
+    use corgi_core::palette::brand;
+    let color = |pixel: char| {
+        let brand = match pixel {
+            'o' => brand::CORGI_COAT,
+            'd' => brand::CORGI_INNER_EAR,
+            'w' => brand::CORGI_WHITE,
+            'k' => brand::CORGI_DARK,
+            'h' => brand::CORGI_GLINT,
+            'p' => brand::CORGI_TONGUE,
+            _ => return None,
+        };
+        match brand {
+            corgi_core::palette::Color::Indexed(index) => {
+                Some(theme::hsla(corgi_core::palette::indexed_rgb(index)))
+            }
+            _ => None,
+        }
+    };
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .children(CORGI_PIXELS.iter().map(|row| {
+            div().flex().flex_row().children(row.chars().map(|pixel| {
+                let square = div().w(px(PIXEL)).h(px(PIXEL));
+                match color(pixel) {
+                    Some(color) => square.bg(color),
+                    None => square,
+                }
+            }))
+        }))
+}
