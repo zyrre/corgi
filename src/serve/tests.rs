@@ -514,6 +514,8 @@ fn a_refresh_sends_only_what_changed_and_resync_the_whole_state() {
     let mut session = Session::start(&herdr, &scratch);
     let state = opening(&session);
     assert_eq!(state.projects[0].workers.working, 1);
+    // A frontend's copy, kept by applying every delta.
+    let mut copy = state.clone();
 
     // Nothing changed, nothing is sent.
     assert_eq!(session.refresh(), None);
@@ -523,6 +525,7 @@ fn a_refresh_sends_only_what_changed_and_resync_the_whole_state() {
     snapshot["agents"].as_array_mut().unwrap().pop();
     herdr.set_snapshot(snapshot);
     let changes = session.refresh().expect("a delta");
+    copy.apply(changes.clone());
     let worker = changes.iter().find_map(|change| match change {
         Change::Agent(agent) => Some(agent),
         _ => None,
@@ -549,9 +552,11 @@ fn a_refresh_sends_only_what_changed_and_resync_the_whole_state() {
         changes.as_slice(),
         [Change::Herdr(status)] if !status.connected && status.error.is_some()
     ));
+    copy.apply(changes);
     herdr.heal("session.snapshot");
     let changes = session.refresh().expect("a delta");
     assert!(matches!(changes.as_slice(), [Change::Herdr(status)] if status.connected));
+    copy.apply(changes);
 
     // A resync is the whole state, next in sequence.
     let (_, before) = session.ok(json!({"command": "resync"}));
@@ -564,6 +569,8 @@ fn a_refresh_sends_only_what_changed_and_resync_the_whole_state() {
         .expect("a snapshot");
     assert_eq!(snapshot.seq, 4);
     assert_eq!(snapshot.state.agents.len(), 2);
+    // The deltas, applied in order, led to the same state.
+    assert_eq!(copy, snapshot.state);
     session.close();
 }
 

@@ -94,6 +94,59 @@ pub struct State {
     pub palette: PaletteSet,
 }
 
+impl State {
+    /// Applies a delta's changes in order, as a frontend keeps its copy of
+    /// the state: rows and projects are replaced whole by key, or appended
+    /// until an order change places them.
+    pub fn apply(&mut self, changes: impl IntoIterator<Item = Change>) {
+        for change in changes {
+            match change {
+                Change::Herdr(herdr) => self.herdr = herdr,
+                Change::Status { status } => self.status = status,
+                Change::Usage { usage } => self.usage = usage,
+                Change::Agent(agent) => replace_keyed(&mut self.agents, *agent, |a| &a.pane_id),
+                Change::AgentRemoved { pane_id } => {
+                    self.agents.retain(|agent| agent.pane_id != pane_id)
+                }
+                Change::AgentOrder { pane_ids } => {
+                    reorder(&mut self.agents, &pane_ids, |a| &a.pane_id)
+                }
+                Change::Project(project) => {
+                    replace_keyed(&mut self.projects, *project, |p| &p.group)
+                }
+                Change::ProjectRemoved { group } => {
+                    self.projects.retain(|project| project.group != group)
+                }
+                Change::ProjectOrder { groups } => {
+                    reorder(&mut self.projects, &groups, |p| &p.group)
+                }
+                Change::Transcript { transcript } => self.transcript = transcript,
+                Change::Selection { pane_id } => self.selection = pane_id,
+                Change::Palette(palette) => self.palette = *palette,
+            }
+        }
+    }
+}
+
+/// Replaces the item of `items` with `item`'s key, or appends it.
+fn replace_keyed<T>(items: &mut Vec<T>, item: T, key: impl Fn(&T) -> &String) {
+    match items.iter_mut().find(|old| key(old) == key(&item)) {
+        Some(old) => *old = item,
+        None => items.push(item),
+    }
+}
+
+/// Puts `items` in the order of `keys`; an item `keys` lacks goes last, in
+/// its old order.
+fn reorder<T>(items: &mut Vec<T>, keys: &[String], key: impl Fn(&T) -> &String) {
+    let position = |item: &T| {
+        keys.iter()
+            .position(|wanted| wanted == key(item))
+            .unwrap_or(keys.len())
+    };
+    items.sort_by_key(|item| position(item));
+}
+
 /// Whether Herdr answered the last refresh.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HerdrStatus {
@@ -700,6 +753,39 @@ mod tests {
                 lookup: DigestQuery::Summary
             }
         );
+    }
+
+    #[test]
+    fn applying_changes_replaces_rows_by_key_and_follows_the_order() {
+        let agent = |pane_id: &str, task: &str| Agent {
+            pane_id: pane_id.into(),
+            task: task.into(),
+            ..Agent::default()
+        };
+        let mut state = State {
+            agents: vec![agent("a", "one"), agent("b", "two")],
+            ..State::default()
+        };
+        state.apply([
+            Change::Agent(Box::new(agent("b", "changed"))),
+            Change::Agent(Box::new(agent("c", "new"))),
+            Change::AgentRemoved {
+                pane_id: "a".into(),
+            },
+            Change::AgentOrder {
+                pane_ids: vec!["c".into(), "b".into()],
+            },
+            Change::Status {
+                status: Some("woke".into()),
+            },
+        ]);
+        let tasks: Vec<_> = state
+            .agents
+            .iter()
+            .map(|agent| (agent.pane_id.as_str(), agent.task.as_str()))
+            .collect();
+        assert_eq!(tasks, [("c", "new"), ("b", "changed")]);
+        assert_eq!(state.status.as_deref(), Some("woke"));
     }
 
     #[test]
