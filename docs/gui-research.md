@@ -626,6 +626,99 @@ with every surface Herdr sent. The trade-off is clear:
 
 Either way, the interactive layer (selection, links, IME, scrolling) is ours.
 
+## 11. Terminal inside a UI: how others do it (October 2026)
+
+A survey of about 35 agentic IDEs, orchestrators and terminal apps, and of
+the technology behind them **[web]**. Each claim is sourced in the research
+notes; the main links are below.
+
+**What the field does:**
+
+1. **Electron + xterm.js (WebGL renderer) + node-pty is the most common
+   approach.** VS Code and its forks (Cursor, Windsurf, Kiro), the Codex app,
+   Superset, Orca, Pane, Emdash, Wave and Tabby all use it.
+   - Serious apps run xterm.js 6.1 betas to get synchronized output and the
+     kitty keyboard protocol.
+   - The recurring complaints with Claude Code and Codex are scroll jumps and
+     flicker, plus Electron's memory use.
+2. **libghostty is replacing older terminal engines,** in three forms:
+   - **Full embedding,** where Ghostty draws the terminal (cmux, Supacode,
+     Farol, herdrm, Heeler). It is **macOS only**: the API calls itself
+     internal to Ghostty's macOS app, and Ghostty has said a Linux version is
+     not planned.
+   - **libghostty-vt with the app's own renderer** (JetBrains 2026.3,
+     Paneflow, moai-studio). It has no renderer of its own and no way to load
+     cells, and its API "is definitely going to change".
+   - **ghostty-web,** compiled to WebAssembly (Nimbalyst, Xum, herdr-web).
+     It is still at 0.4 and missing pieces.
+3. **alacritty_terminal plus an own GPU painter** is used by Zed (GPL, so a
+   reference only), Warp, okena (MIT, GPUI, Wayland, kitty keys, IME) and the
+   egui and iced widgets.
+4. **Platform widgets** each tie the app to one toolkit and platform: VTE (no
+   kitty keyboard yet), SwiftTerm, QTermWidget, JediTerm.
+5. **Not possible on Wayland:** embedding another app's window, or a web
+   terminal inside a native Rust window. wry's child webview is X11-only.
+   Tauri on Linux has had 0.5 s echo lag from WebKitGTK's slow WebGL path.
+
+**Where emulation happens.** Almost every app emulates in the client.
+Server-owned designs (tmux `-CC`, Zellij web, herdrm and herdr-web on Herdr)
+usually emulate twice: on the server, then again in the client. Only
+**Herdr UI paints the server's cells directly.** Shared lessons from those
+designs:
+
+- Scrollback and copy beyond the visible screen must come from the server.
+- Keys are only right when the server encodes them.
+- herdr-web shows the costs of the alternative: guessed keys, copy limited to
+  the visible screen, reconnects after lost frames, and a pin to Herdr's
+  private protocol.
+
+**What the well-regarded apps did.** cmux, Ghostty, Supacode, Herdr UI and
+Paneflow are the ones praised as feeling native and fast. They:
+
+- reuse a proven terminal engine instead of writing one;
+- support synchronized output (DEC 2026) and the kitty keyboard protocol,
+  which fix the flicker and the Shift+Enter problems;
+- paint with GPU quads, a glyph atlas, and box drawing as sprites;
+- keep reading the program's output while hidden, but skip painting hidden
+  panes;
+- use a binary transport per pane with flow control;
+- keep sessions in a daemon, so the UI can restart without losing them.
+
+**The best way, in general and for Corgi.**
+
+In general, when an app owns its programs, the best-regarded native recipe is
+libghostty-vt or alacritty_terminal plus a GPU cell painter. The mainstream
+recipe is Electron with xterm.js.
+
+Corgi's case is the rarer one: Herdr already runs the programs, interprets
+their output and encodes keys. So the best fit is the one Herdr UI uses:
+**paint the endpoint's cells natively, with no client-side emulator.** That
+avoids double emulation, guessed keys and the web stacks' Linux problems. It
+matches §8–§10.
+
+- **The painter:** Herdr UI's (Apache-2.0, GPUI), or a wgpu painter for egui
+  modelled on Rio's `sugarloaf` (MIT).
+- **The interactive layer is ours** whichever painter: selection, links,
+  IME, wheel and scroll sent to the server, copy beyond the screen read from
+  the server. okena (MIT) is the permissive reference for input, IME and
+  links.
+- **Fallback:** if the endpoint ever fails us, feed the bridge's frames to
+  libghostty-vt in-process.
+
+Main sources:
+- [libghostty header](https://github.com/ghostty-org/ghostty/blob/main/include/ghostty.h)
+- [Ghostty Linux embedding](https://github.com/ghostty-org/ghostty/discussions/11722)
+- [JetBrains on Ghostty](https://blog.jetbrains.com/platform/2026/10/jetbrains-terminal-now-uses-ghostty/)
+- [Paneflow](https://paneflow.dev/blog/libghostty-linux)
+- [okena](https://github.com/contember/okena)
+- [sugarloaf](https://lib.rs/crates/rio-backend)
+- [wry child webview](https://docs.rs/wry/latest/wry/struct.WebViewBuilder.html)
+- [Tauri WebGL lag](https://github.com/VoltiusApp/voltius/pull/313)
+- [xterm.js kitty keyboard](https://github.com/xtermjs/xterm.js/pull/5600)
+- [Zellij web](https://poor.dev/blog/building-zellij-web-terminal/)
+- [Claude Code fullscreen notes](https://code.claude.com/docs/en/fullscreen)
+- [TerminalX transport](https://github.com/terminalx-ai/terminalx/issues/232)
+
 ## Open questions
 
 1. **Daemon.** Should Corgi get an optional long-running `corgi daemon` (a
