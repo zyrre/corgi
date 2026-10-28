@@ -7,6 +7,7 @@
 use std::{borrow::Cow, collections::HashMap, fmt::Write as _};
 
 pub mod lookup;
+pub mod memory;
 pub mod search;
 
 /// Full decision entries, newest first, are shown up to this many bytes...

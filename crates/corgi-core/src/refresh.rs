@@ -110,6 +110,21 @@ pub struct Inputs {
     pub notice_path: Option<PathBuf>,
 }
 
+impl Inputs {
+    /// The inputs of a refresh by a process that owns no dashboard pane and
+    /// shows no transcript, such as a Herdr hook or a frontend's data
+    /// source: every agent on `client` is listed.
+    pub fn new(client: HerdrClient) -> Self {
+        Self {
+            client,
+            dashboard_pane_id: None,
+            codex_task_titles: HashMap::new(),
+            transcript_pane: None,
+            notice_path: None,
+        }
+    }
+}
+
 /// A refresh's result and the state it hands back.
 #[derive(Debug)]
 pub struct Refreshed {
@@ -544,9 +559,40 @@ pub fn is_due(last: Option<Instant>, interval: Duration) -> bool {
 mod tests {
     use std::time::Duration;
 
-    use crate::test_support::ScratchDir;
+    use serde_json::json;
+
+    use crate::test_support::{ScratchDir, UNUSED_SOCKET, answer, fake_herdr};
 
     use super::*;
+
+    #[test]
+    fn a_refresh_runs_from_a_client_alone() {
+        let (socket_path, server) = fake_herdr("refresh-core", |listener| {
+            answer(&listener, |request| {
+                assert_eq!(request["method"], "session.snapshot");
+                json!({"result": {"type": "session_snapshot", "snapshot": {
+                    "workspaces": [{"workspace_id": "w1", "label": "weather"}],
+                    // Herdr's detector alone, with no session: not listed.
+                    "agents": [{
+                        "agent": "codex", "agent_status": "working",
+                        "pane_id": "w1:p1", "workspace_id": "w1", "tab_id": "w1:t1"
+                    }]
+                }}})
+            });
+        });
+        let inputs = Inputs::new(HerdrClient::from_socket_path(&socket_path));
+        let refreshed = run(&inputs, RefreshState::default(), None);
+        server.join().expect("fake server panicked");
+        std::fs::remove_file(&socket_path).expect("remove fake socket");
+        let view = refreshed.view.expect("a view");
+        assert!(view.agents.is_empty());
+        assert_eq!(view.workspaces[0].workspace_id, "w1");
+
+        // Herdr gone: the reason, and the state to hand to the next one.
+        let gone = Inputs::new(HerdrClient::from_socket_path(UNUSED_SOCKET));
+        let refreshed = run(&gone, refreshed.state, None);
+        assert!(refreshed.view.is_err());
+    }
 
     #[test]
     fn a_slow_refresh_is_logged_and_every_one_when_asked() {

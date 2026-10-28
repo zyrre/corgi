@@ -36,6 +36,7 @@ pub mod session;
 pub mod setup;
 pub mod supervisor;
 pub mod sweep;
+pub mod tag;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod time;

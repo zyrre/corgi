@@ -22,7 +22,7 @@ use crate::{
     app::launch::CORGI_REQUEST_TOKEN,
     app::{
         App,
-        cli::{TagOptions, fleet_rows, requested_agent, tag_agent},
+        cli::{fleet_rows, requested_agent},
         merge::{MergePhase, MergeWorktreeForm},
         overlay::Overlay,
         project_main::project_root_digest,
@@ -30,6 +30,7 @@ use crate::{
     },
     herdr::HerdrClient,
     supervisor::{self, HANDOVER_TOKEN, MERGE_TOKEN, OLD_SUPERVISOR_TOKEN, SUPERVISOR_TOKEN},
+    tag::{TagOptions, tag_agent},
     test_support::{ScratchDir, fake_herdr, test_app},
 };
 
@@ -513,7 +514,7 @@ fn a_merge_tag_lasts_until_its_worker_works_again() {
     dashboard.refresh();
     fleet.refresh();
     assert_eq!(
-        tag_agent(&client, &fleet, &root, &tag(true)).expect("tag"),
+        tag_agent(&client, &fleet.agents, &root, &tag(true)).expect("tag"),
         "Tagged w-brave ready to merge: 1 commit ahead of main"
     );
     assert_eq!(worker_tokens()[MERGE_TOKEN], "done 7");
@@ -580,7 +581,7 @@ fn a_tag_its_worker_worked_past_unseen_is_ignored_and_cleared() {
     let mut fleet = test_app();
     fleet.client = client.clone();
     fleet.refresh();
-    tag_agent(&client, &fleet, &root, &tag(true)).expect("tag");
+    tag_agent(&client, &fleet.agents, &root, &tag(true)).expect("tag");
 
     herdr.set_worker("done", 12);
     fleet.refresh();
@@ -615,21 +616,21 @@ fn a_merge_tag_is_cleared_on_request_and_by_merging_the_branch() {
     let worker_tokens = || herdr.tokens("agents", "pane_id", "w8Z:p1");
 
     app.refresh();
-    tag_agent(&client, &app, &root, &tag(true)).expect("tag");
+    tag_agent(&client, &app.agents, &root, &tag(true)).expect("tag");
     app.refresh();
     assert_eq!(
-        tag_agent(&client, &app, &root, &tag(false)).expect("clear"),
+        tag_agent(&client, &app.agents, &root, &tag(false)).expect("clear"),
         "Cleared the merge tag of w-brave"
     );
     assert!(worker_tokens().get(MERGE_TOKEN).is_none());
     assert_eq!(worker_tokens()[CORGI_REQUEST_TOKEN], "20261003-w-brave");
     app.refresh();
     assert_eq!(
-        tag_agent(&client, &app, &root, &tag(false)).expect("clear again"),
+        tag_agent(&client, &app.agents, &root, &tag(false)).expect("clear again"),
         "w-brave had no merge tag"
     );
 
-    tag_agent(&client, &app, &root, &tag(true)).expect("tag again");
+    tag_agent(&client, &app.agents, &root, &tag(true)).expect("tag again");
     app.refresh();
     assert!(worker(&app).ready_to_merge());
     app.overlay = Overlay::merge(MergeWorktreeForm {
@@ -668,7 +669,7 @@ fn a_merge_tag_is_refused_without_commits_ahead_or_while_working() {
     let mut app = test_app();
     app.client = client.clone();
     app.refresh();
-    let refused = tag_agent(&client, &app, &root, &tag(true)).expect_err("nothing ahead");
+    let refused = tag_agent(&client, &app.agents, &root, &tag(true)).expect_err("nothing ahead");
     assert!(
         refused.to_string().contains("no commits ahead of main"),
         "{refused}"
@@ -677,9 +678,10 @@ fn a_merge_tag_is_refused_without_commits_ahead_or_while_working() {
         name: "supervisor-corgi".into(),
         ..tag(true)
     };
-    let refused = tag_agent(&client, &app, &root, &supervisor).expect_err("a working supervisor");
+    let refused =
+        tag_agent(&client, &app.agents, &root, &supervisor).expect_err("a working supervisor");
     assert!(refused.to_string().contains("is working"), "{refused}");
-    let elsewhere = tag_agent(&client, &app, "/repos/elsewhere", &tag(true))
+    let elsewhere = tag_agent(&client, &app.agents, "/repos/elsewhere", &tag(true))
         .expect_err("another project's agent");
     assert!(
         elsewhere.to_string().contains("no agent named w-brave"),

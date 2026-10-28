@@ -3,7 +3,7 @@
 // the same in the dashboard's code.
 pub use corgi_core::{
     activity, choices, defaults, digest, git, harness, herdr, inbox, job, model, paths, projects,
-    recovery, session, supervisor, time, usage, usage_cache,
+    recovery, session, supervisor, tag, time, usage, usage_cache,
 };
 
 pub mod app;
