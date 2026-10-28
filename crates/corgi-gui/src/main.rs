@@ -64,6 +64,7 @@ fn main() -> ExitCode {
         text_input::bind_keys(cx);
         window::bind_app_keys(cx);
         let font = pick_font(cx);
+        eprintln!("corgi-gui: drawing with the font {font}");
         let saved = Layout::load(Layout::path().as_deref()).window;
         let (width, height) = saved.unwrap_or((1280.0, 820.0));
         let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
