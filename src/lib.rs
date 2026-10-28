@@ -10,6 +10,7 @@ pub mod app;
 pub(crate) mod motion;
 #[cfg(test)]
 mod readme_shots;
+pub mod serve;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod textfield;

@@ -21,6 +21,7 @@ Commands:
   role        Print a part of the supervisor's role it reads on demand
   edit        Open the focused or selected agent's checkout in your editor
   hook        What Herdr runs on its start and on agents' events
+  serve       Speak the frontend protocol on stdio, for a desktop GUI
 
 Run corgi COMMAND --help for a command's options, and corgi --version for the
 version.";
@@ -64,6 +65,8 @@ fn main() -> Result<()> {
         Some("edit") => corgi::app::edit_command(&args[2..]),
         Some("hook") if help() => usage(corgi::app::HOOK_USAGE),
         Some("hook") => corgi::app::hook_command(&args[2..]),
+        Some("serve") if help() => usage(corgi::serve::SERVE_USAGE),
+        Some("serve") => corgi::serve::serve_command(&args[2..]),
         Some("setup") if help() => usage(corgi::app::SETUP_USAGE),
         Some("setup") => corgi::app::setup(&args[2..]),
         Some("--bar-stream") => {

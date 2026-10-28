@@ -23,6 +23,12 @@ const PREFERENCE_TIMEOUT: Duration = Duration::from_millis(150);
 /// first source that answers. Call it with the terminal in raw mode and
 /// before anything else reads its input, since the terminal's answer to the
 /// queries arrives there.
+///
+/// It writes its queries to stdout and reads the answers from stdin, so a
+/// frontend whose stdio is not a terminal must never call it: in `corgi
+/// serve` the queries would corrupt the protocol and the protocol's lines
+/// would be read as answers. Such a frontend builds its theme from
+/// [`omarchy_palette`] or a fixed palette instead.
 pub fn resolve() -> Theme {
     let truecolor =
         env::var("COLORTERM").is_ok_and(|value| matches!(value.as_str(), "truecolor" | "24bit"));

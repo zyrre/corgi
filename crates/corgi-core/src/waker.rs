@@ -138,7 +138,7 @@ pub struct Inboxes {
 
 impl Inboxes {
     /// The state directory holding the inbox of `root`'s supervisor.
-    fn dir(&self, root: &str) -> Option<PathBuf> {
+    pub fn dir(&self, root: &str) -> Option<PathBuf> {
         match &self.base {
             Some(base) => Some(base.join(dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT))),
             None => supervisor::state_dir(root).ok(),

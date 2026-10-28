@@ -451,6 +451,35 @@ impl<C: Copy> Roles<C> {
             context_ramp: self.context_ramp.map(f),
         }
     }
+
+    /// Every role but the context ramp, by its field name, for a frontend
+    /// that receives them as data (`corgi serve`).
+    pub fn named(&self) -> Vec<(&'static str, C)> {
+        vec![
+            ("accent", self.accent),
+            ("muted", self.muted),
+            ("success", self.success),
+            ("warning", self.warning),
+            ("danger", self.danger),
+            ("unknown", self.unknown),
+            ("merge", self.merge),
+            ("thinking", self.thinking),
+            ("text", self.text),
+            ("quiet", self.quiet),
+            ("badge_text", self.badge_text),
+            ("popup_fill", self.popup_fill),
+            ("keycap", self.keycap),
+            ("rule", self.rule),
+            ("focus_bar", self.focus_bar),
+            ("dimmed", self.dimmed),
+            ("dimmed_background", self.dimmed_background),
+            ("fade_from", self.fade_from),
+            ("foreground", self.foreground),
+            ("success_frame", self.success_frame),
+            ("stamp", self.stamp),
+            ("flash", self.flash),
+        ]
+    }
 }
 
 impl Roles {

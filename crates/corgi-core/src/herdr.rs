@@ -346,9 +346,13 @@ impl HerdrClient {
         Ok(())
     }
 
-    /// Closes a workspace and all of its tabs and panes.
+    /// Closes a workspace and all of its tabs and panes. Herdr 0.9.0 answers
+    /// `ok` rather than `workspace_closed`, after closing it all the same.
     pub fn close_workspace(&self, workspace_id: &str) -> Result<()> {
         let result = self.request("workspace.close", json!({ "workspace_id": workspace_id }))?;
+        if result.get("type").and_then(Value::as_str) == Some("ok") {
+            return Ok(());
+        }
         expect_result_type(&result, "workspace_closed")
     }
 
@@ -1065,6 +1069,28 @@ mod tests {
         assert_eq!(snapshot.version, "test-20");
         assert_eq!(snapshot.workspaces[0].label, "Corgi");
         assert_eq!(snapshot.agents[0].pane_id, "w1:p1");
+    }
+
+    #[test]
+    fn a_closed_workspace_is_answered_ok_or_workspace_closed() {
+        let replies = ["workspace_closed", "ok", "tab_closed"];
+        let (socket_path, server) = fake_herdr("herdr-close", move |listener| {
+            for kind in replies {
+                answer(&listener, |request| {
+                    assert_eq!(request["method"], "workspace.close");
+                    json!({ "result": { "type": kind } })
+                });
+            }
+        });
+        let client = HerdrClient::from_socket_path(&socket_path);
+        client.close_workspace("w9").expect("workspace_closed");
+        client
+            .close_workspace("w9")
+            .expect("ok, as Herdr 0.9.0 answers");
+        let error = client.close_workspace("w9").expect_err("another type");
+        server.join().expect("fake server panicked");
+        fs::remove_file(&socket_path).expect("remove fake socket");
+        assert!(error.to_string().contains("tab_closed"), "{error}");
     }
 
     #[test]
