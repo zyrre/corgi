@@ -101,6 +101,55 @@ docker run --rm -v "$PWD":/src:ro -w /src -e CARGO_TARGET_DIR=/tmp/t \
   rust:1.89-slim cargo check --locked --all-targets
 ```
 
+## The desktop window
+
+`crates/corgi-gui` (GPUI, Rust 1.96) is out of the default members, so the
+commands above never build it. Before handing off a change to it, also run:
+
+```bash
+cargo clippy -p corgi-gui --all-targets -- -D warnings
+cargo clippy -p corgi-gui --all-targets --features capture -- -D warnings
+cargo test -p corgi-gui
+cargo build --release -p corgi-gui
+```
+
+It shares `Cargo.lock` with the other crates, so after changing its
+dependencies repeat the Rust 1.89 check above: a newer pin of a crate the
+core also uses would raise the core's oldest Rust. On Linux it needs the
+Wayland, xkbcommon and fontconfig development packages; a Linux container
+(`rust:latest` with `libxkbcommon-dev libwayland-dev libfontconfig-dev
+libfreetype-dev pkg-config`) checks the Linux build from a Mac. Before
+handing off `scripts/package-gui.sh`, run `bash scripts/test-package-gui`,
+which packages fake binaries and runs `shellcheck`.
+
+To see the window working, run it against a throwaway Herdr as for the
+hooks below (private `HOME` and `XDG_*`, a shell wrapper that keeps
+`/opt/homebrew/bin` off `PATH`, `CORGI_CLAUDE_BIN` and `CORGI_CODEX_BIN`
+pointing at fakes so neither a real CLI nor the Keychain is touched, and
+seeded `usage/<provider>.json` files with their `.lock` held so no plan
+usage is fetched). A fake agent is a shell pane reported with a test
+`--source`, named with `herdr agent rename` after it is reported (a
+supervisor's name must match its `corgi_handler` token), tagged with a
+`session` token; a Claude session file under the private
+`~/.claude/projects/<cwd with / and . as ->/<session>.jsonl` gives it a model,
+context, cache and transcript (use the real path: `/tmp` is `/private/tmp`
+on macOS). Worktrees opened with `herdr worktree open` are linked worktrees
+to Corgi; plain workspaces on a `git worktree` are not. The private home
+needs a Git identity in its `.gitconfig` for merges, and a bare `origin`
+for one to push.
+
+Build with `--features capture`, then run with `CORGI_GUI_BACKGROUND=1`
+(no focus taken), `CORGI_GUI_SCRIPT` (steps such as
+`wait:3000;key:n;type:Fix it;shot:form;quit`) and `CORGI_GUI_CAPTURE_DIR`;
+`CORGI_GUI_APPEARANCE=light` checks the light theme without changing the
+system's. Move the window to AeroSpace workspace 4 the moment it appears
+(see the user's instructions); `render_to_image` still captures it there.
+Script steps run through the untyped window handle (`cx.update_window`):
+updating the typed `WindowHandle<CorgiWindow>` leases the root view, and a
+key dispatched inside that lease panics when its listener updates the view.
+Kill the window's own process, not a wrapper shell function's subshell,
+and check that its `corgi serve` child is gone afterwards.
+
 `HERDR_CONFIG_PATH=<file> herdr config check` validates a Herdr config file
 without a running server (and without touching the real config). Herdr's CLI
 reports errors as JSON lines with an `error.code`, such as

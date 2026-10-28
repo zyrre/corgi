@@ -91,10 +91,11 @@ Plan usage (once a minute per machine, only for CLIs Corgi can find)
   ├─ codex app-server ────── account/rateLimits/read over JSON-RPC
   └─ curl api.anthropic.com/api/oauth/usage ── with Claude Code's stored token
 
-Optional desktop GUI (local, or over ssh)
-  └─ corgi serve ──── JSON lines on stdio: a hello, a snapshot of the rows,
-                      cards, usage and palette as data, then deltas; commands
-                      for the dashboard's actions (docs/serve-protocol.md)
+Optional desktop GUI: corgi-gui, a GPUI window (crates/corgi-gui)
+  └─ corgi serve ──── its child, local or `ssh HOST corgi serve`: JSON lines
+                      on stdio, a hello, a snapshot of the rows, cards, usage
+                      and palette as data, then deltas; commands for the
+                      dashboard's actions (docs/serve-protocol.md)
 
 Optional Omarchy widget
   ├─ corgi --bar-stream <socket> ── newline-delimited dashboard rows and usage
@@ -144,8 +145,8 @@ a process that exits within its time limit.
 
 ## Crates
 
-The repository is a Cargo workspace of two crates, both on `rust-version`
-1.89:
+The repository is a Cargo workspace of three crates. The first two are on
+`rust-version` 1.89:
 
 - `crates/corgi-core`, the library every frontend shares: Herdr's client,
   the agents' sessions, the rows and their order, the refresh pipeline, the
@@ -164,9 +165,17 @@ The repository is a Cargo workspace of two crates, both on `rust-version`
   paths the dashboard always used (`app::launch::LaunchPlan`, …).
 
 Both are the workspace's default members, so `cargo build`, `cargo test`
-and `cargo clippy` at the root cover both. A desktop app goes under
-`crates/` as a crate of its own, out of the default members, and only it
-depends on its toolkit; the `corgi` binary never builds it.
+and `cargo clippy` at the root cover both. The third is out of the default
+members:
+
+- `crates/corgi-gui`, the desktop window (`corgi-gui`), drawn with GPUI
+  (`gpui-pre =0.3.6`, the version Herdr UI's terminal painter pins, so the
+  terminals of a later phase can use it). GPUI needs Rust 1.96, so the crate
+  has its own `rust-version`; build and test it with `-p corgi-gui`. Only it
+  depends on GPUI, and the `corgi` binary never builds it. It shares the
+  workspace's `Cargo.lock`: adding GPUI moved no version the other two crates
+  use, and they still build on Rust 1.89 with `--locked` (check that after
+  changing the GUI's dependencies, as AGENTS.md says).
 
 What a frontend other than the dashboard calls, with no `App`:
 
@@ -593,6 +602,56 @@ when stdin closes and no command is still running.
 - Its tests (`src/serve/tests.rs`) run the server against a fake Herdr that
   answers every request from a snapshot the test changes, with real Git
   repositories for the merges, and keep every file in a scratch directory.
+
+### The desktop window: `crates/corgi-gui/`
+
+`corgi-gui` is a GPUI window on `corgi serve`, which it runs as its child:
+`corgi serve` beside its own binary (a release build's
+`target/release/corgi`, or the one packaged with it), else on `PATH`, or
+`ssh -T -o BatchMode=yes HOST corgi serve` with `--ssh`. It deserializes
+into `corgi_core::protocol`'s types and keeps its copy of the state with
+`State::apply`. Its layout is fixed, plain GPUI with no dock: the header
+(the brand's pixel corgi, the HERD counts, a card per plan), a toolbar, the
+overview of project cards and rows, the selected agent's session under it,
+the side panel with the selected project's supervisor, its numbered
+questions and its blocked workers, and a status bar. The session and the
+side panel open and close, and the edges between them drag; their sizes, and
+the window's, are kept in `$STATE/gui-layout.json`.
+
+- `link.rs` starts the child and reads its stdout on a thread of its own,
+  each line a `ServerMessage`; a line it cannot read (a newer server's) is
+  skipped. When the child ends, the window keeps the last state, dims it
+  under a banner with the reason (the end of the child's stderr) and
+  connects again after 0.5 s, doubling to 15 s, back to 0.5 s after a hello.
+  Requests still unanswered then are failed in their dialogs, and never
+  sent again. Closing the window closes the child's stdin, so `serve` exits
+  once its running commands have replied.
+- `store.rs` keeps the state and its `seq`, asks for `resync` on a gap, and
+  counts down from the server's `now`. Its `Outbox` numbers requests and
+  refuses `focus`, `edit` and any command the hello marks `touches_focus`:
+  Herdr's focus methods move every attached client, so the window never
+  calls them.
+- `dialogs.rs` is what every reply does: the prompt and answer boxes stay
+  open with Corgi's error until a prompt is confirmed; the new-agent form
+  (`form.rs`, the dashboard's rows and keys over the lists `serve` sends,
+  with its own filter so a project typed over SSH is not looked up on the
+  wrong machine) points at the row a refused `spawn` names; the merge dialog
+  shows the steps, the outcome and the follow-ups the outcome allows; the
+  close dialog asks again for a dirty worktree.
+- `theme.rs` takes every color from the palette `serve` sends, light or dark
+  as the system's appearance (Catppuccin Latte or Mocha, or the Omarchy theme
+  for both), and the vendor and corgi colors from `palette::brand`.
+- While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
+  Wayland's suspended state), it stops drawing, stops its one-second tick
+  and asks `serve` to stop reading the transcript; messages are still
+  applied, so it is current when shown again.
+- On Linux it enables `gpui-pre-platform`'s `wayland` feature and sets the
+  Wayland app id `corgi-gui`, and picks a monospace font that exists there
+  (Menlo does not).
+- The `capture` feature drives the window from `CORGI_GUI_SCRIPT` (keys,
+  waits) and writes screenshots with GPUI's `render_to_image`, for checking
+  it without screen recording; `CORGI_GUI_BACKGROUND` opens it without
+  taking focus.
 
 ### Herdr restarts
 
