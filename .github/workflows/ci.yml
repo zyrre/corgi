@@ -34,7 +34,7 @@ jobs:
       - name: Lint
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      # The fake Herdr socket in src/test_support.rs lives under $TMPDIR,
+      # The fake Herdr socket in crates/corgi-core/src/test_support.rs lives under $TMPDIR,
       # whose long default on macOS makes its path too long for a socket.
       - name: Test
         env:

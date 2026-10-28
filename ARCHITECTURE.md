@@ -53,7 +53,7 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   │                        worker has started
   │   A dashboard that starts removes the wake/ and markers/ files, but not
   │   the spawn locks, of a Herdr session whose socket is gone, once they
-  │   have gone untouched for a week (`src/app/sweep.rs`).
+  │   have gone untouched for a week (the core's `sweep.rs`).
   ├─ usage/<provider>.json ─ the last plan-usage reading every process shares,
   │                        when it was fetched, and the last fetch's error;
   │                        replaced whole through a temporary file and a rename
@@ -67,7 +67,7 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
                           while one is under way, handovers/, notes/; at
                           launch Corgi moves superseded ledger lines to
                           ledger-archive.jsonl;
-                          and by Corgi only (`src/inbox.rs`, under inbox.lock):
+                          and by Corgi only (`inbox.rs`, under inbox.lock):
                           inbox.jsonl, inbox-reports/ for long reports, and
                           reports/, spawned workers' reports kept for good
 
@@ -108,30 +108,80 @@ The dashboard refreshes from Herdr in the background, 850 ms after the last
 refresh finished or at once when an action asks for one, never while a
 launch runs and never two at a time, and redraws about every 80 ms, so
 spinners move and keys answer however long a refresh takes (see
-`app/refresh.rs` below); while a popup opens, closes or plays an outcome it draws
+`refresh.rs` below); while a popup opens, closes or plays an outcome it draws
 at about 60 frames a second, and drops back to 80 ms once nothing moves (see
 "Popup motion" below). Plan usage is read once a minute per machine rather than
-per process (see `src/usage_cache.rs` below) and Codex thread names every few
-seconds, each on a background thread. API calls open a fresh
-newline-delimited JSON connection, have five-second I/O deadlines (ten for a
-first prompt, which waits for the agent to react), and cap responses at
+per process (see `crates/corgi-core/src/usage_cache.rs` below) and Codex
+thread names every few seconds, each on a background thread. API calls open a
+fresh newline-delimited JSON connection, have five-second I/O deadlines (ten
+for a first prompt, which waits for the agent to react), and cap responses at
 4 MiB. There is no daemon, database, HTTP listener, or state that needs to be
 synchronized with Herdr.
+
+## Crates
+
+The repository is a Cargo workspace of two crates, both on `rust-version`
+1.89:
+
+- `crates/corgi-core`, the library every frontend shares: Herdr's client,
+  the agents' sessions, the rows and their order, the refresh pipeline, the
+  supervisor, its inbox, memory and waker, the marks Corgi keeps in Herdr,
+  the flows that change Herdr (launch, merge, close, tag, recovery), the
+  model catalogs, and the color palette. It depends on neither ratatui nor
+  crossterm, and nothing in it reads a key or draws. Its `test-support`
+  feature exports the test helpers (scratch directories, a fake Herdr
+  socket, the recovery fixture) to the other crates' tests.
+- `corgi`, the root package, the `corgi` binary at `target/release/corgi`
+  that the plugin, the installer, the release workflow and the Omarchy
+  widget run: the ratatui dashboard (`src/app/`, `src/ui/`, `src/motion.rs`,
+  `src/theme/`), the command-line tools and the Omarchy endpoints. Where a
+  flow is split, the core holds the work and `src/app/` the form, the keys,
+  the background job and the panel, re-exporting the core's items under the
+  paths the dashboard always used (`app::launch::LaunchPlan`, …).
+
+Both are the workspace's default members, so `cargo build`, `cargo test`
+and `cargo clippy` at the root cover both. A desktop app goes under
+`crates/` as a crate of its own, out of the default members, and only it
+depends on its toolkit; the `corgi` binary never builds it.
+
+What a frontend other than the dashboard calls, with no `App`:
+
+- the refresh: `refresh::run` with `refresh::Inputs::new(client)` and a
+  `RefreshState` (with `SupervisorWaker::default()` in it to restore marks,
+  wake supervisors and deliver their inboxes when it takes the per-socket
+  wake lock), giving the sorted rows and workspaces;
+- the marks and the waker on their own: `markers::restore_markers`,
+  `markers::clear_stale_merge_tags`, `waker::wake_supervisors`;
+- the actions: `launch::run_launch` with a `LaunchPlan`
+  (`launch::supervisor_plan` for a supervisor), `merge::merge_form`,
+  `merge::run_merge`, `merge::clear_merged_tag` and
+  `merge::tell_supervisor_about_merge`, `close::close_form` and
+  `close::close`, `tag::tag_agent`, `recovery::{capture, plan, restore}`,
+  and `HerdrClient`'s own `prompt_agent` and `go_to_agent`;
+- the memory: `digest::render` and `digest::memory::digest_lookup`;
+- the colors: `palette::resolve()`, and `palette::Theme::rgb_roles` for a
+  frontend that paints its own pixels.
+
+Every one of them takes a `HerdrClient`, which `HerdrClient::from_socket_path`
+makes for any Herdr socket; only `HerdrClient::from_env` reads
+`HERDR_SOCKET_PATH`.
 
 ## Components
 
 ### Reading Herdr and the agents
 
-- `src/herdr.rs` is the typed Herdr socket adapter. All actions are expressed
+All of this is in the core, `crates/corgi-core/src/`.
+
+- `herdr.rs` is the typed Herdr socket adapter. All actions are expressed
   in Herdr's public API rather than by driving terminal input directly. A
   refusal from Herdr is a typed `HerdrError`. The refusals a flow reacts to,
   such as `agent_pane_busy` or `not_git_worktree`, are classified by
   `HerdrError` itself (`HerdrError::is_pane_not_ready`,
   `HerdrError::is_not_git_worktree`, …), by its code rather than its text.
-- `src/model.rs` holds Herdr's agents and workspaces as Corgi deserializes
+- `model.rs` holds Herdr's agents and workspaces as Corgi deserializes
   them, and `DashboardAgent`, one row of the dashboard with everything
   derived for it.
-- `src/harness.rs` is the one place that knows a harness. `Harness` parses
+- `harness.rs` is the one place that knows a harness. `Harness` parses
   Herdr's kind string exactly (anything unknown stays `Other` and round-trips
   unchanged; text a user typed is trimmed and lower-cased first) and owns its
   title, the CLI lookup (`CORGI_CODEX_BIN` or `CORGI_CLAUDE_BIN`, else `PATH`,
@@ -144,12 +194,12 @@ synchronized with Herdr.
   arrives from Herdr, the command line, or the form's text, and passes a
   `Harness` from there on; it is a string again only where it leaves Corgi,
   in `agent.start` and the JSON Corgi writes.
-- `src/activity.rs` reduces a bounded terminal read to display lines. It
+- `activity.rs` reduces a bounded terminal read to display lines. It
   recognizes the command on screen separately from questions, assistant
   messages, and progress; strips terminal chrome; redacts common credentials;
   and caps output length. It is the fallback for what the session file lacks,
   and the only source of the permission prompts a blocked CLI shows on screen.
-- `src/session/` reads each agent's session file, which its CLI already
+- `session/` reads each agent's session file, which its CLI already
   writes: Claude Code's transcript under `projects/` in its configuration
   directory, and Codex's rollout under `~/.codex/sessions`. From it come the
   model and context-window usage, the newest thing said in the conversation
@@ -188,13 +238,13 @@ synchronized with Herdr.
   adds the documented 30-minute minimum retention and labels the result an
   estimate. Past that minimum, its row says the cache may be cold rather than
   claiming a re-read is certain.
-- `src/usage.rs` reads plan usage per provider and fetches Codex's
+- `usage.rs` reads plan usage per provider and fetches Codex's
   account-aware picker catalog and thread names through a short-lived
   app-server. Claude Code usage comes from its stored OAuth token and
   Anthropic's usage endpoint. All of these run off the UI thread and fail
   soft. Its `Provider` is the view of the two harnesses that have a plan to
   read.
-- `src/usage_cache.rs` shares one plan-usage reading per provider between
+- `usage_cache.rs` shares one plan-usage reading per provider between
   every dashboard and Omarchy bar stream on the machine, so reloads and extra
   dashboards do not multiply requests (Anthropic answers them with HTTP 429).
   Each process checks `usage/<provider>.json` every few seconds, a started
@@ -204,13 +254,13 @@ synchronized with Herdr.
   until a later check. A failed fetch is recorded with its time, beside the
   last good reading, so nobody retries it before the minute is up and the
   card keeps showing the reading. The card's first row shows its age.
-- `src/defaults.rs` reads what each harness's own configuration names, so
+- `defaults.rs` reads what each harness's own configuration names, so
   the form can show it in parentheses behind "Harness default": Claude Code's
   `model` and `effortLevel` (including per-model `modelSettings`) from its
   settings files, and Codex's top-level `model` and `model_reasoning_effort`.
   It never guesses a CLI's built-in default; an unread configuration shows
   nothing. Each harness is read once per dashboard run.
-- `src/projects.rs` is where a new agent can be started: the projects with
+- `projects.rs` is where a new agent can be started: the projects with
   agents, the repositories with any primary workspace open in Herdr, the
   directories beside those, and the ones Corgi remembers in a plain text file
   under `$XDG_STATE_HOME/corgi` (`CORGI_PROJECTS_FILE` overrides it), turned
@@ -222,23 +272,24 @@ synchronized with Herdr.
   supervisor in the new project workspace's root tab; the directory stays plain
   until the supervisor makes it a repository. A picked project first becomes the
   `cwd` of `worktree.list`, which Herdr resolves to the repository itself.
-- `src/git.rs` runs the few plain Git commands Corgi needs: a checkout's
+- `git.rs` runs the few plain Git commands Corgi needs: a checkout's
   branch, whether it is clean, the commits a merge would bring, and the main
   checkout that folder trust keys on.
 
-### The dashboard: `src/app/`
+### The flows: `crates/corgi-core/src/`
 
-`src/app/` owns the dashboard's state and every flow that changes Herdr. Its
-submodules are split by flow, each adding methods to the one `App`.
+The work of every flow that changes Herdr, and of the periodic refresh, is
+in the core, as free functions over a `HerdrClient` and the rows, so the
+dashboard, the command line and other frontends run the same code.
 
-- `mod.rs` is `App`: selection, the expanded transcript, the plan
-  usage and Codex thread-name jobs, key dispatch, and the terminal loop.
 - `refresh.rs` is the periodic refresh: Herdr's snapshot, the marks put back
   and the stale merge tags cleared, the project workspaces relabelled, each
   agent's row from its session file, its screen and, for an unidentified
   scratch Codex, its pane's processes, the expanded transcript, the
-  state-directory warnings, and the supervisors' wakes. The interactive
-  dashboard runs all of it as a background `Job`. What it carries from one
+  state-directory warnings, and the supervisors' wakes: `refresh::run`, from
+  its `Inputs` and the `RefreshState` the last one handed back. The
+  interactive dashboard runs all of it as a background `Job`
+  (`src/app/refresh.rs`). What it carries from one
   refresh to the next (the session reader and its caches, the rows kept for
   failed reads, the waker) is moved into the job and handed back with its
   result, so the UI thread and the job share nothing behind a lock; the UI
@@ -264,37 +315,16 @@ submodules are split by flow, each adding methods to the one `App`.
   transcript a key opens or moves to is read on the UI thread with a reader
   of its own, as before; the refresh rereads it with its own.
   `App::headless` is the same app for the command-line and Omarchy paths,
-  which own no dashboard pane. `sort_agents` orders each project's rows:
+  which own no dashboard pane. `refresh::sort_agents` orders each project's rows:
   supervisor, then state, then the most recent `state_change_seq` first. That
   counter is one sequence for the whole Herdr session, not per agent, so it
   compares across panes and the dashboard keeps no ordering state of its own.
-- `cards.rs` is the project cards: which runs of the sorted list are a card
-  (led by a supervisor, not scratch), `CardMemory`, the expanded projects saved
-  in `expanded-projects`, and the selection stops, which skip the workers
-  folded into a collapsed card. `→` and `←` expand and collapse the selected
-  card; `←` from a worker row selects its supervisor. A refresh keeps the
-  selection on its stop, its row of the list, rather than on an agent index.
 - `rows.rs` derives what a row shows from Herdr's metadata and the session
   facts: the project and its heading (`repo/checkout` for a linked worktree),
   the task summary, and the status-line bridge fallbacks.
-- `overlay.rs` is `Overlay`: nothing, or the one form or dialog open over the
-  agent list (or a notice such as `corgi setup`'s), which takes the keys and is drawn on top. A launch or merge
-  keeps its background job on `App`, since dropping a job would not stop its
-  worker, and Esc never closes the overlay while that job runs. In the
-  animated dashboard a launch that started keeps its panel up for 0.9 s,
-  over its check stamp, then closes it by itself or at any key;
-  without effects it closes at once, as the headless paths expect.
-- `prompt.rs` is the prompt typed for an existing agent.
-- `form.rs` is the new-agent form: one task row over a short list of
-  selector rows, each with an inline filterable list. The default agent kind
-  is `CORGI_DEFAULT_AGENT`, else the first installed CLI; the default project
-  is the selected agent's repository, else the most recently used one. For a
-  new project, or one with no agent session, the form launches the project's
-  supervisor instead of a worker. It validates and builds a `LaunchPlan`, which
-  `launch.rs` runs. The `t` key opens the same form for the home directory, a
-  scratch agent, whose task may be left empty.
 - `catalog.rs` holds the per-harness model catalogs behind the Model row, and
-  the harness, model, and effort rows' choices. Codex uses its App Server;
+  the harness, model, and effort rows' choices; `src/app/catalog.rs` hands a
+  catalog that arrives to an open model list. Codex uses its App Server;
   OpenCode uses `opencode models`; static entries are an offline fallback. A
   discovered catalog is cached and re-fetched in the background once it is
   over an hour old, so a dashboard left open picks up a harness's new models
@@ -330,8 +360,9 @@ submodules are split by flow, each adding methods to the one `App`.
   project, left out of the form's project list, and ignored by the supervisor
   waker and handover. A launch with no task, which only a scratch agent can
   have from the form, skips the first prompt and leaves an interactive
-  session. From the dashboard the launch runs as a background
-  job, also in `launch.rs`, whose progress replaces the form with a panel
+  session. `run_launch` is the launch with the dashboard's focus put back
+  after it. From the dashboard the launch runs as a background
+  job, in `src/app/launch.rs`, whose progress replaces the form with a panel
   until the first prompt is confirmed. `progress.rs` is where a launch or
   merge reports its steps: the dashboard's job, stderr for the command line,
   or nowhere.
@@ -366,12 +397,13 @@ submodules are split by flow, each adding methods to the one `App`.
   supervisor runs in, in any tab, and otherwise takes the first in snapshot
   order; every lookup (launch, close, merge, cleanup) goes through it.
 - `close.rs` closes an agent: its worktree and checkout, its tab in a project
-  workspace, or its whole workspace, then retires the project workspace when
-  nothing is left in it. Before that, any other Corgi project workspace of
-  the same project that holds nothing — no agent in any pane, no dashboard,
+  workspace, or its whole workspace (`close_form` says which, `close` does it,
+  and `src/app/close.rs` is the dialog), then retires the project workspace
+  when nothing is left in it. Before that, any other Corgi project workspace
+  of the same project that holds nothing — no agent in any pane, no dashboard,
   and only its recorded root tab with at most one pane — is closed as a
-  duplicate, the way adopting Herdr's root workspace closes an idle older
-  one. A duplicate with anything in it is left alone.
+  duplicate, the way adopting Herdr's root workspace closes an idle older one.
+  A duplicate with anything in it is left alone.
 - `markers.rs` is Corgi's record of the metadata tokens it sets in Herdr,
   described under "Herdr restarts" below. Every Corgi token write goes
   through its `mark_pane` and `mark_workspace`; nothing else calls
@@ -383,14 +415,12 @@ submodules are split by flow, each adding methods to the one `App`.
   supervisor, the `git merge --abort` of that merge. Before the merge it
   fetches that upstream and, when the user asks, pulls it into the branch. The agent never
   performs the merge, and Corgi never changes the user's checked-out branch.
+  The core has the Git steps and the supervisor's inbox lines; the dialog,
+  its phases' keys and the job are `src/app/merge.rs`.
 - `waker.rs` is `SupervisorWaker`, which wakes supervisors through their inboxes,
   puts the merge and merge-conflict lines in them, and hands them over, as
   described below; `draft.rs` tells it whether a supervisor's input box holds
   the user's draft.
-- `cli.rs` is `corgi spawn`, `corgi supervisor`, `corgi fleet`,
-  `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox`,
-  `corgi tag` and `corgi role`. The
-  digest's parsing and caps are pure functions in `src/digest.rs`.
 - `setup.rs` is `corgi setup`. Herdr plugins cannot declare key bindings,
   so it appends one for the plugin's `open` action to the end of Herdr's
   `config.toml`, never rewriting what is there. It leaves a config that
@@ -416,6 +446,48 @@ submodules are split by flow, each adding methods to the one `App`.
   directories from `/` down to every entry that matches the spelling; a
   file goes only when none matches, it is not the dashboard's own session's,
   and it has gone untouched for a week.
+
+### The dashboard: `src/app/`
+
+`src/app/` owns the dashboard's state, its keys and its background jobs.
+Its submodules are split by flow, each adding methods to the one `App`.
+
+- `mod.rs` is `App`: selection, the expanded transcript, the plan
+  usage and Codex thread-name jobs, key dispatch, and the terminal loop.
+- `refresh.rs` decides when a refresh is due, runs the core's as a
+  background `Job`, and puts its rows, the selection and the expanded
+  transcript in place, as described above.
+- `cards.rs` is the project cards: which runs of the sorted list are a card
+  (led by a supervisor, not scratch), `CardMemory`, the expanded projects saved
+  in `expanded-projects`, and the selection stops, which skip the workers
+  folded into a collapsed card. `→` and `←` expand and collapse the selected
+  card; `←` from a worker row selects its supervisor. A refresh keeps the
+  selection on its stop, its row of the list, rather than on an agent index.
+- `overlay.rs` is `Overlay`: nothing, or the one form or dialog open over the
+  agent list (or a notice such as `corgi setup`'s), which takes the keys and is drawn on top. A launch or merge
+  keeps its background job on `App`, since dropping a job would not stop its
+  worker, and Esc never closes the overlay while that job runs. In the
+  animated dashboard a launch that started keeps its panel up for 0.9 s,
+  over its check stamp, then closes it by itself or at any key;
+  without effects it closes at once, as the headless paths expect.
+- `prompt.rs` is the prompt typed for an existing agent.
+- `form.rs` is the new-agent form: one task row over a short list of
+  selector rows, each with an inline filterable list. The default agent kind
+  is `CORGI_DEFAULT_AGENT`, else the first installed CLI; the default project
+  is the selected agent's repository, else the most recently used one. For a
+  new project, or one with no agent session, the form launches the project's
+  supervisor instead of a worker. It validates and builds a `LaunchPlan`, which
+  `launch.rs` runs. The `t` key opens the same form for the home directory, a
+  scratch agent, whose task may be left empty.
+- `catalog.rs`, `launch.rs`, `merge.rs` and `close.rs` are the dashboard's
+  side of the core's flows of the same names: fetching catalogs as the form
+  asks, the launch job and its panel, the merge dialog and its job, and the
+  close dialog.
+- `cli.rs` is `corgi spawn`, `corgi supervisor`, `corgi fleet`,
+  `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox`,
+  `corgi tag` and `corgi role`. The
+  digest's parsing and caps are pure functions in
+  `crates/corgi-core/src/digest.rs`.
 - `edit.rs` is the dashboard's `e` key and `corgi edit`, which the plugin's
   `edit` action runs (as `./target/release/corgi edit`, with the
   `HERDR_SOCKET_PATH` Herdr gives every action). Both end in `open_checkout`:
@@ -510,24 +582,24 @@ role. So Corgi keeps its own record and puts the tokens back.
 
 ### The supervisor
 
-- `src/supervisor.rs` holds what makes a session a project's supervisor: the role
-  from `supervisor/ROLE.md`, embedded in the binary and written into the
-  project's supervisor directory with the path of the Corgi binary that launches
-  it; that directory's files; the first prompt; and the pure state machines
-  behind waking and handover. The role is loaded into every turn, so what a
-  supervisor needs only at one moment is not in it: how to hand over is
-  `supervisor/HANDOVER.md`, which `corgi role handover` prints and the
-  handover request names, and what to do after a merge, a conflicted merge
-  or a failed push is in the `[Corgi]` line that reports it. A supervisor runs on Claude Code, the default, or
-  Codex, which `Harness` gives the role arguments of.
-  Claude Code appends the role file to its system prompt.
+- `crates/corgi-core/src/supervisor.rs` holds what makes a session a project's
+  supervisor: the role from `supervisor/ROLE.md`, embedded in the binary and
+  written into the project's supervisor directory with the path of the Corgi
+  binary that launches it; that directory's files; the first prompt; and the
+  pure state machines behind waking and handover. The role is loaded into
+  every turn, so what a supervisor needs only at one moment is not in it: how
+  to hand over is `supervisor/HANDOVER.md`, which `corgi role handover` prints
+  and the handover request names, and what to do after a merge, a conflicted
+  merge or a failed push is in the `[Corgi]` line that reports it. A
+  supervisor runs on Claude Code, the default, or Codex, which `Harness` gives
+  the role arguments of. Claude Code appends the role file to its system prompt.
   Codex takes the role inline as `-c developer_instructions`, which adds to
   its own instructions (`model_instructions_file` would replace them), and
   runs the supervisor in its workspace-write sandbox with network access, which
   is what lets `herdr` and `corgi` reach Herdr's Unix socket, and the state
-  directory as an extra writable root. The launch marks the supervisor's pane with a
-  `corgi_handler` token holding `session:<native agent_session value>`, so
-  presentation renames preserve its role and later sessions in the pane do
+  directory as an extra writable root. The launch marks the supervisor's pane
+  with a `corgi_handler` token holding `session:<native agent_session value>`,
+  so presentation renames preserve its role and later sessions in the pane do
   not inherit it. Before Herdr exposes the session, the launch name marks
   the pane before the first prompt; the prompt acknowledgement and dashboard
   reconciliation upgrade it once native identity is known. Legacy name
@@ -597,15 +669,15 @@ role. So Corgi keeps its own record and puts the tokens back.
   process, and the next dashboard to refresh takes it over. Every interactive
   dashboard (the tab, the popup, a preview) tries for the lock; the Omarchy
   reader and the command-line tools never wake.
-- Every wake goes through the supervisor's inbox (`src/inbox.rs`),
-  `inbox.jsonl` in its state directory, so none is lost or sent twice when
-  a dashboard closes, crashes, restarts or hands the lock over. It is
-  append-only JSON lines, written only through that module under
-  `inbox.lock`: items (`id`, `ts`, `project`, `source`, `kind` of `wake`,
-  `conflict`, `merge` or `note`, `agent`, `state`, for a wake the agent's `pane` and
-  `change` (its `state_change_seq`), a coalescing `key`, the `[Corgi]`
-  `text`, `own`, the spawn's `request` id for one of the supervisor's own,
-  and the agent's report inline or as `report_file`), and
+- Every wake goes through the supervisor's inbox
+  (`crates/corgi-core/src/inbox.rs`), `inbox.jsonl` in its state directory, so
+  none is lost or sent twice when a dashboard closes, crashes, restarts or
+  hands the lock over. It is append-only JSON lines, written only through that
+  module under `inbox.lock`: items (`id`, `ts`, `project`, `source`, `kind` of
+  `wake`, `conflict`, `merge` or `note`, `agent`, `state`, for a wake the
+  agent's `pane` and `change` (its `state_change_seq`), a coalescing `key`,
+  the `[Corgi]` `text`, `own`, the spawn's `request` id for one of the
+  supervisor's own, and the agent's report inline or as `report_file`), and
   records naming the ids delivered. An item no record names is
   undelivered, and an id is added only once. Readers take no lock and skip
   a last line still being written; a writer that finds the last line cut
@@ -623,15 +695,15 @@ role. So Corgi keeps its own record and puts the tokens back.
   hook's line) through the same code. Projects of the same directory name
   share a state directory, so each item names its project root, and a
   supervisor gets only its own project's items.
-- Inbox privacy lives in `src/inbox_privacy.rs`. Before supervisor preparation
-  writes content, its Corgi-owned project state directory is protected. New
-  state/report directories request 0700; inbox, lock, spilled report and
-  compaction files request 0600 at open, before content is written. Umask may
-  remove further owner permissions. Repairs only remove bits (directory mode
-  AND 0700, file mode AND 0600), never grant missing owner access; an access
-  failure stops writes. Existing HOME/XDG/shared parents are not chmodded.
-  Every inbox read (including the dashboard's, when the file changed, and
-  CLI reads), append,
+- Inbox privacy lives in `crates/corgi-core/src/inbox_privacy.rs`. Before
+  supervisor preparation writes content, its Corgi-owned project state
+  directory is protected. New state/report directories request 0700; inbox,
+  lock, spilled report and compaction files request 0600 at open, before
+  content is written. Umask may remove further owner permissions. Repairs only
+  remove bits (directory mode AND 0700, file mode AND 0600), never grant
+  missing owner access; an access failure stops writes. Existing
+  HOME/XDG/shared parents are not chmodded. Every inbox read (including the
+  dashboard's, when the file changed, and CLI reads), append,
   delivery write and saved-report read checks the state directory, reports
   directory, inbox, lock and interrupted compaction file. All old report files,
   including orphans, are swept on first access in a process and again when the
@@ -888,14 +960,18 @@ role. So Corgi keeps its own record and puts the tokens back.
   terminal for a steady bar cursor and gives back the user's shape on exit.
   A dashboard without an animated `Motion` (tests, the headless paths) shows
   every effect at its end.
-- Colors. `src/theme/` is the one place a color is written. A `Theme` is a
+- Colors. `crates/corgi-core/src/palette/` is the one place a color is
+  written, and `src/theme/` the dashboard's view of it. A `Theme` is a
   `Palette` (the terminal's foreground, background and sixteen ANSI colors as
   RGB) and the `Roles` the UI draws with, worked out from it once: accent,
   muted, success, warning, danger, unknown, merge, text and so on, plus the
   derived shades (the popup fill, rule, keycaps, focus bar, the dimmed
   dashboard, what popup content fades in from, the success frame, the flash,
-  and the context ramp). The UI reads them with `theme::roles()`.
-  `theme::resolve` picks the palette once at startup, in raw mode before the
+  and the context ramp). A role is the terminal's default, an ANSI color, one
+  of the fixed 256 or an RGB (`palette::Color`), which `src/theme/` maps one
+  to one onto ratatui's colors, and `Theme::rgb` turns into RGB for a frontend
+  that is not a terminal. The UI reads them with `theme::roles()`.
+  `palette::resolve` picks the palette once at startup, in raw mode before the
   first frame: `CORGI_THEME` when set; else the active Omarchy theme's
   `alacritty.toml` (`~/.local/state/omarchy/current/theme/`, or
   `~/.config/omarchy/current/theme/` before Omarchy 4), which Omarchy renders
@@ -908,41 +984,42 @@ role. So Corgi keeps its own record and puts the tokens back.
   millisecond, also when that terminal is at the other end of SSH; a terminal
   that never answers costs the 100 ms. Whenever the palette is the terminal's
   own (Omarchy themes the terminal too, and Catppuccin only stands in for one
-  it could not read), roles stay the terminal's ANSI colors (`Color::Cyan`
-  and so on), so they match it exactly and keep following it when Omarchy
-  switches theme under a running dashboard; only shades come from the
+  it could not read), roles stay the terminal's ANSI colors (`Color::Cyan` in
+  ratatui, and so on), so they match it exactly and keep following it when
+  Omarchy switches theme under a running dashboard; only shades come from the
   palette's RGB, 24-bit when `COLORTERM` says so, else snapped to the
   256-color cube. `CORGI_THEME=catppuccin-mocha|catppuccin-latte` draws every
   role in Catppuccin's own RGB instead. A light palette swaps what depends on
   a dark background: body text becomes the terminal's foreground rather than
   bright white, the popup fill a step off the background rather than black,
-  and the flash dark. Over xterm's defaults, the theme before one is
-  resolved and in tests, the shades come out as the fixed greys and ramp
-  Corgi drew before it had themes. The mascot's colors and the model
-  vendors' are brand colors (`theme::brand`), fixed in every theme. The
-  Omarchy reader (`app/bar.rs`) gives the widget each role's tone name and
-  an RGB shade as its nearest 256-color index, so the widget is unchanged.
+  and the flash dark. Over xterm's defaults, the theme before one is resolved
+  and in tests, the shades come out as the fixed greys and ramp Corgi drew
+  before it had themes. The mascot's colors and the model vendors' are brand
+  colors (`theme::brand`), fixed in every theme. The Omarchy reader
+  (`app/bar.rs`) gives the widget each role's tone name and an RGB shade as
+  its nearest 256-color index, so the widget is unchanged.
   `src/readme_shots.rs` draws the README images in a fixed Catppuccin Mocha,
   and its `theme_preview` test writes the dashboard and popups in several
   themes as ANSI text for `less -R`.
-- `src/choices.rs` is the pure model behind every selector list in the
-  new-agent form: the rows, the word filter typed over them, and how typed
-  text that names no row is offered (as a value of its own for harness and
-  model, as a completed directory for the project, or not at all).
+- `crates/corgi-core/src/choices.rs` is the pure model behind every selector
+  list in the new-agent form: the rows, the word filter typed over them, and
+  how typed text that names no row is offered (as a value of its own for
+  harness and model, as a completed directory for the project, or not at all).
 - `src/textfield.rs` wraps the form's task text and moves its caret along the
   rows the reader sees.
-- `src/job.rs` is work handed to a background thread: its progress messages
-  and its outcome, polled from the UI loop so the UI thread never waits, and
-  a panic reported rather than lost.
-- `src/time.rs` is the wall clock without a date crate: Unix seconds, RFC 3339
-  timestamps as the agent CLIs write them, and the UTC stamps handover
-  archives are named with.
-- `src/paths.rs` is the home directory, Corgi's state directory under
-  `$XDG_STATE_HOME` or `~/.local/state`, the `~` shorthand paths are typed
-  and shown with, and `dir_name`, the last path component a project or
-  checkout is known by.
-- `src/test_support.rs` is compiled only for tests: scratch directories, a
-  fake Herdr socket that answers scripted replies, a dashboard that never
+- `crates/corgi-core/src/job.rs` is work handed to a background thread: its
+  progress messages and its outcome, polled from the UI loop so the UI thread
+  never waits, and a panic reported rather than lost.
+- `crates/corgi-core/src/time.rs` is the wall clock without a date crate: Unix
+  seconds, RFC 3339 timestamps as the agent CLIs write them, and the UTC
+  stamps handover archives are named with.
+- `crates/corgi-core/src/paths.rs` is the home directory, Corgi's state
+  directory under `$XDG_STATE_HOME` or `~/.local/state`, the `~` shorthand
+  paths are typed and shown with, and `dir_name`, the last path component a
+  project or checkout is known by.
+- `crates/corgi-core/src/test_support.rs` is compiled for tests and the core's
+  `test-support` feature: scratch directories and a fake Herdr socket that
+  answers scripted replies. `src/test_support.rs` adds a dashboard that never
   reads the developer's own state, and rendered screens read back as text.
 - `herdr-plugin.toml` exposes a persistent tab and a compact popup.
 - `omarchy/` is an optional compact QML dashboard. Its owned reader process
@@ -989,7 +1066,7 @@ minutes and red in its last minute; once cold it reads, for example,
 a supervisor weighing a follow-up against a fresh worker: `warm 52m`,
 `cold 182k`, `warm? 18m` and `cold? 182k` for a Codex estimate, `-` when
 unknown. Both format through `cache_countdown` and `compact_tokens` in
-`src/model.rs`.
+`crates/corgi-core/src/model.rs`.
 
 Every project with an agent session gets a heading, its supervisor first. Within
 a state, agents Herdr reports no order between are alphabetical. Scratch
@@ -1134,9 +1211,9 @@ stays open, says why, and moves to the row that needs a value.
 
 ### Projects
 
-The Project row's list is ordered by `src/projects.rs`, and opens by itself
-when no agent is selected and Corgi knows no project. Herdr keeps a
-repository's primary workspace open while any of its worktree workspaces
+The Project row's list is ordered by `crates/corgi-core/src/projects.rs`, and
+opens by itself when no agent is selected and Corgi knows no project. Herdr
+keeps a repository's primary workspace open while any of its worktree workspaces
 exist, which is why an open workspace counts as a project. While an absolute
 path is typed, matching directories are offered as completions, and a
 complete directory path can be chosen even if Corgi has never seen it.
@@ -1327,10 +1404,10 @@ failure is a launch warning, not an error. Lookups and search read
 superseded lines in their original order, so each id's history reads oldest
 first.
 
-`corgi digest --search "<words>"` (`src/digest/search.rs`) looks in all of
-the memory, since a test showed a supervisor answering "don't know" to every
-question about older history with the digest alone: decision entries
-(superseded ones marked); each ledger id, all its lines in
+`corgi digest --search "<words>"` (`crates/corgi-core/src/digest/search.rs`)
+looks in all of the memory, since a test showed a supervisor answering "don't
+know" to every question about older history with the digest alone: decision
+entries (superseded ones marked); each ledger id, all its lines in
 `ledger-archive.jsonl` and `ledger.jsonl` searched together and placed at
 its newest; and the paragraphs and list items of briefs, `reports/`,
 `notes/` (any UTF-8 file up to 1 MB, links not followed), `handover.md` and
@@ -1349,7 +1426,7 @@ since a stale note misled the test's answers) and up to ten lines or
 output stops near 7 KB with a line counting the hits left out.
 
 `--show <file:line>`, `--ledger <id or agent>` and `--brief <id>`
-(`src/digest/lookup.rs`) print one item whole, since the same
+(`crates/corgi-core/src/digest/lookup.rs`) print one item whole, since the same
 investigation found a third of search hits followed by a raw read of the
 file: the decision entry, the ledger line with its id's history, a brief
 or report whole, or the section of any other Markdown file under its

@@ -22,12 +22,25 @@ cargo test
 cargo build --release
 ```
 
+These cover the whole workspace: the `corgi` binary at the root and the
+`corgi-core` library in `crates/corgi-core` are both default members (see
+"Crates" in ARCHITECTURE.md). The core must not depend on ratatui or
+crossterm; after changing its dependencies, check that
+`cargo tree -p corgi-core | grep -E 'ratatui|crossterm'` prints nothing.
+Code that draws or reads keys goes in the root crate; what another frontend
+would need (Herdr, the rows, the flows that change Herdr, the supervisor's
+files) goes in the core, which takes a `HerdrClient` rather than an `App`.
+
 Clippy lints code under `#[cfg(target_os = ...)]` only on that OS, so a lint
 can pass on your machine and fail CI on the other (a `return` left at the end
 of a macOS-only block did). CI runs on both Linux and macOS; check both jobs.
 
 On macOS the default `$TMPDIR` makes the fake Herdr socket path in
-`src/test_support.rs` exceed `SUN_LEN`, so run `TMPDIR=/tmp cargo test` there.
+`crates/corgi-core/src/test_support.rs` exceed `SUN_LEN`, so run
+`TMPDIR=/tmp cargo test` there. The binary crate's tests reach the core's
+test helpers through its `test-support` feature; a core item only tests use
+is gated `#[cfg(any(test, feature = "test-support"))]`, not `#[cfg(test)]`,
+when the binary's tests need it too.
 
 A test that polls a non-blocking listener's `accept()` must set the accepted
 stream back to blocking (`set_nonblocking(false)`) before relying on a read
@@ -42,10 +55,10 @@ such as `/repos/a`.
 
 The supervisor's role and the `[Corgi]` lines Corgi types into its box
 (handover requests, merge, conflict and push lines) are pinned by tests in
-`src/supervisor.rs`, and the merge lines also by the exact-inbox-text tests
-in `src/app/merge.rs`: change the wording, update both. Line breaks in
-`supervisor/ROLE.md` and `supervisor/HANDOVER.md` matter, since those tests
-match their text with `contains`.
+`crates/corgi-core/src/supervisor.rs`, and the merge lines also by the
+exact-inbox-text tests in `src/app/merge.rs`: change the wording, update
+both. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
+matter, since those tests match their text with `contains`.
 
 On macOS, copying a rebuilt binary over an existing file (say, a copy of
 `target/release/corgi` kept to compare before and after) gets it killed with
@@ -55,9 +68,9 @@ destination before copying.
 `corgi digest`'s lookups (`--search`, `--show`, `--ledger`, `--brief`,
 `--decision`) need Herdr only to find the project's state directory. Test
 them with a `ScratchDir` as the state directory through `digest_lookup` in
-`src/app/cli.rs`. To try them on real data, copy the state into a scratch
-directory and point `XDG_STATE_HOME` at it; never run a change against the
-real `~/.local/state/corgi`:
+`crates/corgi-core/src/digest/memory.rs`. To try them on real data, copy the
+state into a scratch directory and point `XDG_STATE_HOME` at it; never run a
+change against the real `~/.local/state/corgi`:
 
 ```bash
 mkdir -p "$scratch/corgi/supervisors"
@@ -65,12 +78,13 @@ cp -R ~/.local/state/corgi/supervisors/<project> "$scratch/corgi/supervisors/"
 XDG_STATE_HOME="$scratch" ./target/release/corgi digest <project dir> --search "<words>"
 ```
 
-`rust-version` in `Cargo.toml` is the oldest Rust that builds Corgi: 1.89,
-set by std's `File::lock` (ratatui 0.30 alone needs 1.88). With it set,
-clippy's `incompatible_msrv` lint refuses a newer std API, so raise it
-deliberately. To check an older toolchain, build in Docker with the worktree
-mounted read-only and the target directory inside the container (a session
-scratchpad under `/private/tmp` is not visible to Docker on macOS):
+`rust-version` in the root `Cargo.toml`'s `[workspace.package]`, which both
+crates take, is the oldest Rust that builds Corgi: 1.89, set by std's
+`File::lock` (ratatui 0.30 alone needs 1.88). With it set, clippy's
+`incompatible_msrv` lint refuses a newer std API, so raise it deliberately. To
+check an older toolchain, build in Docker with the worktree mounted read-only
+and the target directory inside the container (a session scratchpad under
+`/private/tmp` is not visible to Docker on macOS):
 
 ```bash
 docker run --rm -v "$PWD":/src:ro -w /src -e CARGO_TARGET_DIR=/tmp/t \
@@ -187,12 +201,14 @@ using.
 
 ## Releasing
 
-Bump `version` in `Cargo.toml`, `herdr-plugin.toml` and
-`omarchy/manifest.json` (and run `cargo build` so `Cargo.lock` follows),
-commit, and push a `vX.Y.Z` tag matching it. `.github/workflows/release.yml`
-then builds the four binaries and publishes the GitHub release with them and
-their `SHA256SUMS`; it refuses a tag that does not match all three versions.
-Its last job, `omarchy`, then publishes the Omarchy bar widget (below).
+Bump `version` in the root `Cargo.toml` (`[workspace.package]`, which both
+crates take), `herdr-plugin.toml` and `omarchy/manifest.json` (and run
+`cargo build` so `Cargo.lock` follows), commit, and push a `vX.Y.Z` tag
+matching it.
+`.github/workflows/release.yml` then builds the four binaries and publishes
+the GitHub release with them and their `SHA256SUMS`; it refuses a tag that
+does not match all three versions. Its last job, `omarchy`, then publishes the
+Omarchy bar widget (below).
 
 After the artifacts exist, independently download all four binaries and hash
 those bytes; compare with the published `SHA256SUMS`, GitHub asset digests and
@@ -336,9 +352,11 @@ strong enough that decoration never interferes with readability.
 Use color often to clarify state, hierarchy, and actions. Prefer semantic ANSI
 terminal colors over fixed RGB values so Corgi automatically follows the active
 Omarchy theme palette; reserve high-contrast colors for important information.
-Take every color from a role in `src/theme/` (`theme::roles()`), adding a role
-there when none fits, so it follows the terminal's palette, light or dark; only
-the theme module and tests write color literals. To check a color change
-without a light terminal or an Omarchy machine, write the theme preview with
+Take every color from a role (`theme::roles()`), adding a role in
+`crates/corgi-core/src/palette/` when none fits, so it follows the terminal's
+palette, light or dark; only the palette and theme modules and tests write
+color literals; `src/theme/` maps the core's colors onto ratatui's. To check
+a color change without a light terminal or an Omarchy machine, write the
+theme preview with
 `CORGI_PREVIEW_DIR=<dir> TMPDIR=/tmp cargo test --lib theme_preview -- --ignored`
 and read its files with `less -R`.
