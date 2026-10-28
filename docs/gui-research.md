@@ -854,6 +854,15 @@ opened.
   mode. Connections are deactivated while the window is hidden (§9, §12).
 - **Toolkit: GPUI,** with Herdr UI's terminal painter (Apache-2.0) on the
   `gpui-pre` version it pins. It passed on macOS and Hyprland (§10, §12).
+- **Herdr is the always-on backend (§13).** Corgi runs no process of its own.
+  Its plugin's startup and event hooks do the always-on work: they restore
+  markers, record sessions, queue and deliver wakes, start context handovers
+  and do bookkeeping. Each hook reconciles from the whole state, so a dropped
+  event costs nothing. The GUI, TUI and widget can be closed at any time and
+  read the state when opened.
+- **The idle prompt-cache handover runs only while a Corgi window is open.**
+  It is the one timed feature, and Herdr has no timer hooks. Context handovers
+  stay event-driven and always on.
 - **No dock library.** Layouts are fixed: an overview, a focus view with one
   or two terminals, and side panels such as the supervisor and open
   questions. Splits are resizable and sidebars can be opened and closed, with
