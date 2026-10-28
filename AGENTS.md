@@ -122,14 +122,20 @@ libfreetype-dev pkg-config`) checks the Linux build from a Mac. Before
 handing off `scripts/package-gui.sh`, run `bash scripts/test-package-gui`,
 which packages fake binaries and runs `shellcheck`.
 
+The root crate's tests that wait for a background job give it five
+seconds, and fail while a GPUI build (or a container building one) takes
+every core, so run the root tests without a GUI build alongside.
+
 To see the window working, run it against a throwaway Herdr as for the
 hooks below (private `HOME` and `XDG_*`, a shell wrapper that keeps
 `/opt/homebrew/bin` off `PATH`, `CORGI_CLAUDE_BIN` and `CORGI_CODEX_BIN`
 pointing at fakes so neither a real CLI nor the Keychain is touched, and
 seeded `usage/<provider>.json` files with their `.lock` held so no plan
 usage is fetched). A fake agent is a shell pane reported with a test
-`--source`, named with `herdr agent rename` after it is reported (a
-supervisor's name must match its `corgi_handler` token), tagged with a
+`--source` (Herdr 0.9.0 takes the states `idle`, `working`, `blocked` and
+`unknown`; a done agent cannot be reported), named with
+`herdr agent rename` after it is reported (a supervisor's name must match
+its `corgi_handler` token), tagged with a
 `session` token; a Claude session file under the private
 `~/.claude/projects/<cwd with / and . as ->/<session>.jsonl` gives it a model,
 context, cache and transcript (use the real path: `/tmp` is `/private/tmp`
