@@ -64,6 +64,14 @@ impl<T, M> Job<T, M> {
         self.running.is_some()
     }
 
+    /// Whether the worker has returned or panicked, so the next poll
+    /// delivers how it ended.
+    pub fn is_finished(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|running| running.worker.is_finished())
+    }
+
     /// Everything the worker has produced since the last poll, ending with
     /// how it ended once it has. Once that is delivered, the job is idle.
     pub fn poll(&mut self) -> Vec<Update<T, M>> {

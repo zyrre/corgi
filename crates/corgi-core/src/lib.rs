@@ -16,6 +16,7 @@ pub mod first_prompt;
 pub mod git;
 pub mod harness;
 pub mod herdr;
+pub mod hook;
 pub mod inbox;
 mod inbox_privacy;
 pub mod job;

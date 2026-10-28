@@ -166,6 +166,36 @@ from that primary checkout with `cargo build --release` and
 metadata changed. Quit and reopen only the Corgi dashboard when the running
 process must pick up a rebuilt binary; do not restart Herdr.
 
+## Testing Herdr's hooks
+
+`cargo test hook` covers `corgi hook`: the core's tests drive the lock and
+dirty-flag protocol, the event parsing and the watchdog, and `tests/hook.rs`
+runs the real binary, sixteen at once, against `test_support::FakeHerdr`.
+To try the hooks in a real Herdr, register the plugin only in a private
+home: plugin registrations are per user, not per session. Run Herdr with
+`env -i` and a private `HOME` and `XDG_*` directories (a short
+`XDG_CONFIG_HOME` such as `/tmp/<name>`, since macOS limits socket paths),
+a throwaway `--session`, and link a copy of the manifest without its
+`[[build]]` whose `./target/release/corgi` is a symlink to the worktree's
+build; delete the session afterwards and check `herdr session list`. Then:
+
+- Keep `XDG_STATE_HOME` outside `/tmp` and `$TMPDIR` (say under
+  `target/`): Corgi's recovery refuses to coordinate deliveries from a
+  volatile state directory, so no wake is typed in. `tests/hook.rs` keeps
+  its state under `CARGO_TARGET_TMPDIR` for the same reason.
+- Herdr types into an agent (`agent.prompt`) only while the agent is the
+  pane's foreground process. A fake agent is a copy of `/bin/cat` named
+  `claude`, signed with `codesign -s - -f` (an unsigned copy is killed).
+- Report fake agents' states with a test `--source`. Only
+  `--source herdr:claude` keeps an `--agent-session-id`, and Herdr then
+  ignores the test source's states for that pane. **A pane with a
+  `herdr:claude` session comes back after a Herdr restart or live handoff
+  running the real `claude --resume <id>`** from the server's `PATH`. Put
+  the fake `claude` first on that `PATH`, or keep real agent CLIs off it,
+  before restarting, and check `ps` before typing into any pane.
+- `herdr plugin log list --plugin io.github.zyrre.corgi` shows each hook's
+  line, its exit code and its time.
+
 ## Session recovery checks
 
 `cargo test recovery` uses isolated native-store/config fixtures and fake Herdr

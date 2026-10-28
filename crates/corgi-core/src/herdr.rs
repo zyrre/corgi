@@ -393,6 +393,31 @@ impl HerdrClient {
             .map(PathBuf::from))
     }
 
+    /// Whether the plugin `plugin_id` has a startup or event hook that runs
+    /// `corgi hook` registered with Herdr: the hooks do Corgi's always-on
+    /// work. A plugin linked before it had hooks has none until it is
+    /// linked again.
+    pub fn plugin_hooks(&self, plugin_id: &str) -> Result<bool> {
+        let result = self.request("plugin.list", json!({}))?;
+        let runs_hook = |hook: &Value| {
+            hook["command"]
+                .as_array()
+                .is_some_and(|command| command.iter().any(|arg| arg == "hook"))
+        };
+        Ok(result["plugins"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|plugin| plugin["plugin_id"] == plugin_id && plugin["enabled"] != false)
+            .any(|plugin| {
+                ["startup", "events"].iter().any(|key| {
+                    plugin[*key]
+                        .as_array()
+                        .is_some_and(|hooks| hooks.iter().any(runs_hook))
+                })
+            }))
+    }
+
     /// Changes the user-visible label of a workspace.
     pub fn rename_workspace(&self, workspace_id: &str, label: &str) -> Result<()> {
         self.request(

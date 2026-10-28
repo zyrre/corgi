@@ -999,7 +999,12 @@ pub enum HandoverStep {
 /// failing to write the note is not asked at every refresh. A request the
 /// supervisor never takes up (its state does not change within
 /// [`HANDOVER_ANSWER_SECS`]) counts as no note.
-#[derive(Debug, Default)]
+///
+/// It is kept on disk between refreshes (`wake/<socket>.handovers.json`),
+/// since Herdr's hooks and every dashboard take turns at waking: whoever
+/// holds the wake lock takes it up and leaves it for the next.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Handover {
     session: String,
     phase: Phase,
@@ -1013,7 +1018,13 @@ pub struct Handover {
 /// How long a supervisor has to start the turn a handover request asks for.
 const HANDOVER_ANSWER_SECS: u64 = 120;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+/// How long a replacement may run before it counts as failed: the process
+/// running it can end before it records how it went (a dashboard that quits,
+/// a hook past its time limit), and wakes wait while one runs. A replacement
+/// itself takes under a minute (see `waker::replace_supervisor`).
+pub const REPLACEMENT_SECS: u64 = 180;
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum Phase {
     #[default]
     Watching,
@@ -1029,8 +1040,8 @@ enum Phase {
     /// applies: a draft only delays it. `worked` once it has been seen at
     /// work since, which makes the note stale.
     Noted { change: u64, worked: bool },
-    /// Its note was found and the replacement runs.
-    Replacing,
+    /// Its note was found and the replacement runs, since `at`.
+    Replacing { at: u64 },
     /// No note came when its state change was `change`.
     Failed { change: u64, turned: bool },
 }
@@ -1049,8 +1060,11 @@ impl Handover {
         note_since: impl FnOnce(u64) -> bool,
         may_type: impl FnOnce() -> bool,
     ) -> Option<HandoverStep> {
-        if self.phase == Phase::Replacing {
-            return None;
+        if let Phase::Replacing { at } = self.phase {
+            if now < at + REPLACEMENT_SECS {
+                return None;
+            }
+            self.fail(seen.change);
         }
         if self.session != seen.session {
             self.session = seen.session.to_string();
@@ -1105,7 +1119,7 @@ impl Handover {
                         change: seen.change,
                         worked: false,
                     };
-                    self.replace_unless_drafting(may_type)
+                    self.replace_unless_drafting(now, may_type)
                 } else {
                     self.fail(seen.change);
                     Some(HandoverStep::NoNote)
@@ -1120,10 +1134,10 @@ impl Handover {
                 } else if *worked {
                     may_type().then(|| self.ask(seen, now, Trigger::Update))
                 } else {
-                    self.replace_unless_drafting(may_type)
+                    self.replace_unless_drafting(now, may_type)
                 }
             }
-            Phase::Replacing => None,
+            Phase::Replacing { .. } => None,
         }
     }
 
@@ -1148,9 +1162,13 @@ impl Handover {
 
     /// Starts the replacement of a supervisor whose note was found, unless
     /// `may_type()` says its input box holds a draft.
-    fn replace_unless_drafting(&mut self, may_type: impl FnOnce() -> bool) -> Option<HandoverStep> {
+    fn replace_unless_drafting(
+        &mut self,
+        now: u64,
+        may_type: impl FnOnce() -> bool,
+    ) -> Option<HandoverStep> {
         may_type().then(|| {
-            self.phase = Phase::Replacing;
+            self.phase = Phase::Replacing { at: now };
             HandoverStep::Replace
         })
     }
@@ -1198,7 +1216,7 @@ impl Handover {
     pub fn in_progress(&self) -> bool {
         matches!(
             self.phase,
-            Phase::Asked { .. } | Phase::Noted { .. } | Phase::Replacing
+            Phase::Asked { .. } | Phase::Noted { .. } | Phase::Replacing { .. }
         )
     }
 }
@@ -2077,6 +2095,74 @@ mod tests {
                 Some(HandoverStep::Ask(1_000, Trigger::Full(50))),
                 Some(HandoverStep::Replace)
             ]
+        );
+    }
+
+    #[test]
+    fn a_handover_kept_on_disk_between_refreshes_goes_as_one_kept_in_memory() {
+        // Each refresh by another process: the handover is read from the
+        // file the one before wrote.
+        let steps = [
+            (Idle, 1, 60),
+            (Working, 2, 60),
+            (Done, 3, 62),
+            (Idle, 4, 62),
+        ];
+        let mut text = serde_json::to_string(&Handover::default()).unwrap();
+        let taken_up: Vec<_> = steps
+            .iter()
+            .enumerate()
+            .map(|(second, &(state, change, percent))| {
+                let mut handover: Handover = serde_json::from_str(&text).unwrap();
+                let step = handover.observe(
+                    seen(state, change, percent),
+                    FULL,
+                    1_000 + second as u64,
+                    |_| true,
+                    || true,
+                );
+                text = serde_json::to_string(&handover).unwrap();
+                step
+            })
+            .collect();
+        assert_eq!(taken_up, handover_steps(&steps, true));
+        assert_eq!(taken_up[2], Some(HandoverStep::Replace));
+    }
+
+    #[test]
+    fn a_replacement_nobody_recorded_counts_as_failed_after_its_time() {
+        let mut handover = Handover::default();
+        let mut at = |second, state, change| {
+            handover.observe(seen(state, change, 60), FULL, second, |_| true, || true)
+        };
+        assert_eq!(
+            at(1_000, Idle, 1),
+            Some(HandoverStep::Ask(1_000, Trigger::Full(50)))
+        );
+        at(1_001, Working, 2);
+        assert_eq!(at(1_002, Done, 3), Some(HandoverStep::Replace));
+        // The process running it went before it said how it went: wakes
+        // wait for the successor only as long as a replacement can take.
+        assert!(handover.in_progress());
+        let late = 1_002 + REPLACEMENT_SECS;
+        assert_eq!(
+            handover.observe(seen(Done, 3, 60), FULL, late - 1, |_| true, || true),
+            None
+        );
+        assert!(handover.in_progress());
+        assert_eq!(
+            handover.observe(seen(Done, 3, 60), FULL, late, |_| true, || true),
+            None
+        );
+        assert!(!handover.in_progress());
+        // Asked again only after a later turn of its own.
+        assert_eq!(
+            handover.observe(seen(Working, 4, 60), FULL, late + 1, |_| true, || true),
+            None
+        );
+        assert_eq!(
+            handover.observe(seen(Idle, 5, 60), FULL, late + 2, |_| true, || true),
+            Some(HandoverStep::Ask(late + 2, Trigger::Full(50)))
         );
     }
 

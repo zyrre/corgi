@@ -22,7 +22,10 @@ const DEAD_SOCKET_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// project.
 const SOCKET_FILES: [(&str, &[&str]); 2] = [
     ("markers", &["json", "lock"]),
-    ("wake", &["lock", "seen.json"]),
+    (
+        "wake",
+        &["lock", "seen.json", "handovers.json", "dirty", "open"],
+    ),
 ];
 
 /// Sweeps the state directory `state`, for a dashboard of the Herdr session
