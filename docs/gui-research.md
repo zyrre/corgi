@@ -19,6 +19,8 @@ Evidence marks used below:
   second separate session (`endpointspike`, also stopped and deleted), §8.
 - **[spike 3]**: an egui prototype and protocol follow-ups, each against its
   own separate session (`guiproto`, `endpointspike2`, both deleted), §9.
+- **[spike 4]**: a GPUI prototype using Herdr UI's painter, session
+  `gpuiproto` (deleted), §10.
 - **[web]**: third-party sources, linked; **[assumption]**: not verified.
 
 ## Summary
@@ -32,7 +34,11 @@ Evidence marks used below:
   ([penso/herdr-gpui](https://github.com/penso/herdr-gpui), Rust + GPUI,
   Apache-2.0, about 1.7k stars, macOS/Linux/Windows). It paints Herdr's own
   cells, with no second terminal emulator. Corgi should not rebuild that.
-- **Recommendation:** a hybrid GUI focused on what only Corgi has. That means
+- **Update after the prototypes (§9–§10):** the terminal must sit inside the
+  GUI, with Herdr's endpoint protocol feeding it. Both egui and GPUI prototypes
+  are fast enough. GPUI can reuse Herdr UI's terminal painter; egui is more
+  mature and more responsive. The open decision is in Open questions.
+- **Recommendation (original):** a hybrid GUI focused on what only Corgi has. That means
   project cards, the supervisor, merges, the inbox, decisions, ledger, briefs
   and reports. Agent terminals open on demand inside the GUI later, and until
   then "focus" hands off to Herdr's TUI or Herdr UI. Build it in Rust with
@@ -555,6 +561,71 @@ atlas) and the connection-management rules above, not a change of approach.
 Still unverified: real SSH, Codex, IME and dead keys typed by a person, and
 Linux/Hyprland.
 
+## 10. GPUI with Herdr UI's terminal painter (spike 4)
+
+You then set two priorities: the terminal must sit **inside** the GUI, with
+performance second. You also don't want to build a terminal. So a third
+prototype checked whether Herdr UI's terminal code can be reused, in its
+toolkit GPUI (`gpui-pre =0.3.6`, as Herdr UI pins it), against a separate
+`gpuiproto` session (deleted afterwards). The egui prototype was rerun
+alongside it on the same machine and display: Apple M5, 2560×1440 at 144 Hz.
+
+**The lift.**
+
+- **The painter compiled unchanged.** That is `terminal_painter.rs` and six
+  submodules, about 2,300 lines: glyph cache, box drawing as exact shapes,
+  powerline symbols, colour emoji, images. So did Herdr UI's protocol crates
+  (`herdr-protocol`, `herdr-client`). The stubs needed were a theme struct, an
+  error type and about 200 lines of `terminal.rs`. About 1,000 new lines and
+  one hour of work.
+- **Not reusable as-is: the interactive layer.** Herdr UI has no standalone
+  terminal view. Its canvas, selection, links, IME, text input and scrolling
+  live in its 1,000-line window renderer. Those would still be ours to port or
+  write, in either toolkit.
+- **Version fragmentation showed at once.** gpui-component 0.8.1, the dock
+  library, needs `gpui-pre =0.3.10`, which cannot mix with Herdr UI's 0.3.6.
+  The prototype used a fixed split instead of a dock.
+
+**Side by side.** "Frame" is each toolkit's own per-frame work; CPU is the app
+followed by Herdr's server.
+
+| Scenario | GPUI fps, frame p50/p95 (ms) | egui fps, frame p50/p95 (ms) | CPU, GPUI | CPU, egui |
+| --- | --- | --- | --- | --- |
+| Idle | 0 | 0 | 0.9 % / 0.3 % | 0.0 % / 0.3 % |
+| One 200×60, scrolling flood | 28, 3.5 / 5.7 | 58, 2.2 / 5.4 | 14 % / 6 % | 18 % / 6 % |
+| One 200×60, full redraw | 53, 3.9 / 4.8 | 103, 1.3 / 3.9 | 28 % / 16 % | 27 % / 12 % |
+| Two 150×60 redrawing + overview | 58, 4.5 / 5.2 | 157, 0.6 / 4.6 | 35 % / 20 % | 37 % / 17 % |
+| Keystroke to frame, idle (p50/p90) | **8.0 / 9.9 ms** | **1.8 / 2.9 ms** | | |
+| Keystroke to frame, other pane redrawing | 18.5 / 26.7 ms | 15.5 / 23.0 ms | | |
+| Cold start to first terminal | median 246 ms | median 265 ms | | |
+| Memory under load, binary | 69–94 MB, 12.7 MB | 108–136 MB, 15.0 MB | | |
+
+Notes on the numbers:
+
+- **Both kept up with every surface Herdr sent.** egui simply paints more
+  often.
+- **GPUI's extra input latency** comes from waiting for the next display tick
+  (4.3 ms from arrival to frame start). Its frame cost is GPUI re-laying out
+  the whole window each frame. The painter itself takes 0.9–2.4 ms; the rest
+  is the overview panel, which a cached view would avoid.
+- **Herdr UI's client polls each socket every 10 ms,** about 1 % CPU at idle.
+
+**Rendering correctness.** GPUI with the lifted painter was right out of the
+box: box drawing, emoji, CJK alignment, powerline symbols. Nerd Font icons
+were missing only because no Nerd Font is installed. egui still needs that
+work (§9).
+
+**Reading.** Both are fast enough: neither was sluggish, and both kept up
+with every surface Herdr sent. The trade-off is clear:
+
+- **GPUI** reuses the hard rendering polish and uses less memory. It costs a
+  pinned pre-release toolkit whose versions already conflict, about 6 ms more
+  keystroke latency at idle, and experimental accessibility.
+- **egui** is the more mature, more responsive toolkit. We'd write the
+  rendering polish ourselves.
+
+Either way, the interactive layer (selection, links, IME, scrolling) is ours.
+
 ## Open questions
 
 1. **Daemon.** Should Corgi get an optional long-running `corgi daemon` (a
@@ -570,5 +641,11 @@ Linux/Hyprland.
 
    Recommended: (i), keeping (iii) possible, since `corgi serve` is the same
    work either way.
-3. **Stack.** egui is recommended; GPUI is the alternative if (ii) appeals.
-   Decide after the phase 0 spike.
+3. **Stack** (§10). The options:
+   - **GPUI with Herdr UI's painter:** less rendering work, pre-release
+     toolkit.
+   - **egui with our own painter:** a more mature toolkit, lower latency.
+
+   Recommended: GPUI, if two checks pass. First, the painter moves to
+   `gpui-pre 0.3.10` so gpui-component's dock can be used. Second, it runs well
+   on Hyprland. Otherwise egui.
