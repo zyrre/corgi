@@ -719,6 +719,57 @@ Main sources:
 - [Claude Code fullscreen notes](https://code.claude.com/docs/en/fullscreen)
 - [TerminalX transport](https://github.com/terminalx-ai/terminalx/issues/232)
 
+## 12. The prototypes on Hyprland (spike 5)
+
+Both prototypes were run on the Omarchy machine:
+- **Hardware:** Ryzen 5 3600, Radeon RX 6700 XT on Mesa, 2560×1440 at 165 Hz,
+  scale 1.0.
+- **Software:** Hyprland 0.56, Herdr 0.9.1.
+- **Full report:** `results/omarchy.md` on the `gui-prototypes` branch.
+
+**Platform support.**
+- Both ran as native Wayland clients (no XWayland), and no system packages
+  were missing.
+- egui needed no changes.
+- GPUI needed three configuration fixes:
+  - enable `gpui-pre-platform`'s `wayland` feature;
+  - set a Wayland `app_id`;
+  - pick a monospace font that exists on Linux.
+
+**Performance.** The macOS gap mostly closed.
+- Under load, frame times, CPU and memory were within about 10 % of each
+  other.
+- Keystroke to frame at idle: GPUI 4.4 ms, egui 1.2 ms. Both are within one
+  165 Hz refresh.
+- With another pane redrawing: 16.7 ms and 15.8 ms.
+- Load cost about twice the CPU of the M5 for both, and for Herdr's server
+  too.
+- Memory was about 125–144 MB for both.
+
+**Behaviour.**
+- **Compositor resizes** (tiling, swaps, a simulated drag) gave a correctly
+  sized terminal in about 50 ms for both. GPUI's timing was the steadier.
+- **Swedish keys** (å ä ö, AltGr brackets) worked in both, and so did Claude
+  Code's Shift+Enter, Alt+Enter and Ctrl+J.
+- **Rendering:** GPUI rendered box drawing and Nerd Font icons correctly.
+  egui kept its macOS defects: gaps in box borders, and icons overlapping the
+  next cell.
+
+**One fix needed in GPUI: hidden windows.** On a hidden workspace, Hyprland
+stops sending frame callbacks.
+- egui then stops painting; Herdr, seeing no acknowledgements, throttles, and
+  both go almost idle.
+- GPUI kept receiving and decoding every surface. Under a full redraw that
+  cost the app 11 % and Herdr 35 % CPU.
+- **Fix:** the GUI should deactivate its connections while the window is
+  occluded, with `client_shell.surface.set {active:false}` (§9).
+
+**Not checked:** flicker while the compositor resizes, judged by eye;
+fractional scaling; dead keys.
+
+**Verdict: GPUI.** It passes check 2 of the stack question. Check 1 is still
+open: the painter on the `gpui-pre` version that gpui-component's dock needs.
+
 ## Open questions
 
 1. **Daemon.** Should Corgi get an optional long-running `corgi daemon` (a
