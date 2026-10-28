@@ -184,7 +184,9 @@ pub fn boot() -> Result<String> {
         .context("cannot identify this host boot");
     #[cfg(target_os = "macos")]
     {
-        let out = std::process::Command::new("sysctl")
+        // By its path, as `ioreg` below: a Herdr hook runs with the server's
+        // PATH, which need not hold /usr/sbin.
+        let out = std::process::Command::new("/usr/sbin/sysctl")
             .args(["-n", "kern.boottime"])
             .output()?;
         ensure!(out.status.success(), "cannot identify this host boot");
