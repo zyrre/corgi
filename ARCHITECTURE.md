@@ -548,8 +548,9 @@ when stdin closes and no command is still running.
   dashboard's `project_runs` and `is_card`), each supervisor's open
   numbered questions from its ledger (`digest::all_open_questions`), the
   usage cards, the watched transcript and the palette, whose roles it sends
-  in RGB for light and dark (the Omarchy theme, else Catppuccin), never
-  querying the terminal, since stdio carries the protocol. It also computes
+  in RGB for light and dark (the Omarchy theme, else Catppuccin). It never
+  calls `palette::resolve`, which queries the terminal over stdin and stdout,
+  where the protocol runs. It also computes
   a delta: rows and projects replaced whole by key, removals, and the order
   whenever it changed.
 - `commands.rs` maps each command onto the core flow the dashboard's key

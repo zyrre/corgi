@@ -47,6 +47,16 @@ stream back to blocking (`set_nonblocking(false)`) before relying on a read
 timeout: macOS/BSD sockets inherit `O_NONBLOCK` from the listener, Linux
 sockets do not, so the failure shows only on macOS CI.
 
+In the root crate's tests, give every `HerdrClient` a scratch marker record
+with `.with_marker_record(scratch.join("markers.json"))`: the core is built
+there without `cfg(test)`, so `HerdrClient::from_socket_path` writes its
+marker record into the real state directory.
+
+A shell pane reported as an agent (below) shows in Corgi like one, but
+Herdr refuses `agent.prompt` to it with `agent_not_ready`, since no agent is
+its foreground process. Testing a prompt live needs a real agent CLI, which
+tests must not drive, so test prompts against a fake Herdr socket.
+
 `App::new` loads the real `projects` list from Corgi's state directory;
 `test_app()` keeps an in-memory one, so build test apps with it. Saving the
 list drops directories that do not exist, so a test that saves it to a file
