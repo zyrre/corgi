@@ -2,7 +2,11 @@
 
 Corgi does not run its own backend service. Herdr is the control plane and the
 terminal multiplexer; each Corgi pane is a short-lived client of the Unix socket
-that Herdr injects as `HERDR_SOCKET_PATH`.
+that Herdr injects as `HERDR_SOCKET_PATH`. What has to happen while no Corgi
+window is open (putting back marks after a restart, recording new agents'
+sessions, waking supervisors, starting handovers) Herdr runs itself, through
+the plugin's startup and event hooks: each is one short `corgi hook` process
+(see "Herdr's hooks" below).
 
 ## Runtime shape
 
@@ -40,10 +44,18 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   │                        dashboard running as process <pid>, empty for none, for
   │                        `corgi edit`; replaced through a rename, removed on quit,
   │                        and by the next dashboard to start once <pid> is gone
-  ├─ wake/<socket>.lock ─ held by the one dashboard that wakes supervisors
-  ├─ wake/<socket>.seen.json ─ what that dashboard last saw of each agent it
+  ├─ wake/<socket>.lock ─ held for one pass at waking supervisors at a time, by a
+  │                        hook or a dashboard (an older Corgi's dashboard held it
+  │                        for as long as it ran)
+  ├─ wake/<socket>.seen.json ─ what the last pass saw of each agent it
   │                        follows (pane, run of state changes, transitions), for the next one;
   │                        replaced whole through a temporary file and a rename
+  ├─ wake/<socket>.handovers.json ─ where each supervisor's handover stands, by
+  │                        project root, for the next pass; written the same way
+  ├─ wake/<socket>.dirty ─ set by a hook that found the wake lock taken, so the pass
+  │                        holding it goes round once more; cleared as a pass begins
+  ├─ wake/<socket>.open ── a share of it held by every open dashboard, so the
+  │                        command-line tools can tell one is open
   ├─ markers/<socket>.json ─ every metadata token Corgi set in that Herdr session,
   │                        by pane and workspace, with the agent or checkout it
   │                        was set for; replaced whole through a temporary file
@@ -90,6 +102,12 @@ Optional Omarchy widget
   ├─ herdr agent focus ─────── reveal a selected agent
   └─ herdr plugin pane open/focus ── launch or reveal the full dashboard
 
+Herdr's plugin hooks (herdr-plugin.toml), one short process each
+  └─ corgi hook ───── at the server's start or live handoff, and on pane.agent_detected,
+                      pane.agent_status_changed, pane.exited, pane.closed and
+                      workspace.closed: one pass of the refresh under the wake lock,
+                      the same marks, wakes, deliveries and handovers a dashboard does
+
 Headless launch and the supervisor
   ├─ corgi spawn ──── the new-agent form's launch sequence, task on stdin, result as JSON
   ├─ corgi supervisor the same launch into the project's root tab, as its supervisor
@@ -121,7 +139,8 @@ thread names every few seconds, each on a background thread. API calls open a
 fresh newline-delimited JSON connection, have five-second I/O deadlines (ten
 for a first prompt, which waits for the agent to react), and cap responses at
 4 MiB. There is no daemon, database, HTTP listener, or state that needs to be
-synchronized with Herdr.
+synchronized with Herdr: the always-on work runs in hooks Herdr starts, each
+a process that exits within its time limit.
 
 ## Crates
 
@@ -156,7 +175,10 @@ What a frontend other than the dashboard calls, with no `App`:
   wake supervisors and deliver their inboxes when it takes the per-socket
   wake lock), giving the sorted rows and workspaces;
 - the marks and the waker on their own: `markers::restore_markers`,
-  `markers::clear_stale_merge_tags`, `waker::wake_supervisors`;
+  `markers::clear_stale_merge_tags`, `waker::wake_supervisors`, between a
+  waker's `begin` and `end` (which take and give up the wake lock);
+- a hook: `hook::run` with `hook::Event::from_env()`, or `hook::reconcile`
+  with the passes of `hook::HookPasses`;
 - the actions: `launch::run_launch` with a `LaunchPlan`
   (`launch::supervisor_plan` for a supervisor), `merge::merge_form`,
   `merge::run_merge`, `merge::clear_merged_tag` and
@@ -595,8 +617,9 @@ role. So Corgi keeps its own record and puts the tokens back.
   on a background thread and `corgi spawn` never lose each other's entries
   and a reader never sees half a file. A record that cannot be written only
   costs the restore; the Herdr mark is what counts.
-- The dashboard holding the wake lock compares the record with each snapshot
-  before anything reads it, so only one process reconciles. It costs one
+- The pass holding the wake lock, a hook's or a dashboard's, compares the
+  record with each snapshot before anything reads it, so only one process
+  reconciles at a time. It costs one
   small file read per refresh and a write only when something changed.
   Valid live session markers and workspace tokens update the record, since
   another process may have set them since. Legacy name markers migrate when
@@ -626,12 +649,103 @@ role. So Corgi keeps its own record and puts the tokens back.
   that one key, so a worker's request id beside it is left alone; the
   launch's and the supervisor's own full mark sets clear it, as they clear every
   Corgi pane token they leave out.
-- A supervisor launched and lost in a restart before any dashboard saw its
+- A supervisor launched and lost in a restart before any pass saw its
   session is not re-marked: without a recorded session there is nothing to
-  confirm the pane still holds it. The dashboard records the session at the
-  first refresh after the launch.
+  confirm the pane still holds it. The hook Herdr runs when it detects the
+  new agent (`pane.agent_detected`) records the session at once, and a
+  dashboard's next refresh would too.
 - Herdr's plugin-pane records are Herdr's own and not part of this; the
   `open` action copes with losing them (`scripts/herdr-corgi-dashboard`).
+- The startup hook puts the marks back: Herdr runs it as its server starts
+  and again after a live handoff, within about 50 ms, before any window is
+  open. Panes whose agent Herdr detects only later are put back by the
+  `pane.agent_detected` hook that follows.
+
+### Herdr's hooks
+
+`herdr-plugin.toml` declares a `[[startup]]` hook and `[[events]]` hooks on
+`pane.agent_detected`, `pane.agent_status_changed`, `pane.exited`,
+`pane.closed` and `workspace.closed`, all running `corgi hook`
+(`src/app/hook.rs` around `crates/corgi-core/src/hook.rs`). Herdr starts it
+in the plugin's root with its own environment, `HERDR_PLUGIN_EVENT` naming
+the event and `HERDR_PLUGIN_EVENT_JSON` holding it, and keeps what it prints
+in its plugin log (`herdr plugin log list --plugin io.github.zyrre.corgi`):
+one line per run, saying what woke it, how many passes it made or that it
+left the work to the pass holding the lock, how long it took, and the
+status lines of its passes.
+
+- **Trigger, then reconcile.** Herdr 0.9 runs at most 32 plugin commands
+  at once across all plugins and drops the events beyond that, starts hooks
+  in parallel and lets them finish in any order, says no previous status,
+  state change counter or session in an event (an idle nobody looked at
+  arrives as `done`), fires `pane.closed` only for an explicit close (a
+  shell that exits gives `pane.exited`), loses the events of the time it is
+  down, and runs no hook for token changes or for time passing. So the
+  event decides nothing: every hook makes the same pass, `refresh::run`
+  with a `SupervisorWaker`, which reconciles from Herdr's snapshot and
+  Corgi's records (the agents followed, the handovers, the marks, the
+  inboxes). A dropped event is caught by the next hook, whatever it is for,
+  or by the startup hook. Exits and closes need no work of their own: the
+  pass drops what it followed of agents, panes and workspaces that are gone.
+- **One pass at a time.** A pass holds `wake/<socket>.lock` from before
+  its snapshot to after its wakes. A hook first sets `wake/<socket>.dirty`,
+  then tries the lock; finding it taken, it exits at once, and the process
+  holding it goes round once more when its pass ends, since that pass's
+  snapshot may predate the event. Because the flag is set before the lock is
+  tried, it is never set after the holder last looked: a hook looks once
+  more after giving the lock up, and goes round again if the flag is set
+  and it can take the lock back. A pass that begins clears the flag. A
+  burst of 16 hooks makes a few passes and delivers once.
+- **Time limits.** No pass starts after five seconds; what is still dirty
+  then is left to the next hook. A watchdog thread ends the process after 30
+  seconds (exit code 124) whatever it is doing, since Herdr gives a hung
+  hook no time limit and its slot is taken for good. The wake lock goes
+  with the process. Every Herdr call has its own deadline, so the watchdog
+  is for what has none, such as another process's lock held for good.
+  `CORGI_HOOK_LIMIT_MS` lowers the hard limit, for the tests.
+- **State between processes.** A hook is a new process, so everything a
+  pass needs from the one before is on disk: what was seen of each agent
+  (`seen.json`), where each handover stands (`handovers.json`), the marks
+  record, and the inboxes, which record every delivery. A pass takes them
+  up as it begins and writes them as it ends (`SupervisorWaker::begin` and
+  `end`). An agent the record does not have counts as having appeared
+  while nobody watched only at a process's first pass, as at a dashboard's
+  start.
+- **Replacements.** A supervisor's replacement (its exit, then its
+  successor's launch) runs on a thread of the hook with the lock given up,
+  for at most 90 seconds, with the watchdog's limit moved past that; then
+  one more pass records how it went. A replacement whose process went
+  before recording it (a dashboard that quit, a hook ended by its watchdog)
+  counts as failed after `supervisor::REPLACEMENT_SECS` (three minutes), so
+  the project's wakes do not wait for good.
+- **Refused and unknown prompts.** Before typing a project's inbox in, a
+  pass records the items' ids in the recovery journal, and clears them once
+  Herdr confirms (`recovery::begin_delivery` and `finish_delivery`), so an
+  item whose delivery nobody confirmed is never typed in twice. Herdr's
+  `agent.prompt` refuses before writing anything with `agent_not_found`,
+  `agent_target_ambiguous`, `agent_blocked`, `agent_not_ready` (the agent is
+  not the pane's foreground process) or `empty_agent_prompt`: then the ids
+  are cleared again (`recovery::abort_delivery`) and the items go out at a
+  later pass, once the supervisor takes prompts (`waker::Delivery`). Any
+  other failure (the connection, `agent_prompt_failed`, `timeout`) may have
+  typed them, so they stay held, and with them everything later for that
+  project, until they are read and recorded with
+  `corgi inbox <project> --take`. A held inbox shows in every pass's status
+  line (a dashboard's, a hook's log line), in `corgi fleet`, `digest`,
+  `report` and `inbox` (`N inbox item(s) held: …`), and in `corgi serve`'s
+  `held` count of each project, since a hook may hit it with no window
+  open.
+- **Dashboards.** A dashboard makes the same pass at each refresh, under
+  the same lock, so it is the fallback where no hook runs: a Herdr whose
+  plugin was linked before the manifest had hooks, or a hook that failed. A
+  refresh that ends to find the flag set is due again at once. With hooks
+  and dashboards taking turns, nothing is delivered twice: a delivery is
+  made and recorded under the lock, and the next pass reads the inbox
+  afresh. A dashboard of an older Corgi holds the lock for as long as it
+  runs, so the hooks leave all the work to it until it quits. The idle
+  prompt-cache handover stays with dashboards (hooks run only when
+  something happens, so none could time a rest); the handover at 50% of the
+  context is the hooks' as well.
 
 ### The supervisor
 
@@ -706,8 +820,10 @@ role. So Corgi keeps its own record and puts the tokens back.
   must be the pane of an agent carrying the supervisor marker. Without
   `--harness`, such a spawn starts the worker on the kind Herdr detected in
   the supervisor's pane, rather than on the form's default.
-- The dashboard wakes supervisors from its own refresh (`app/waker.rs`),
-  on the refresh's background thread; nothing else runs for it. Every agent of a project with a running supervisor
+- Herdr's hooks and every interactive dashboard wake supervisors, from the
+  same pass of the refresh (`crates/corgi-core/src/waker.rs`; a dashboard's
+  on its refresh's background thread), one pass at a time (see "Herdr's
+  hooks"). Every agent of a project with a running supervisor
   counts, except the supervisor, whoever started it, and so does one the supervisor
   spawned (it carries a `corgi_request` token) while the project has no
   running supervisor, so the next supervisor hears of it. `supervisor::Transitions` reduces each agent's
@@ -716,12 +832,12 @@ role. So Corgi keeps its own record and puts the tokens back.
   a new agent opens on is news; after that, each time it rests (done or
   idle, which count as one) after working, and each change between blocked
   and resting. The same resting state with a newer `state_change_seq` means
-  a turn passed between two refreshes, and wakes too. Only the dashboard
+  a turn passed between two refreshes, and wakes too. Only the pass
   holding an exclusive lock on `$XDG_STATE_HOME/corgi/wake/<socket>.lock`
-  follows the agents, adds wakes and delivers; the lock goes with its
-  process, and the next dashboard to refresh takes it over. Every interactive
-  dashboard (the tab, the popup, a preview) tries for the lock; the Omarchy
-  reader and the command-line tools never wake.
+  follows the agents, adds wakes and delivers, and it holds the lock only
+  for that pass. Every hook and every interactive dashboard (the tab, the
+  popup, a preview) tries for the lock; the Omarchy reader and the
+  command-line tools never wake.
 - Every wake goes through the supervisor's inbox
   (`crates/corgi-core/src/inbox.rs`), `inbox.jsonl` in its state directory, so
   none is lost or sent twice when a dashboard closes, crashes, restarts or
@@ -777,12 +893,11 @@ role. So Corgi keeps its own record and puts the tokens back.
   name after it restarts, but counts its state changes from the start
   again, so the run is part of the id: it is set when the dashboard first
   follows the agent, and again whenever its `state_change_seq` goes back.
-- What the leading dashboard last saw of each agent (its pane, run, last
+- What the last pass saw of each agent (its pane, run, last
   `state_change_seq` and `Transitions`) is kept in
-  `wake/<socket>.seen.json`, written after that refresh's items, and only
-  when it changed. A dashboard that takes the lock starts from that record
-  rather than from what it sees, so whatever changed while no dashboard led
-  is news: a worker that was working at the last save and is done now wakes
+  `wake/<socket>.seen.json`, written after that pass's items, and only
+  when it changed. Every pass starts from that record rather than from what
+  it sees, so whatever changed while no pass ran is news: a worker that was working at the last save and is done now wakes
   its supervisor once. An agent of the same name in another pane is another
   agent. An agent the record does not have, and that rests now, wakes
   nobody, except one the supervisor spawned that is done, or idle with a report
@@ -883,7 +998,10 @@ role. So Corgi keeps its own record and puts the tokens back.
   within two minutes, leaves the supervisor in place with a status line, and
   it is asked again only after a later turn of its own.
   `CORGI_DEBUG_HANDOVER_PERCENT` lowers the threshold for
-  a debug run; it is not a setting.
+  a debug run; it is not a setting. Where each supervisor's handover stands
+  (`supervisor::Handover`) is kept in `wake/<socket>.handovers.json`, so a
+  hook that asks and a dashboard that replaces, or the other way round, are
+  one handover.
 - A second trigger hands over a supervisor whose prompt cache is about to go
   cold, since its next turn would otherwise re-read the whole conversation
   uncached, while a fresh session is small enough to wake cold cheaply. It
@@ -906,7 +1024,9 @@ role. So Corgi keeps its own record and puts the tokens back.
   never qualifies, and a supervisor on a harness whose session file Corgi
   cannot read is never handed over for idleness. The 50% trigger goes first
   when both hold. `CORGI_DEBUG_HANDOVER_IDLE_SECS` sets the idle time for
-  a debug run on any harness; it is not a setting.
+  a debug run on any harness; it is not a setting. Only a dashboard asks
+  for this one: it is timed, and Herdr runs hooks only when something
+  happens, so it waits for a Corgi window to be open.
 - Claude Code's folder-trust question is the one question Corgi answers. It
   keys trust on a repository's main checkout, so the first worktree of a
   repository nobody trusted yet opens on it, even under a trusted folder. When
@@ -1179,8 +1299,8 @@ tagged: done or idle at the same state change, or idle at any after being
 tagged done, which is how Herdr shows a done agent the user has looked at.
 Working or blocked, done at another state change, or idle at another one
 after being tagged idle, the agent has worked since, and the tag is stale:
-every dashboard ignores it at once, and the one holding the wake lock clears
-it from Herdr and the record at its next refresh, also when the work
+every dashboard ignores it at once, and the next pass holding the wake lock
+(a hook's or a dashboard's) clears it from Herdr and the record, also when the work
 happened while no dashboard ran. The one case it cannot tell is a worker
 tagged done that worked, finished and was looked at while no dashboard ran;
 it still shows MERGE until it works again. A merge with `m` clears the
@@ -1407,8 +1527,10 @@ for that name in any supervisor's inbox.
 `corgi fleet`, `corgi digest` and `corgi report` end with one line on
 stderr, `N undelivered inbox items: run corgi inbox <project>`, when the
 supervisor of their project (for `report`, the current directory's) has missed
-items: any undelivered while no dashboard holds the wake lock (the command
-tries it for a moment), else only those undelivered for five minutes, so
+items: any undelivered while nothing delivers (no Corgi hook registered with
+Herdr, no dashboard open, and no older dashboard holding the wake lock),
+else only those undelivered for five minutes, and above that a line when some
+are held because Herdr never confirmed their delivery (see "Herdr's hooks"), so
 a supervisor notices a wake that did not reach it at its next command, but is
 not drawn into the wakes that only wait for its turn to end.
 

@@ -48,3 +48,31 @@ placement = "popup"
 width = "88%"
 height = "84%"
 command = ["./target/release/corgi", "--compact"]
+
+# Corgi's always-on work, with no dashboard open: Herdr runs `corgi hook` as
+# its server starts or hands over, and on these events. Every run reconciles
+# from Herdr's snapshot and Corgi's records, whatever the event, so one Herdr
+# drops in a burst costs nothing; see `corgi hook --help` and "Herdr's hooks"
+# in ARCHITECTURE.md.
+[[startup]]
+command = ["./target/release/corgi", "hook"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["./target/release/corgi", "hook"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["./target/release/corgi", "hook"]
+
+[[events]]
+on = "pane.exited"
+command = ["./target/release/corgi", "hook"]
+
+[[events]]
+on = "pane.closed"
+command = ["./target/release/corgi", "hook"]
+
+[[events]]
+on = "workspace.closed"
+command = ["./target/release/corgi", "hook"]

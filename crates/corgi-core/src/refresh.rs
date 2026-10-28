@@ -133,6 +133,10 @@ pub struct Refreshed {
     pub view: Result<View, String>,
     /// A notice from `corgi setup` this refresh took, to show in a popup.
     pub notice: Option<String>,
+    /// Whether another process asked for a pass at waking supervisors while
+    /// this refresh held the wake lock (a hook that found it taken), so the
+    /// next refresh is due at once.
+    pub again: bool,
 }
 
 /// The rows one refresh found, ready to put in place.
@@ -161,7 +165,15 @@ struct Timings {
 pub fn run(inputs: &Inputs, mut state: RefreshState, log: Option<&RefreshLog>) -> Refreshed {
     let started = Instant::now();
     let mut timings = Timings::default();
-    let view = state.refresh(inputs, &mut timings);
+    // The pass at waking holds the wake lock from before the snapshot to
+    // after the wakes, so every pass, a hook's or a dashboard's, starts from
+    // what the one before did.
+    let leading = state
+        .waker
+        .as_mut()
+        .is_some_and(|waker| waker.begin(&inputs.client));
+    let view = state.refresh(inputs, leading, &mut timings);
+    let again = state.waker.as_mut().is_some_and(SupervisorWaker::end);
     let found = match &view {
         Ok(view) => Ok(view.agents.len()),
         Err(error) => Err(error.clone()),
@@ -178,6 +190,7 @@ pub fn run(inputs: &Inputs, mut state: RefreshState, log: Option<&RefreshLog>) -
         state,
         view,
         notice,
+        again,
     }
 }
 
@@ -192,7 +205,12 @@ impl RefreshState {
         }
     }
 
-    fn refresh(&mut self, inputs: &Inputs, timings: &mut Timings) -> Result<View, String> {
+    fn refresh(
+        &mut self,
+        inputs: &Inputs,
+        leading: bool,
+        timings: &mut Timings,
+    ) -> Result<View, String> {
         let client = &inputs.client;
         let step = Instant::now();
         let snapshot = client.snapshot();
@@ -201,10 +219,10 @@ impl RefreshState {
 
         let step = Instant::now();
         let mut status = None;
-        // The dashboard that wakes supervisors is the one that puts back the
+        // The pass that wakes supervisors is the one that puts back the
         // marks a Herdr restart lost, before anything reads them, and that
         // clears the merge tags their agents worked past.
-        if self.waker.as_mut().is_some_and(|waker| waker.leads(client)) {
+        if leading {
             status = restore_markers(client, &mut snapshot).map(|status| (status, MARKS_HOLD));
             clear_stale_merge_tags(client, &mut snapshot);
         }
@@ -219,7 +237,7 @@ impl RefreshState {
         if let Some(warning) = self.warn_about_old_state_dirs(&view.agents) {
             status = Some((warning, STATE_DIR_HOLD));
         }
-        if let Some(waker) = self.waker.as_mut()
+        if let Some(waker) = self.waker.as_mut().filter(|_| leading)
             && let Some(woke) = wake_supervisors(waker, client, &mut self.sessions, &view.agents)
         {
             status = Some((woke, WAKE_HOLD));

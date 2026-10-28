@@ -143,8 +143,14 @@ impl App {
             state,
             view,
             notice,
+            again,
         } = refreshed;
         self.refresh_state = Some(state);
+        // A hook found the wake lock taken by this refresh and left the work
+        // to it: the next pass goes now rather than after the interval.
+        if again {
+            self.request_refresh();
+        }
         if notice.is_some() {
             self.pending_notice = notice;
             self.show_pending_notice();

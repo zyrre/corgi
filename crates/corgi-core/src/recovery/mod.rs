@@ -1308,6 +1308,27 @@ pub fn finish_delivery(store: &Store, scope: &str, project: &str, ids: &[String]
     store.write_journal(&journal)
 }
 
+/// Takes back the `ids` [`begin_delivery`] recorded, for a delivery Herdr
+/// refused before typing anything: they were not sent, so they are no longer
+/// quarantined and go out at a later pass.
+pub fn abort_delivery(store: &Store, scope: &str, project: &str, ids: &[String]) -> Result<()> {
+    finish_delivery(store, scope, project, ids)
+}
+
+/// The ids of `project`'s inbox items on the Herdr session `scope` whose
+/// delivery began and was never confirmed: quarantined, so they are never
+/// typed in again, and with them every later item of the project, until
+/// someone looks.
+pub fn quarantined(store: &Store, scope: &str, project: &str) -> Result<Vec<String>> {
+    let journal = store.journal()?;
+    let prefix = format!("{scope}\n{project}\n");
+    Ok(journal
+        .deliveries
+        .iter()
+        .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
+        .collect())
+}
+
 /// Puts back the pane tokens and, for a recovered workspace, the workspace
 /// tokens Corgi had set for the agent `entry` recorded.
 pub fn restore_marks(

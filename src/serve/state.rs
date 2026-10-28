@@ -6,6 +6,7 @@ use std::{collections::HashMap, env, fs};
 
 use corgi_core::{
     digest::{all_open_questions, lookup::LEDGER_FILE},
+    herdr::HerdrClient,
     model::{self, AgentState, DashboardAgent, PromptCacheKind},
     palette::{self, Palette, Rgb, Source, Theme},
     protocol::{
@@ -78,7 +79,11 @@ pub(super) fn activity(entry: &model::Activity) -> Activity {
 
 /// The projects of `agents`, in the dashboard's order, each with the open
 /// questions its supervisor's ledger in `inboxes` lists.
-pub(super) fn projects(agents: &[DashboardAgent], inboxes: &Inboxes) -> Vec<Project> {
+pub(super) fn projects(
+    agents: &[DashboardAgent],
+    inboxes: &Inboxes,
+    client: &HerdrClient,
+) -> Vec<Project> {
     project_runs(agents)
         .into_iter()
         .map(|run| {
@@ -92,10 +97,13 @@ pub(super) fn projects(agents: &[DashboardAgent], inboxes: &Inboxes) -> Vec<Proj
             } else {
                 lead.project_root.clone()
             };
-            let questions = if root.is_empty() {
-                Vec::new()
+            let (questions, held) = if root.is_empty() {
+                (Vec::new(), 0)
             } else {
-                open_questions(inboxes, &root)
+                (
+                    open_questions(inboxes, &root),
+                    inboxes.held(client, &root).len(),
+                )
             };
             Project {
                 group: lead.project_group.clone(),
@@ -124,6 +132,7 @@ pub(super) fn projects(agents: &[DashboardAgent], inboxes: &Inboxes) -> Vec<Proj
                     })
                     .collect(),
                 questions,
+                held,
             }
         })
         .collect()

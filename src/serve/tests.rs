@@ -497,7 +497,8 @@ fn the_first_lines_are_the_hello_and_a_snapshot_of_rows_cards_and_questions() {
                         "done": 0, "idle": 0, "unknown": 0},
             "blocked": [{"pane_id": "w2:p1", "task": worker["task"],
                          "waiting_on": "Waiting for your input"}],
-            "questions": [{"id": "Q4", "title": "Keep the old flag?", "agent": "w-fix"}]
+            "questions": [{"id": "Q4", "title": "Keep the old flag?", "agent": "w-fix"}],
+            "held": 0
         })
     );
     assert_eq!(projects[1]["scratch"], true);

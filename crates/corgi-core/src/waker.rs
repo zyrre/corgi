@@ -39,16 +39,32 @@ const SUPERVISOR_EXIT_POLL_DELAY: Duration = Duration::from_millis(250);
 /// Wakes each project's supervisor when another agent of that project stops:
 /// every agent whose project has a running supervisor counts, whoever started
 /// it, and one the supervisor spawned counts also while the project has none, so
-/// the next supervisor hears of it. Only the dashboard holding the lock for its
+/// the next supervisor hears of it. Only a process holding the wake lock of its
 /// Herdr socket follows the agents, puts each stop in the supervisor's inbox and
-/// types the inbox into the supervisor's box, so a supervisor hears each stop once.
-/// What it saw of each agent is kept on disk, so a dashboard that starts
-/// later or takes over the lock picks up where it left off. The same
-/// dashboard hands supervisors over to fresh sessions.
-#[derive(Debug, Default)]
+/// types the inbox into the supervisor's box, so a supervisor hears each stop
+/// once. Herdr's hooks (`corgi hook`) and every open dashboard take the lock
+/// in turn, for one pass each ([`SupervisorWaker::begin`] to
+/// [`SupervisorWaker::end`]): what was seen of each agent and where each
+/// handover stands is kept on disk, taken up at the start of a pass and
+/// written at its end, so whoever comes next picks up where the last left
+/// off. The same passes hand supervisors over to fresh sessions.
+#[derive(Debug)]
 pub struct SupervisorWaker {
-    /// The wake lock, while this dashboard holds it.
+    /// The wake lock, while a pass holds it.
     lock: Option<fs::File>,
+    /// The wake lock to take in place of the Herdr socket's, as a test sets.
+    lock_path: Option<PathBuf>,
+    /// Whether the lock is kept from one pass to the next, as `corgi hook`
+    /// keeps it while it goes round, rather than given up at each pass's end.
+    hold: bool,
+    /// Whether this waker asks an idle supervisor for its handover when its
+    /// prompt cache is about to lapse. That is timed, and Herdr's hooks run
+    /// only when something happens, so only a dashboard does it.
+    idle_handover: bool,
+    /// A dashboard's share of `wake/<socket>.open`, held for as long as it
+    /// runs, which tells the command-line tools a dashboard is open
+    /// ([`dashboard_open`]).
+    presence: Option<fs::File>,
     /// The Corgi binary the wake messages name.
     corgi_bin: Option<PathBuf>,
     /// The supervisors' inboxes, whose base directory, when a test sets one,
@@ -61,8 +77,11 @@ pub struct SupervisorWaker {
     /// Whether `agents` has taken up the record the dashboard that led
     /// before left, which happens at the first refresh this one leads.
     resumed: bool,
-    /// The record as last written, so an unchanged one is not written again.
+    /// The record as last written or taken up, so an unchanged one is not
+    /// written again.
     written: Option<String>,
+    /// The handovers as last written or taken up.
+    handovers_written: Option<String>,
     /// By state directory, the items typed into a supervisor's box whose
     /// delivery could not be recorded, so they are not typed in again while
     /// recording them is retried; dropped once the inbox shows them
@@ -78,6 +97,31 @@ pub struct SupervisorWaker {
     /// Recovery holds suppress outgoing work while preserving observed baselines.
     recovery_held: HashSet<String>,
     recovery_store: Option<crate::recovery::Store>,
+}
+
+impl Default for SupervisorWaker {
+    fn default() -> Self {
+        Self {
+            lock: None,
+            lock_path: None,
+            hold: false,
+            idle_handover: true,
+            presence: None,
+            corgi_bin: None,
+            inboxes: Inboxes::default(),
+            socket: None,
+            agents: BTreeMap::new(),
+            resumed: false,
+            written: None,
+            handovers_written: None,
+            unrecorded: HashMap::new(),
+            read: InboxCache::default(),
+            handovers: HashMap::new(),
+            replacements: Vec::new(),
+            recovery_held: HashSet::new(),
+            recovery_store: None,
+        }
+    }
 }
 
 /// The supervisors' inboxes, a directory per project. The waker delivers
@@ -109,6 +153,33 @@ impl Inboxes {
             .context("Corgi has no state directory")?;
         inbox::append(&dir, item)?;
         Ok(())
+    }
+
+    /// The ids of `root`'s undelivered items that Corgi holds back on
+    /// `client`'s Herdr session: a delivery of them began and Herdr never
+    /// confirmed it, so they may already be in the supervisor's box. Until
+    /// they are read and recorded (`corgi inbox <project> --take`), nothing
+    /// more of the project is typed in.
+    pub fn held(&self, client: &HerdrClient, root: &str) -> Vec<String> {
+        let Some(store) = crate::recovery::Store::for_client(client) else {
+            return Vec::new();
+        };
+        let scope = client.socket_path().to_string_lossy();
+        let (Ok(held), Some(dir)) = (
+            crate::recovery::quarantined(&store, &scope, root),
+            self.dir(root),
+        ) else {
+            return Vec::new();
+        };
+        if held.is_empty() {
+            return held;
+        }
+        Inbox::read(&dir)
+            .undelivered_for(root)
+            .into_iter()
+            .filter(|item| held.contains(&item.id))
+            .map(|item| item.id.clone())
+            .collect()
     }
 
     /// Whether `root` has had a supervisor: one was prepared in its state
@@ -261,9 +332,16 @@ struct HandoverAction {
 }
 
 impl SupervisorWaker {
-    /// Whether this dashboard wakes supervisors, taking the lock at `path` if
-    /// no other dashboard holds it. The lock goes with the process.
+    /// Makes `path` this waker's wake lock, in place of its Herdr socket's,
+    /// and takes it if no other process holds it, as a test does to pin the
+    /// lock. Returns whether this waker holds it now; it does until the end
+    /// of the pass it is taken for, or until the waker goes.
     pub fn lead(&mut self, path: &Path) -> bool {
+        self.lock_path = Some(path.to_path_buf());
+        self.take_lock(path)
+    }
+
+    fn take_lock(&mut self, path: &Path) -> bool {
         if self.lock.is_none() {
             self.lock = fs::create_dir_all(path.parent().unwrap_or(path))
                 .ok()
@@ -273,10 +351,187 @@ impl SupervisorWaker {
         self.lock.is_some()
     }
 
-    /// Whether this dashboard wakes supervisors of `client`'s Herdr session,
-    /// taking the lock if no other dashboard holds it.
-    pub fn leads(&mut self, client: &HerdrClient) -> bool {
-        wake_lock_path(client.socket_path()).is_some_and(|lock| self.lead(&lock))
+    /// The wake lock of `client`'s Herdr session, or the one a test set.
+    fn lock_file(&self, client: &HerdrClient) -> Option<PathBuf> {
+        self.lock_path
+            .clone()
+            .or_else(|| wake_lock_path(client.socket_path()))
+    }
+
+    /// Starts a pass at waking the supervisors of `client`'s Herdr session:
+    /// takes the wake lock unless another process holds it, and if it got
+    /// it, clears the session's dirty flag and takes up what the last pass,
+    /// whoever's, left on disk. Returns whether this waker leads the pass;
+    /// one that does not must do nothing that only the leader may.
+    pub fn begin(&mut self, client: &HerdrClient) -> bool {
+        self.socket
+            .get_or_insert_with(|| client.socket_path().to_path_buf());
+        let Some(path) = self.lock_file(client) else {
+            return false;
+        };
+        if self.idle_handover && self.presence.is_none() {
+            let path = match &self.inboxes.base {
+                Some(base) => Some(base.join("open")),
+                None => presence_path(client.socket_path()),
+            };
+            self.presence = path.and_then(|path| {
+                let file = fs::File::create(path).ok()?;
+                file.try_lock_shared().ok()?;
+                Some(file)
+            });
+        }
+        if !self.take_lock(&path) {
+            return false;
+        }
+        if let Some(dirty) = self.dirty_file() {
+            let _ = fs::remove_file(dirty);
+        }
+        self.take_up();
+        true
+    }
+
+    /// Ends a pass: writes where the handovers stand, and gives up the wake
+    /// lock unless it is held across passes ([`Self::hold`]). Returns whether
+    /// another process asked for a pass while this one ran, by marking the
+    /// state dirty ([`Self::mark_dirty`]), so the caller goes round again.
+    pub fn end(&mut self) -> bool {
+        if self.lock.is_none() {
+            return false;
+        }
+        if let Err(error) = self.save_handovers() {
+            eprintln!("corgi: could not save the supervisors' handovers: {error:#}");
+        }
+        if !self.hold {
+            self.release();
+        }
+        self.is_dirty()
+    }
+
+    /// Takes the wake lock of `client`'s Herdr session and keeps it across
+    /// passes until [`Self::release`], as `corgi hook` does while it goes
+    /// round. Returns whether it got it.
+    pub fn hold(&mut self, client: &HerdrClient) -> bool {
+        self.socket
+            .get_or_insert_with(|| client.socket_path().to_path_buf());
+        let held = self
+            .lock_file(client)
+            .is_some_and(|path| self.take_lock(&path));
+        self.hold = held;
+        held
+    }
+
+    /// Gives up the wake lock at once. Closing the file alone may not: a
+    /// child process spawned on another thread at that moment briefly holds
+    /// a copy of the descriptor, and with it the lock, so the next process
+    /// would find it still taken.
+    pub fn release(&mut self) {
+        self.hold = false;
+        if let Some(lock) = self.lock.take() {
+            let _ = lock.unlock();
+        }
+    }
+
+    /// Gives up the wake lock and the dashboard's presence, as the waker
+    /// goes.
+    fn close(&mut self) {
+        self.release();
+        if let Some(presence) = self.presence.take() {
+            let _ = presence.unlock();
+        }
+    }
+
+    /// Whether this waker holds the wake lock, between [`Self::begin`] and
+    /// [`Self::end`].
+    pub fn leading(&self) -> bool {
+        self.lock.is_some()
+    }
+
+    /// Leaves the idle prompt-cache handover to dashboards: Herdr runs a
+    /// hook only when something happens, so no hook can time a rest.
+    pub fn without_idle_handover(mut self) -> Self {
+        self.idle_handover = false;
+        self
+    }
+
+    /// Whether a supervisor's replacement this waker started still runs.
+    pub fn replacing(&self) -> bool {
+        self.replacements
+            .iter()
+            .any(|(_, replacement)| replacement.is_running() && !replacement.is_finished())
+    }
+
+    /// Asks for a pass at waking the supervisors of `client`'s Herdr
+    /// session, for when its wake lock may be taken: the pass that holds it
+    /// goes round again when it ends ([`Self::end`]), and the next pass to
+    /// begin clears the flag. Returns whether the flag could be set.
+    pub fn mark_dirty(&mut self, client: &HerdrClient) -> bool {
+        self.socket
+            .get_or_insert_with(|| client.socket_path().to_path_buf());
+        self.dirty_file().is_some_and(|path| {
+            path.parent()
+                .is_some_and(|dir| fs::create_dir_all(dir).is_ok())
+                && fs::write(&path, b"").is_ok()
+        })
+    }
+
+    /// Whether a pass was asked for ([`Self::mark_dirty`]) that none has
+    /// begun since.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty_file().is_some_and(|path| path.exists())
+    }
+
+    /// The dirty flag of this waker's Herdr session, `wake/<socket>.dirty`.
+    fn dirty_file(&self) -> Option<PathBuf> {
+        match &self.inboxes.base {
+            Some(base) => Some(base.join("dirty")),
+            None => dirty_path(self.socket.as_deref()?),
+        }
+    }
+
+    /// Takes up what the last pass left on disk: the agents followed and the
+    /// handovers. A file that is missing or cannot be read leaves what this
+    /// waker has, so a first pass starts from nothing and a damaged file
+    /// costs only what it held.
+    fn take_up(&mut self) {
+        if let Some(text) = self
+            .record_file()
+            .and_then(|path| fs::read_to_string(path).ok())
+            && let Ok(agents) = serde_json::from_str(&text)
+        {
+            self.agents = agents;
+            self.written = Some(text);
+        }
+        if let Some(text) = self
+            .handovers_file()
+            .and_then(|path| fs::read_to_string(path).ok())
+            && let Ok(handovers) = serde_json::from_str(&text)
+        {
+            self.handovers = handovers;
+            self.handovers_written = Some(text);
+        }
+    }
+
+    /// Where the handovers are kept: `wake/<socket>.handovers.json`.
+    fn handovers_file(&self) -> Option<PathBuf> {
+        match &self.inboxes.base {
+            Some(base) => Some(base.join("handovers.json")),
+            None => socket_state_file("wake", self.socket.as_deref()?, "handovers.json"),
+        }
+    }
+
+    /// Writes the handovers, when they changed.
+    fn save_handovers(&mut self) -> Result<()> {
+        let Some(path) = self.handovers_file() else {
+            return Ok(());
+        };
+        let sorted: BTreeMap<&String, &supervisor::Handover> = self.handovers.iter().collect();
+        let text = serde_json::to_string(&sorted)?;
+        if self.handovers_written.as_deref() == Some(text.as_str()) {
+            return Ok(());
+        }
+        replace_file(&path, &text)?;
+        self.handovers_written = Some(text);
+        Ok(())
     }
 
     /// Whether `root`'s supervisor is handing over, so wakes for it wait for the
@@ -296,12 +551,15 @@ impl SupervisorWaker {
         waker
     }
 
-    /// A waker that keeps its inboxes and record under `base`.
+    /// A waker that keeps its inboxes, its record, its handovers, its
+    /// dirty flag and its wake lock under `base`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn in_dir(base: &Path) -> Self {
-        Self::with_inboxes(Inboxes {
+        let mut waker = Self::with_inboxes(Inboxes {
             base: Some(base.to_path_buf()),
-        })
+        });
+        waker.lock_path = Some(base.join("wake.lock"));
+        waker
     }
 
     /// The inboxes this waker delivers from, for adding to them while it is
@@ -338,12 +596,7 @@ impl SupervisorWaker {
         if self.written.as_deref() == Some(text.as_str()) {
             return Ok(());
         }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        }
-        let temporary = path.with_extension("json.tmp");
-        fs::write(&temporary, &text).with_context(|| format!("write {}", temporary.display()))?;
-        fs::rename(&temporary, &path).with_context(|| format!("replace {}", path.display()))?;
+        replace_file(&path, &text)?;
         self.written = Some(text);
         Ok(())
     }
@@ -593,11 +846,11 @@ impl SupervisorWaker {
     /// a project without a supervisor wait in its inbox, and each supervisor gets only
     /// its own project's, though projects of the same directory name share
     /// an inbox. Returns the error of a delivery that could not be recorded.
-    pub fn deliver(
+    pub fn deliver<D: Into<Delivery>>(
         &mut self,
         agents: &[DashboardAgent],
         mut drafting: impl FnMut(&DashboardAgent) -> bool,
-        mut prompt: impl FnMut(&str, &str) -> bool,
+        mut prompt: impl FnMut(&str, &str) -> D,
     ) -> Option<String> {
         let mut error = None;
         let mut roots = HashSet::new();
@@ -647,8 +900,18 @@ impl SupervisorWaker {
                 error = Some(format!("Coordination: {failed}"));
                 continue;
             }
-            if !prompt(supervisor, &inbox::prompt_text(&pending)) {
-                continue;
+            match prompt(supervisor, &inbox::prompt_text(&pending)).into() {
+                Delivery::Sent => {}
+                // Herdr typed nothing: the items stay undelivered, and go
+                // out at a later pass once the supervisor takes prompts.
+                Delivery::Refused => {
+                    if let Some(store) = &self.recovery_store {
+                        let _ = crate::recovery::abort_delivery(store, &scope, root, &ids);
+                    }
+                    continue;
+                }
+                // It may have been typed: the items stay quarantined.
+                Delivery::Unknown => continue,
             }
             if let Err(failed) = inbox::mark_delivered(&dir, &ids, supervisor) {
                 unrecorded.extend(ids);
@@ -673,7 +936,7 @@ impl SupervisorWaker {
         agents: &[DashboardAgent],
         report: impl FnMut(&DashboardAgent) -> Option<Captured>,
     ) -> Option<String> {
-        if !self.leads(client) {
+        if !self.leading() {
             return None;
         }
         // Check durable recovery holds before observation can enqueue stop
@@ -722,10 +985,15 @@ impl SupervisorWaker {
                 }));
         }
         let percent = supervisor::handover_percent();
+        let idle_handover = self.idle_handover;
         let actions = self.hand_over(
             &available,
             percent,
-            supervisor::handover_idle_secs,
+            |harness| {
+                idle_handover
+                    .then(|| supervisor::handover_idle_secs(harness))
+                    .flatten()
+            },
             unix_now(),
             |root, at| {
                 supervisor::state_dir(root)
@@ -788,7 +1056,7 @@ impl SupervisorWaker {
         let undelivered = self.deliver(
             &available,
             |supervisor| holds_draft(client, supervisor),
-            |supervisor, text| client.prompt_agent(supervisor, text).is_ok(),
+            |supervisor, text| Delivery::of(&client.prompt_agent(supervisor, text)),
         );
         status.or(undelivered).or_else(|| {
             (!held.is_empty()).then(|| {
@@ -798,6 +1066,52 @@ impl SupervisorWaker {
                 )
             })
         })
+    }
+}
+
+/// How typing an inbox into a supervisor's box went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// Herdr typed it in.
+    Sent,
+    /// Herdr refused before typing anything: the agent was gone, not the
+    /// pane's foreground process, blocked on a question, or ambiguous. The
+    /// items may go out at a later pass.
+    Refused,
+    /// It may or may not have been typed (the connection failed, Herdr
+    /// timed out or failed while writing): the items are quarantined
+    /// rather than risk typing them twice.
+    Unknown,
+}
+
+/// The codes with which Herdr's `agent.prompt` refuses before it writes
+/// anything to the pane (Herdr 0.9's `queue_agent_prompt`).
+const REFUSED_BEFORE_WRITING: [&str; 5] = [
+    "agent_not_found",
+    "agent_target_ambiguous",
+    "agent_blocked",
+    "agent_not_ready",
+    "empty_agent_prompt",
+];
+
+impl Delivery {
+    /// How the `agent.prompt` that returned `result` went.
+    pub fn of<T>(result: &Result<T>) -> Self {
+        match result {
+            Ok(_) => Self::Sent,
+            Err(error) => match crate::herdr::HerdrError::code_of(error) {
+                Some(code) if REFUSED_BEFORE_WRITING.contains(&code) => Self::Refused,
+                _ => Self::Unknown,
+            },
+        }
+    }
+}
+
+/// `true` is a prompt typed in, and `false` one that may have been: the
+/// tests' prompts, which say only whether they went.
+impl From<bool> for Delivery {
+    fn from(sent: bool) -> Self {
+        if sent { Self::Sent } else { Self::Unknown }
     }
 }
 
@@ -908,16 +1222,25 @@ fn report_tokens(client: &HerdrClient, action: &HandoverAction, handover: Option
     );
 }
 
-/// Gives up the wake lock at once. Closing the file alone may not: a child
-/// process spawned on another thread at that moment briefly holds a copy of
-/// the descriptor, and with it the lock, so the next dashboard would find
-/// it still taken.
+/// Gives up the wake lock and the presence at once ([`SupervisorWaker::release`]).
 impl Drop for SupervisorWaker {
     fn drop(&mut self) {
-        if let Some(lock) = &self.lock {
-            let _ = lock.unlock();
-        }
+        self.close();
     }
+}
+
+/// Replaces the file at `path` with `text` whole, through a temporary file
+/// and a rename, so a reader never sees half of it.
+fn replace_file(path: &Path, text: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    fs::write(&temporary, text).with_context(|| format!("write {}", temporary.display()))?;
+    fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))?;
+    Ok(())
 }
 
 /// The launch of the supervisor that takes over from the one in `action`,
@@ -985,9 +1308,49 @@ fn wake_lock_path(socket: &Path) -> Option<PathBuf> {
     socket_state_file("wake", socket, "lock")
 }
 
-/// Whether a dashboard holds the wake lock of the Herdr session at
-/// `socket`, so the supervisors' inboxes are being delivered. Trying the lock
-/// holds it only for that moment, and a lock nobody ever took is free.
+/// What every open dashboard holds a share of, `wake/<socket>.open`.
+fn presence_path(socket: &Path) -> Option<PathBuf> {
+    let path = socket_state_file("wake", socket, "open")?;
+    fs::create_dir_all(path.parent()?).ok()?;
+    Some(path)
+}
+
+/// Whether a dashboard of this Corgi is open on the Herdr session at
+/// `socket`: one holds a share of its presence lock.
+pub fn dashboard_open(socket: &Path) -> bool {
+    let Some(file) = socket_state_file("wake", socket, "open").and_then(|p| fs::File::open(p).ok())
+    else {
+        return false;
+    };
+    match file.try_lock() {
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+/// Whether the supervisors' inboxes on `client`'s Herdr session are being
+/// delivered: Corgi's plugin has its hooks registered with Herdr, or a
+/// dashboard is open, of this Corgi or of an older one (which held the wake
+/// lock for as long as it ran).
+pub fn inboxes_delivered(client: &HerdrClient) -> bool {
+    let socket = client.socket_path();
+    wake_lock_held(socket)
+        || dashboard_open(socket)
+        || client.plugin_hooks(supervisor::PLUGIN_ID).unwrap_or(false)
+}
+
+/// The dirty flag of the Herdr session at `socket`, `wake/<socket>.dirty`.
+fn dirty_path(socket: &Path) -> Option<PathBuf> {
+    socket_state_file("wake", socket, "dirty")
+}
+
+/// Whether a process holds the wake lock of the Herdr session at `socket`:
+/// a dashboard of an older Corgi, which held it for as long as it ran, or a
+/// pass at waking under way. Trying the lock holds it only for that moment,
+/// and a lock nobody ever took is free.
 pub fn wake_lock_held(socket: &Path) -> bool {
     let Some(file) = wake_lock_path(socket).and_then(|path| fs::File::open(path).ok()) else {
         return false;
@@ -2053,6 +2416,51 @@ mod tests {
                 .and_then(|path| path.file_name().map(|name| name.to_owned())),
             Some("_tmp_herdr_sock.lock".into())
         );
+    }
+
+    #[test]
+    fn a_pass_takes_up_the_handovers_and_agents_the_last_pass_left() {
+        use AgentState::{Idle, Working};
+        let scratch = ScratchDir::new("waker-passes");
+        let client = HerdrClient::from_socket_path(crate::test_support::UNUSED_SOCKET);
+        let mut supervisor = weather_supervisor(Idle);
+        supervisor.info.tokens.insert(
+            SUPERVISOR_TOKEN.into(),
+            supervisor::marker("supervisor-weather", Some("s1")),
+        );
+        supervisor.info.agent_session = Some(crate::model::AgentSession {
+            value: "s1".into(),
+            ..Default::default()
+        });
+        supervisor.context_percent = Some(80);
+        let agents = [supervisor, weather_worker("w-radar", Working, 1, false)];
+
+        // A hook's pass asks the full supervisor for its note.
+        let mut hook = SupervisorWaker::in_dir(&scratch).without_idle_handover();
+        assert!(hook.begin(&client));
+        hook.observe(&agents, Path::new("/opt/corgi"), |_| None);
+        let actions = hook.hand_over(&agents, 50, |_| None, 1_000, |_, _| false, |_| false);
+        assert!(matches!(
+            actions[0].step,
+            Some(supervisor::HandoverStep::Ask(1_000, _))
+        ));
+        // Only one pass at a time.
+        let mut dashboard = SupervisorWaker::in_dir(&scratch);
+        assert!(!dashboard.begin(&client));
+        assert!(!dashboard.end() && !dashboard.leading());
+        // A dashboard that tried meanwhile marked it dirty.
+        assert!(dashboard.mark_dirty(&client));
+        assert!(hook.end(), "the hook goes round again");
+        drop(hook);
+
+        // The dashboard's next pass goes on from there: the request is the
+        // one being answered, and the worker is followed.
+        assert!(dashboard.begin(&client));
+        assert!(!dashboard.is_dirty(), "a pass that begins clears the flag");
+        assert!(dashboard.handing_over("/repos/weather"));
+        assert_eq!(dashboard.agents["w-radar"].change, 1);
+        assert!(!dashboard.end());
+        assert!(!dashboard.leading(), "a dashboard gives the lock up");
     }
 
     #[test]

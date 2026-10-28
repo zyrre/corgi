@@ -7,8 +7,8 @@
 //! every one of its marks goes through here: it is reported to Herdr and
 //! written to a file in Corgi's state directory, `markers/<socket>.json`,
 //! together with what identifies the pane's agent or the workspace's
-//! checkout. The dashboard that wakes supervisors compares the record with each
-//! snapshot ([`restore_markers`]): where Herdr has Corgi's tokens, Herdr
+//! checkout. The pass holding the wake lock (a hook's or a dashboard's)
+//! compares the record with each snapshot ([`restore_markers`]): where Herdr has Corgi's tokens, Herdr
 //! is right and the record follows it; where Herdr has none, they are put
 //! back if the pane or workspace still holds the same occupant, and the
 //! entry is dropped if it does not.
@@ -509,8 +509,9 @@ fn pane_patch(tokens: &Tokens) -> Vec<(&str, Option<&str>)> {
 /// Puts back the tokens Corgi set that Herdr lost, as after a restart or live
 /// handoff, and keeps the record in step with `snapshot`. What is put back
 /// goes into `snapshot` too, so the refresh that found the loss already sees
-/// the supervisor and the project workspaces again. Only the dashboard that
-/// wakes supervisors calls this, so one process writes. Returns the status
+/// the supervisor and the project workspaces again. Only the pass holding
+/// the wake lock, a hook's or a dashboard's, calls this, so one process
+/// writes at a time. Returns the status
 /// line to show when anything was put back.
 pub fn restore_markers(client: &HerdrClient, snapshot: &mut SessionSnapshot) -> Option<String> {
     let path = client.marker_record()?;
@@ -571,8 +572,8 @@ pub fn restore_markers(client: &HerdrClient, snapshot: &mut SessionSnapshot) -> 
 /// their agent has worked since it was tagged, in Herdr, the record and
 /// `snapshot` itself. A stale tag is never shown even before it is
 /// cleared, so a clear that fails costs nothing but a retry on the next
-/// refresh. Only the dashboard that wakes supervisors calls this; clearing
-/// twice would be harmless.
+/// refresh. Only the pass holding the wake lock calls this; clearing twice
+/// would be harmless.
 pub fn clear_stale_merge_tags(client: &HerdrClient, snapshot: &mut SessionSnapshot) {
     for agent in snapshot
         .agents

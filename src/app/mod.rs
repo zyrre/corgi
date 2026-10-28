@@ -69,7 +69,9 @@ pub use cli::{
     supervisor_command, tag_command,
 };
 pub use edit::{EDIT_USAGE, edit_command};
+mod hook;
 pub(crate) use edit::{open_checkout, selection_file, write_selection};
+pub use hook::{HOOK_USAGE, hook_command};
 pub use navigate::bar_navigate;
 use rows::codex_thread_id;
 pub use setup::{SETUP_USAGE, setup};

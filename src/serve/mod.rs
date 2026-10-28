@@ -489,6 +489,11 @@ impl Server {
     fn apply_refresh(&mut self, refreshed: Refreshed) {
         self.refresh_state = Some(refreshed.state);
         self.last_refresh = Some(Instant::now());
+        // A hook found the wake lock taken by this refresh and left the work
+        // to it: the next pass goes now rather than after the interval.
+        if refreshed.again {
+            self.refresh_requested = true;
+        }
         match refreshed.view {
             Ok(view) => {
                 self.herdr = HerdrStatus {
@@ -497,7 +502,8 @@ impl Server {
                 };
                 self.agents = view.agents;
                 self.workspaces = view.workspaces;
-                self.projects = state::projects(&self.agents, &self.shared.inboxes);
+                self.projects =
+                    state::projects(&self.agents, &self.shared.inboxes, &self.options.client);
                 if let Some((status, hold)) = view.status {
                     self.status = Some((status, Instant::now() + hold));
                 }
