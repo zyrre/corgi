@@ -218,7 +218,8 @@ Exactly one per request, with its `id`.
  "supervisor":"w1:p1","agents":["w1:p1","w2:p1"],
  "workers":{"total":1,"blocked":1,"merge":0,"working":0,"done":0,"idle":0,"unknown":0},
  "blocked":[{"pane_id":"w2:p1","task":"Fix the forecast","waiting_on":"Waiting for your input"}],
- "questions":[{"id":"Q4","title":"Keep the old flag?","agent":"w-fix"}]}
+ "questions":[{"id":"Q4","title":"Keep the old flag?","agent":"w-fix"}],
+ "held":0}
 ```
 
 - `card` is true for a project led by its running supervisor, which the
@@ -232,6 +233,13 @@ Exactly one per request, with its `id`.
   user, from its ledger: the `questions` of each ledger id's newest line
   whose work is not finished. Answer one with `answer`. `id` is empty for a
   question the supervisor listed without a number.
+- `held` counts the inbox items Corgi holds back: Herdr never confirmed a
+  delivery of them (the connection failed, or Herdr failed while typing),
+  so they may already be in the supervisor's box, and nothing more of the
+  project is typed in until they are read with `corgi inbox <root> --take`.
+  Show it: no window may have been open when it happened. A refusal before
+  anything was typed (the supervisor not the pane's foreground process,
+  blocked, gone) holds nothing; those items go out at a later pass.
 
 ### `UsageCard`: the plan-usage header
 

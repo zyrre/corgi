@@ -238,6 +238,11 @@ pub struct Project {
     pub blocked: Vec<Blocked>,
     /// The numbered questions the supervisor's ledger has open.
     pub questions: Vec<Question>,
+    /// How many inbox items are held: Herdr never confirmed a delivery of
+    /// them, so nothing more is typed into the supervisor until they are
+    /// read (`corgi inbox <root> --take`).
+    #[serde(default)]
+    pub held: usize,
 }
 
 /// A card's workers by state; those tagged ready to merge count only as

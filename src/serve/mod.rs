@@ -502,7 +502,8 @@ impl Server {
                 };
                 self.agents = view.agents;
                 self.workspaces = view.workspaces;
-                self.projects = state::projects(&self.agents, &self.shared.inboxes);
+                self.projects =
+                    state::projects(&self.agents, &self.shared.inboxes, &self.options.client);
                 if let Some((status, hold)) = view.status {
                     self.status = Some((status, Instant::now() + hold));
                 }

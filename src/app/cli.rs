@@ -934,6 +934,12 @@ pub fn inbox_command(args: &[String]) -> Result<()> {
     let inbox = Inbox::try_read(&dir)?;
     let (text, shown) = inbox_text(&inbox, &dir, &root, delivered);
     print!("{text}");
+    if let Some(note) = HerdrClient::from_env()
+        .ok()
+        .and_then(|client| held_note(&client, &root))
+    {
+        println!("{note}");
+    }
     if take {
         let ids: Vec<String> = shown.iter().map(|item| item.id.clone()).collect();
         inbox::mark_delivered(&dir, &ids, "corgi inbox --take")?;
@@ -1025,8 +1031,11 @@ fn inbox_entry(item: &Item, corgi_bin: &str, budget: Option<&mut usize>) -> Stri
 /// a dashboard deliver, else those that have waited minutes, not just for
 /// the supervisor's turn.
 fn print_inbox_footer(root: &str) {
-    let delivering =
-        HerdrClient::from_env().is_ok_and(|client| super::waker::inboxes_delivered(&client));
+    let client = HerdrClient::from_env().ok();
+    let delivering = client.as_ref().is_some_and(super::waker::inboxes_delivered);
+    if let Some(note) = client.as_ref().and_then(|client| held_note(client, root)) {
+        eprintln!("{note}");
+    }
     if let Some(footer) = crate::supervisor::state_dir(root).ok().and_then(|dir| {
         inbox::footer(
             &dir,
@@ -1038,6 +1047,22 @@ fn print_inbox_footer(root: &str) {
     }) {
         eprintln!("{footer}");
     }
+}
+
+/// The line saying that the inbox of the project at `root` is held, if it
+/// is: Herdr never confirmed a delivery of some of its items, which may be in
+/// the supervisor's box already, so Corgi types nothing more in until they are
+/// read.
+fn held_note(client: &HerdrClient, root: &str) -> Option<String> {
+    let held = super::waker::Inboxes::default().held(client, root).len();
+    (held > 0).then(|| {
+        format!(
+            "{held} inbox item(s) held: Corgi could not tell whether they reached the \
+             supervisor, so it types nothing more in for this project; read them with \
+             {} inbox {root} --take",
+            corgi_bin_text()
+        )
+    })
 }
 
 /// The root of `project` (default: the current directory): its

@@ -155,6 +155,33 @@ impl Inboxes {
         Ok(())
     }
 
+    /// The ids of `root`'s undelivered items that Corgi holds back on
+    /// `client`'s Herdr session: a delivery of them began and Herdr never
+    /// confirmed it, so they may already be in the supervisor's box. Until
+    /// they are read and recorded (`corgi inbox <project> --take`), nothing
+    /// more of the project is typed in.
+    pub fn held(&self, client: &HerdrClient, root: &str) -> Vec<String> {
+        let Some(store) = crate::recovery::Store::for_client(client) else {
+            return Vec::new();
+        };
+        let scope = client.socket_path().to_string_lossy();
+        let (Ok(held), Some(dir)) = (
+            crate::recovery::quarantined(&store, &scope, root),
+            self.dir(root),
+        ) else {
+            return Vec::new();
+        };
+        if held.is_empty() {
+            return held;
+        }
+        Inbox::read(&dir)
+            .undelivered_for(root)
+            .into_iter()
+            .filter(|item| held.contains(&item.id))
+            .map(|item| item.id.clone())
+            .collect()
+    }
+
     /// Whether `root` has had a supervisor: one was prepared in its state
     /// directory, so an item added for it is read when it next runs.
     pub fn has_supervisor(&self, root: &str) -> bool {
@@ -819,11 +846,11 @@ impl SupervisorWaker {
     /// a project without a supervisor wait in its inbox, and each supervisor gets only
     /// its own project's, though projects of the same directory name share
     /// an inbox. Returns the error of a delivery that could not be recorded.
-    pub fn deliver(
+    pub fn deliver<D: Into<Delivery>>(
         &mut self,
         agents: &[DashboardAgent],
         mut drafting: impl FnMut(&DashboardAgent) -> bool,
-        mut prompt: impl FnMut(&str, &str) -> bool,
+        mut prompt: impl FnMut(&str, &str) -> D,
     ) -> Option<String> {
         let mut error = None;
         let mut roots = HashSet::new();
@@ -873,8 +900,18 @@ impl SupervisorWaker {
                 error = Some(format!("Coordination: {failed}"));
                 continue;
             }
-            if !prompt(supervisor, &inbox::prompt_text(&pending)) {
-                continue;
+            match prompt(supervisor, &inbox::prompt_text(&pending)).into() {
+                Delivery::Sent => {}
+                // Herdr typed nothing: the items stay undelivered, and go
+                // out at a later pass once the supervisor takes prompts.
+                Delivery::Refused => {
+                    if let Some(store) = &self.recovery_store {
+                        let _ = crate::recovery::abort_delivery(store, &scope, root, &ids);
+                    }
+                    continue;
+                }
+                // It may have been typed: the items stay quarantined.
+                Delivery::Unknown => continue,
             }
             if let Err(failed) = inbox::mark_delivered(&dir, &ids, supervisor) {
                 unrecorded.extend(ids);
@@ -1019,7 +1056,7 @@ impl SupervisorWaker {
         let undelivered = self.deliver(
             &available,
             |supervisor| holds_draft(client, supervisor),
-            |supervisor, text| client.prompt_agent(supervisor, text).is_ok(),
+            |supervisor, text| Delivery::of(&client.prompt_agent(supervisor, text)),
         );
         status.or(undelivered).or_else(|| {
             (!held.is_empty()).then(|| {
@@ -1029,6 +1066,52 @@ impl SupervisorWaker {
                 )
             })
         })
+    }
+}
+
+/// How typing an inbox into a supervisor's box went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// Herdr typed it in.
+    Sent,
+    /// Herdr refused before typing anything: the agent was gone, not the
+    /// pane's foreground process, blocked on a question, or ambiguous. The
+    /// items may go out at a later pass.
+    Refused,
+    /// It may or may not have been typed (the connection failed, Herdr
+    /// timed out or failed while writing): the items are quarantined
+    /// rather than risk typing them twice.
+    Unknown,
+}
+
+/// The codes with which Herdr's `agent.prompt` refuses before it writes
+/// anything to the pane (Herdr 0.9's `queue_agent_prompt`).
+const REFUSED_BEFORE_WRITING: [&str; 5] = [
+    "agent_not_found",
+    "agent_target_ambiguous",
+    "agent_blocked",
+    "agent_not_ready",
+    "empty_agent_prompt",
+];
+
+impl Delivery {
+    /// How the `agent.prompt` that returned `result` went.
+    pub fn of<T>(result: &Result<T>) -> Self {
+        match result {
+            Ok(_) => Self::Sent,
+            Err(error) => match crate::herdr::HerdrError::code_of(error) {
+                Some(code) if REFUSED_BEFORE_WRITING.contains(&code) => Self::Refused,
+                _ => Self::Unknown,
+            },
+        }
+    }
+}
+
+/// `true` is a prompt typed in, and `false` one that may have been: the
+/// tests' prompts, which say only whether they went.
+impl From<bool> for Delivery {
+    fn from(sent: bool) -> Self {
+        if sent { Self::Sent } else { Self::Unknown }
     }
 }
 

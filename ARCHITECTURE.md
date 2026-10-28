@@ -718,6 +718,23 @@ status lines of its passes.
   before recording it (a dashboard that quit, a hook ended by its watchdog)
   counts as failed after `supervisor::REPLACEMENT_SECS` (three minutes), so
   the project's wakes do not wait for good.
+- **Refused and unknown prompts.** Before typing a project's inbox in, a
+  pass records the items' ids in the recovery journal, and clears them once
+  Herdr confirms (`recovery::begin_delivery` and `finish_delivery`), so an
+  item whose delivery nobody confirmed is never typed in twice. Herdr's
+  `agent.prompt` refuses before writing anything with `agent_not_found`,
+  `agent_target_ambiguous`, `agent_blocked`, `agent_not_ready` (the agent is
+  not the pane's foreground process) or `empty_agent_prompt`: then the ids
+  are cleared again (`recovery::abort_delivery`) and the items go out at a
+  later pass, once the supervisor takes prompts (`waker::Delivery`). Any
+  other failure (the connection, `agent_prompt_failed`, `timeout`) may have
+  typed them, so they stay held, and with them everything later for that
+  project, until they are read and recorded with
+  `corgi inbox <project> --take`. A held inbox shows in every pass's status
+  line (a dashboard's, a hook's log line), in `corgi fleet`, `digest`,
+  `report` and `inbox` (`N inbox item(s) held: …`), and in `corgi serve`'s
+  `held` count of each project, since a hook may hit it with no window
+  open.
 - **Dashboards.** A dashboard makes the same pass at each refresh, under
   the same lock, so it is the fallback where no hook runs: a Herdr whose
   plugin was linked before the manifest had hooks, or a hook that failed. A
@@ -1512,7 +1529,8 @@ stderr, `N undelivered inbox items: run corgi inbox <project>`, when the
 supervisor of their project (for `report`, the current directory's) has missed
 items: any undelivered while nothing delivers (no Corgi hook registered with
 Herdr, no dashboard open, and no older dashboard holding the wake lock),
-else only those undelivered for five minutes, so
+else only those undelivered for five minutes, and above that a line when some
+are held because Herdr never confirmed their delivery (see "Herdr's hooks"), so
 a supervisor notices a wake that did not reach it at its next command, but is
 not drawn into the wakes that only wait for its turn to end.
 

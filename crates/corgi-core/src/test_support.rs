@@ -108,18 +108,38 @@ pub fn answer(listener: &UnixListener, reply: impl FnOnce(&Value) -> Value) {
 pub struct FakeHerdr {
     pub socket: PathBuf,
     snapshot: Arc<Mutex<Value>>,
+    prompts: Arc<Mutex<Prompts>>,
     requests: Arc<Mutex<Vec<Value>>>,
     stop: Arc<AtomicBool>,
     server: Option<thread::JoinHandle<()>>,
 }
 
+/// How a [`FakeHerdr`] answers `agent.prompt`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Prompts {
+    /// As typed in.
+    #[default]
+    Accept,
+    /// With a Herdr error of this code, as Herdr refuses.
+    Refuse(String),
+    /// By closing the connection without a reply, so whether it was typed
+    /// cannot be told.
+    HangUp,
+}
+
 impl FakeHerdr {
     pub fn start(label: &str, snapshot: Value) -> Self {
         let snapshot = Arc::new(Mutex::new(snapshot));
+        let prompts = Arc::new(Mutex::new(Prompts::Accept));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let (socket, server) = {
-            let (snapshot, requests, stop) = (snapshot.clone(), requests.clone(), stop.clone());
+            let (snapshot, prompts, requests, stop) = (
+                snapshot.clone(),
+                prompts.clone(),
+                requests.clone(),
+                stop.clone(),
+            );
             fake_herdr(label, move |listener| {
                 listener
                     .set_nonblocking(true)
@@ -127,8 +147,11 @@ impl FakeHerdr {
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            let (snapshot, requests) = (snapshot.clone(), requests.clone());
-                            thread::spawn(move || serve_one(stream, &snapshot, &requests));
+                            let (snapshot, prompts, requests) =
+                                (snapshot.clone(), prompts.clone(), requests.clone());
+                            thread::spawn(move || {
+                                serve_one(stream, &snapshot, &prompts, &requests)
+                            });
                         }
                         Err(_) => thread::sleep(std::time::Duration::from_millis(2)),
                     }
@@ -138,6 +161,7 @@ impl FakeHerdr {
         Self {
             socket,
             snapshot,
+            prompts,
             requests,
             stop,
             server: Some(server),
@@ -147,6 +171,11 @@ impl FakeHerdr {
     /// Replaces the session snapshot Herdr gives from now on.
     pub fn set_snapshot(&self, snapshot: Value) {
         *self.snapshot.lock().expect("snapshot") = snapshot;
+    }
+
+    /// How `agent.prompt` is answered from now on.
+    pub fn set_prompts(&self, prompts: Prompts) {
+        *self.prompts.lock().expect("prompts") = prompts;
     }
 
     /// The requests of `method` made so far.
@@ -190,6 +219,7 @@ impl Drop for FakeHerdr {
 fn serve_one(
     stream: std::os::unix::net::UnixStream,
     snapshot: &Mutex<Value>,
+    prompts: &Mutex<Prompts>,
     requests: &Mutex<Vec<Value>>,
 ) {
     // A stream accepted from a non-blocking listener is non-blocking on
@@ -205,7 +235,24 @@ fn serve_one(
     };
     requests.lock().expect("requests").push(request.clone());
     let params = &request["params"];
-    let result = match request["method"].as_str().unwrap_or_default() {
+    let method = request["method"].as_str().unwrap_or_default();
+    if method == "agent.prompt" {
+        match prompts.lock().expect("prompts").clone() {
+            Prompts::Accept => {}
+            Prompts::HangUp => return,
+            Prompts::Refuse(code) => {
+                let response = serde_json::json!({
+                    "id": request["id"],
+                    "error": {"code": code, "message": "refused by the fake Herdr"},
+                });
+                let stream = reader.get_mut();
+                let _ = serde_json::to_writer(&mut *stream, &response);
+                let _ = stream.write_all(b"\n");
+                return;
+            }
+        }
+    }
+    let result = match method {
         "session.snapshot" => serde_json::json!({
             "type": "session_snapshot",
             "snapshot": snapshot.lock().expect("snapshot").clone(),

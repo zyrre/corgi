@@ -13,7 +13,7 @@ use super::*;
 use crate::{
     inbox::{Item, Kind},
     supervisor::{SUPERVISOR_TOKEN, marker},
-    test_support::{FakeHerdr, ScratchDir},
+    test_support::{FakeHerdr, Prompts, ScratchDir},
 };
 
 #[test]
@@ -466,4 +466,116 @@ fn the_hooks_log_line_says_what_woke_it_and_how_it_ended() {
         line,
         "corgi hook startup: deferred to the pass holding the wake lock in 2 ms"
     );
+}
+
+/// A client of `herdr` that keeps Corgi's marks and recovery journal under
+/// `base`, as the real one does under the state directory, so deliveries
+/// are journalled.
+fn journalled(herdr: &FakeHerdr, base: &std::path::Path) -> HerdrClient {
+    HerdrClient::from_socket_path(&herdr.socket)
+        .with_marker_record(base.join("markers").join("herdr.json"))
+}
+
+/// One hook run with `client`, its files under `base`.
+fn hook_with(client: &HerdrClient, base: &std::path::Path) -> HookPasses {
+    let mut passes = HookPasses::with_waker(client.clone(), SupervisorWaker::in_dir(base));
+    reconcile(&mut passes, QUICK, |_| {});
+    passes
+}
+
+#[test]
+fn a_prompt_herdr_refused_before_typing_goes_out_once_the_supervisor_takes_it() {
+    let scratch = ScratchDir::new("hook-refused");
+    let herdr = FakeHerdr::start("hook-refused", weather("working", 2));
+    let client = journalled(&herdr, &scratch);
+    let inboxes = SupervisorWaker::in_dir(&scratch).inboxes();
+    hook_with(&client, &scratch);
+    // The worker stops while the supervisor's pane runs something else:
+    // Herdr refuses the prompt and types nothing.
+    herdr.set_prompts(Prompts::Refuse("agent_not_ready".into()));
+    herdr.set_snapshot(weather("idle", 3));
+    hook_with(&client, &scratch);
+    hook_with(&client, &scratch);
+    assert_eq!(
+        herdr.requests("agent.prompt").len(),
+        2,
+        "tried at each pass"
+    );
+    assert!(inboxes.held(&client, ROOT).is_empty(), "nothing is held");
+
+    // The supervisor takes prompts again: the next pass delivers, once.
+    herdr.set_prompts(Prompts::Accept);
+    let passes = hook_with(&client, &scratch);
+    assert!(passes.statuses.is_empty(), "{:?}", passes.statuses);
+    hook_with(&client, &scratch);
+    assert_eq!(herdr.requests("agent.prompt").len(), 3);
+    assert!(inboxes.pending_for(ROOT).is_empty());
+}
+
+#[test]
+fn a_prompt_whose_outcome_is_unknown_is_held_and_shown_until_read() {
+    let scratch = ScratchDir::new("hook-unknown");
+    let herdr = FakeHerdr::start("hook-unknown", weather("working", 2));
+    let client = journalled(&herdr, &scratch);
+    let inboxes = SupervisorWaker::in_dir(&scratch).inboxes();
+    hook_with(&client, &scratch);
+    // Herdr hangs up without saying whether it typed the wake in.
+    herdr.set_prompts(Prompts::HangUp);
+    herdr.set_snapshot(weather("idle", 3));
+    hook_with(&client, &scratch);
+    let held = inboxes.held(&client, ROOT);
+    assert_eq!(held.len(), 1, "{held:?}");
+
+    // It is never typed in again, nor is a later stop of the project.
+    herdr.set_prompts(Prompts::Accept);
+    herdr.set_snapshot(weather("working", 4));
+    hook_with(&client, &scratch);
+    herdr.set_snapshot(weather("idle", 5));
+    let passes = hook_with(&client, &scratch);
+    assert_eq!(herdr.requests("agent.prompt").len(), 1);
+    assert!(
+        passes
+            .statuses
+            .iter()
+            .any(|status| status.contains("quarantined")),
+        "{:?}",
+        passes.statuses
+    );
+    assert_eq!(inboxes.held(&client, ROOT), held);
+
+    // Read with `corgi inbox --take`, the held item is done with, and the
+    // later stop goes out alone.
+    let dir = scratch.join("hook-weather");
+    crate::inbox::mark_delivered(&dir, &held, "corgi inbox --take").expect("take");
+    assert!(inboxes.held(&client, ROOT).is_empty());
+    hook_with(&client, &scratch);
+    let prompts = herdr.prompts();
+    assert_eq!(prompts.len(), 2, "{prompts:?}");
+    assert!(prompts[1].contains("w-forecast is idle"), "{prompts:?}");
+    assert!(inboxes.pending_for(ROOT).is_empty());
+}
+
+#[test]
+fn only_herdrs_refusals_before_typing_are_retried() {
+    for (code, retried) in [
+        ("agent_not_found", true),
+        ("agent_target_ambiguous", true),
+        ("agent_blocked", true),
+        ("agent_not_ready", true),
+        // Failed while writing, or timed out: it may be in the box.
+        ("agent_prompt_failed", false),
+        ("timeout", false),
+    ] {
+        let scratch = ScratchDir::new("hook-codes");
+        let herdr = FakeHerdr::start("hook-codes", weather("working", 2));
+        let client = journalled(&herdr, &scratch);
+        hook_with(&client, &scratch);
+        herdr.set_prompts(Prompts::Refuse(code.into()));
+        herdr.set_snapshot(weather("idle", 3));
+        hook_with(&client, &scratch);
+        let held = SupervisorWaker::in_dir(&scratch)
+            .inboxes()
+            .held(&client, ROOT);
+        assert_eq!(held.is_empty(), retried, "{code}");
+    }
 }
