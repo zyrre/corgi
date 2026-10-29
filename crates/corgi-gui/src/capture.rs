@@ -7,6 +7,8 @@
 //! - `key:KEYS` types each space-separated keystroke (`p`, `escape`,
 //!   `shift-tab`), as GPUI parses them;
 //! - `type:TEXT` types the text, character by character;
+//! - `click:X,Y`, `right:X,Y` and `double:X,Y` click the left button, the
+//!   right one, or the left one twice, at window point (X, Y);
 //! - `size:WxH` resizes the window, as a tiling window manager may have
 //!   sized it otherwise (float it there first);
 //! - `shot:NAME` writes `NAME.png`, the window as last drawn;
@@ -14,7 +16,10 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use gpui::{AnyWindowHandle, App, AppContext, Keystroke, WindowHandle, px, size};
+use gpui::{
+    AnyWindowHandle, App, AppContext, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PlatformInput, WindowHandle, point, px, size,
+};
 
 use crate::window::CorgiWindow;
 
@@ -67,6 +72,52 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                             .timer(Duration::from_millis(30))
                             .await;
                     }
+                }
+                "click" | "right" | "double" => {
+                    let parsed = argument
+                        .split_once(',')
+                        .and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)));
+                    let Some((x, y)) = parsed else {
+                        eprintln!("capture: bad point {argument}");
+                        continue;
+                    };
+                    let position = point(px(x), px(y));
+                    let button = if verb == "right" {
+                        MouseButton::Right
+                    } else {
+                        MouseButton::Left
+                    };
+                    let clicks = if verb == "double" { 2 } else { 1 };
+                    let _ = cx.update_window(any, |_, window, cx| {
+                        // Over the point first, so its elements are hovered.
+                        window.dispatch_event(
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position,
+                                ..Default::default()
+                            }),
+                            cx,
+                        );
+                        for click_count in 1..=clicks {
+                            window.dispatch_event(
+                                PlatformInput::MouseDown(MouseDownEvent {
+                                    button,
+                                    position,
+                                    click_count,
+                                    ..Default::default()
+                                }),
+                                cx,
+                            );
+                            window.dispatch_event(
+                                PlatformInput::MouseUp(MouseUpEvent {
+                                    button,
+                                    position,
+                                    click_count,
+                                    ..Default::default()
+                                }),
+                                cx,
+                            );
+                        }
+                    });
                 }
                 "size" => {
                     let parsed = argument

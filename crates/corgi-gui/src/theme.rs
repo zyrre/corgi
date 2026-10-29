@@ -95,6 +95,13 @@ impl Colors {
         self.roles.success
     }
 
+    /// The tile behind the corgi in a light theme, where the background all
+    /// but hides its white blaze: the selection bar's grey, lighter than
+    /// the coat and darker than the blaze. A dark theme shows it bare.
+    pub fn corgi_tile(&self) -> Option<Hsla> {
+        self.light.then_some(self.roles.focus_bar)
+    }
+
     /// The text on a badge filled with `fill`: the theme's badge text, or,
     /// where that vanishes (Mocha's black on its grey IDLE), whichever of
     /// body text and foreground reads best.
@@ -306,6 +313,21 @@ mod tests {
         assert_ne!(vendor("gpt-5-codex"), vendor("claude"));
         assert_eq!(vendor("some-local-model"), None);
         assert_eq!(vendor("claude"), brand_rgb(brand::CORGI_COAT).map(hsla));
+    }
+
+    #[test]
+    fn the_corgi_stands_on_a_tile_between_its_coat_and_blaze_only_when_light() {
+        let empty = PaletteSet::default();
+        assert_eq!(Colors::new(&empty, false).corgi_tile(), None);
+        let latte = Colors::new(&empty, true);
+        let tile = latte.corgi_tile().expect("a tile in Latte");
+        let coat = brand_color(brand::CORGI_COAT).unwrap();
+        let blaze = brand_color(brand::CORGI_WHITE).unwrap();
+        assert!(luminance(coat) < luminance(tile) && luminance(tile) < luminance(blaze));
+        // The blaze all but vanished on the background; on the tile it reads.
+        assert!(contrast(blaze, latte.background) < 1.15);
+        let on_tile = contrast(blaze, tile);
+        assert!(on_tile >= 1.4, "blaze on tile: {on_tile}");
     }
 
     #[test]

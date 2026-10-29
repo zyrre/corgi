@@ -193,7 +193,13 @@ impl CorgiWindow {
             .gap(px(CORGI_GAP))
             .h(px(HEADER_HEIGHT))
             .mr(px(WORDMARK_CARD_GAP - CARD_GAP))
-            .child(corgi_art())
+            // A light theme's background all but hides the white blaze, so
+            // the corgi stands on a grey tile there.
+            .child(
+                corgi_art()
+                    .rounded_lg()
+                    .when_some(colors.corgi_tile(), |corgi, tile| corgi.bg(tile)),
+            )
             .child(
                 div()
                     .mt(px(WORDMARK_TOP))
@@ -469,6 +475,7 @@ impl CorgiWindow {
                 .into_any_element()
         });
         let group = project.group.clone();
+        let right_click_group = group.clone();
         let toggle = project.card.then(|| -> EdgeClick {
             Box::new(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 this.toggle_card(&group, cx);
@@ -529,6 +536,15 @@ impl CorgiWindow {
                 .children(rows)
                 .children(footer),
         )
+        .id(SharedString::from(format!("project-{}", project.group)))
+        // A right click anywhere in the frame collapses or expands it,
+        // leaving the selection be. Rows take only left clicks.
+        .on_aux_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+            if event.is_right_click() {
+                this.toggle_card(&right_click_group, cx);
+                cx.stop_propagation();
+            }
+        }))
         .into_any_element()
     }
 
@@ -630,7 +646,7 @@ impl CorgiWindow {
                 this.select(pane_id.clone(), cx);
                 window.focus(&this.focus, cx);
                 if event.click_count() == 2 {
-                    this.open_prompt(Some(pane_id.clone()), window, cx);
+                    this.open_agent(pane_id.clone(), window, cx);
                 }
             }))
             .into_any_element()
@@ -1122,7 +1138,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .text_color(colors.roles.muted)
-                    .child("j/k select · ←/→ card · 1–9 answer"),
+                    .child("j/k select · ←/→ or right-click card · 1–9 answer"),
             )
             .on_mouse_down(
                 MouseButton::Left,
