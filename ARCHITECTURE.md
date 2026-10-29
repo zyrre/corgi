@@ -653,7 +653,9 @@ the window's, are kept in `$STATE/gui-layout.json`.
 - GPUI's `on_click` fires only for the left button; right and middle clicks
   go to `on_aux_click`, told apart by `ClickEvent::is_right_click`. Nested
   elements do not block each other's mouse events, so a project frame's
-  `on_aux_click` also gets the right clicks that land on its rows.
+  `on_aux_click` also gets the right clicks that land on its rows. A
+  nested element's `on_click` that calls `cx.stop_propagation()` does stop
+  its parent's `on_click`, which the question card's × relies on.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still
