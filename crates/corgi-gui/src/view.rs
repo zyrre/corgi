@@ -538,6 +538,11 @@ impl CorgiWindow {
         let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
         let (badge, badge_tone) = format::badge(agent);
         let badge_color = self.tone(badge_tone, None);
+        let secondary = colors.secondary(if selected {
+            colors.roles.focus_bar
+        } else {
+            colors.background
+        });
         let model = agent.model.as_deref().unwrap_or(&agent.harness);
         let task_color = if agent.supervisor {
             colors.supervisor()
@@ -559,13 +564,12 @@ impl CorgiWindow {
                     .flex()
                     .justify_center()
                     .bg(badge_color)
-                    .text_color(colors.roles.badge_text)
+                    .text_color(colors.badge_text(badge_color))
                     .font_weight(FontWeight::BOLD)
                     .child(badge),
             )
             .children(
-                format::last_activity(agent)
-                    .map(|time| div().text_color(colors.roles.muted).child(time)),
+                format::last_activity(agent).map(|time| div().text_color(secondary).child(time)),
             )
             .child(
                 div()
@@ -589,10 +593,13 @@ impl CorgiWindow {
                     .flex_row()
                     .flex_none()
                     .gap_2()
-                    .child(div().text_color(colors.roles.muted).child("·"))
+                    .child(div().text_color(secondary).child("·"))
                     .child(
                         div()
-                            .text_color(self.tone(piece.tone, Some(model)))
+                            .text_color(match piece.tone {
+                                Tone::Muted => secondary,
+                                tone => self.tone(tone, Some(model)),
+                            })
                             .when(piece.bold, |d| d.font_weight(FontWeight::BOLD))
                             .child(piece.text),
                     ),
@@ -617,8 +624,8 @@ impl CorgiWindow {
             .when(selected, |row| row.bg(colors.roles.focus_bar))
             .cursor(CursorStyle::PointingHand)
             .child(identity)
-            .child(self.activity_line(&agent.message, 2))
-            .child(self.activity_line(&agent.tool, 1))
+            .child(self.activity_line(&agent.message, 2, selected))
+            .child(self.activity_line(&agent.tool, 1, selected))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.select(pane_id.clone(), cx);
                 window.focus(&this.focus, cx);
@@ -629,12 +636,23 @@ impl CorgiWindow {
             .into_any_element()
     }
 
-    fn activity_line(&self, activity: &Activity, lines: usize) -> impl IntoElement {
-        let marker_color = self.tone(format::marker_tone(activity.kind), None);
+    /// An activity line; on the `selected` row, muted parts take the
+    /// colors' secondary so they read on the selection bar.
+    fn activity_line(&self, activity: &Activity, lines: usize, selected: bool) -> impl IntoElement {
+        let colors = &self.colors;
+        let secondary = colors.secondary(if selected {
+            colors.roles.focus_bar
+        } else {
+            colors.background
+        });
+        let marker_color = match format::marker_tone(activity.kind) {
+            Tone::Muted => secondary,
+            tone => self.tone(tone, None),
+        };
         let text_color = match activity.kind {
             corgi_core::protocol::ActivityKind::Thinking => self.colors.roles.thinking,
             corgi_core::protocol::ActivityKind::Question => self.colors.roles.warning,
-            corgi_core::protocol::ActivityKind::Ready => self.colors.roles.muted,
+            corgi_core::protocol::ActivityKind::Ready => secondary,
             _ => self.colors.roles.text,
         };
         div()
@@ -832,6 +850,7 @@ impl CorgiWindow {
                 let now = self.store.now();
                 let model = supervisor.model.as_deref().unwrap_or(&supervisor.harness);
                 let (badge, tone) = format::badge(supervisor);
+                let badge_color = self.tone(tone, None);
                 panel = panel
                     .child(
                         div()
@@ -842,8 +861,8 @@ impl CorgiWindow {
                             .child(
                                 div()
                                     .px_1()
-                                    .bg(self.tone(tone, None))
-                                    .text_color(colors.roles.badge_text)
+                                    .bg(badge_color)
+                                    .text_color(colors.badge_text(badge_color))
                                     .font_weight(FontWeight::BOLD)
                                     .child(badge),
                             )
@@ -854,7 +873,7 @@ impl CorgiWindow {
                             })),
                     )
                     .child(self.activity_block(&supervisor.message))
-                    .child(self.activity_line(&supervisor.tool, 2))
+                    .child(self.activity_line(&supervisor.tool, 2, false))
                     .child(
                         div()
                             .flex()
@@ -1143,11 +1162,18 @@ impl CorgiWindow {
                 error.as_deref(),
             ),
             Some(Dialog::NewAgent(new)) => self.form_dialog(new, cx),
+            Some(Dialog::NewAgentLoading) => self.loading_dialog(),
             Some(Dialog::Merge(merge)) => self.merge_dialog(merge, cx),
             Some(Dialog::Close(close)) => self.close_dialog(close, cx),
             None => div().into_any_element(),
         };
         let _ = window;
+        // A refused prompt keeps the keyboard; its frame says so.
+        let frame = if self.dialogs.open.as_ref().is_some_and(Dialog::refused) {
+            colors.roles.danger
+        } else {
+            colors.roles.accent
+        };
         div()
             .id("dialog-layer")
             .absolute()
@@ -1173,7 +1199,7 @@ impl CorgiWindow {
                     .p_4()
                     .rounded_lg()
                     .border_1()
-                    .border_color(colors.roles.accent)
+                    .border_color(frame)
                     .bg(colors.roles.popup_fill)
                     .shadow_lg()
                     .child(content),
@@ -1219,7 +1245,7 @@ impl CorgiWindow {
                     .child(keycap(key, colors.roles.keycap, colors.roles.accent))
                     .child(
                         div()
-                            .text_color(colors.roles.muted)
+                            .text_color(colors.secondary(colors.roles.popup_fill))
                             .child(label.to_string()),
                     )
             }))
@@ -1241,14 +1267,39 @@ impl CorgiWindow {
             .children(question.map(|question| div().child(question)))
             .child(self.field_box(self.prompt_input.clone().into_any_element()))
             .when(sending, |d| {
-                d.child(div().text_color(colors.roles.muted).child("Sending…"))
+                d.child(
+                    div()
+                        .text_color(colors.secondary(colors.roles.popup_fill))
+                        .child("Sending…"),
+                )
             })
             .children(error.map(|error| {
                 div()
                     .text_color(colors.roles.danger)
                     .child(error.to_string())
             }))
-            .child(self.hints(&[("↵", "send"), ("Esc", "cancel")]))
+            .children(
+                self.dialogs
+                    .open
+                    .as_ref()
+                    .map(|dialog| self.hints(dialog.text_hints())),
+            )
+            .into_any_element()
+    }
+
+    /// The new-agent box while its form loads.
+    fn loading_dialog(&self) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(self.dialog_title("New agent".into()))
+            .child(
+                div()
+                    .text_color(self.colors.secondary(self.colors.roles.popup_fill))
+                    .child("Loading the form and the harnesses' models…"),
+            )
+            .child(self.hints(&[("Esc", "cancel")]))
             .into_any_element()
     }
 

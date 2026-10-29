@@ -53,8 +53,33 @@ pub enum Dialog {
         error: Option<String>,
     },
     NewAgent(Box<NewAgent>),
+    /// The new-agent form, asked for and not here yet: the first one waits
+    /// on the harnesses' model lists, which can take seconds.
+    NewAgentLoading,
     Merge(Box<Merge>),
     Close(Close),
+}
+
+impl Dialog {
+    /// The keys a prompt or answer box offers. A refused one stays open
+    /// with its text and keeps the keyboard, so Esc, the way back to the
+    /// overview's keys, comes first.
+    pub fn text_hints(&self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Dialog::Prompt { error: Some(_), .. } | Dialog::Answer { error: Some(_), .. } => {
+                &[("Esc", "close"), ("↵", "retry")]
+            }
+            _ => &[("↵", "send"), ("Esc", "cancel")],
+        }
+    }
+
+    /// Whether a prompt or answer box shows a refusal.
+    pub fn refused(&self) -> bool {
+        matches!(
+            self,
+            Dialog::Prompt { error: Some(_), .. } | Dialog::Answer { error: Some(_), .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -238,10 +263,19 @@ impl Dialogs {
             }
             Purpose::NewAgentForm => {
                 match (error, reply.result) {
-                    (Some(error), _) => self.say(error, true),
+                    (Some(error), _) => {
+                        if matches!(self.open, Some(Dialog::NewAgentLoading)) {
+                            self.open = None;
+                        }
+                        self.say(error, true);
+                    }
                     (None, Some(ReplyResult::NewAgentForm(form))) => match &mut self.open {
                         Some(Dialog::NewAgent(new)) => new.reloaded(*form),
-                        _ => self.open = Some(Dialog::NewAgent(Box::new(NewAgent::new(*form)))),
+                        Some(Dialog::NewAgentLoading) => {
+                            self.open = Some(Dialog::NewAgent(Box::new(NewAgent::new(*form))));
+                        }
+                        // Closed while it loaded: the user has moved on.
+                        _ => {}
                     },
                     _ => {}
                 }
@@ -396,6 +430,10 @@ impl Dialogs {
                     close.running = false;
                     close.error = Some(why.into());
                 }
+                (Purpose::NewAgentForm, Some(Dialog::NewAgentLoading)) => {
+                    self.open = None;
+                    self.say(why, true);
+                }
                 (Purpose::Quiet, _) => {}
                 _ => self.say(why, true),
             }
@@ -472,7 +510,12 @@ mod tests {
         };
         let refusal =
             "Could not confirm prompt delivery (agent_not_ready). Check the agent before retrying.";
+        assert_eq!(dialogs.open.as_ref().unwrap().text_hints()[0].0, "↵");
         dialogs.reply(Purpose::Prompt, refused(refusal, None));
+        // Still open, and saying that Esc is the way out of it.
+        let open = dialogs.open.as_ref().unwrap();
+        assert!(open.refused());
+        assert_eq!(open.text_hints()[0], ("Esc", "close"));
         assert_eq!(
             dialogs.open,
             Some(Dialog::Prompt {
@@ -488,8 +531,35 @@ mod tests {
     }
 
     #[test]
+    fn the_form_shows_loading_at_once_and_a_cancelled_one_stays_closed() {
+        let form = || ok(ReplyResult::NewAgentForm(Box::default()));
+        let mut dialogs = Dialogs {
+            open: Some(Dialog::NewAgentLoading),
+            ..Dialogs::default()
+        };
+        dialogs.reply(Purpose::NewAgentForm, form());
+        assert!(matches!(dialogs.open, Some(Dialog::NewAgent(_))));
+        // Esc while it loaded: the late form does not pop up.
+        dialogs.open = None;
+        dialogs.reply(Purpose::NewAgentForm, form());
+        assert_eq!(dialogs.open, None);
+        // A refusal or a lost connection closes the loading box and is said.
+        dialogs.open = Some(Dialog::NewAgentLoading);
+        dialogs.reply(Purpose::NewAgentForm, refused("No harness installed", None));
+        assert_eq!(dialogs.open, None);
+        assert_eq!(dialogs.flash.as_ref().unwrap().text, "No harness installed");
+        dialogs.open = Some(Dialog::NewAgentLoading);
+        dialogs.lost(&[Purpose::NewAgentForm]);
+        assert_eq!(dialogs.open, None);
+        assert!(dialogs.flash.as_ref().unwrap().error);
+    }
+
+    #[test]
     fn the_form_opens_reloads_and_a_refused_spawn_points_at_its_row() {
-        let mut dialogs = Dialogs::default();
+        let mut dialogs = Dialogs {
+            open: Some(Dialog::NewAgentLoading),
+            ..Dialogs::default()
+        };
         let form = NewAgentForm {
             project: "/r".into(),
             harness: "claude".into(),

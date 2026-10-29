@@ -563,7 +563,7 @@ impl CorgiWindow {
     pub fn new_agent(&mut self, cx: &mut Context<Self>) {
         self.task_input.update(cx, |input, cx| input.clear(cx));
         let pane_id = self.selected.clone();
-        self.send(
+        let sent = self.send(
             Command::NewAgentForm {
                 pane_id,
                 project: None,
@@ -572,6 +572,11 @@ impl CorgiWindow {
             },
             Purpose::NewAgentForm,
         );
+        // The form waits on the harnesses' model lists; say so at once.
+        if sent {
+            self.dialogs.open = Some(Dialog::NewAgentLoading);
+            self.focus_dialog(cx);
+        }
         cx.notify();
     }
 
@@ -875,6 +880,12 @@ impl CorgiWindow {
                 }
                 _ => false,
             },
+            Some(Dialog::NewAgentLoading) => {
+                if key == "escape" {
+                    self.dialogs.open = None;
+                }
+                true
+            }
             Some(Dialog::Close(_)) => match key {
                 "enter" => {
                     self.confirm_close(cx);

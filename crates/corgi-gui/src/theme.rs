@@ -94,6 +94,58 @@ impl Colors {
     pub fn supervisor(&self) -> Hsla {
         self.roles.success
     }
+
+    /// The text on a badge filled with `fill`: the theme's badge text, or,
+    /// where that vanishes (Mocha's black on its grey IDLE), whichever of
+    /// body text and foreground reads best.
+    pub fn badge_text(&self, fill: Hsla) -> Hsla {
+        let roles = &self.roles;
+        readable(roles.badge_text, fill, &[roles.text, roles.foreground])
+    }
+
+    /// Secondary text (times, separators, the checkout, a dialog's hints)
+    /// on `fill`: muted, or quiet where muted vanishes. Mocha's muted is
+    /// nearly the grey of its selection bar and its popups; Latte's reads.
+    pub fn secondary(&self, fill: Hsla) -> Hsla {
+        readable(self.roles.muted, fill, &[self.roles.quiet])
+    }
+}
+
+/// A contrast below which text all but vanishes on its fill.
+const VANISHES: f32 = 2.0;
+
+/// `role` on `fill`, or, where it vanishes there, whichever of it and
+/// `instead` reads best: a theme keeps its look wherever its roles read.
+fn readable(role: Hsla, fill: Hsla, instead: &[Hsla]) -> Hsla {
+    if contrast(role, fill) >= VANISHES {
+        return role;
+    }
+    instead.iter().copied().fold(role, |best, next| {
+        if contrast(next, fill) > contrast(best, fill) {
+            next
+        } else {
+            best
+        }
+    })
+}
+
+/// WCAG's contrast ratio of two colors, 1 (none) to 21.
+pub fn contrast(a: Hsla, b: Hsla) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// WCAG's relative luminance.
+fn luminance(color: Hsla) -> f32 {
+    let rgba = color.to_rgb();
+    let linear = |c: f32| {
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(rgba.r) + 0.7152 * linear(rgba.g) + 0.0722 * linear(rgba.b)
 }
 
 /// A model name's vendor color, fixed in every theme so a herd mixing agents
@@ -249,5 +301,47 @@ mod tests {
         assert_ne!(vendor("gpt-5-codex"), vendor("claude"));
         assert_eq!(vendor("some-local-model"), None);
         assert_eq!(vendor("claude"), brand_rgb(brand::CORGI_COAT).map(hsla));
+    }
+
+    #[test]
+    fn the_idle_badge_and_the_selected_row_read_in_mocha_and_latte() {
+        let empty = PaletteSet::default();
+        for light in [false, true] {
+            let colors = Colors::new(&empty, light);
+            let flavor = if light { "Latte" } else { "Mocha" };
+            for state in [
+                AgentState::Working,
+                AgentState::Blocked,
+                AgentState::Done,
+                AgentState::Idle,
+                AgentState::Unknown,
+            ] {
+                let fill = colors.state(state, false);
+                let ratio = contrast(colors.badge_text(fill), fill);
+                assert!(ratio >= VANISHES, "{flavor} {state:?} badge: {ratio}");
+            }
+            for (fill, on) in [
+                (colors.roles.focus_bar, "selected row"),
+                (colors.roles.popup_fill, "dialog"),
+            ] {
+                let ratio = contrast(colors.secondary(fill), fill);
+                assert!(ratio >= 2.5, "{flavor} {on}: {ratio}");
+            }
+            assert_eq!(colors.secondary(colors.background), colors.roles.muted);
+            // Latte keeps its look: badge text and muted were readable.
+            if light {
+                for fill in [colors.roles.muted, colors.roles.accent] {
+                    assert_eq!(colors.badge_text(fill), colors.roles.badge_text);
+                }
+                for fill in [colors.roles.focus_bar, colors.roles.popup_fill] {
+                    assert_eq!(colors.secondary(fill), colors.roles.muted);
+                }
+            }
+        }
+        // Mocha's IDLE badge: black on surface2 before, light text now.
+        let mocha = Colors::new(&empty, false);
+        assert!(contrast(mocha.roles.badge_text, mocha.roles.muted) < VANISHES);
+        assert!(contrast(mocha.badge_text(mocha.roles.muted), mocha.roles.muted) > 4.0);
+        assert_eq!(mocha.badge_text(mocha.roles.accent), mocha.roles.badge_text);
     }
 }

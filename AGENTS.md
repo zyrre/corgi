@@ -156,6 +156,20 @@ key dispatched inside that lease panics when its listener updates the view.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 
+For a screenshot that needs no real flow, `--corgi` can name a small
+program instead: corgi-gui runs it with `serve …`, and any program that
+writes a `Hello` and a `Snapshot` (built with `corgi_core::protocol`, one
+JSON line each) and answers each `Request` line on stdin draws the window
+with no Herdr at all, and can delay or refuse a reply to show a state.
+When moving its window, look the id up after launch each time: AeroSpace
+can still list the last run's closed window for a moment.
+
+Text on a fill other than the background (a badge, the selected row's bar,
+a dialog) takes its color through `Colors::badge_text` or
+`Colors::secondary`, which keep the role unless it all but vanishes on
+that fill (Mocha's muted and black on its greys), so a theme keeps its
+look wherever its roles read.
+
 `HERDR_CONFIG_PATH=<file> herdr config check` validates a Herdr config file
 without a running server (and without touching the real config). Herdr's CLI
 reports errors as JSON lines with an `error.code`, such as
