@@ -1,7 +1,8 @@
 //! What the window draws: the header (the corgi and the wordmark, the
 //! herd's counts, plan usage), the overview of framed projects and their
 //! agent rows, the transcript under it, the supervisor's side panel, the
-//! status bar and the dialogs. Every color comes from `theme::Colors`.
+//! focus view (an agent's terminal beside the side panel), the status bar
+//! and the dialogs. Every color comes from `theme::Colors`.
 
 use corgi_core::protocol::{Activity, Agent, MergeOutcome, Project};
 use gpui::{
@@ -19,6 +20,7 @@ use crate::{
         PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
     store::Connection,
+    terminal::keys,
     theme,
     window::{CorgiWindow, Drag},
 };
@@ -46,18 +48,40 @@ impl Render for CorgiWindow {
         let has_state = self.store.seq.is_some() || !self.store.state.agents.is_empty();
         let dialog = self.dialogs.open.is_some();
         let viewport = window.viewport_size();
+        let focus_view = self.focus_view.is_some();
 
-        let body = div()
-            .flex()
-            .flex_row()
-            .flex_1()
-            .min_h_0()
-            .when(!connected, |body| body.opacity(0.45))
-            .child(self.main_column(f32::from(viewport.height), cx))
-            .when(self.layout.side_open, |body| {
-                body.child(self.divider(Split::Side, cx))
-                    .child(self.side_panel(window, cx))
-            });
+        let body = if focus_view {
+            // The terminal stays bright while `corgi serve` reconnects: it
+            // has a connection of its own.
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .child(self.terminal.clone()),
+                )
+                .when(self.layout.focus_side_open, |body| {
+                    body.child(self.divider(Split::FocusSide, cx))
+                        .child(self.side_panel(window, cx))
+                })
+        } else {
+            div()
+                .flex()
+                .flex_row()
+                .flex_1()
+                .min_h_0()
+                .when(!connected, |body| body.opacity(0.45))
+                .child(self.main_column(f32::from(viewport.height), cx))
+                .when(self.layout.side_open, |body| {
+                    body.child(self.divider(Split::Side, cx))
+                        .child(self.side_panel(window, cx))
+                })
+        };
 
         div()
             .id("corgi")
@@ -74,6 +98,8 @@ impl Render for CorgiWindow {
             .on_key_down(cx.listener(|this, event, window, cx| {
                 if this.dialogs.open.is_some() {
                     this.dialog_key(event, window, cx);
+                } else if this.focus_view.is_some() {
+                    this.focus_key(event, window, cx);
                 } else {
                     this.overview_key(event, window, cx);
                 }
@@ -96,7 +122,13 @@ impl Render for CorgiWindow {
                     .when(!connected, |header| header.opacity(0.45))
                     .child(self.header(cx)),
             )
-            .child(self.toolbar(cx))
+            .map(|root| {
+                if focus_view {
+                    root.child(self.focus_bar(cx))
+                } else {
+                    root.child(self.toolbar(cx))
+                }
+            })
             .when(!connected, |root| {
                 root.child(self.connection_banner(has_state, cx))
             })
@@ -273,20 +305,119 @@ impl CorgiWindow {
                     }),
                 );
         }
-        bar.child(div().flex_1())
+        bar.child(self.button(
+            "↵",
+            "Terminal",
+            has_agent,
+            false,
+            cx,
+            |this, window, cx| {
+                if let Some(pane_id) = this.selected.clone() {
+                    this.open_agent(pane_id, window, cx);
+                }
+            },
+        ))
+        .child(div().flex_1())
+        .child(self.button(
+            "␣",
+            "Transcript",
+            true,
+            self.layout.transcript_open,
+            cx,
+            |this, _, cx| this.toggle_transcript(cx),
+        ))
+        .child(self.button(
+            "\\",
+            "Side panel",
+            true,
+            self.layout.side_open,
+            cx,
+            |this, _, cx| this.toggle_side(cx),
+        ))
+    }
+
+    /// The focus view's bar in place of the toolbar: the way back, the agent
+    /// and how its terminal is, and the side panel's switch.
+    fn focus_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let mac = cfg!(target_os = "macos");
+        let terminal = self.terminal.read(cx);
+        let status = terminal.status_text();
+        let (live, gone) = (terminal.live(), terminal.gone());
+        let agent = self
+            .focus_view
+            .as_deref()
+            .and_then(|id| self.store.agent(id));
+        let badge = agent.map(|agent| {
+            let (badge, tone) = format::badge(agent);
+            let fill = self.tone(tone, None);
+            div()
+                .px_1()
+                .bg(fill)
+                .text_color(colors.badge_text(fill))
+                .font_weight(FontWeight::BOLD)
+                .child(badge)
+        });
+        let task = agent.map(|agent| {
+            div()
+                .min_w_0()
+                .truncate()
+                .font_weight(FontWeight::BOLD)
+                .text_color(if agent.supervisor {
+                    colors.supervisor()
+                } else {
+                    colors.roles.text
+                })
+                .child(if agent.task.is_empty() {
+                    agent.name.clone()
+                } else {
+                    agent.task.clone()
+                })
+        });
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_1()
+            .border_b_1()
+            .border_color(colors.roles.rule)
             .child(self.button(
-                "↵",
-                "Transcript",
+                keys::leave_label(mac),
+                "← Overview",
                 true,
-                self.layout.transcript_open,
+                false,
                 cx,
-                |this, _, cx| this.toggle_transcript(cx),
+                |this, _, cx| this.leave_focus(cx),
             ))
+            .children(badge)
+            .children(task)
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(if live {
+                        colors.roles.success
+                    } else if gone {
+                        colors.roles.warning
+                    } else {
+                        colors.roles.muted
+                    })
+                    .child(status),
+            )
+            .when(gone, |bar| {
+                bar.child(
+                    self.button("", "Open again", true, false, cx, |this, window, cx| {
+                        this.reopen(window, cx)
+                    }),
+                )
+            })
+            .child(div().flex_1())
             .child(self.button(
-                "\\",
+                keys::side_label(mac),
                 "Side panel",
                 true,
-                self.layout.side_open,
+                self.layout.focus_side_open,
                 cx,
                 |this, _, cx| this.toggle_side(cx),
             ))
@@ -810,7 +941,11 @@ impl CorgiWindow {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(self.layout.side_width))
+            .w(px(if self.focus_view.is_some() {
+                self.layout.focus_side_width
+            } else {
+                self.layout.side_width
+            }))
             .gap_2()
             .p_3()
             .bg(colors.panel)
@@ -907,11 +1042,22 @@ impl CorgiWindow {
                             ))
                             .child(self.button(
                                 "",
-                                "Select it",
+                                // The focus view opens the supervisor's own terminal.
+                                if self.focus_view.is_some() {
+                                    "Open its terminal"
+                                } else {
+                                    "Select it"
+                                },
                                 true,
                                 false,
                                 cx,
-                                move |this, _, cx| this.select(pane_id.clone(), cx),
+                                move |this, window, cx| {
+                                    if this.focus_view.is_some() {
+                                        this.open_agent(pane_id.clone(), window, cx)
+                                    } else {
+                                        this.select(pane_id.clone(), cx)
+                                    }
+                                },
                             )),
                     );
             }
@@ -1062,7 +1208,7 @@ impl CorgiWindow {
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                     let last = match split {
-                        Split::Side => event.position.x,
+                        Split::Side | Split::FocusSide => event.position.x,
                         Split::Transcript => event.position.y,
                     };
                     this.drag = Some(Drag { split, last });
@@ -1071,7 +1217,7 @@ impl CorgiWindow {
                 }),
             );
         match split {
-            Split::Side => handle
+            Split::Side | Split::FocusSide => handle
                 .w(px(4.))
                 .h_full()
                 .cursor(CursorStyle::ResizeLeftRight),
@@ -1080,6 +1226,24 @@ impl CorgiWindow {
     }
 
     // ---- The status bar ----
+
+    /// The keys the status bar reminds of.
+    fn status_hints(&self) -> String {
+        if self.focus_view.is_none() {
+            return "j/k select · ↵ terminal · ←/→ or right-click card · 1–9 answer".into();
+        }
+        let mac = cfg!(target_os = "macos");
+        let (modifier, copy) = if mac {
+            ("⌘", "⌘C/⌘V")
+        } else {
+            ("Ctrl", "Ctrl+Shift+C/V")
+        };
+        format!(
+            "{} overview · {} side panel · {copy} copy/paste · {modifier}-click a link",
+            keys::leave_label(mac),
+            keys::side_label(mac),
+        )
+    }
 
     fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
@@ -1138,7 +1302,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .text_color(colors.roles.muted)
-                    .child("j/k select · ←/→ or right-click card · 1–9 answer"),
+                    .child(self.status_hints()),
             )
             .on_mouse_down(
                 MouseButton::Left,

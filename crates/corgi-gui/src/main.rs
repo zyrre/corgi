@@ -11,6 +11,7 @@ mod layout;
 mod link;
 mod options;
 mod store;
+mod terminal;
 mod text_input;
 mod theme;
 mod view;

@@ -1,6 +1,7 @@
 //! The window's fixed layout: the header's measurements, and the overview,
-//! the transcript split under it and the side panel beside it, which open
-//! and close and keep their sizes across runs in `$STATE/gui-layout.json`.
+//! the transcript split under it and the side panel beside it, and the focus
+//! view's terminal with its own side panel, which open and close and keep
+//! their sizes across runs in `$STATE/gui-layout.json`.
 
 use std::{fs, path::Path, path::PathBuf};
 
@@ -54,6 +55,9 @@ pub struct Layout {
     /// The selected agent's transcript, under the overview.
     pub transcript_open: bool,
     pub transcript_height: f32,
+    /// The side panel beside the focus view's terminal.
+    pub focus_side_open: bool,
+    pub focus_side_width: f32,
     /// The window's size when it was last closed.
     pub window: Option<(f32, f32)>,
 }
@@ -65,6 +69,8 @@ impl Default for Layout {
             side_width: 380.0,
             transcript_open: true,
             transcript_height: 260.0,
+            focus_side_open: true,
+            focus_side_width: 340.0,
             window: None,
         }
     }
@@ -75,6 +81,8 @@ impl Default for Layout {
 pub enum Split {
     Side,
     Transcript,
+    /// The focus view's terminal and its side panel.
+    FocusSide,
 }
 
 impl Layout {
@@ -109,6 +117,7 @@ impl Layout {
 
     fn clamped(mut self) -> Self {
         self.side_width = self.side_width.clamp(SIDE_MIN, SIDE_MAX);
+        self.focus_side_width = self.focus_side_width.clamp(SIDE_MIN, SIDE_MAX);
         self.transcript_height = self.transcript_height.clamp(TRANSCRIPT_MIN, TRANSCRIPT_MAX);
         self.window = self
             .window
@@ -116,12 +125,15 @@ impl Layout {
         self
     }
 
-    /// Resizes `split` by a drag of `delta` pixels: the side panel grows as
+    /// Resizes `split` by a drag of `delta` pixels: a side panel grows as
     /// its edge moves left, the transcript as its edge moves up.
     pub fn drag(&mut self, split: Split, delta: f32) {
         match split {
             Split::Side => {
                 self.side_width = (self.side_width - delta).clamp(SIDE_MIN, SIDE_MAX);
+            }
+            Split::FocusSide => {
+                self.focus_side_width = (self.focus_side_width - delta).clamp(SIDE_MIN, SIDE_MAX);
             }
             Split::Transcript => {
                 self.transcript_height =
@@ -204,6 +216,31 @@ mod tests {
         let lockup = corgi + CORGI_GAP + wordmark;
         assert_eq!(lockup, 448.0);
         assert!(lockup + 2.0 * HEADER_PADDING <= WINDOW_MIN.0);
+    }
+
+    #[test]
+    fn the_focus_views_side_panel_keeps_its_own_width_and_visibility() {
+        let dir = scratch("focus-layout");
+        let path = dir.join("gui-layout.json");
+        let mut layout = Layout::default();
+        layout.drag(Split::FocusSide, -60.0);
+        layout.focus_side_open = false;
+        assert_eq!(layout.focus_side_width, 400.0);
+        assert_eq!(
+            layout.side_width,
+            Layout::default().side_width,
+            "the overview's is left alone"
+        );
+        layout.save(Some(&path));
+        assert_eq!(Layout::load(Some(&path)), layout);
+        // A file from before the focus view gives its defaults.
+        fs::write(&path, r#"{"side_width": 300}"#).unwrap();
+        let loaded = Layout::load(Some(&path));
+        assert!(loaded.focus_side_open);
+        assert_eq!(loaded.focus_side_width, Layout::default().focus_side_width);
+        layout.drag(Split::FocusSide, 10_000.0);
+        assert_eq!(layout.focus_side_width, SIDE_MIN);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

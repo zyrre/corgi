@@ -16,6 +16,8 @@ Copyright 2026 Fabien Penso
 - src/herdr_ui/terminal.rs and src/herdr_ui/config.rs keep parts of Herdr
   UI's crates/herdr-gpui/src/terminal.rs, config/theme.rs and
   config/font_weight.rs.
+- src/terminal/input.rs and src/terminal/selection.rs follow Herdr UI's
+  input.rs and terminal/selection.rs.
 - src/endpoint/protocol.rs is adapted from Herdr UI's crates/herdr-protocol
   (wire.rs, endpoint.rs, frame.rs, codec.rs), and the image types in
   src/endpoint/mod.rs from its crates/herdr-client.

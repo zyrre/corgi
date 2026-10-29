@@ -1,5 +1,6 @@
 //! The window: its connection to `corgi serve`, the selection, the keys and
-//! the actions. What it draws is in `view.rs`.
+//! the actions, and the focus view around an agent's terminal
+//! (`crate::terminal`). What it draws is in `view.rs`.
 
 use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
@@ -17,8 +18,12 @@ use crate::{
     link::{Backoff, Link, LinkEvent},
     options::Options,
     store::{Connection, Outbox, Purpose, Received, Store},
+    terminal::{
+        Target, TerminalEvent, TerminalView,
+        keys::{self, Chord},
+    },
     text_input::{FieldColors, TextInput},
-    theme::{Colors, forced_light, is_light},
+    theme::{self, Colors, forced_light, is_light},
 };
 
 /// A split being dragged, and where the pointer was last.
@@ -58,6 +63,12 @@ pub struct CorgiWindow {
     pub overview_scroll: ScrollHandle,
     pub transcript_scroll: ScrollHandle,
     pub drag: Option<Drag>,
+    /// The focus view's terminal, kept while the overview shows so its
+    /// connection stays warm, parked and inactive.
+    pub terminal: Entity<TerminalView>,
+    /// The agent whose terminal the focus view shows; `None` shows the
+    /// overview.
+    pub focus_view: Option<String>,
     /// The keyboard should move to where the open dialog wants it.
     refocus: bool,
     _tasks: Vec<Task<()>>,
@@ -77,6 +88,7 @@ impl CorgiWindow {
         let colors = Colors::new(&store.state.palette, system_light);
         let field = field_colors(&colors);
         let prompt_input = cx.new(|cx| TextInput::new("Type a prompt", field, cx));
+        let terminal = cx.new(|cx| TerminalView::new(font.clone(), cx));
         let task_input = cx.new(|cx| TextInput::new("Describe the task", field, cx));
         let layout_path = Layout::path();
         let layout = Layout::load(layout_path.as_deref());
@@ -105,12 +117,20 @@ impl CorgiWindow {
             }
         });
         // Countdowns (the prompt cache, the reconnect) move once a second,
-        // only while the window shows.
+        // only while the window shows. The focus view, whose terminal
+        // otherwise draws only when Herdr sends something, redraws for them
+        // once a minute, as its clocks read, but each second when one counts
+        // seconds.
         let tick = cx.spawn(async move |this, cx| {
+            let mut minute = 0;
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
-                    if this.visible {
+                    let now = this.store.now();
+                    let due =
+                        this.focus_view.is_none() || now / 60 != minute || this.counts_seconds(now);
+                    if this.visible && due {
+                        minute = now / 60;
                         cx.notify();
                     }
                 });
@@ -129,6 +149,20 @@ impl CorgiWindow {
             }),
             cx.observe_window_visibility(window, |this, visibility, _, cx| {
                 this.set_visible(visibility == WindowVisibility::Visible, cx);
+            }),
+            cx.subscribe(
+                &terminal,
+                |this, _, event: &TerminalEvent, cx| match event {
+                    TerminalEvent::Leave => this.leave_focus(cx),
+                    TerminalEvent::ToggleSide => this.toggle_side(cx),
+                },
+            ),
+            // The focus bar says how the terminal is.
+            cx.observe(&terminal, |_, _, cx| cx.notify()),
+            // Quitting parks and deactivates the terminal's connection.
+            cx.on_app_quit(|this, cx| {
+                this.terminal
+                    .update(cx, |terminal, cx| terminal.shut_down(cx))
             }),
         ];
 
@@ -157,10 +191,14 @@ impl CorgiWindow {
             overview_scroll: ScrollHandle::new(),
             transcript_scroll: ScrollHandle::new(),
             drag: None,
+            terminal,
+            focus_view: None,
             refocus: false,
             _tasks: vec![pump, tick],
             _subscriptions: subscriptions,
         };
+        this.sync_terminal_socket(cx);
+        this.color_terminal(cx);
         this.connect(cx);
         window.focus(&this.focus, cx);
         this
@@ -196,10 +234,15 @@ impl CorgiWindow {
         }
         match event {
             LinkEvent::Message(message) => {
-                if matches!(*message, corgi_core::protocol::ServerMessage::Hello(_)) {
+                let hello = matches!(*message, corgi_core::protocol::ServerMessage::Hello(_));
+                if hello {
                     self.backoff.reset();
                 }
-                match self.store.receive(*message) {
+                let received = self.store.receive(*message);
+                if hello {
+                    self.sync_terminal_socket(cx);
+                }
+                match received {
                     None => false,
                     Some(Received::State) => {
                         self.reconcile(cx);
@@ -314,6 +357,18 @@ impl CorgiWindow {
         agents
     }
 
+    /// Whether a clock the window shows counts seconds now: a prompt cache
+    /// in its last minute, or the wait before connecting again.
+    fn counts_seconds(&self, now: u64) -> bool {
+        !self.store.connected()
+            || self.store.state.agents.iter().any(|agent| {
+                agent
+                    .cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.expires_at > now && cache.expires_at - now <= 60)
+            })
+    }
+
     pub fn selected_agent(&self) -> Option<&Agent> {
         self.store.agent(self.selected.as_deref()?)
     }
@@ -388,14 +443,14 @@ impl CorgiWindow {
         let wanted = self
             .selected
             .clone()
-            .filter(|_| self.visible && self.layout.transcript_open);
+            .filter(|_| self.visible && self.layout.transcript_open && self.focus_view.is_none());
         if wanted != self.watching {
             self.watching = wanted.clone();
             self.send(Command::Watch { pane_id: wanted }, Purpose::Quiet);
         }
     }
 
-    fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+    pub fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
         if self.visible == visible {
             return;
         }
@@ -410,9 +465,41 @@ impl CorgiWindow {
             }
         );
         self.sync_watch();
+        self.terminal
+            .update(cx, |terminal, cx| terminal.set_visible(visible, cx));
         if visible {
             cx.notify();
         }
+    }
+
+    /// Gives the terminal the Herdr session `corgi serve` reads, from its
+    /// hello: terminals are local only, so none over ssh.
+    fn sync_terminal_socket(&mut self, cx: &mut Context<Self>) {
+        let remote = self.options.ssh.is_some();
+        let Some(hello) = self.store.hello.as_ref().filter(|_| !remote) else {
+            if remote {
+                self.terminal
+                    .update(cx, |terminal, cx| terminal.set_socket(None, true, cx));
+            }
+            return;
+        };
+        let socket = Some(PathBuf::from(&hello.socket));
+        self.terminal
+            .update(cx, |terminal, cx| terminal.set_socket(socket, false, cx));
+    }
+
+    fn color_terminal(&self, cx: &mut Context<Self>) {
+        let palette = theme::terminal_palette(&self.store.state.palette, self.system_light);
+        let roles = &self.colors.roles;
+        let (accent, muted, light) = (
+            theme::rgb(roles.accent),
+            theme::rgb(roles.muted),
+            self.colors.light,
+        );
+        self.terminal.update(cx, |terminal, cx| {
+            terminal.set_colors(&palette, accent, muted, light);
+            cx.notify();
+        });
     }
 
     fn recolor(&mut self, cx: &mut Context<Self>) {
@@ -426,6 +513,7 @@ impl CorgiWindow {
                     cx.notify();
                 });
             }
+            self.color_terminal(cx);
             cx.notify();
         }
     }
@@ -436,8 +524,14 @@ impl CorgiWindow {
         self.layout.save(self.layout_path.as_deref());
     }
 
+    /// Shows or hides the side panel: the focus view's own, or the
+    /// overview's.
     pub fn toggle_side(&mut self, cx: &mut Context<Self>) {
-        self.layout.side_open = !self.layout.side_open;
+        if self.focus_view.is_some() {
+            self.layout.focus_side_open = !self.layout.focus_side_open;
+        } else {
+            self.layout.side_open = !self.layout.side_open;
+        }
         self.save_layout();
         cx.notify();
     }
@@ -469,7 +563,7 @@ impl CorgiWindow {
             return;
         };
         let now = match drag.split {
-            Split::Side => position.x,
+            Split::Side | Split::FocusSide => position.x,
             Split::Transcript => position.y,
         };
         let delta = f32::from(now - drag.last);
@@ -487,11 +581,43 @@ impl CorgiWindow {
 
     // ---- Actions ----
 
-    /// What a double click on an agent's row does. Phase 3 opens the
-    /// agent's session in a terminal focus view here, and only here; until
-    /// then it opens the prompt dialog.
+    /// What a double click on an agent's row, or Enter on it, does: opens
+    /// the focus view on the agent's live terminal.
     pub fn open_agent(&mut self, pane_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_prompt(Some(pane_id), window, cx);
+        let Some(agent) = self.store.agent(&pane_id).cloned() else {
+            return;
+        };
+        self.select(pane_id.clone(), cx);
+        self.focus_view = Some(pane_id);
+        let target = Target {
+            pane_id: agent.pane_id,
+            tab_id: agent.tab_id,
+            name: agent.herdr_name.unwrap_or(agent.name),
+        };
+        self.terminal
+            .update(cx, |terminal, cx| terminal.open(target, cx));
+        let focus = self.terminal.read(cx).focus.clone();
+        window.focus(&focus, cx);
+        self.sync_watch();
+        cx.notify();
+    }
+
+    /// Back to the overview; the terminal's connection parks.
+    pub fn leave_focus(&mut self, cx: &mut Context<Self>) {
+        if self.focus_view.take().is_none() {
+            return;
+        }
+        self.terminal.update(cx, |terminal, cx| terminal.leave(cx));
+        self.focus_dialog(cx);
+        self.sync_watch();
+        cx.notify();
+    }
+
+    /// Opens the focus view's agent again, after its terminal was gone.
+    pub fn reopen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(pane_id) = self.focus_view.clone() {
+            self.open_agent(pane_id, window, cx);
+        }
     }
 
     pub fn open_prompt(
@@ -807,7 +933,12 @@ impl CorgiWindow {
             "k" | "up" => self.step(-1, cx),
             "home" | "g" => self.step(-10_000, cx),
             "end" => self.step(10_000, cx),
-            "enter" | "space" => self.toggle_transcript(cx),
+            "enter" => {
+                if let Some(pane_id) = self.selected.clone() {
+                    self.open_agent(pane_id, window, cx);
+                }
+            }
+            "space" => self.toggle_transcript(cx),
             "\\" => self.toggle_side(cx),
             "left" | "right" => {
                 let Some(group) = selected_group else { return };
@@ -828,6 +959,27 @@ impl CorgiWindow {
                 let index = key.parse::<usize>().unwrap_or(1) - 1;
                 self.answer_nth(index, window, cx);
             }
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    /// Keys in the focus view while its terminal does not have the keyboard
+    /// (after a click in the side panel): with nothing typed into a program,
+    /// Esc and `\` are free for the view. The terminal's own chords work too.
+    pub fn focus_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let terminal_focus = self.terminal.read(cx).focus.clone();
+        if terminal_focus.is_focused(window) {
+            return;
+        }
+        let keystroke = &event.keystroke;
+        let plain = !keystroke.modifiers.modified();
+        match keys::chord(keystroke, cfg!(target_os = "macos")) {
+            Some(Chord::Leave) => self.leave_focus(cx),
+            Some(Chord::ToggleSide) => self.toggle_side(cx),
+            _ if plain && keystroke.key == "escape" => self.leave_focus(cx),
+            _ if plain && keystroke.key == "\\" => self.toggle_side(cx),
+            _ if plain && keystroke.key == "enter" => window.focus(&terminal_focus, cx),
             _ => return,
         }
         cx.stop_propagation();
@@ -952,6 +1104,7 @@ impl CorgiWindow {
 
     pub fn focus_dialog_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = match &self.dialogs.open {
+            None if self.focus_view.is_some() => self.terminal.read(cx).focus.clone(),
             None => self.focus.clone(),
             Some(Dialog::Prompt { .. } | Dialog::Answer { .. }) => {
                 self.prompt_input.read(cx).focus_handle(cx)
