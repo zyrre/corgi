@@ -161,9 +161,9 @@ called out when detected.
 
 ## Private metadata, not a transcript backup
 
-The implementation is separated into [inventory/execution](../src/recovery/mod.rs),
-[native adapters](../src/recovery/native.rs), [storage](../src/recovery/store.rs),
-[setup](../src/recovery/setup.rs), [TUI state](../src/app/recovery.rs) and
+The implementation is separated into [inventory/execution](../crates/corgi-core/src/recovery/mod.rs),
+[native adapters](../crates/corgi-core/src/recovery/native.rs), [storage](../crates/corgi-core/src/recovery/store.rs),
+[setup](../crates/corgi-core/src/recovery/setup.rs), [TUI state](../src/app/recovery.rs) and
 [rendering](../src/ui/sessions.rs). It uses the existing Herdr client, theme
 roles, background jobs and marker reconciliation.
 
@@ -256,15 +256,15 @@ idempotency key, loaded config path or auto-resume queue barrier. Website-only
 `resume_argv` support is not assumed.
 
 Local source anchors at this revision: inventory
-[src/recovery/mod.rs:185](../src/recovery/mod.rs), original-shell validation
-[src/recovery/mod.rs:850](../src/recovery/mod.rs), holds
-[src/recovery/mod.rs:871](../src/recovery/mod.rs), execution
-[src/recovery/mod.rs:944](../src/recovery/mod.rs), delivery intents
-[src/recovery/mod.rs:1257](../src/recovery/mod.rs), native metadata/arguments
-[src/recovery/native.rs:151](../src/recovery/native.rs) and
-[src/recovery/native.rs:322](../src/recovery/native.rs), durable saves
-[src/recovery/store.rs:49](../src/recovery/store.rs), and explicit setup
-[src/recovery/setup.rs:146](../src/recovery/setup.rs).
+[crates/corgi-core/src/recovery/mod.rs:185](../crates/corgi-core/src/recovery/mod.rs), original-shell validation
+[crates/corgi-core/src/recovery/mod.rs:850](../crates/corgi-core/src/recovery/mod.rs), holds
+[crates/corgi-core/src/recovery/mod.rs:871](../crates/corgi-core/src/recovery/mod.rs), execution
+[crates/corgi-core/src/recovery/mod.rs:944](../crates/corgi-core/src/recovery/mod.rs), delivery intents
+[crates/corgi-core/src/recovery/mod.rs:1257](../crates/corgi-core/src/recovery/mod.rs), native metadata/arguments
+[crates/corgi-core/src/recovery/native.rs:151](../crates/corgi-core/src/recovery/native.rs) and
+[crates/corgi-core/src/recovery/native.rs:322](../crates/corgi-core/src/recovery/native.rs), durable saves
+[crates/corgi-core/src/recovery/store.rs:49](../crates/corgi-core/src/recovery/store.rs), and explicit setup
+[crates/corgi-core/src/recovery/setup.rs:146](../crates/corgi-core/src/recovery/setup.rs).
 
 Official references: [Herdr session restoration](https://herdr.dev/docs/session-state/)
 explains layout versus process/native restoration; [Codex resume](https://learn.chatgpt.com/docs/developer-commands?surface=cli#codex-resume)
@@ -287,7 +287,7 @@ required. Claude remains implemented. Independent live Codex verification after
 this implementation is assigned by the supervisor and remains a separate review
 step; no real reboot or active Herdr restart is authorized.
 
-Focused tests in [recovery/tests.rs](../src/recovery/tests.rs) and the TUI/waker
+Focused tests in [recovery/tests.rs](../crates/corgi-core/src/recovery/tests.rs) and the TUI/waker
 modules cover both native adapters and role/memory access; original IDs with
 zero placement creations/prompts; strict identity/private writes; missing and
 occupied destinations; unknown starts and metadata-only retry; next-boot holds,

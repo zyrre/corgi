@@ -1,28 +1,18 @@
-pub mod activity;
+// The frontend-independent modules live in the `corgi-core` crate; they are
+// re-exported here under their old paths, so `crate::herdr` and the like read
+// the same in the dashboard's code.
+pub use corgi_core::{
+    activity, choices, defaults, digest, git, harness, herdr, inbox, job, model, paths, projects,
+    recovery, session, supervisor, tag, time, usage, usage_cache,
+};
+
 pub mod app;
-pub mod choices;
-pub mod defaults;
-pub mod digest;
-pub mod git;
-pub mod harness;
-pub mod herdr;
-pub mod inbox;
-mod inbox_privacy;
-pub mod job;
-pub mod model;
 pub(crate) mod motion;
-pub mod paths;
-pub mod projects;
 #[cfg(test)]
 mod readme_shots;
-pub(crate) mod recovery;
-pub mod session;
-pub mod supervisor;
+pub mod serve;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod textfield;
 pub mod theme;
-pub mod time;
 pub mod ui;
-pub mod usage;
-pub mod usage_cache;

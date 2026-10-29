@@ -10,7 +10,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    digest,
+    digest::{
+        self,
+        memory::{DigestLookup, corgi_bin_text, digest_lookup, markdown_files},
+    },
     git::{git_current_branch, git_output, trust_root},
     harness::Harness,
     herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS, ReadSource},
@@ -19,17 +22,17 @@ use crate::{
     paths::{corgi_state_dir, expand_home, is_home},
     session::SessionReader,
     supervisor::{OLD_WAKE_PREFIX, WAKE_PREFIX},
+    tag::{TagOptions, tag_agent},
     time::unix_now,
 };
 
 use super::{
     App,
     catalog::{EFFORT_LEVELS, default_harness},
-    form::Checkout,
     launch::{
-        CORGI_REQUEST_TOKEN, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL, calling_supervisor_harness,
-        launch_agent, sanitize_agent_name, supervisor_harness_error, supervisor_plan,
-        unique_agent_name,
+        CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL,
+        calling_supervisor_harness, launch_agent, sanitize_agent_name, supervisor_harness_error,
+        supervisor_plan, unique_agent_name,
     },
     markers,
     progress::Stderr,
@@ -193,7 +196,7 @@ pub fn spawn(args: &[String]) -> Result<()> {
     if let Some(warning) = calling_supervisor_state_conflict(&app, pane_id.as_deref()) {
         eprintln!("warning: {warning}");
     }
-    let supervisor_harness = calling_supervisor_harness(&app, pane_id.as_deref());
+    let supervisor_harness = calling_supervisor_harness(&app.agents, pane_id.as_deref());
     let harness = spawn_harness(options.harness, supervisor_harness, default_harness);
     anyhow::ensure!(
         options.effort.is_empty() || harness.supports_effort(),
@@ -370,7 +373,14 @@ pub fn supervisor_command(args: &[String]) -> Result<()> {
 
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    let mut plan = supervisor_plan(&app, &root, harness, options.model, options.effort, task)?;
+    let mut plan = supervisor_plan(
+        &app.agents,
+        &root,
+        harness,
+        options.model,
+        options.effort,
+        task,
+    )?;
     if let Some(requested) = options.name.as_deref() {
         plan.name = free_agent_name(&client, requested)?;
     }
@@ -470,15 +480,6 @@ Options:
   --project PATH  Project directory (default: the current directory)
   --clear         Remove the tag";
 
-/// What `corgi tag` was asked to do.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct TagOptions {
-    pub(super) name: String,
-    /// Tag ready to merge, or else clear the tag.
-    pub(super) merge: bool,
-    pub(super) project: Option<String>,
-}
-
 fn parse_tag_options(args: &[String]) -> Result<TagOptions> {
     let mut name = None;
     let mut tag = None;
@@ -516,99 +517,8 @@ pub fn tag_command(args: &[String]) -> Result<()> {
     let project = existing_project_dir(options.project.as_deref())?;
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
-    println!("{}", tag_agent(&client, &app, &root, &options)?);
+    println!("{}", tag_agent(&client, &app.agents, &root, &options)?);
     Ok(())
-}
-
-/// Tags or untags the agent `options` names among the agents of the project
-/// at `root`, and says what was done.
-pub(super) fn tag_agent(
-    client: &HerdrClient,
-    app: &App,
-    root: &str,
-    options: &TagOptions,
-) -> Result<String> {
-    let name = options.name.as_str();
-    let agent = app
-        .agents
-        .iter()
-        .find(|agent| {
-            agent.project_root == root
-                && (agent.info.name.as_deref() == Some(name) || agent.info.pane_id == name)
-        })
-        .with_context(|| format!("no agent named {name} in {root}"))?;
-    let info = &agent.info;
-    let agent_name = info.name.as_deref().unwrap_or(name);
-    let session = markers::session_of(info);
-    if !options.merge {
-        let had = info.tokens.contains_key(crate::supervisor::MERGE_TOKEN);
-        markers::tag_pane(client, &info.pane_id, agent_name, session, None)?;
-        return Ok(if had {
-            format!("Cleared the merge tag of {agent_name}")
-        } else {
-            format!("{agent_name} had no merge tag")
-        });
-    }
-    if let Some(questions) = open_questions(root, agent_name) {
-        if questions.is_empty() {
-            bail!(
-                "{agent_name} has open questions (its ledger status is needs-answer); answer them first"
-            );
-        }
-        bail!(
-            "{agent_name} has open questions: {}; answer them first",
-            questions.join("; ")
-        );
-    }
-    let state = info.state;
-    anyhow::ensure!(
-        matches!(
-            state,
-            crate::model::AgentState::Done | crate::model::AgentState::Idle
-        ),
-        "{agent_name} is {}; tag it once it is done or idle",
-        state.label().to_lowercase()
-    );
-    let checkout = agent
-        .worktree_checkout
-        .as_deref()
-        .unwrap_or_else(|| info.cwd());
-    let base = git_current_branch(std::path::Path::new(root))
-        .with_context(|| format!("read the branch checked out in {root}"))?;
-    let ahead = commits_ahead(std::path::Path::new(checkout), &base)?;
-    anyhow::ensure!(
-        ahead > 0,
-        "{agent_name} has no commits ahead of {base} in {checkout}; there is nothing to merge"
-    );
-    let value = crate::supervisor::merge_tag_value(state, info.state_change_seq);
-    markers::tag_pane(client, &info.pane_id, agent_name, session, Some(&value))?;
-    Ok(format!(
-        "Tagged {agent_name} ready to merge: {ahead} commit{} ahead of {base}",
-        if ahead == 1 { "" } else { "s" }
-    ))
-}
-
-/// The questions the project supervisor's ledger still has open about the agent
-/// `agent` (see [`digest::open_questions`]). A project without a ledger, or
-/// one that cannot be read, has none.
-fn open_questions(root: &str, agent: &str) -> Option<Vec<String>> {
-    let state_dir = crate::supervisor::state_dir(root).ok()?;
-    let ledger = fs::read_to_string(state_dir.join("ledger.jsonl")).ok()?;
-    digest::open_questions(&ledger, agent)
-}
-
-/// How many commits `checkout`'s HEAD has that the branch `base` has not.
-fn commits_ahead(checkout: &std::path::Path, base: &str) -> Result<usize> {
-    let range = format!("{base}..HEAD");
-    git_output(checkout, &["rev-list", "--count", &range])?
-        .trim()
-        .parse()
-        .with_context(|| {
-            format!(
-                "count the commits of {} ahead of {base}",
-                checkout.display()
-            )
-        })
 }
 
 pub const DIGEST_USAGE: &str = "\
@@ -653,15 +563,6 @@ Options:
   --brief ID         Print a brief whole, by its id (YYYYMMDD-<worker>) or
                      its worker's name (the newest one)";
 
-/// What `corgi digest` prints: the digest, or one lookup in the memory.
-enum DigestLookup {
-    Decision(String),
-    Search(String),
-    Show(String),
-    Ledger(String),
-    Brief(String),
-}
-
 /// `corgi digest`: a bounded view of the state of a project's supervisor, joined
 /// with its running agents, for a supervisor to read at the start of its session.
 pub fn digest(args: &[String]) -> Result<()> {
@@ -701,17 +602,28 @@ pub fn digest(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
+    print!("{}", digest_summary(&root, &state_dir, &app.agents));
+    print_inbox_footer(&root);
+    Ok(())
+}
+
+/// `corgi digest`'s summary of the memory of `root`'s supervisor in
+/// `state_dir`, with `agents` as the project's running fleet.
+pub(crate) fn digest_summary(
+    root: &str,
+    state_dir: &Path,
+    agents: &[crate::model::DashboardAgent],
+) -> String {
     let read = |name: &str| fs::read_to_string(state_dir.join(name)).ok();
     let decisions = read("decisions.md").unwrap_or_default();
     let state = state_dir.to_string_lossy();
     let handovers = markdown_files(&state_dir.join(crate::supervisor::HANDOVERS_DIR));
-    let root_path = std::path::Path::new(&root);
+    let root_path = Path::new(root);
     let branch = git_current_branch(root_path).unwrap_or_else(|_| "(detached)".to_string());
     let head = git_output(root_path, &["rev-parse", "--short", "HEAD"])
         .map(|head| head.trim().to_string())
         .unwrap_or_else(|_| "(no commit)".to_string());
-    let fleet: Vec<_> = app
-        .agents
+    let fleet: Vec<_> = agents
         .iter()
         .filter(|agent| agent.project_root == root)
         .map(|agent| digest::LiveAgent {
@@ -729,182 +641,20 @@ pub fn digest(args: &[String]) -> Result<()> {
         .last()
         .map(|(name, text)| (name.as_str(), text.as_str()));
     let ledger = read(digest::lookup::LEDGER_FILE).unwrap_or_default();
-    print!(
-        "{}",
-        digest::render(&digest::DigestInput {
-            project: &root,
-            branch: &branch,
-            head: &head,
-            state_dir: &state,
-            handover: handover.as_deref(),
-            previous_handover,
-            decisions: &decisions,
-            ledger: &ledger,
-            fleet: &fleet,
-            now: crate::time::unix_now(),
-            decision_command: &decision_command,
-            search_command: &search_command,
-        })
-    );
-    print_inbox_footer(&root);
-    Ok(())
-}
-
-/// What `lookup` prints from the state directory `state_dir` of the project
-/// at `root`. Reads only.
-fn digest_lookup(state_dir: &Path, root: &str, lookup: DigestLookup) -> Result<String> {
-    let read = |name: &str| fs::read_to_string(state_dir.join(name)).ok();
-    let ledger = || read(digest::lookup::LEDGER_FILE).unwrap_or_default();
-    let archive = || read(digest::lookup::LEDGER_ARCHIVE_FILE).unwrap_or_default();
-    let names = |files: Vec<(String, String)>| -> Vec<String> {
-        files.into_iter().map(|(name, _)| name).collect()
-    };
-    match lookup {
-        DigestLookup::Decision(words) => {
-            let text = read("decisions.md").unwrap_or_default();
-            let decisions = digest::parse_decisions(&text);
-            let found = digest::matching_decisions(&decisions, &words);
-            if !found.is_empty() {
-                return Ok(format!("{}\n", found.join("\n\n")));
-            }
-            let found = digest::decisions_containing(&decisions, &words);
-            if !found.is_empty() {
-                let count = found.len();
-                return Ok(format!(
-                    "No decision heading contains {words:?}; {count} decision{} {} it in {}text:\n\n{}\n",
-                    if count == 1 { "" } else { "s" },
-                    if count == 1 { "has" } else { "have" },
-                    if count == 1 { "its " } else { "their " },
-                    found.join("\n\n")
-                ));
-            }
-            Ok(format!(
-                "No decision contains {words:?}; searching all of your memory instead.\n\n{}",
-                digest_search(state_dir, root, &words)
-            ))
-        }
-        DigestLookup::Search(words) => Ok(digest_search(state_dir, root, &words)),
-        DigestLookup::Show(handle) => {
-            let state = state_dir.to_string_lossy();
-            let (path, line) = digest::lookup::parse_handle(&state, &handle)?;
-            let text = fs::read_to_string(state_dir.join(&path))
-                .with_context(|| format!("read {path} in {state}"))?;
-            digest::lookup::show(&path, &text, line, &ledger(), &archive())
-        }
-        DigestLookup::Ledger(id) => digest::lookup::ledger(
-            &ledger(),
-            &archive(),
-            &id,
-            &names(markdown_files(&state_dir.join("briefs"))),
-            &names(markdown_files(&state_dir.join(digest::lookup::REPORTS_DIR))),
-        ),
-        DigestLookup::Brief(id) => {
-            digest::lookup::brief(&markdown_files(&state_dir.join("briefs")), &id)
-        }
-    }
-}
-
-/// `--search`'s output for `words` in the state directory `state_dir`.
-fn digest_search(state_dir: &Path, root: &str, words: &str) -> String {
-    let read = |name: &str| fs::read_to_string(state_dir.join(name)).ok();
-    let state = state_dir.to_string_lossy();
-    let decisions = read("decisions.md").unwrap_or_default();
-    let ledger = read(digest::lookup::LEDGER_FILE).unwrap_or_default();
-    let ledger_archive = read(digest::lookup::LEDGER_ARCHIVE_FILE).unwrap_or_default();
-    let handover_path = state_dir.join(crate::supervisor::HANDOVER_NOTE);
-    let handover = fs::read_to_string(&handover_path)
-        .ok()
-        .map(|text| (modified_text(&handover_path), text));
-    let briefs = markdown_files(&state_dir.join("briefs"));
-    let handovers = markdown_files(&state_dir.join(crate::supervisor::HANDOVERS_DIR));
-    let reports = markdown_files(&state_dir.join(digest::lookup::REPORTS_DIR));
-    let notes = note_files(&state_dir.join(digest::lookup::NOTES_DIR));
-    let show_command = format!("{} digest {root} --show <file:line>", corgi_bin_text());
-    digest::search::search(
-        &digest::search::SearchInput {
-            state_dir: &state,
-            show_command: &show_command,
-            decisions: &decisions,
-            ledger: &ledger,
-            ledger_archive: &ledger_archive,
-            handover: handover
-                .as_ref()
-                .map(|(when, text)| (when.as_str(), text.as_str())),
-            briefs: &briefs,
-            handovers: &handovers,
-            reports: &reports,
-            notes: &notes,
-        },
-        words,
-    )
-}
-
-/// When `path` was last written, `YYYY-MM-DD HH:MM UTC`, or empty when that
-/// cannot be read.
-fn modified_text(path: &Path) -> String {
-    fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|age| {
-            let stamp = crate::time::rfc3339_utc(age.as_secs());
-            format!("{} {} UTC", &stamp[..10], &stamp[11..16])
-        })
-        .unwrap_or_default()
-}
-
-/// The largest note `--search` reads; a bigger file is likely not one.
-const NOTE_BYTES: u64 = 1024 * 1024;
-
-/// `(path under dir, time last written, text)` of each text file in `dir`
-/// and the directories in it, by path; none when `dir` does not exist.
-/// Files that are not UTF-8 or past [`NOTE_BYTES`] are left out, and links
-/// are not followed.
-fn note_files(dir: &Path) -> Vec<(String, String, String)> {
-    let mut notes = Vec::new();
-    let mut pending = vec![dir.to_path_buf()];
-    while let Some(current) = pending.pop() {
-        for entry in fs::read_dir(&current).into_iter().flatten().flatten() {
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            let path = entry.path();
-            if kind.is_dir() {
-                pending.push(path);
-            } else if kind.is_file()
-                && entry.metadata().is_ok_and(|meta| meta.len() <= NOTE_BYTES)
-                && let Ok(text) = fs::read_to_string(&path)
-                && let Ok(relative) = path.strip_prefix(dir)
-            {
-                notes.push((
-                    relative.to_string_lossy().into_owned(),
-                    modified_text(&path),
-                    text,
-                ));
-            }
-        }
-    }
-    notes.sort();
-    notes
-}
-
-/// `(file name, text)` of each readable `.md` file in `dir`, by name; none
-/// when `dir` does not exist.
-fn markdown_files(dir: &std::path::Path) -> Vec<(String, String)> {
-    let mut files: Vec<_> = fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
-            let text = name
-                .ends_with(".md")
-                .then(|| fs::read_to_string(entry.path()).ok())??;
-            Some((name, text))
-        })
-        .collect();
-    files.sort();
-    files
+    digest::render(&digest::DigestInput {
+        project: root,
+        branch: &branch,
+        head: &head,
+        state_dir: &state,
+        handover: handover.as_deref(),
+        previous_handover,
+        decisions: &decisions,
+        ledger: &ledger,
+        fleet: &fleet,
+        now: crate::time::unix_now(),
+        decision_command: &decision_command,
+        search_command: &search_command,
+    })
 }
 
 pub const REPORT_USAGE: &str = "\
@@ -1184,6 +934,12 @@ pub fn inbox_command(args: &[String]) -> Result<()> {
     let inbox = Inbox::try_read(&dir)?;
     let (text, shown) = inbox_text(&inbox, &dir, &root, delivered);
     print!("{text}");
+    if let Some(note) = HerdrClient::from_env()
+        .ok()
+        .and_then(|client| held_note(&client, &root))
+    {
+        println!("{note}");
+    }
     if take {
         let ids: Vec<String> = shown.iter().map(|item| item.id.clone()).collect();
         inbox::mark_delivered(&dir, &ids, "corgi inbox --take")?;
@@ -1270,20 +1026,16 @@ fn inbox_entry(item: &Item, corgi_bin: &str, budget: Option<&mut usize>) -> Stri
     out
 }
 
-/// The Corgi binary as the commands it prints name it.
-fn corgi_bin_text() -> String {
-    env::current_exe().map_or_else(
-        |_| "corgi".to_string(),
-        |path| path.to_string_lossy().into_owned(),
-    )
-}
-
 /// Prints, on stderr, that the supervisor of the project at `root` has missed
-/// inbox items, if it does: any undelivered while no dashboard delivers,
-/// else those that have waited minutes, not just for the supervisor's turn.
+/// inbox items, if it does: any undelivered while neither Herdr's hooks nor
+/// a dashboard deliver, else those that have waited minutes, not just for
+/// the supervisor's turn.
 fn print_inbox_footer(root: &str) {
-    let delivering = HerdrClient::from_env()
-        .is_ok_and(|client| super::waker::wake_lock_held(client.socket_path()));
+    let client = HerdrClient::from_env().ok();
+    let delivering = client.as_ref().is_some_and(super::waker::inboxes_delivered);
+    if let Some(note) = client.as_ref().and_then(|client| held_note(client, root)) {
+        eprintln!("{note}");
+    }
     if let Some(footer) = crate::supervisor::state_dir(root).ok().and_then(|dir| {
         inbox::footer(
             &dir,
@@ -1295,6 +1047,22 @@ fn print_inbox_footer(root: &str) {
     }) {
         eprintln!("{footer}");
     }
+}
+
+/// The line saying that the inbox of the project at `root` is held, if it
+/// is: Herdr never confirmed a delivery of some of its items, which may be in
+/// the supervisor's box already, so Corgi types nothing more in until they are
+/// read.
+fn held_note(client: &HerdrClient, root: &str) -> Option<String> {
+    let held = super::waker::Inboxes::default().held(client, root).len();
+    (held > 0).then(|| {
+        format!(
+            "{held} inbox item(s) held: Corgi could not tell whether they reached the \
+             supervisor, so it types nothing more in for this project; read them with \
+             {} inbox {root} --take",
+            corgi_bin_text()
+        )
+    })
 }
 
 /// The root of `project` (default: the current directory): its
@@ -1792,77 +1560,5 @@ mod tests {
         let args = ["--request-id".to_string(), "20261002-corgi".to_string()];
         let refused = supervisor_command(&args).expect_err("no request id for a supervisor");
         assert!(refused.to_string().contains("for corgi spawn"), "{refused}");
-    }
-
-    #[test]
-    fn digest_lookups_read_the_state_directory_and_decision_falls_back_to_search() {
-        let state = crate::test_support::ScratchDir::new("digest-lookup");
-        let write = |name: &str, text: &str| {
-            let path = state.join(name);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, text).unwrap();
-        };
-        write(
-            "decisions.md",
-            "# Decisions\n\n## 2026-10-13: Loop fix (Q13: C)\nDecision: guard in kafka.\n\n\
-             ## 2026-10-14: Snapshots\nDecision: none, settled as Q21.\n",
-        );
-        write(
-            "handovers/20261014-103547.md",
-            "# Handover\n\n## Open threads\nSettled: Q23 A (lessons in CLAUDE.md).\n",
-        );
-        write(
-            "notes/plans/rollout.md",
-            "# Rollout\n\nQ23 follow-up: none.\n",
-        );
-        write(
-            "ledger-archive.jsonl",
-            r#"{"id":"20261001-w-a","agent":"w-a","status":"dispatched","summary":"Q23 lessons"}"#,
-        );
-        write("briefs/20261001-w-a.md", "# Lessons\n");
-        let lookup = |what| digest_lookup(&state, "/repos/weather", what).unwrap();
-
-        // A heading, then a body, then a search.
-        assert!(
-            lookup(DigestLookup::Decision("q13".into())).starts_with("## 2026-10-13: Loop fix")
-        );
-        assert_eq!(
-            lookup(DigestLookup::Decision("Q21".into())),
-            "No decision heading contains \"Q21\"; 1 decision has it in its text:\n\n\
-             ## 2026-10-14: Snapshots\nDecision: none, settled as Q21.\n"
-        );
-        let searched = lookup(DigestLookup::Decision("Q23".into()));
-        assert!(searched.starts_with(
-            "No decision contains \"Q23\"; searching all of your memory instead.\n\n\
-             # Search \"q23\": 3 hits"
-        ));
-        for place in [
-            "handovers/20261014-103547.md:4",
-            "notes/plans/rollout.md:3",
-            "ledger-archive.jsonl:1",
-        ] {
-            assert!(searched.contains(place), "{place}: {searched}");
-        }
-
-        assert!(
-            lookup(DigestLookup::Show("handovers/20261014-103547.md:4".into())).starts_with(
-                "# handovers/20261014-103547.md:3 (lines 3-4 of 4)\n## Open threads\n"
-            )
-        );
-        assert!(lookup(DigestLookup::Ledger("w-a".into())).contains(
-            "dispatched  agent: w-a; summary: Q23 lessons\nBrief: briefs/20261001-w-a.md\n"
-        ));
-        assert_eq!(
-            lookup(DigestLookup::Brief("w-a".into())),
-            "# briefs/20261001-w-a.md (whole file)\n# Lessons\n"
-        );
-        assert!(
-            digest_lookup(
-                &state,
-                "/repos/weather",
-                DigestLookup::Show("nothing.md".into())
-            )
-            .is_err()
-        );
     }
 }

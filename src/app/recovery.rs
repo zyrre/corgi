@@ -5,7 +5,7 @@ use crate::{
     recovery::{self, Row, Snapshot, Store, Target, setup},
     time::{rfc3339_utc, unix_now},
 };
-use anyhow::{Context, Result};
+use anyhow::Context;
 use crossterm::event::{KeyCode, KeyEvent};
 use std::{
     collections::BTreeMap,
@@ -646,69 +646,6 @@ impl App {
     }
 }
 
-pub(crate) fn restore_marks(
-    client: &crate::herdr::HerdrClient,
-    agent: &crate::model::AgentInfo,
-    tokens: &[(&str, &str)],
-    workspace: &str,
-    tab: &str,
-    entry: &recovery::Entry,
-) -> Result<()> {
-    super::markers::mark_pane(
-        client,
-        &agent.pane_id,
-        agent.name.as_deref().unwrap_or("recovered"),
-        super::markers::session_of(agent),
-        tokens,
-    )?;
-    if !entry.workspace_tokens.is_empty() {
-        let tokens = entry
-            .workspace_tokens
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str(),
-                    if k == "corgi_project_main_tab" && v == &entry.tab {
-                        tab
-                    } else {
-                        v.as_str()
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        super::markers::mark_workspace(
-            client,
-            workspace,
-            if entry.linked_checkout {
-                entry.cwd.to_str()
-            } else {
-                None
-            },
-            &tokens,
-        )?;
-    }
-    Ok(())
-}
-
-pub(crate) fn confirmed_request(
-    client: &crate::herdr::HerdrClient,
-    agent: &crate::model::AgentInfo,
-) -> Option<String> {
-    super::markers::confirmed_request(client, agent)
-}
-
-pub(crate) fn resume_name(entry: &recovery::Entry, live: &[crate::model::AgentInfo]) -> String {
-    let original = super::launch::sanitize_agent_name(&entry.name);
-    if live.iter().any(|a| a.name.as_deref() == Some(&original)) {
-        format!(
-            "r-{}",
-            &entry.native_id.as_deref().unwrap().replace('-', "")[..30]
-        )
-    } else {
-        original
-    }
-}
-
 fn known(value: &str) -> &str {
     if value.is_empty() {
         "unverified native default"
@@ -795,7 +732,7 @@ mod tests {
     }
     #[test]
     fn final_confirmation_requires_selection_tab_and_inline_acknowledgments() {
-        let (_scratch, _client, mut saved, _) = recovery::tests::hold_fixture();
+        let (_scratch, _client, mut saved, _) = recovery::fixture::hold_fixture();
         saved.created = 1;
         saved.entries[0].settings.unknown = true;
         let mut form = Sessions {
@@ -944,7 +881,7 @@ mod tests {
 
     #[test]
     fn restore_acknowledgment_hints_accept_both_letter_cases() {
-        let (_scratch, _client, mut saved, _) = recovery::tests::hold_fixture();
+        let (_scratch, _client, mut saved, _) = recovery::fixture::hold_fixture();
         saved.created = 1;
         saved.entries[0].settings.unknown = true;
         for (old, setup) in [('o', 'a'), ('O', 'A')] {

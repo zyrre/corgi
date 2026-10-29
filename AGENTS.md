@@ -22,17 +22,40 @@ cargo test
 cargo build --release
 ```
 
+These cover the whole workspace: the `corgi` binary at the root and the
+`corgi-core` library in `crates/corgi-core` are both default members (see
+"Crates" in ARCHITECTURE.md). The core must not depend on ratatui or
+crossterm; after changing its dependencies, check that
+`cargo tree -p corgi-core | grep -E 'ratatui|crossterm'` prints nothing.
+Code that draws or reads keys goes in the root crate; what another frontend
+would need (Herdr, the rows, the flows that change Herdr, the supervisor's
+files) goes in the core, which takes a `HerdrClient` rather than an `App`.
+
 Clippy lints code under `#[cfg(target_os = ...)]` only on that OS, so a lint
 can pass on your machine and fail CI on the other (a `return` left at the end
 of a macOS-only block did). CI runs on both Linux and macOS; check both jobs.
 
 On macOS the default `$TMPDIR` makes the fake Herdr socket path in
-`src/test_support.rs` exceed `SUN_LEN`, so run `TMPDIR=/tmp cargo test` there.
+`crates/corgi-core/src/test_support.rs` exceed `SUN_LEN`, so run
+`TMPDIR=/tmp cargo test` there. The binary crate's tests reach the core's
+test helpers through its `test-support` feature; a core item only tests use
+is gated `#[cfg(any(test, feature = "test-support"))]`, not `#[cfg(test)]`,
+when the binary's tests need it too.
 
 A test that polls a non-blocking listener's `accept()` must set the accepted
 stream back to blocking (`set_nonblocking(false)`) before relying on a read
 timeout: macOS/BSD sockets inherit `O_NONBLOCK` from the listener, Linux
 sockets do not, so the failure shows only on macOS CI.
+
+In the root crate's tests, give every `HerdrClient` a scratch marker record
+with `.with_marker_record(scratch.join("markers.json"))`: the core is built
+there without `cfg(test)`, so `HerdrClient::from_socket_path` writes its
+marker record into the real state directory.
+
+A shell pane reported as an agent (below) shows in Corgi like one, but
+Herdr refuses `agent.prompt` to it with `agent_not_ready`, since no agent is
+its foreground process. Testing a prompt live needs a real agent CLI, which
+tests must not drive, so test prompts against a fake Herdr socket.
 
 `App::new` loads the real `projects` list from Corgi's state directory;
 `test_app()` keeps an in-memory one, so build test apps with it. Saving the
@@ -42,10 +65,10 @@ such as `/repos/a`.
 
 The supervisor's role and the `[Corgi]` lines Corgi types into its box
 (handover requests, merge, conflict and push lines) are pinned by tests in
-`src/supervisor.rs`, and the merge lines also by the exact-inbox-text tests
-in `src/app/merge.rs`: change the wording, update both. Line breaks in
-`supervisor/ROLE.md` and `supervisor/HANDOVER.md` matter, since those tests
-match their text with `contains`.
+`crates/corgi-core/src/supervisor.rs`, and the merge lines also by the
+exact-inbox-text tests in `src/app/merge.rs`: change the wording, update
+both. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
+matter, since those tests match their text with `contains`.
 
 On macOS, copying a rebuilt binary over an existing file (say, a copy of
 `target/release/corgi` kept to compare before and after) gets it killed with
@@ -55,9 +78,9 @@ destination before copying.
 `corgi digest`'s lookups (`--search`, `--show`, `--ledger`, `--brief`,
 `--decision`) need Herdr only to find the project's state directory. Test
 them with a `ScratchDir` as the state directory through `digest_lookup` in
-`src/app/cli.rs`. To try them on real data, copy the state into a scratch
-directory and point `XDG_STATE_HOME` at it; never run a change against the
-real `~/.local/state/corgi`:
+`crates/corgi-core/src/digest/memory.rs`. To try them on real data, copy the
+state into a scratch directory and point `XDG_STATE_HOME` at it; never run a
+change against the real `~/.local/state/corgi`:
 
 ```bash
 mkdir -p "$scratch/corgi/supervisors"
@@ -65,12 +88,13 @@ cp -R ~/.local/state/corgi/supervisors/<project> "$scratch/corgi/supervisors/"
 XDG_STATE_HOME="$scratch" ./target/release/corgi digest <project dir> --search "<words>"
 ```
 
-`rust-version` in `Cargo.toml` is the oldest Rust that builds Corgi: 1.89,
-set by std's `File::lock` (ratatui 0.30 alone needs 1.88). With it set,
-clippy's `incompatible_msrv` lint refuses a newer std API, so raise it
-deliberately. To check an older toolchain, build in Docker with the worktree
-mounted read-only and the target directory inside the container (a session
-scratchpad under `/private/tmp` is not visible to Docker on macOS):
+`rust-version` in the root `Cargo.toml`'s `[workspace.package]`, which both
+crates take, is the oldest Rust that builds Corgi: 1.89, set by std's
+`File::lock` (ratatui 0.30 alone needs 1.88). With it set, clippy's
+`incompatible_msrv` lint refuses a newer std API, so raise it deliberately. To
+check an older toolchain, build in Docker with the worktree mounted read-only
+and the target directory inside the container (a session scratchpad under
+`/private/tmp` is not visible to Docker on macOS):
 
 ```bash
 docker run --rm -v "$PWD":/src:ro -w /src -e CARGO_TARGET_DIR=/tmp/t \
@@ -152,6 +176,51 @@ from that primary checkout with `cargo build --release` and
 metadata changed. Quit and reopen only the Corgi dashboard when the running
 process must pick up a rebuilt binary; do not restart Herdr.
 
+## Testing Herdr's hooks
+
+`cargo test hook` covers `corgi hook`: the core's tests drive the lock and
+dirty-flag protocol, the event parsing and the watchdog, and `tests/hook.rs`
+runs the real binary, sixteen at once, against `test_support::FakeHerdr`.
+To try the hooks in a real Herdr, register the plugin only in a private
+home: plugin registrations are per user, not per session. Run Herdr with
+`env -i` and a private `HOME` and `XDG_*` directories (a short
+`XDG_CONFIG_HOME` such as `/tmp/<name>`, since macOS limits socket paths),
+a throwaway `--session`, and link a copy of the manifest without its
+`[[build]]` whose `./target/release/corgi` is a symlink to the worktree's
+build; delete the session afterwards and check `herdr session list`. Then:
+
+- Keep `XDG_STATE_HOME` outside `/tmp` and `$TMPDIR` (say under
+  `target/`): Corgi's recovery refuses to coordinate deliveries from a
+  volatile state directory, so no wake is typed in. `tests/hook.rs` keeps
+  its state under `CARGO_TARGET_TMPDIR` for the same reason.
+- Herdr types into an agent (`agent.prompt`) only while the agent is the
+  pane's foreground process. A fake agent is a small program compiled with
+  `rustc` and installed as `claude` (and `codex`) in a directory of its own:
+  it ignores its arguments, echoes each line, prints Claude Code's working
+  line (`⏵⏵ working · esc to interrupt`: Herdr's pattern needs whitespace,
+  `·` or the line's end after "interrupt") for a few seconds per prompt so
+  Herdr sees a turn, writes the handover note when a line asks for one, and
+  exits on `/exit`. A copied system binary must be signed with
+  `codesign -s - -f`, or macOS kills it.
+- Keep the real agent CLIs unreachable. A login bash runs macOS's
+  `path_helper`, which puts `/etc/paths.d/homebrew` (`/opt/homebrew/bin`,
+  where `claude` lives) ahead of anything prepended to `PATH`, so set the
+  server's `SHELL` to a wrapper that runs `bash --noprofile --norc -i` with
+  `PATH` the fakes' directory and the system's, and keep the server's own
+  `PATH` the same. Before typing into a pane, check with
+  `herdr pane process-info --pane <id>` that each foreground process's
+  executable (`lsof -a -p <pid> -d txt`, not `ps -o comm`, which gives only
+  the name it was started by) is a fake, and run a loop that kills any
+  other `claude`, `codex` or `node` of the private home.
+- Report fake agents' states with a test `--source`. Only
+  `--source herdr:claude` keeps an `--agent-session-id`, and Herdr then
+  ignores the test source's states for that pane. **A pane with a
+  `herdr:claude` session comes back after a Herdr restart or live handoff
+  running the real `claude --resume <id>`** through the pane's shell, so
+  the fakes must win on that shell's `PATH` (above) before any restart.
+- `herdr plugin log list --plugin io.github.zyrre.corgi` shows each hook's
+  line, its exit code and its time.
+
 ## Session recovery checks
 
 `cargo test recovery` uses isolated native-store/config fixtures and fake Herdr
@@ -185,14 +254,22 @@ monospace fonts, so it needs no tool beyond Cargo. It takes about half a
 minute; keep the GIF well under 2 MB. Delete an image the README stops
 using.
 
+Since the GIF's text comes from the system's fonts, `merge-outcomes.gif`
+differs from machine to machine. To check that a change left it alone,
+compare it with one drawn from a build of the base commit on the same
+machine, not with the committed file (`git archive <base>` into a scratch
+directory gives that build without touching a checkout).
+
 ## Releasing
 
-Bump `version` in `Cargo.toml`, `herdr-plugin.toml` and
-`omarchy/manifest.json` (and run `cargo build` so `Cargo.lock` follows),
-commit, and push a `vX.Y.Z` tag matching it. `.github/workflows/release.yml`
-then builds the four binaries and publishes the GitHub release with them and
-their `SHA256SUMS`; it refuses a tag that does not match all three versions.
-Its last job, `omarchy`, then publishes the Omarchy bar widget (below).
+Bump `version` in the root `Cargo.toml` (`[workspace.package]`, which both
+crates take), `herdr-plugin.toml` and `omarchy/manifest.json` (and run
+`cargo build` so `Cargo.lock` follows), commit, and push a `vX.Y.Z` tag
+matching it.
+`.github/workflows/release.yml` then builds the four binaries and publishes
+the GitHub release with them and their `SHA256SUMS`; it refuses a tag that
+does not match all three versions. Its last job, `omarchy`, then publishes the
+Omarchy bar widget (below).
 
 After the artifacts exist, independently download all four binaries and hash
 those bytes; compare with the published `SHA256SUMS`, GitHub asset digests and
@@ -336,9 +413,11 @@ strong enough that decoration never interferes with readability.
 Use color often to clarify state, hierarchy, and actions. Prefer semantic ANSI
 terminal colors over fixed RGB values so Corgi automatically follows the active
 Omarchy theme palette; reserve high-contrast colors for important information.
-Take every color from a role in `src/theme/` (`theme::roles()`), adding a role
-there when none fits, so it follows the terminal's palette, light or dark; only
-the theme module and tests write color literals. To check a color change
-without a light terminal or an Omarchy machine, write the theme preview with
+Take every color from a role (`theme::roles()`), adding a role in
+`crates/corgi-core/src/palette/` when none fits, so it follows the terminal's
+palette, light or dark; only the palette and theme modules and tests write
+color literals; `src/theme/` maps the core's colors onto ratatui's. To check
+a color change without a light terminal or an Omarchy machine, write the
+theme preview with
 `CORGI_PREVIEW_DIR=<dir> TMPDIR=/tmp cargo test --lib theme_preview -- --ignored`
 and read its files with `less -R`.

@@ -1,223 +1,27 @@
-//! Every color Corgi draws, by what it means rather than by its value.
+//! The dashboard's colors: the theme of [`corgi_core::palette`] as ratatui
+//! draws it, and the one theme the process draws with.
 //!
-//! A [`Theme`] is a [`Palette`] — the terminal's foreground, background and
-//! sixteen ANSI colors, as RGB — and the roles the dashboard draws with,
-//! worked out from it once. Most roles are the terminal's own ANSI colors
-//! (`Color::Cyan` for the accent, and so on), so they look exactly as the
-//! terminal's theme paints them. The rest are shades between them, for the
-//! rules and keycaps of a popup and for the effects that fade, and those are
-//! blended from the palette's RGB, so they sit right on a light terminal as
-//! well as a dark one.
-//!
-//! The palette is resolved once at startup by [`resolve`]: the active
-//! Omarchy theme, else the terminal's answer to an OSC color query, else
-//! Catppuccin. Until then, and in tests, the theme is xterm's defaults, the
-//! palette Corgi assumed before it could read one.
+//! A core role is the terminal's default, one of its sixteen ANSI colors, one
+//! of the fixed 256, or an RGB; here each is the ratatui [`Color`] of the
+//! same name, so the terminal paints the ANSI ones from its own theme.
 //!
 //! No color literal belongs anywhere else in the crate, except in tests.
 //! The brand colors in [`brand`] are fixed in every theme.
 
 use std::{cell::RefCell, sync::OnceLock};
 
+use corgi_core::palette;
+pub use corgi_core::palette::{
+    CONTEXT_STEPS, Palette, Rgb, Source, blend, indexed_rgb, is_light, nearest,
+};
 use ratatui::style::Color;
 
-pub(crate) mod resolve;
-
-pub use resolve::resolve;
-
-/// A color as red, green and blue.
-pub type Rgb = (u8, u8, u8);
-
-/// The colors a terminal is themed with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Palette {
-    pub foreground: Rgb,
-    pub background: Rgb,
-    /// Black, red, green, yellow, blue, magenta, cyan and white, then their
-    /// bright variants.
-    pub ansi: [Rgb; 16],
-}
-
-impl Palette {
-    /// xterm's defaults: what Corgi assumed of every terminal before it
-    /// could read one, and what a dark xterm-like terminal still looks like.
-    pub const XTERM: Self = Self {
-        foreground: (229, 229, 229),
-        background: (0, 0, 0),
-        ansi: [
-            (0, 0, 0),
-            (205, 0, 0),
-            (0, 205, 0),
-            (205, 205, 0),
-            (0, 0, 238),
-            (205, 0, 205),
-            (0, 205, 205),
-            (229, 229, 229),
-            (127, 127, 127),
-            (255, 0, 0),
-            (0, 255, 0),
-            (255, 255, 0),
-            (92, 92, 255),
-            (255, 0, 255),
-            (0, 255, 255),
-            (255, 255, 255),
-        ],
-    };
-
-    /// Catppuccin Mocha, the fallback on a dark terminal.
-    pub const CATPPUCCIN_MOCHA: Self = Self {
-        foreground: (0xcd, 0xd6, 0xf4),
-        background: (0x1e, 0x1e, 0x2e),
-        ansi: [
-            (0x45, 0x47, 0x5a),
-            (0xf3, 0x8b, 0xa8),
-            (0xa6, 0xe3, 0xa1),
-            (0xf9, 0xe2, 0xaf),
-            (0x89, 0xb4, 0xfa),
-            (0xf5, 0xc2, 0xe7),
-            (0x94, 0xe2, 0xd5),
-            (0xba, 0xc2, 0xde),
-            (0x58, 0x5b, 0x70),
-            (0xf3, 0x8b, 0xa8),
-            (0xa6, 0xe3, 0xa1),
-            (0xf9, 0xe2, 0xaf),
-            (0x89, 0xb4, 0xfa),
-            (0xf5, 0xc2, 0xe7),
-            (0x94, 0xe2, 0xd5),
-            (0xa6, 0xad, 0xc8),
-        ],
-    };
-
-    /// Catppuccin Latte, the fallback on a light terminal.
-    pub const CATPPUCCIN_LATTE: Self = Self {
-        foreground: (0x4c, 0x4f, 0x69),
-        background: (0xef, 0xf1, 0xf5),
-        ansi: [
-            (0x5c, 0x5f, 0x77),
-            (0xd2, 0x0f, 0x39),
-            (0x40, 0xa0, 0x2b),
-            (0xdf, 0x8e, 0x1d),
-            (0x1e, 0x66, 0xf5),
-            (0xea, 0x76, 0xcb),
-            (0x17, 0x92, 0x99),
-            (0xac, 0xb0, 0xbe),
-            (0x6c, 0x6f, 0x85),
-            (0xd2, 0x0f, 0x39),
-            (0x40, 0xa0, 0x2b),
-            (0xdf, 0x8e, 0x1d),
-            (0x1e, 0x66, 0xf5),
-            (0xea, 0x76, 0xcb),
-            (0x17, 0x92, 0x99),
-            (0xbc, 0xc0, 0xcc),
-        ],
-    };
-
-    /// Catppuccin in the flavor that suits a light or a dark terminal.
-    pub fn catppuccin(light: bool) -> Self {
-        if light {
-            Self::CATPPUCCIN_LATTE
-        } else {
-            Self::CATPPUCCIN_MOCHA
-        }
-    }
-
-    /// Whether the background is light, by its perceived brightness.
-    pub fn is_light(&self) -> bool {
-        is_light(self.background)
-    }
-}
-
-/// Whether `rgb` is a light color, by its perceived brightness.
-pub fn is_light((r, g, b): Rgb) -> bool {
-    0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b) > 127.5
-}
-
-/// Where a theme's palette came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// Nothing was read: xterm's defaults, as before any theme was resolved.
-    Assumed,
-    /// The active Omarchy theme.
-    Omarchy,
-    /// The terminal's answer to the OSC color queries.
-    Terminal,
-    /// Catppuccin, because nothing could be read, or because it was asked
-    /// for with `CORGI_THEME`.
-    Catppuccin,
-}
-
-/// The palette and the roles worked out from it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Theme {
-    pub palette: Palette,
-    pub source: Source,
-    /// Whether the background is light.
-    pub light: bool,
-    /// Whether roles are the terminal's own ANSI colors, which the terminal
-    /// paints from its theme, rather than the palette's RGB. They are
-    /// whenever the palette is the terminal's own, read or presumed.
-    pub terminal_colors: bool,
-    /// Whether shades are drawn in 24-bit RGB rather than snapped to the
-    /// fixed 256-color cube.
-    pub truecolor: bool,
-    pub roles: Roles,
-}
-
-/// What the dashboard draws with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Roles {
-    /// Working agents, focus, and what the user can act on.
-    pub accent: Color,
-    /// Secondary text: separators, hints, idle states.
-    pub muted: Color,
-    pub success: Color,
-    pub warning: Color,
-    pub danger: Color,
-    /// A state Corgi cannot tell.
-    pub unknown: Color,
-    /// An agent a supervisor tagged ready for the user to merge: magenta,
-    /// the one semantic color no state the user acts on uses.
-    pub merge: Color,
-    /// An agent's thinking, apart from what it says.
-    pub thinking: Color,
-    /// Body text.
-    pub text: Color,
-    /// Text that is done with: quieter than body text, louder than muted.
-    pub quiet: Color,
-    /// Text on a colored badge, such as an agent's state.
-    pub badge_text: Color,
-    /// A popup's fill, a panel tone that lifts it off the dashboard.
-    pub popup_fill: Color,
-    /// The cap a key is drawn on, the rule over a popup's keys, and the bar
-    /// behind a form's focused row: quiet greys over the popup's fill.
-    pub keycap: Color,
-    pub rule: Color,
-    pub focus_bar: Color,
-    /// What the dashboard's colors fade towards behind a popup, and its
-    /// backgrounds.
-    pub dimmed: Color,
-    pub dimmed_background: Color,
-    /// What a popup's content fades in from, just off its fill.
-    pub fade_from: Color,
-    /// The terminal's default foreground, for an effect that fades it.
-    pub foreground: Color,
-    /// The green a success turns a popup's frame, and the vivid green of its
-    /// check stamp.
-    pub success_frame: Color,
-    pub stamp: Color,
-    /// What a failure's frame pulses from: as far from the background as a
-    /// color goes.
-    pub flash: Color,
-    /// How full a context window is, from green through yellow to red.
-    pub context_ramp: [Color; CONTEXT_STEPS],
-}
+/// The roles the dashboard draws with, as ratatui colors.
+pub type Roles = palette::Roles<Color>;
 
 /// The terminal's default color, foreground or background: no color of
 /// Corgi's own.
 pub const TERMINAL_DEFAULT: Color = Color::Reset;
-
-/// The steps of [`Roles::context_ramp`].
-pub const CONTEXT_STEPS: usize = 7;
 
 /// The sixteen ANSI colors by name, as a role that the terminal paints.
 const ANSI_NAMES: [Color; 16] = [
@@ -238,150 +42,75 @@ const ANSI_NAMES: [Color; 16] = [
     Color::LightCyan,
     Color::White,
 ];
-const BLACK: usize = 0;
-const RED: usize = 1;
-const GREEN: usize = 2;
-const YELLOW: usize = 3;
-const MAGENTA: usize = 5;
-const CYAN: usize = 6;
-const WHITE: usize = 7;
-const BRIGHT_BLACK: usize = 8;
-const BRIGHT_GREEN: usize = 10;
-const BRIGHT_BLUE: usize = 12;
-const BRIGHT_WHITE: usize = 15;
+
+/// The ratatui color that draws `color`.
+pub const fn color(color: palette::Color) -> Color {
+    match color {
+        palette::Color::Default => Color::Reset,
+        palette::Color::Ansi(index) if index < 16 => ANSI_NAMES[index as usize],
+        palette::Color::Ansi(_) => Color::Reset,
+        palette::Color::Indexed(index) => Color::Indexed(index),
+        palette::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// The core color `color` draws, the inverse of [`color()`].
+fn core_color(color: Color) -> palette::Color {
+    if let Some(index) = ANSI_NAMES.iter().position(|name| *name == color) {
+        return palette::Color::Ansi(index as u8);
+    }
+    match color {
+        Color::Indexed(index) => palette::Color::Indexed(index),
+        Color::Rgb(r, g, b) => palette::Color::Rgb(r, g, b),
+        _ => palette::Color::Default,
+    }
+}
+
+/// A theme of the core as the dashboard draws it: the core's theme, and its
+/// roles as ratatui colors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Theme {
+    pub palette: Palette,
+    /// Whether the background is light.
+    pub light: bool,
+    pub roles: Roles,
+    core: palette::Theme,
+}
+
+impl From<palette::Theme> for Theme {
+    fn from(core: palette::Theme) -> Self {
+        Self {
+            palette: core.palette,
+            light: core.light,
+            roles: core.roles.map(color),
+            core,
+        }
+    }
+}
 
 impl Theme {
     /// The theme of `palette`. With `terminal_colors`, roles are the
     /// terminal's ANSI colors and only shades come from the palette's RGB.
     pub fn new(palette: Palette, source: Source, terminal_colors: bool, truecolor: bool) -> Self {
-        let mut theme = Self {
-            palette,
-            source,
-            light: palette.is_light(),
-            terminal_colors,
-            truecolor,
-            roles: Roles::placeholder(),
-        };
-        theme.roles = theme.derive();
-        theme
+        palette::Theme::new(palette, source, terminal_colors, truecolor).into()
     }
 
     /// xterm's defaults in the terminal's own colors, snapped to the 256
     /// colors: the theme before one is resolved, and in tests.
     pub fn assumed() -> Self {
-        Self::new(Palette::XTERM, Source::Assumed, true, false)
+        palette::Theme::assumed().into()
     }
 
     /// Catppuccin in its own RGB rather than the terminal's colors, for a
     /// fixed look whatever the terminal is themed with.
     pub fn catppuccin(light: bool, truecolor: bool) -> Self {
-        Self::new(
-            Palette::catppuccin(light),
-            Source::Catppuccin,
-            false,
-            truecolor,
-        )
-    }
-
-    fn derive(&self) -> Roles {
-        let palette = &self.palette;
-        let (foreground, background) = (palette.foreground, palette.background);
-        let named = |index: usize| self.named(index);
-        let shade = |rgb: Rgb| self.shade(rgb);
-        // A dark theme's black is a panel tone just off its background, as
-        // popups have always been filled; a light theme's black is dark,
-        // so its popups are filled a step from the background instead.
-        let (popup_fill, fill) = if self.light {
-            let fill = blend(background, foreground, 0.06);
-            (shade(fill), fill)
-        } else {
-            (named(BLACK), palette.ansi[BLACK])
-        };
-        // A theme color taken towards the foreground as far as it is
-        // saturated: xterm's pure green loses its edge, a pastel theme's
-        // stays nearly as it is, and on a light theme the color deepens, so
-        // either way it reads without shouting.
-        let soften = |rgb: Rgb| blend(rgb, foreground, 0.3 * saturation(rgb));
-        let context_ramp = std::array::from_fn(|step| {
-            let half = (CONTEXT_STEPS - 1) / 2;
-            let rgb = if step <= half {
-                blend(
-                    palette.ansi[GREEN],
-                    palette.ansi[YELLOW],
-                    step as f32 / half as f32,
-                )
-            } else {
-                blend(
-                    palette.ansi[YELLOW],
-                    palette.ansi[RED],
-                    (step - half) as f32 / half as f32,
-                )
-            };
-            shade(soften(rgb))
-        });
-        Roles {
-            accent: named(CYAN),
-            muted: named(BRIGHT_BLACK),
-            success: named(GREEN),
-            warning: named(YELLOW),
-            danger: named(RED),
-            unknown: named(MAGENTA),
-            merge: named(MAGENTA),
-            thinking: named(BRIGHT_BLUE),
-            // A light theme's whites are pale, so its text is the
-            // terminal's own foreground.
-            text: match (self.light, self.terminal_colors) {
-                (false, _) => named(BRIGHT_WHITE),
-                (true, true) => Color::Reset,
-                (true, false) => shade(foreground),
-            },
-            quiet: if self.light {
-                shade(blend(foreground, background, 0.25))
-            } else {
-                named(WHITE)
-            },
-            badge_text: if self.light {
-                shade(background)
-            } else {
-                named(BLACK)
-            },
-            popup_fill,
-            keycap: shade(blend(fill, foreground, 0.25)),
-            rule: shade(blend(fill, foreground, 0.25)),
-            focus_bar: shade(blend(fill, foreground, 0.2)),
-            dimmed: shade(blend(background, foreground, 0.3)),
-            dimmed_background: shade(blend(background, foreground, 0.12)),
-            fade_from: shade(blend(fill, foreground, 0.16)),
-            foreground: shade(foreground),
-            success_frame: shade(soften(palette.ansi[GREEN])),
-            stamp: named(BRIGHT_GREEN),
-            flash: shade(if self.light {
-                (0, 0, 0)
-            } else {
-                (255, 255, 255)
-            }),
-            context_ramp,
-        }
-    }
-
-    /// ANSI color `index` as a role: the terminal's own when it paints the
-    /// palette, else the palette's RGB.
-    fn named(&self, index: usize) -> Color {
-        if self.terminal_colors {
-            ANSI_NAMES[index]
-        } else {
-            self.shade(self.palette.ansi[index])
-        }
+        palette::Theme::catppuccin(light, truecolor).into()
     }
 
     /// `rgb` as the terminal can draw it: exactly in truecolor, else the
     /// nearest of the fixed 256 colors.
     pub fn shade(&self, rgb: Rgb) -> Color {
-        if self.truecolor {
-            Color::Rgb(rgb.0, rgb.1, rgb.2)
-        } else {
-            Color::Indexed(nearest(rgb))
-        }
+        color(self.core.shade(rgb))
     }
 
     /// The RGB of `color` in this theme: the palette's for the sixteen ANSI
@@ -389,16 +118,7 @@ impl Theme {
     /// terminal's default, which is the foreground or the background
     /// depending on where it is drawn.
     pub fn rgb(&self, color: Color) -> Option<Rgb> {
-        if let Some(index) = ANSI_NAMES.iter().position(|name| *name == color) {
-            return Some(self.palette.ansi[index]);
-        }
-        match color {
-            Color::Reset => None,
-            Color::Rgb(r, g, b) => Some((r, g, b)),
-            Color::Indexed(index @ 0..=15) => Some(self.palette.ansi[usize::from(index)]),
-            Color::Indexed(index) => Some(indexed_rgb(index)),
-            _ => None,
-        }
+        self.core.rgb(core_color(color))
     }
 
     /// `from` blended `t` of the way to `to`. The ends are the colors
@@ -412,10 +132,7 @@ impl Theme {
         if t >= 1.0 {
             return to;
         }
-        let (Some(a), Some(b)) = (self.rgb(from), self.rgb(to)) else {
-            return if t < 0.5 { from } else { to };
-        };
-        self.shade(blend(a, b, t))
+        color(self.core.mix(core_color(from), core_color(to), t))
     }
 
     /// The name the Omarchy bar widget gives `color`, when it is a role the
@@ -436,34 +153,9 @@ impl Theme {
     }
 }
 
-impl Roles {
-    fn placeholder() -> Self {
-        Self {
-            accent: Color::Reset,
-            muted: Color::Reset,
-            success: Color::Reset,
-            warning: Color::Reset,
-            danger: Color::Reset,
-            unknown: Color::Reset,
-            merge: Color::Reset,
-            thinking: Color::Reset,
-            text: Color::Reset,
-            quiet: Color::Reset,
-            badge_text: Color::Reset,
-            popup_fill: Color::Reset,
-            keycap: Color::Reset,
-            rule: Color::Reset,
-            focus_bar: Color::Reset,
-            dimmed: Color::Reset,
-            dimmed_background: Color::Reset,
-            fade_from: Color::Reset,
-            foreground: Color::Reset,
-            success_frame: Color::Reset,
-            stamp: Color::Reset,
-            flash: Color::Reset,
-            context_ramp: [Color::Reset; CONTEXT_STEPS],
-        }
-    }
+/// The theme to draw with, as [`palette::resolve()`] finds it.
+pub fn resolve() -> Theme {
+    palette::resolve().into()
 }
 
 /// The colors of the brand, fixed in every theme: the supervisor's corgi
@@ -471,31 +163,30 @@ impl Roles {
 /// identity rather than a state of the session, read by hue across a
 /// dashboard mixing agents.
 pub mod brand {
+    use corgi_core::palette::brand;
     use ratatui::style::Color;
 
-    pub const CORGI_COAT: Color = Color::Indexed(208);
-    pub const CORGI_INNER_EAR: Color = Color::Indexed(166);
-    pub const CORGI_WHITE: Color = Color::Indexed(255);
-    pub const CORGI_DARK: Color = Color::Indexed(16);
-    // Brighter than the muzzle so the glint reads as a reflection, not fur.
-    pub const CORGI_GLINT: Color = Color::Indexed(231);
-    pub const CORGI_TONGUE: Color = Color::Indexed(210);
+    use super::color;
+
+    pub const CORGI_COAT: Color = color(brand::CORGI_COAT);
+    pub const CORGI_INNER_EAR: Color = color(brand::CORGI_INNER_EAR);
+    pub const CORGI_WHITE: Color = color(brand::CORGI_WHITE);
+    pub const CORGI_DARK: Color = color(brand::CORGI_DARK);
+    pub const CORGI_GLINT: Color = color(brand::CORGI_GLINT);
+    pub const CORGI_TONGUE: Color = color(brand::CORGI_TONGUE);
 
     /// Model vendors, by the words their model names and agent kinds
-    /// contain. Anthropic keeps its orange, OpenAI its blue.
-    pub const VENDORS: [(&[&str], Color); 8] = [
-        (
-            &["claude", "opus", "sonnet", "haiku", "fable"],
-            Color::Indexed(208),
-        ),
-        (&["gpt", "codex"], Color::Indexed(39)),
-        (&["gemini", "gemma"], Color::Indexed(105)),
-        (&["llama"], Color::Indexed(63)),
-        (&["mistral", "codestral", "devstral"], Color::Indexed(203)),
-        (&["grok"], Color::Indexed(250)),
-        (&["deepseek"], Color::Indexed(43)),
-        (&["qwen", "kimi", "glm"], Color::Indexed(135)),
-    ];
+    /// contain.
+    pub const VENDORS: [(&[&str], Color); 8] = {
+        let mut vendors: [(&[&str], Color); 8] = [(&[], Color::Reset); 8];
+        let mut index = 0;
+        while index < vendors.len() {
+            let (words, vendor) = brand::VENDORS[index];
+            vendors[index] = (words, color(vendor));
+            index += 1;
+        }
+        vendors
+    };
 }
 
 static RESOLVED: OnceLock<Theme> = OnceLock::new();
@@ -552,70 +243,6 @@ pub fn indexed(color: Color) -> Option<u8> {
         Color::Indexed(index) => Some(index),
         Color::Rgb(r, g, b) => Some(nearest((r, g, b))),
         _ => None,
-    }
-}
-
-/// How saturated `rgb` is, from 0 for a grey to 1 for a pure hue.
-fn saturation((r, g, b): Rgb) -> f32 {
-    let (max, min) = (r.max(g).max(b), r.min(g).min(b));
-    if max == 0 {
-        0.0
-    } else {
-        f32::from(max - min) / f32::from(max)
-    }
-}
-
-/// `a` blended `t` of the way to `b`.
-pub fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    let t = t.clamp(0.0, 1.0);
-    let channel = |a: u8, b: u8| (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
-    (channel(a.0, b.0), channel(a.1, b.1), channel(a.2, b.2))
-}
-
-/// The channel levels of the 6×6×6 color cube.
-const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
-
-/// The RGB of one of the fixed 240 colors past the sixteen ANSI ones: the
-/// color cube and the grey ramp, the same in every terminal.
-pub fn indexed_rgb(index: u8) -> Rgb {
-    match index {
-        0..=15 => Palette::XTERM.ansi[usize::from(index)],
-        16..=231 => {
-            let cube = index - 16;
-            (
-                CUBE_LEVELS[usize::from(cube / 36)],
-                CUBE_LEVELS[usize::from(cube / 6 % 6)],
-                CUBE_LEVELS[usize::from(cube % 6)],
-            )
-        }
-        _ => {
-            let grey = 8 + 10 * (index - 232);
-            (grey, grey, grey)
-        }
-    }
-}
-
-/// The fixed color nearest `rgb`: the nearer of the cube and the grey ramp.
-/// The cube is a grid, so its nearest point is each channel's nearest level;
-/// the ramp's nearest step is the one nearest the channels' mean.
-pub fn nearest((r, g, b): Rgb) -> u8 {
-    let level = |channel: u8| {
-        (0..CUBE_LEVELS.len())
-            .min_by_key(|&index| CUBE_LEVELS[index].abs_diff(channel))
-            .unwrap_or(0) as u8
-    };
-    let cube = 16 + 36 * level(r) + 6 * level(g) + level(b);
-    let mean = (u16::from(r) + u16::from(g) + u16::from(b)) / 3;
-    let grey = 232 + (mean.saturating_sub(3) / 10).min(23) as u8;
-    let distance = |index: u8| {
-        let (cr, cg, cb) = indexed_rgb(index);
-        let square = |a: u8, b: u8| u32::from(a.abs_diff(b)).pow(2);
-        square(r, cr) + square(g, cg) + square(b, cb)
-    };
-    if distance(grey) < distance(cube) {
-        grey
-    } else {
-        cube
     }
 }
 

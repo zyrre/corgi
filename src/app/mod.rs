@@ -23,7 +23,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use crate::{
     herdr::HerdrClient,
     job::Job,
-    model::{Activity, AgentState, DashboardAgent, WorkspaceInfo},
+    model::{Activity, DashboardAgent, WorkspaceInfo},
     motion::Motion,
     projects::ProjectMemory,
     session::SessionReader,
@@ -39,16 +39,15 @@ mod close;
 mod edit;
 mod form;
 mod merge;
-mod notice;
 mod overlay;
 mod prompt;
 #[cfg(test)]
 pub(crate) use catalog::HARNESS_DEFAULT_MODEL;
 use catalog::ModelCatalogs;
 pub(crate) use close::{CloseTarget, CloseWorkspaceForm};
-#[cfg(test)]
-pub(crate) use form::Checkout;
 pub(crate) use form::{NewAgentForm, NewField};
+#[cfg(test)]
+pub(crate) use launch::Checkout;
 #[cfg(test)]
 pub(crate) use merge::Upstream;
 pub(crate) use merge::{ConflictHelp, MergePhase, MergeWorktreeForm};
@@ -61,39 +60,35 @@ mod bar;
 mod cards;
 mod cli;
 mod navigate;
-mod rows;
-mod setup;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
+pub(crate) use cli::digest_summary;
 pub use cli::{
     DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, REPORT_USAGE, ROLE_USAGE, SPAWN_USAGE,
     SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify, report, role_command, spawn,
     supervisor_command, tag_command,
 };
 pub use edit::{EDIT_USAGE, edit_command};
+mod hook;
+pub(crate) use edit::{open_checkout, selection_file, write_selection};
+pub use hook::{HOOK_USAGE, hook_command};
 pub use navigate::bar_navigate;
 use rows::codex_thread_id;
 pub use setup::{SETUP_USAGE, setup};
 
-// The periodic refresh, the launch sequence, the project workspace Corgi
-// owns, the record of the marks Corgi sets in Herdr, the supervisor waker and
-// the draft check it makes before typing into a supervisor's pane.
-mod draft;
-mod first_prompt;
+// The dashboard's side of the periodic refresh, the launch sequence and
+// session recovery. The work itself, with the project workspace Corgi owns,
+// the record of the marks Corgi sets in Herdr, the supervisor waker and the
+// draft check it makes before typing into a supervisor's pane, is in the core.
 mod launch;
-mod markers;
-mod progress;
-mod project_main;
 pub(crate) mod recovery;
 mod refresh;
-mod sweep;
-mod waker;
+use corgi_core::{markers, notice, progress, project_main, rows, setup, sweep, waker};
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
 use progress::JobReport;
-use refresh::{QUIT_WAIT, RefreshLog, RefreshState, Refreshed};
+use refresh::{QUIT_WAIT, RefreshLog, RefreshState, Refreshed, is_due};
 use waker::{Inboxes, SupervisorWaker};
 
-const REFRESH_INTERVAL: Duration = Duration::from_millis(850);
 /// How old a plan-usage reading may be before one Corgi process on the
 /// machine fetches a new one for all of them; see [`crate::usage_cache`].
 const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -105,13 +100,6 @@ const USAGE_CACHE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// this short enough for a new row to settle quickly without spawning an app
 /// server for every dashboard redraw.
 const CODEX_TASK_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
-/// Herdr gives plugin panes their manifest title as a pane label.  It is a
-/// stable identity even when the launcher moves the dashboard to a new
-/// workspace, which changes its pane ID.
-const DASHBOARD_PANE_LABEL: &str = "Corgi";
-/// What the dashboard calls a project's supervisor: its role, capitalised as
-/// a label. There is one per project, so the project heading says whose it is.
-const SUPERVISOR_NAME: &str = "Supervisor";
 
 type UsageResult = (Provider, Option<CachedUsage>);
 
@@ -586,56 +574,6 @@ impl App {
     }
 }
 
-/// Keeps related worktree sessions together, each project led by its
-/// supervisor, and the scratch sessions after every project. Within a project
-/// the rest follow their live state, the ones needing attention first:
-/// blocked, working, done, idle, then unknown. Agents sharing a state are
-/// ordered by when they entered it, the most recent first, using Herdr's
-/// `state_change_seq`: one counter across the whole Herdr session that is
-/// bumped on every state change, so it compares between agents. A row
-/// therefore moves only when its own agent changes state, which is rare
-/// enough to be worth seeing at a glance what is blocked or busy; focus stays
-/// out of the key so moving between panes never reorders the list. Equal
-/// counters (older Herdr, or fixtures) fall back to name, then pane ID.
-fn sort_agents(agents: &mut [DashboardAgent]) {
-    agents.sort_by(|left, right| {
-        left.scratch
-            .cmp(&right.scratch)
-            .then_with(|| {
-                left.project_group
-                    .to_lowercase()
-                    .cmp(&right.project_group.to_lowercase())
-            })
-            .then_with(|| right.supervisor.cmp(&left.supervisor))
-            .then_with(|| state_rank(left.info.state).cmp(&state_rank(right.info.state)))
-            .then_with(|| right.info.state_change_seq.cmp(&left.info.state_change_seq))
-            .then_with(|| {
-                left.info
-                    .display_name()
-                    .to_lowercase()
-                    .cmp(&right.info.display_name().to_lowercase())
-            })
-            .then_with(|| left.info.pane_id.cmp(&right.info.pane_id))
-    });
-}
-
-/// Position of a state within a project, the most urgent first.
-fn state_rank(state: AgentState) -> u8 {
-    match state {
-        AgentState::Blocked => 0,
-        AgentState::Working => 1,
-        AgentState::Done => 2,
-        AgentState::Idle => 3,
-        AgentState::Unknown => 4,
-    }
-}
-
-/// Whether something last done at `last` is due again after `interval`.
-/// `None` means it never ran, or was asked for, so it is due now.
-fn is_due(last: Option<Instant>, interval: Duration) -> bool {
-    last.is_none_or(|at| at.elapsed() >= interval)
-}
-
 pub fn run() -> Result<()> {
     let compact = env::args().any(|arg| arg == "--compact");
     let client = HerdrClient::from_env().context("Corgi must run inside a Herdr plugin pane")?;
@@ -740,7 +678,11 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
 }
 
 #[cfg(test)]
+mod markers_tests;
+#[cfg(test)]
 mod test_helpers;
+#[cfg(test)]
+mod waker_tests;
 
 #[cfg(test)]
 mod tests {
@@ -754,6 +696,7 @@ mod tests {
             project_main::{
                 CORGI_PROJECT_MAIN_ROLE, CORGI_PROJECT_MAIN_TAB_TOKEN, CORGI_WORKSPACE_ROLE_TOKEN,
             },
+            refresh::sort_agents,
         },
         herdr::{PaneInfo, SessionSnapshot},
         model::{
@@ -1527,7 +1470,7 @@ mod tests {
         );
         assert!(
             super::launch::supervisor_plan(
-                &app,
+                &app.agents,
                 "/projects/corgi",
                 crate::harness::Harness::Codex,
                 String::new(),

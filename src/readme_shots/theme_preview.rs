@@ -23,11 +23,13 @@ use super::{
     HEIGHT, HERO_HEIGHT, WIDTH, dashboard, draw_at, merge, new_agent_form, popup_area, screen,
     settle,
 };
+use corgi_core::palette::resolve;
+
 use crate::{
     app::MergePhase,
     motion::{STAMP_DRAW, STAMP_HOLD},
     test_support::test_terminal,
-    theme::{self, Palette, Source, Theme, resolve},
+    theme::{self, Palette, Source, Theme},
 };
 
 /// How a preview's cells become escape codes.
@@ -216,7 +218,7 @@ fn theme_preview() {
     let directory = PathBuf::from(std::env::var("CORGI_PREVIEW_DIR").expect("CORGI_PREVIEW_DIR"));
     fs::create_dir_all(&directory).expect("create the preview directory");
     let tokyo = resolve::parse_alacritty(include_str!(
-        "../theme/fixtures/omarchy-tokyo-night-alacritty.toml"
+        "../../crates/corgi-core/src/palette/fixtures/omarchy-tokyo-night-alacritty.toml"
     ))
     .expect("Tokyo Night");
     let mut previews = Vec::new();

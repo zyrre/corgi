@@ -1,10 +1,7 @@
 //! The new-agent form: its rows, the values they hold, and its keys. What the
 //! filled-in form launches is a [`LaunchPlan`], which `launch.rs` runs.
 
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -26,8 +23,8 @@ use super::{
         model_choices, supported_model,
     },
     launch::{
-        LaunchPlan, Role, starts_supervisor, supervisor_harness_error, supervisor_plan,
-        unique_agent_name,
+        Checkout, FormRow, LaunchPlan, NewAgentValues, is_new_project, new_agent_plan,
+        starts_supervisor,
     },
     overlay::Overlay,
 };
@@ -63,62 +60,6 @@ impl NewField {
     /// Whether the row chooses from a list rather than taking typed text.
     fn is_selector(self) -> bool {
         self != Self::Task
-    }
-}
-
-/// Where a new agent's workspace is rooted.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum Checkout {
-    /// A fresh Git worktree of the project's repository, so every agent edits
-    /// its own checkout. Falls back to the directory itself outside Git.
-    #[default]
-    Worktree,
-    /// The project directory as it is, shared with whatever already runs there.
-    Directory,
-    /// The root tab of the project's Corgi workspace itself, in the primary
-    /// checkout. That tab is where a coordinating agent such as the supervisor lives,
-    /// so only `corgi spawn` offers it; the form's list does not.
-    ProjectRoot,
-}
-
-impl Checkout {
-    fn toggle(self) -> Self {
-        match self {
-            Self::Worktree => Self::Directory,
-            Self::Directory | Self::ProjectRoot => Self::Worktree,
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Worktree => "New Git worktree",
-            Self::Directory => "Project directory as is",
-            Self::ProjectRoot => "Project root tab",
-        }
-    }
-
-    /// What the choice means, shown after the label in a quieter colour.
-    pub(crate) fn detail(self) -> &'static str {
-        match self {
-            Self::Worktree => "own branch and checkout",
-            Self::Directory => "shared checkout, own tab",
-            Self::ProjectRoot => "primary checkout, the project's own tab",
-        }
-    }
-
-    /// The token the checkout selector stores for this choice.
-    pub(super) fn value(self) -> &'static str {
-        match self {
-            Self::Worktree => "worktree",
-            Self::Directory => "directory",
-            Self::ProjectRoot => "root",
-        }
-    }
-
-    pub(super) fn from_value(value: &str) -> Option<Self> {
-        [Self::Worktree, Self::Directory, Self::ProjectRoot]
-            .into_iter()
-            .find(|checkout| checkout.value().eq_ignore_ascii_case(value.trim()))
     }
 }
 
@@ -181,13 +122,12 @@ impl NewAgentForm {
     /// the filesystem, so a renderer calls it once per frame and passes the
     /// answer on.
     pub(crate) fn is_new_project(&self) -> bool {
-        let project = Path::new(self.project.trim());
-        self.new_project && project.is_absolute() && !project.exists()
+        is_new_project(&self.project, self.new_project)
     }
 
     /// Whether the form starts its project's supervisor rather than a worker,
     /// given whether the project is new, as
-    /// [`App::new_agent_starts_supervisor`] decides it.
+    /// [`starts_supervisor`] decides it.
     pub(crate) fn starts_supervisor_among(
         &self,
         new_project: bool,
@@ -361,6 +301,7 @@ impl App {
     /// Whether the new-agent form starts its project's supervisor rather than a
     /// worker: for a new project, and for a project with no agent session in
     /// any of its workspaces.
+    #[cfg(test)]
     fn new_agent_starts_supervisor(&self) -> bool {
         self.overlay.new_agent_form().is_some_and(|form| {
             starts_supervisor(form.is_new_project(), form.project.trim(), &self.agents)
@@ -579,82 +520,35 @@ impl App {
     /// What the filled-in form launches: a worker, or the project's supervisor.
     /// A value still missing or invalid is pointed out in the form instead.
     fn new_agent_plan(&mut self) -> Option<LaunchPlan> {
-        let form = self.overlay.new_agent_form_mut()?;
-        let project = PathBuf::from(form.project.trim());
-        // A scratch agent may start without a task, as a session the user
-        // types into; every other agent is briefed first.
-        let problem = if form.prompt.trim().is_empty() && !form.is_scratch() {
-            Some((
-                NewField::Task,
-                "Describe the first task before creating the agent",
-            ))
-        } else if form.kind.trim().is_empty() {
-            Some((NewField::Harness, "Choose a harness"))
-        } else if form.project.trim().is_empty() {
-            Some((NewField::Project, "Choose a project"))
-        } else if !project.is_absolute() || !(project.is_dir() || form.is_new_project()) {
-            Some((
-                NewField::Project,
-                "Project must be an existing absolute directory",
-            ))
-        } else {
-            None
+        let form = self.overlay.new_agent_form()?;
+        let values = NewAgentValues {
+            project: &form.project,
+            new_project: form.is_new_project(),
+            kind: &form.kind,
+            model: &form.model,
+            effort: &form.effort,
+            prompt: &form.prompt,
+            checkout: form.checkout,
         };
-        if let Some((field, message)) = problem {
+        let (row, message) = match new_agent_plan(&values, &self.agents) {
+            Ok(plan) => return Some(plan),
+            Err(problem) => problem,
+        };
+        let form = self.overlay.new_agent_form_mut()?;
+        form.error = Some(message);
+        if let Some(row) = row {
+            let field = match row {
+                FormRow::Task => NewField::Task,
+                FormRow::Harness => NewField::Harness,
+                FormRow::Project => NewField::Project,
+            };
             form.field = field;
-            form.error = Some(message.into());
             form.list = None;
             if field == NewField::Project {
                 self.open_list(None);
             }
-            return None;
         }
-        let new_project = form.is_new_project();
-        let harness = form.harness();
-        let model = form.model.trim().to_string();
-        let effort = form.effort.trim().to_string();
-        let prompt = form.prompt.trim().to_string();
-        let checkout = form.checkout;
-        if !self.new_agent_starts_supervisor() {
-            return Some(LaunchPlan {
-                name: unique_agent_name(&self.agents, &project),
-                harness,
-                model,
-                effort,
-                prompt,
-                project,
-                new_project,
-                checkout,
-                extra_args: Vec::new(),
-                role: Role::Worker,
-                request_id: None,
-            });
-        }
-        // The supervisor takes the harness, model, and effort chosen in the
-        // form, like a worker, on a harness it can run on.
-        let plan = if harness.supports_supervisor() {
-            let root = project.to_string_lossy().into_owned();
-            supervisor_plan(self, &root, harness, model, effort, prompt)
-                .map_err(|error| (None, format!("{error:#}")))
-        } else {
-            Err((Some(NewField::Harness), supervisor_harness_error(&harness)))
-        };
-        match plan {
-            Ok(plan) => Some(LaunchPlan {
-                new_project,
-                ..plan
-            }),
-            Err((field, message)) => {
-                if let Some(form) = self.overlay.new_agent_form_mut() {
-                    if let Some(field) = field {
-                        form.field = field;
-                        form.list = None;
-                    }
-                    form.error = Some(message);
-                }
-                None
-            }
-        }
+        None
     }
 
     pub(super) fn handle_new_agent_key(&mut self, key: KeyEvent) -> bool {
@@ -800,6 +694,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::app::launch::Role;
 
     #[test]
     fn new_agent_composer_starts_in_the_task_row_with_everything_preset() {
