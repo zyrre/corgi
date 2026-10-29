@@ -956,6 +956,29 @@ impl CorgiWindow {
                 String::new()
             };
             let (root, asked) = (root.clone(), question.clone());
+            // Closed with × and still in the ledger: greyed, nothing to click.
+            let closing = !question.id.is_empty() && self.closing.contains(&root, &question.id);
+            let close = (!question.id.is_empty() && !closing).then(|| {
+                let (root, handle) = (root.clone(), question.id.clone());
+                div()
+                    .id(SharedString::from(format!("question-close-{index}")))
+                    .flex_none()
+                    .px_1()
+                    .rounded_sm()
+                    .text_color(colors.roles.muted)
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|style| {
+                        style
+                            .bg(colors.roles.keycap)
+                            .text_color(colors.roles.danger)
+                    })
+                    .child("×")
+                    // The card's own click opens the answer box.
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.close_question(root.clone(), handle.clone(), cx);
+                        cx.stop_propagation();
+                    }))
+            });
             panel = panel.child(
                 div()
                     .id(SharedString::from(format!("question-{index}")))
@@ -965,8 +988,11 @@ impl CorgiWindow {
                     .rounded_sm()
                     .border_1()
                     .border_color(colors.roles.rule)
-                    .cursor(CursorStyle::PointingHand)
-                    .hover(|style| style.bg(colors.roles.focus_bar))
+                    .when(closing, |card| card.text_color(colors.roles.muted))
+                    .when(!closing, |card| {
+                        card.cursor(CursorStyle::PointingHand)
+                            .hover(|style| style.bg(colors.roles.focus_bar))
+                    })
                     .child(
                         div()
                             .flex()
@@ -977,7 +1003,11 @@ impl CorgiWindow {
                             })
                             .child(
                                 div()
-                                    .text_color(colors.roles.warning)
+                                    .text_color(if closing {
+                                        colors.roles.muted
+                                    } else {
+                                        colors.roles.warning
+                                    })
                                     .font_weight(FontWeight::BOLD)
                                     .child(if question.id.is_empty() {
                                         "—".to_string()
@@ -985,18 +1015,24 @@ impl CorgiWindow {
                                         question.id.clone()
                                     }),
                             )
-                            .child(div().flex_1().min_w_0().child(question.title.clone())),
+                            .child(div().flex_1().min_w_0().child(question.title.clone()))
+                            .children(close),
                     )
-                    .when(!question.agent.is_empty(), |card| {
-                        card.child(
-                            div()
-                                .text_color(colors.roles.muted)
-                                .child(format!("about {}", question.agent)),
-                        )
+                    .when(!question.agent.is_empty() || closing, |card| {
+                        let about = (!question.agent.is_empty())
+                            .then(|| format!("about {}", question.agent));
+                        let line = match (about, closing) {
+                            (Some(about), true) => format!("{about} · closing…"),
+                            (Some(about), false) => about,
+                            (None, _) => "closing…".into(),
+                        };
+                        card.child(div().text_color(colors.roles.muted).child(line))
                     })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        this.open_answer(root.clone(), asked.clone(), window, cx);
-                    })),
+                    .when(!closing, |card| {
+                        card.on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_answer(root.clone(), asked.clone(), window, cx);
+                        }))
+                    }),
             );
         }
 

@@ -173,6 +173,10 @@ program instead: corgi-gui runs it with `serve …`, and any program that
 writes a `Hello` and a `Snapshot` (built with `corgi_core::protocol`, one
 JSON line each) and answers each `Request` line on stdin draws the window
 with no Herdr at all, and can delay or refuse a reply to show a state.
+It is easiest as a scratch Cargo crate depending on `crates/corgi-core` by
+path; build its palette with
+`Theme::new(Palette::catppuccin(light), Source::Catppuccin, false, true).rgb_roles()`,
+as `serve::state::theme_colors` does.
 When moving its window, look the id up after launch each time: AeroSpace
 can still list the last run's closed window for a moment.
 

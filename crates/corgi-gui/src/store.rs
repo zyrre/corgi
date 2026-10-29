@@ -2,7 +2,7 @@
 //! and deltas, and the requests sent to it.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 
@@ -170,6 +170,11 @@ pub enum Purpose {
     Quiet,
     Prompt,
     Answer,
+    /// Closes the question `question` (`Q3`) of `project_root`.
+    CloseQuestion {
+        project_root: String,
+        question: String,
+    },
     NewAgentForm,
     Spawn,
     StartSupervisor,
@@ -227,6 +232,50 @@ impl Outbox {
     /// nobody. Returns their purposes.
     pub fn lost(&mut self) -> Vec<Purpose> {
         self.pending.drain().map(|(_, purpose)| purpose).collect()
+    }
+}
+
+/// The questions the window asked `corgi serve` to close, by project root
+/// and handle, shown greyed until the ledger drops them. Kept only here: a
+/// state without one forgets it, and so does a lost connection, so a
+/// question the next snapshot still lists shows as open again.
+#[derive(Debug, Default)]
+pub struct Closing(HashSet<(String, String)>);
+
+impl Closing {
+    pub fn start(&mut self, project_root: &str, question: &str) {
+        self.0.insert((project_root.into(), question.into()));
+    }
+
+    pub fn contains(&self, project_root: &str, question: &str) -> bool {
+        self.0
+            .contains(&(project_root.to_string(), question.to_string()))
+    }
+
+    /// What `reply` to a request sent for `purpose` does: a refused close
+    /// leaves its question open.
+    pub fn replied(&mut self, purpose: &Purpose, reply: &Reply) {
+        if let Purpose::CloseQuestion {
+            project_root,
+            question,
+        } = purpose
+            && !reply.ok
+        {
+            self.0.remove(&(project_root.clone(), question.clone()));
+        }
+    }
+
+    /// Forgets each question `state` no longer lists.
+    pub fn prune(&mut self, state: &State) {
+        self.0.retain(|(root, handle)| {
+            state.projects.iter().any(|project| {
+                project.root == *root && project.questions.iter().any(|open| open.id == *handle)
+            })
+        });
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
     }
 }
 
@@ -361,5 +410,47 @@ mod tests {
         assert_eq!(outbox.answered(&reply), Some(Purpose::MergeCheck));
         assert_eq!(outbox.answered(&reply), None);
         assert_eq!(outbox.lost(), [Purpose::Quiet]);
+    }
+
+    #[test]
+    fn a_closing_question_lasts_until_the_state_drops_it_or_serve_refuses() {
+        let question = |id: &str| corgi_core::protocol::Question {
+            id: id.into(),
+            ..Default::default()
+        };
+        let mut state = State {
+            projects: vec![Project {
+                root: "/r".into(),
+                questions: vec![question("Q4"), question("Q5")],
+                ..Project::default()
+            }],
+            ..State::default()
+        };
+        let mut closing = Closing::default();
+        closing.start("/r", "Q4");
+        closing.start("/r", "Q5");
+        closing.prune(&state);
+        assert!(closing.contains("/r", "Q4") && closing.contains("/r", "Q5"));
+        assert!(!closing.contains("/other", "Q4"));
+
+        state.projects[0].questions.remove(0);
+        closing.prune(&state);
+        assert!(!closing.contains("/r", "Q4"));
+
+        let purpose = Purpose::CloseQuestion {
+            project_root: "/r".into(),
+            question: "Q5".into(),
+        };
+        let reply = |ok| Reply {
+            id: Some(1),
+            ok,
+            error: (!ok).then(|| "Q5 is not open for /r".into()),
+            field: None,
+            result: None,
+        };
+        closing.replied(&purpose, &reply(true));
+        assert!(closing.contains("/r", "Q5"));
+        closing.replied(&purpose, &reply(false));
+        assert!(!closing.contains("/r", "Q5"));
     }
 }

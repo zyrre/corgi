@@ -673,6 +673,68 @@ fn prompt_and_answer_type_into_the_agent_and_never_echo_the_text() {
 }
 
 #[test]
+fn closing_a_question_queues_one_line_for_the_supervisor_running_or_not() {
+    let scratch = ScratchDir::new("serve-close-question");
+    let (repo, worktree) = repository(&scratch);
+    ledger(&scratch);
+    let herdr = FakeHerdr::start("serve-closeq", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+    let root = repo.to_str().unwrap();
+    let pending = || {
+        let inbox = Inbox::read(&scratch.join("state").join("weather"));
+        let items = inbox.undelivered_for(root);
+        assert!(items.iter().all(|item| item.kind == Kind::Note));
+        corgi_core::inbox::prompt_text(&items)
+    };
+    let line = "[Corgi] The user closed Q4 without answering. Drop it from the ledger.";
+
+    let error = session
+        .refused(json!({"command": "close_question", "project_root": root, "question": "four"}))
+        .error
+        .unwrap();
+    assert!(error.contains("not a question number"), "{error}");
+    let error = session
+        .refused(json!({"command": "close_question", "project_root": root, "question": "Q9"}))
+        .error
+        .unwrap();
+    assert_eq!(error, format!("Q9 is not open for {root}"));
+    assert_eq!(pending(), "");
+
+    // Through the inbox, which the waker types in between turns: never
+    // straight into the supervisor's box, over the user.
+    let (result, _) =
+        session.ok(json!({"command": "close_question", "project_root": root, "question": "q4"}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Asked supervisor-weather to drop Q4".into()
+        }
+    );
+    assert!(herdr.calls("agent.prompt").is_empty());
+    // A second click before it goes out still sends one line.
+    session.ok(json!({"command": "close_question", "project_root": root, "question": "Q4"}));
+    assert_eq!(pending(), line);
+
+    // Without a supervisor it waits for the next one.
+    let mut alone = herd(&repo, &worktree, "idle");
+    alone["agents"].as_array_mut().unwrap().remove(0);
+    herdr.set_snapshot(alone);
+    session.refresh();
+    let (result, _) =
+        session.ok(json!({"command": "close_question", "project_root": root, "question": "Q4"}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Q4 is dropped once the supervisor starts".into()
+        }
+    );
+    assert_eq!(pending(), line);
+    assert!(herdr.calls("agent.prompt").is_empty());
+    session.close();
+}
+
+#[test]
 fn the_new_agent_form_is_preset_and_spawn_checks_it_then_launches() {
     let scratch = ScratchDir::new("serve-spawn");
     let (repo, worktree) = repository(&scratch);

@@ -190,6 +190,11 @@ Until answered: <what stays on hold>.
   question is open, end each reply with a line naming each by number and
   title, such as
   `Still open: Q2 Keep the old flag? (blocks <task title> merge); Q5 <title>`.
+- When Corgi says the user closed a question without answering, append a
+  ledger line without it for each unfinished id whose newest line lists it
+  (`"questions":[]` once none remain, with the status that now fits:
+  `reported` if the work still needs your review, else as it was). Never
+  ask it again or list it in `Still open:`; reply in at most one line.
 - A question without options and a recommendation is not ready to ask:
   read the code, or ask the worker, first.
 

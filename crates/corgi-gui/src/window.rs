@@ -16,7 +16,7 @@ use crate::{
     layout::{Layout, Split},
     link::{Backoff, Link, LinkEvent},
     options::Options,
-    store::{Connection, Outbox, Purpose, Received, Store},
+    store::{Closing, Connection, Outbox, Purpose, Received, Store},
     text_input::{FieldColors, TextInput},
     theme::{Colors, forced_light, is_light},
 };
@@ -45,6 +45,8 @@ pub struct CorgiWindow {
     watching: Option<String>,
     /// The project groups whose cards show only their supervisor.
     pub collapsed: HashSet<String>,
+    /// The questions closed with ×, until the ledger drops them.
+    pub closing: Closing,
     /// The window is on screen; while it is not, nothing is drawn and the
     /// transcript is not read.
     pub visible: bool,
@@ -146,6 +148,7 @@ impl CorgiWindow {
             selected: None,
             watching: None,
             collapsed: HashSet::new(),
+            closing: Closing::default(),
             visible: window.is_visible(),
             system_light,
             colors,
@@ -216,10 +219,11 @@ impl CorgiWindow {
                         true
                     }
                     Some(Received::Reply(reply)) => {
-                        if let Some(purpose) = self.outbox.answered(&reply)
-                            && let Some(followup) = self.dialogs.reply(purpose, reply)
-                        {
-                            self.follow(followup, cx);
+                        if let Some(purpose) = self.outbox.answered(&reply) {
+                            self.closing.replied(&purpose, &reply);
+                            if let Some(followup) = self.dialogs.reply(purpose, reply) {
+                                self.follow(followup, cx);
+                            }
                         }
                         self.focus_dialog(cx);
                         true
@@ -233,6 +237,7 @@ impl CorgiWindow {
                 self.store.lost(why, delay);
                 let unanswered = self.outbox.lost();
                 self.dialogs.lost(&unanswered);
+                self.closing.clear();
                 let retry = cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(delay).await;
                     let _ = this.update(cx, |this, cx| {
@@ -329,6 +334,7 @@ impl CorgiWindow {
         if !keep {
             self.selected = visible.first().map(|agent| agent.pane_id.clone());
         }
+        self.closing.prune(&self.store.state);
         self.recolor(cx);
         self.sync_watch();
     }
@@ -552,6 +558,31 @@ impl CorgiWindow {
             error: None,
         });
         self.focus_dialog_now(window, cx);
+        cx.notify();
+    }
+
+    /// Closes `question` of `project_root` without answering it; the card
+    /// shows it closing until the ledger drops it.
+    pub fn close_question(
+        &mut self,
+        project_root: String,
+        question: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing.contains(&project_root, &question) {
+            return;
+        }
+        let command = Command::CloseQuestion {
+            project_root: project_root.clone(),
+            question: question.clone(),
+        };
+        let purpose = Purpose::CloseQuestion {
+            project_root: project_root.clone(),
+            question: question.clone(),
+        };
+        if self.send(command, purpose) {
+            self.closing.start(&project_root, &question);
+        }
         cx.notify();
     }
 

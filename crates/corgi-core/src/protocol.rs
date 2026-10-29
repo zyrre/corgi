@@ -566,6 +566,13 @@ pub enum Command {
         question: String,
         text: String,
     },
+    /// Closes a numbered question without answering it: tells the project's
+    /// supervisor to drop it from its ledger, at once when it is between
+    /// turns, else when it next is (its inbox).
+    CloseQuestion {
+        project_root: String,
+        question: String,
+    },
     /// The new-agent form preset for `pane_id`'s project, else `project`,
     /// else the project used last, on `harness` and `model` when given.
     NewAgentForm {
@@ -691,6 +698,7 @@ impl Command {
             ("watch", false),
             ("prompt", false),
             ("answer", false),
+            ("close_question", false),
             ("new_agent_form", false),
             ("spawn", false),
             ("start_supervisor", false),
@@ -810,6 +818,7 @@ mod tests {
             json!({"command": "watch", "pane_id": "p"}),
             json!({"command": "prompt", "pane_id": "p", "text": "t"}),
             json!({"command": "answer", "project_root": "/r", "question": "Q1", "text": "A"}),
+            json!({"command": "close_question", "project_root": "/r", "question": "Q1"}),
             json!({"command": "new_agent_form"}),
             json!({"command": "spawn"}),
             json!({"command": "start_supervisor", "project_root": "/r"}),
