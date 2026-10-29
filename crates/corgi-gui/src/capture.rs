@@ -8,7 +8,15 @@
 //!   `shift-tab`), as GPUI parses them;
 //! - `type:TEXT` types the text, character by character;
 //! - `click:X,Y`, `right:X,Y` and `double:X,Y` click the left button, the
-//!   right one, or the left one twice, at window point (X, Y);
+//!   right one, or the left one twice, at window point (X, Y); `link:X,Y`
+//!   clicks with the link modifier held (Cmd on macOS, Ctrl elsewhere);
+//! - `drag:X1,Y1,X2,Y2` presses the left button at the first point, moves to
+//!   the second with it held, and lets go there;
+//! - `wheel:X,Y,LINES` turns the wheel over the point, up for positive lines;
+//! - `ime:MARKED>TEXT` has the focus view's terminal compose MARKED, as an
+//!   input method or a dead key shows it, then commit TEXT (`ime:´>é`);
+//! - `hide` and `show` tell the window it was hidden or shown, as the
+//!   platform does when it is minimised or occluded;
 //! - `size:WxH` resizes the window, as a tiling window manager may have
 //!   sized it otherwise (float it there first);
 //! - `shot:NAME` writes `NAME.png`, the window as last drawn;
@@ -17,8 +25,9 @@
 use std::{path::PathBuf, time::Duration};
 
 use gpui::{
-    AnyWindowHandle, App, AppContext, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PlatformInput, WindowHandle, point, px, size,
+    AnyWindowHandle, App, AppContext, EntityInputHandler, Keystroke, Modifiers, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent,
+    WindowHandle, point, px, size,
 };
 
 use crate::window::CorgiWindow;
@@ -73,11 +82,8 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                             .await;
                     }
                 }
-                "click" | "right" | "double" => {
-                    let parsed = argument
-                        .split_once(',')
-                        .and_then(|(x, y)| Some((x.parse::<f32>().ok()?, y.parse::<f32>().ok()?)));
-                    let Some((x, y)) = parsed else {
+                "click" | "right" | "double" | "link" => {
+                    let Some([x, y]) = numbers::<2>(argument) else {
                         eprintln!("capture: bad point {argument}");
                         continue;
                     };
@@ -88,11 +94,17 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                         MouseButton::Left
                     };
                     let clicks = if verb == "double" { 2 } else { 1 };
+                    let modifiers = if verb == "link" {
+                        link_modifier()
+                    } else {
+                        Modifiers::default()
+                    };
                     let _ = cx.update_window(any, |_, window, cx| {
                         // Over the point first, so its elements are hovered.
                         window.dispatch_event(
                             PlatformInput::MouseMove(MouseMoveEvent {
                                 position,
+                                modifiers,
                                 ..Default::default()
                             }),
                             cx,
@@ -102,6 +114,7 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                                 PlatformInput::MouseDown(MouseDownEvent {
                                     button,
                                     position,
+                                    modifiers,
                                     click_count,
                                     ..Default::default()
                                 }),
@@ -111,11 +124,107 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                                 PlatformInput::MouseUp(MouseUpEvent {
                                     button,
                                     position,
+                                    modifiers,
                                     click_count,
+                                }),
+                                cx,
+                            );
+                        }
+                    });
+                }
+                "drag" => {
+                    let Some([x1, y1, x2, y2]) = numbers::<4>(argument) else {
+                        eprintln!("capture: bad drag {argument}");
+                        continue;
+                    };
+                    let (from, to) = (point(px(x1), px(y1)), point(px(x2), px(y2)));
+                    let _ = cx.update_window(any, |_, window, cx| {
+                        window.dispatch_event(
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position: from,
+                                ..Default::default()
+                            }),
+                            cx,
+                        );
+                        window.dispatch_event(
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position: from,
+                                click_count: 1,
+                                ..Default::default()
+                            }),
+                            cx,
+                        );
+                        for step in 1..=8 {
+                            let along = step as f32 / 8.0;
+                            window.dispatch_event(
+                                PlatformInput::MouseMove(MouseMoveEvent {
+                                    position: point(
+                                        px(x1 + (x2 - x1) * along),
+                                        px(y1 + (y2 - y1) * along),
+                                    ),
+                                    pressed_button: Some(MouseButton::Left),
                                     ..Default::default()
                                 }),
                                 cx,
                             );
+                        }
+                        window.dispatch_event(
+                            PlatformInput::MouseUp(MouseUpEvent {
+                                button: MouseButton::Left,
+                                position: to,
+                                click_count: 1,
+                                ..Default::default()
+                            }),
+                            cx,
+                        );
+                    });
+                }
+                "wheel" => {
+                    let Some([x, y, lines]) = numbers::<3>(argument) else {
+                        eprintln!("capture: bad wheel {argument}");
+                        continue;
+                    };
+                    let position = point(px(x), px(y));
+                    let _ = cx.update_window(any, |_, window, cx| {
+                        window.dispatch_event(
+                            PlatformInput::MouseMove(MouseMoveEvent {
+                                position,
+                                ..Default::default()
+                            }),
+                            cx,
+                        );
+                        window.dispatch_event(
+                            PlatformInput::ScrollWheel(ScrollWheelEvent {
+                                position,
+                                delta: ScrollDelta::Lines(point(0.0, lines)),
+                                ..Default::default()
+                            }),
+                            cx,
+                        );
+                    });
+                }
+                "ime" => {
+                    let (marked, text) = argument.split_once('>').unwrap_or((argument, argument));
+                    let _ = cx.update_window(any, |root, window, cx| {
+                        let Ok(root) = root.downcast::<CorgiWindow>() else {
+                            return;
+                        };
+                        let terminal = root.read(cx).terminal.clone();
+                        terminal.update(cx, |terminal, cx| {
+                            terminal.replace_and_mark_text_in_range(None, marked, None, window, cx);
+                        });
+                        window.refresh();
+                        terminal.update(cx, |terminal, cx| {
+                            terminal.replace_text_in_range(None, text, window, cx);
+                        });
+                    });
+                }
+                "hide" | "show" => {
+                    let visible = verb == "show";
+                    let _ = cx.update_window(any, |root, _, cx| {
+                        if let Ok(root) = root.downcast::<CorgiWindow>() {
+                            root.update(cx, |root, cx| root.set_visible(visible, cx));
                         }
                     });
                 }
@@ -155,4 +264,28 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// `N` numbers separated by commas.
+fn numbers<const N: usize>(argument: &str) -> Option<[f32; N]> {
+    let parsed: Vec<f32> = argument
+        .split(',')
+        .map(|part| part.trim().parse().ok())
+        .collect::<Option<_>>()?;
+    parsed.try_into().ok()
+}
+
+/// The modifier a link click is made with.
+fn link_modifier() -> Modifiers {
+    if cfg!(target_os = "macos") {
+        Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        }
+    } else {
+        Modifiers {
+            control: true,
+            ..Modifiers::default()
+        }
+    }
 }
