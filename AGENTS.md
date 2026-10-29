@@ -152,6 +152,7 @@ for one to push.
 Build with `--features capture`, then run with `CORGI_GUI_BACKGROUND=1`
 (no focus taken), `CORGI_GUI_SCRIPT` (steps such as
 `wait:3000;key:n;type:Fix it;shot:form;quit`) and `CORGI_GUI_CAPTURE_DIR`;
+script steps are trimmed, so a trailing space in `type:` is lost;
 `CORGI_GUI_APPEARANCE=light` checks the light theme without changing the
 system's. Move the window to AeroSpace workspace 4 the moment it appears
 (see the user's instructions); `render_to_image` still captures it there.
