@@ -40,3 +40,50 @@ jobs:
         env:
           TMPDIR: /tmp
         run: cargo test --locked
+
+  # The desktop window (crates/corgi-gui) is out of the default members, so
+  # the job above never builds it. GPUI needs the Wayland, xkbcommon and
+  # fontconfig libraries on Linux.
+  gui:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+
+      - name: Install GPUI's libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libfontconfig-dev libfreetype-dev pkg-config
+
+      - name: Lint
+        run: cargo clippy --locked -p corgi-gui --all-targets --features capture -- -D warnings
+
+      - name: Test
+        run: cargo test --locked -p corgi-gui
+
+      - name: Test the packaging script
+        run: bash scripts/test-package-gui
+
+  # The window shares Cargo.lock with the rest, so a pin it raises could
+  # raise the oldest Rust the binary and the core build on.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust 1.89
+        run: |
+          rustup toolchain install 1.89 --profile minimal
+          rustup default 1.89
+
+      - name: Check
+        run: cargo check --locked --all-targets

@@ -1,7 +1,9 @@
 [workspace]
-members = [".", "crates/corgi-core"]
+members = [".", "crates/corgi-core", "crates/corgi-gui"]
 # Plain `cargo build`, `cargo test` and `cargo clippy` at the root cover the
-# whole workspace, as the handoff commands in AGENTS.md expect.
+# binary and the core, as the handoff commands in AGENTS.md expect. The
+# desktop GUI is left out: it needs a newer Rust and GPUI, which the `corgi`
+# binary must never build; build it with `-p corgi-gui`.
 default-members = [".", "crates/corgi-core"]
 resolver = "3"
 

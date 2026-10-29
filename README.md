@@ -140,6 +140,27 @@ for limits, retry behavior and the Claude documentation/fixture verification.
 
 `m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout, and offers to close the worktree. When the base branch has an upstream, it is fetched first: if it has commits the base lacks (pushed from another machine, say), the popup lists them and Enter pulls them into the base (a fast-forward when it can be, else a merge; a pull that conflicts is aborted for you to pull by hand) before merging, while Esc stops. A fetch that fails is shown, and Enter merges anyway. If the push still fails, the branch is merged all the same: the popup shows Git's error, and with a supervisor running, `s` asks it what the error means and what to run. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
 
+## Desktop window (preview)
+
+`corgi-gui` is a native window, on macOS and on Linux (Wayland), that shows what the dashboard shows: project cards and agent rows, the plan-usage header, the selected agent's session under the overview, and a side panel with the project's supervisor and its numbered questions. It prompts agents, answers questions, starts agents and supervisors, tags, merges and closes, keyboard first: `j`/`k` select, `↵` shows or hides the session, `\` the side panel, `p` prompt, `n` new agent, `s` supervisor, `m` merge, `t` tag, `x` close, `1`–`9` answer a question. Drag the edges between the panes to resize them; the window keeps its sizes. It follows the system's light or dark scheme, or the Omarchy theme when there is one. It has no terminals yet.
+
+It runs `corgi serve` (the [protocol](docs/serve-protocol.md)) on this machine, or on another one over SSH, and reconnects by itself, showing the last state dimmed meanwhile:
+
+```bash
+corgi-gui                        # this machine's Herdr
+corgi-gui --session work         # a named Herdr session
+corgi-gui --ssh devbox           # `ssh devbox corgi serve`; --corgi names its path there
+```
+
+It never moves Herdr's focus, which would move every attached Herdr client. Build it from a checkout with Rust 1.96 or newer, and on Linux the Wayland, xkbcommon and fontconfig development packages (`libwayland-dev libxkbcommon-dev libfontconfig-dev` on Debian and Ubuntu; Arch has them already). `scripts/package-gui.sh` builds a Linux tarball or an unsigned macOS `Corgi.app` that carries its own `corgi`:
+
+```bash
+cargo build --release && cargo build --release -p corgi-gui
+./target/release/corgi-gui
+```
+
+On Linux the window's Wayland app id, which compositor rules match, is `corgi-gui`. It uses CaskaydiaMono Nerd Font where installed, else the first of a few common monospace fonts, and Menlo on macOS; `CORGI_GUI_FONT` names another. `CORGI_GUI_APPEARANCE=light` or `dark` overrides the system's scheme.
+
 ## Install
 
 Install on macOS or Linux:
