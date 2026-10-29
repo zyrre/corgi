@@ -32,7 +32,7 @@ new_state() {
   git init --quiet --bare --initial-branch=main "$state/remote.git"
   (
     cd "$state/source"
-    git init --quiet
+    git init --quiet --initial-branch=main
     echo "MIT License" >LICENSE
     echo "# Corgi" >README.md
     printf '{\n  "schemaVersion": 1,\n  "version": "%s"\n}\n' "$version" >omarchy/manifest.json

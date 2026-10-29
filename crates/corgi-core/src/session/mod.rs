@@ -29,7 +29,10 @@
 //!
 //! Herdr publishes the session identity of an agent pane as
 //! `agent_session.value`, so the right file is found without guessing which
-//! of the running sessions a pane belongs to.
+//! of the running sessions a pane belongs to. A Claude Code pane Herdr has no
+//! identity for is found by the `session` token a status-line bridge reports,
+//! and only failing both by its working directory, which no other live Claude
+//! Code pane may share.
 //!
 //! A dashboard reads every agent's file about once a second, so the reading is
 //! incremental. The first read of a file scans back from its end only as far
@@ -66,6 +69,7 @@ use crate::{
     harness::{SessionFormat, claude_config_dirs},
     model::{Activity, AgentInfo, PromptCache},
     paths::home,
+    rows::STATUS_LINE_SESSION_TOKEN,
 };
 
 /// Tails of a session file scanned for the newest usage record. A single tool
@@ -136,6 +140,10 @@ pub struct SessionReader {
     /// The directory session files are looked for under, when it is not
     /// `$HOME`. It stands in for `CLAUDE_CONFIG_DIR` too.
     home: Option<PathBuf>,
+    /// Working directories more than one live Claude Code pane runs in, as of
+    /// the last [`retain`](Self::retain). The newest transcript of one of them
+    /// could be any of those panes', so it is never a pane's fallback.
+    shared_claude_cwds: HashSet<String>,
 }
 
 /// Where the session file of one pane was found, if anywhere, and when.
@@ -143,6 +151,9 @@ pub struct SessionReader {
 struct Lookup {
     path: Option<PathBuf>,
     at: Instant,
+    /// Whether the file is only the newest of the working directory, which a
+    /// session started since in the same pane (say by `/clear`) replaces.
+    by_cwd: bool,
     /// When a lookup last searched every Codex day rather than the newest.
     searched_everywhere_at: Instant,
 }
@@ -172,6 +183,14 @@ struct ParsedTranscript {
 }
 
 impl SessionReader {
+    /// A reader for lookups among `live`, the agent panes now running, so an
+    /// unidentified pane is not given the transcript of another one of them.
+    pub fn among<'a>(live: impl Iterator<Item = &'a AgentInfo>) -> Self {
+        let mut reader = Self::default();
+        reader.retain(live);
+        reader
+    }
+
     /// Facts for one agent, or an empty set when its CLI writes no session
     /// file, the file is not readable, or it holds no usage yet.
     pub fn facts(&mut self, info: &AgentInfo) -> SessionFacts {
@@ -239,9 +258,18 @@ impl SessionReader {
     }
 
     /// Forgets the sessions of panes that are gone, so a long-lived dashboard
-    /// does not accumulate the transcripts of closed agents.
+    /// does not accumulate the transcripts of closed agents, and notes which
+    /// working directories the live Claude Code panes share.
     pub fn retain<'a>(&mut self, live: impl Iterator<Item = &'a AgentInfo>) {
-        let keys: HashSet<String> = live.map(session_key).collect();
+        let live: Vec<&AgentInfo> = live.collect();
+        let mut claude_cwds = HashSet::new();
+        self.shared_claude_cwds = live
+            .iter()
+            .filter(|info| info.harness().session_format() == Some(SessionFormat::Claude))
+            .filter(|info| !claude_cwds.insert(info.cwd()))
+            .map(|info| info.cwd().to_string())
+            .collect();
+        let keys: HashSet<String> = live.into_iter().map(session_key).collect();
         self.files.retain(|key, _| keys.contains(key));
         let paths: HashSet<&PathBuf> = self
             .files
@@ -255,19 +283,26 @@ impl SessionReader {
     fn session_file(&mut self, info: &AgentInfo) -> Option<PathBuf> {
         // An unidentified scratch Codex pane can be real, but its cwd is
         // shared with other live and historical sessions. Never borrow one
-        // of their transcripts or retain its facts across pane reuse.
-        let session_id = info
-            .agent_session
-            .as_ref()
-            .map(|session| session.value.trim())
-            .filter(|value| !value.is_empty());
-        if info.harness().session_format() == Some(SessionFormat::Codex) && session_id.is_none() {
+        // of their transcripts or retain its facts across pane reuse. The
+        // same holds for a Claude Code pane in a directory another live one
+        // works in: the newest transcript there may be the other's.
+        let session_id = session_id(info);
+        let by_cwd = session_id.is_none();
+        if by_cwd
+            && match info.harness().session_format() {
+                Some(SessionFormat::Codex) => true,
+                Some(SessionFormat::Claude) => self.shared_claude_cwds.contains(info.cwd()),
+                None => false,
+            }
+        {
             return None;
         }
         let key = session_key(info);
         let previous = self.files.get(&key);
+        // A file found by name stays the session's; the newest of a
+        // directory is looked for again once in a while like a miss.
         if let Some(lookup) = previous
-            && (lookup.path.is_some() || lookup.at.elapsed() < MISS_RETRY)
+            && ((lookup.path.is_some() && !lookup.by_cwd) || lookup.at.elapsed() < MISS_RETRY)
         {
             return lookup.path.clone();
         }
@@ -295,6 +330,7 @@ impl SessionReader {
             Lookup {
                 path: path.clone(),
                 at: Instant::now(),
+                by_cwd,
                 searched_everywhere_at,
             },
         );
@@ -312,14 +348,35 @@ fn claude_dirs(home: Option<&Path>) -> Vec<PathBuf> {
     }
 }
 
+/// The session one pane shows: Herdr's identity of it, else, for Claude
+/// Code, the `session` token a status-line bridge reports for the pane.
+///
+/// Herdr learns a Claude Code session only from its own Claude integration.
+/// A bridge reports the new session when Claude Code next draws its status
+/// line, so after `/clear`, or in a pane reused by another session, the token
+/// names the old session until then. Codex draws no status line, so a token
+/// on a Codex pane cannot be its own.
+fn session_id(info: &AgentInfo) -> Option<&str> {
+    let native = info
+        .agent_session
+        .as_ref()
+        .map(|session| session.value.as_str());
+    let reported = (info.harness().session_format() == Some(SessionFormat::Claude))
+        .then(|| info.tokens.get(STATUS_LINE_SESSION_TOKEN))
+        .flatten()
+        .map(String::as_str);
+    native
+        .into_iter()
+        .chain(reported)
+        .map(str::trim)
+        // An identity names a file in a directory, never a path.
+        .find(|session| !session.is_empty() && !session.contains('/'))
+}
+
 /// Identity of the session shown in one pane. The pane ID alone would keep a
 /// stale transcript after `/clear` starts a new session in the same pane.
 fn session_key(info: &AgentInfo) -> String {
-    let session = info
-        .agent_session
-        .as_ref()
-        .map(|session| session.value.as_str())
-        .unwrap_or_default();
+    let session = session_id(info).unwrap_or_default();
     format!("{}:{}:{session}", info.kind(), info.pane_id)
 }
 

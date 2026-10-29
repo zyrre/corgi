@@ -251,8 +251,13 @@ All of this is in the core, `crates/corgi-core/src/`.
   said until a newer one says otherwise, so a refresh costs what the agent
   wrote since the last one rather than a rescan of the file.
   Herdr publishes the session identity of a pane, so the right file is found
-  without guessing; a pane whose identity Herdr never learned falls back to the
-  newest session file of its working directory. Nothing has to be installed
+  without guessing. A Claude Code pane whose identity Herdr never learned is
+  found by the `session` token a status-line bridge reports, which names the
+  previous session until the bridge reports again after a `/clear`; failing
+  that, by the newest transcript of its working directory, but only while no
+  other live Claude Code pane works there, since that file may be the other
+  pane's. A Codex pane without Herdr's identity has no file, for the same
+  reason (Codex draws no status line). Nothing has to be installed
   into the agent CLIs, and a status-line bridge that reports `model` or `ctx`
   as pane metadata is used only when the file cannot be read. Claude Code's
   transcript records the model family but not its long-context variant, so the

@@ -37,7 +37,7 @@ pub fn bar_transcript(socket: &str, pane_id: &str) -> Result<()> {
         .iter()
         .find(|agent| agent.pane_id == pane_id)
         .context("this agent session is no longer available")?;
-    let entries: Vec<_> = SessionReader::default()
+    let entries: Vec<_> = SessionReader::among(snapshot.agents.iter())
         .transcript(agent)
         .iter()
         .map(|entry| {

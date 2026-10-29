@@ -36,9 +36,8 @@ pub enum Search {
 ///
 /// Claude Code names the transcript after the session and its directory after
 /// the working directory the session started in, with every separator and dot
-/// replaced by a dash. A session Herdr never learned the ID of, which happens
-/// when its agent integration is not installed, falls back to the newest
-/// transcript of that directory.
+/// replaced by a dash. A session whose ID is not known falls back to the
+/// newest transcript of that directory.
 pub fn claude_transcript(
     claude_dir: &Path,
     session_id: Option<&str>,
