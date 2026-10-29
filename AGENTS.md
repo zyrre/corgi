@@ -168,6 +168,26 @@ hovered and the click reaches none of them.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 
+The focus view's terminal connects to the throwaway session's
+`herdr-client.sock` itself. After changing `src/endpoint/`, run
+`cargo test -p corgi-gui -- --ignored live_herdr`, which drives the adapter
+against a Herdr of its own (private home, `/bin/sh` panes) and removes it.
+To try the terminal by hand, run a program in the agent pane that turns on
+bracketed paste and the kitty keyboard protocol, as Claude Code does, and
+prints the bytes each key arrives as: a real Claude Code reads its
+credentials from the Keychain on macOS, which these runs must not touch.
+The script steps `drag`, `wheel`, `link`, `ime`, `hide` and `show` drive the
+terminal; `CORGI_GUI_LATENCY=1` logs key-to-surface and key-to-frame times,
+`CORGI_GUI_DEBUG_ENDPOINT=1` each snapshot, request and answer, and
+`CORGI_GUI_URL_LOG=<file>` writes a clicked link there instead of opening a
+browser. Copy and paste use the real clipboard: keep the user's text and put
+it back. To see what a user's own Herdr window shows meanwhile, attach
+`herdr --session NAME` in a pty of a fixed size (its first-run welcome and
+integration questions take Esc; install nothing). A tab that a JSON focus
+call (`herdr workspace focus`) moved that window to is owned by no client
+until something is typed there, which is when a new connection could claim
+its size.
+
 For a screenshot that needs no real flow, `--corgi` can name a small
 program instead: corgi-gui runs it with `serve …`, and any program that
 writes a `Hello` and a `Snapshot` (built with `corgi_core::protocol`, one
