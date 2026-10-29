@@ -3,6 +3,7 @@
 //! never sends the commands that move Herdr's focus.
 
 mod dialogs;
+mod endpoint;
 mod form;
 mod format;
 mod layout;

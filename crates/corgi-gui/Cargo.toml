@@ -34,6 +34,8 @@ futures = "0.3"
 unicode-segmentation = "1.12"
 # Only to write the `capture` feature's screenshots; GPUI already uses it.
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# Herdr's endpoint protocol frames its messages with bincode 2 (`src/endpoint/`).
+bincode = { version = "2", default-features = false, features = ["serde", "std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
