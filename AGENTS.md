@@ -162,6 +162,9 @@ AeroSpace tiles the window to fill that workspace whatever size
 Script steps run through the untyped window handle (`cx.update_window`):
 updating the typed `WindowHandle<CorgiWindow>` leases the root view, and a
 key dispatched inside that lease panics when its listener updates the view.
+A scripted click (`click:X,Y`, `right:X,Y`, `double:X,Y`) moves the mouse to
+the point before pressing: without the move, the elements under it are not
+hovered and the click reaches none of them.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 

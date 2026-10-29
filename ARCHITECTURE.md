@@ -646,6 +646,10 @@ the window's, are kept in `$STATE/gui-layout.json`.
 - `theme.rs` takes every color from the palette `serve` sends, light or dark
   as the system's appearance (Catppuccin Latte or Mocha, or the Omarchy theme
   for both), and the vendor and corgi colors from `palette::brand`.
+- GPUI's `on_click` fires only for the left button; right and middle clicks
+  go to `on_aux_click`, told apart by `ClickEvent::is_right_click`. Nested
+  elements do not block each other's mouse events, so a project frame's
+  `on_aux_click` also gets the right clicks that land on its rows.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still
@@ -654,7 +658,7 @@ the window's, are kept in `$STATE/gui-layout.json`.
   Wayland app id `corgi-gui`, and picks a monospace font that exists there
   (Menlo does not).
 - The `capture` feature drives the window from `CORGI_GUI_SCRIPT` (keys,
-  waits) and writes screenshots with GPUI's `render_to_image`, for checking
+  clicks, waits) and writes screenshots with GPUI's `render_to_image`, for checking
   it without screen recording; `CORGI_GUI_BACKGROUND` opens it without
   taking focus.
 
