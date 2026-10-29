@@ -655,14 +655,13 @@ mod tests {
         let remote = std::env::temp_dir().join(format!("corgi-merge-remote-{nonce}"));
         fs::create_dir_all(&repo).expect("create test repository");
         fs::create_dir_all(&remote).expect("create test remote");
-        git_test(&remote, &["init", "--bare"]);
-        git_test(&repo, &["init"]);
+        git_test(&remote, &["init", "--bare", "-b", "main"]);
+        git_test(&repo, &["init", "-b", "main"]);
         git_test(&repo, &["config", "user.name", "Corgi test"]);
         git_test(&repo, &["config", "user.email", "corgi@example.test"]);
         fs::write(repo.join("status.txt"), "base\n").expect("write initial file");
         git_test(&repo, &["add", "status.txt"]);
         git_test(&repo, &["commit", "-m", "initial"]);
-        git_test(&repo, &["branch", "-M", "main"]);
         git_test(
             &repo,
             &["remote", "add", "origin", remote.to_str().unwrap()],

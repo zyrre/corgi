@@ -1241,7 +1241,7 @@ mod tests {
             fs::create_dir_all(path).unwrap();
         }
         let git = std::process::Command::new("git")
-            .args(["init", "-q"])
+            .args(["init", "-q", "-b", "main"])
             .current_dir(&repo)
             .status()
             .unwrap();
