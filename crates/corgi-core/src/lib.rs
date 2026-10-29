@@ -6,6 +6,7 @@
 //! plugin hooks and a desktop app can all build on it.
 
 pub mod activity;
+pub mod art;
 pub mod catalog;
 pub mod choices;
 pub mod close;

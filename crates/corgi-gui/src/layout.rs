@@ -1,10 +1,42 @@
-//! The window's fixed layout: the overview, the transcript split under it
-//! and the side panel beside it, which open and close and keep their sizes
-//! across runs in `$STATE/gui-layout.json`.
+//! The window's fixed layout: the header's measurements, and the overview,
+//! the transcript split under it and the side panel beside it, which open
+//! and close and keep their sizes across runs in `$STATE/gui-layout.json`.
 
 use std::{fs, path::Path, path::PathBuf};
 
+use corgi_core::art::{CORGI_PIXELS, WORDMARK};
 use serde::{Deserialize, Serialize};
+
+/// One pixel of the corgi and the wordmark, drawn as a square about as wide
+/// as a terminal cell, as the dashboard's half blocks have it.
+pub const PIXEL: f32 = 8.0;
+/// The header's band: as tall as the corgi, whose blank first and last
+/// pixel rows hold its art one pixel clear of the band's edges.
+pub const HEADER_HEIGHT: f32 = CORGI_PIXELS.len() as f32 * PIXEL;
+/// The wordmark's rows are two pixels tall, one per half block.
+pub const WORDMARK_HEIGHT: f32 = 2.0 * WORDMARK.len() as f32 * PIXEL;
+/// The wordmark is centred against the corgi, flush left beside it.
+pub const WORDMARK_TOP: f32 = (HEADER_HEIGHT - WORDMARK_HEIGHT) / 2.0;
+/// The corgi to the letters, as wide as the wordmark's own letter spacing
+/// in the dashboard; the letters to the first card twice the cards' gap.
+pub const CORGI_GAP: f32 = 2.0 * PIXEL;
+pub const CARD_GAP: f32 = PIXEL;
+pub const WORDMARK_CARD_GAP: f32 = 2.0 * CARD_GAP;
+/// A header card's title row. Its frame's top rule runs through the middle,
+/// on the corgi's first painted pixel row.
+pub const CARD_TITLE_ROW: f32 = 2.0 * PIXEL;
+/// Every header card's height, its bottom rule on the corgi's last painted
+/// pixel row, so the short usage cards stand as tall as HERD and the rules
+/// bracket the letters by a pixel above and below.
+pub const CARD_HEIGHT: f32 = HEADER_HEIGHT - PIXEL;
+/// A line of a header card.
+pub const CARD_LINE: f32 = 17.0;
+
+/// The smallest the window can be made. Even this leaves the header room
+/// for the corgi beside the letters; the cards wrap under them.
+pub const WINDOW_MIN: (f32, f32) = (640.0, 420.0);
+/// The header's padding either side, `px_4`.
+pub const HEADER_PADDING: f32 = 16.0;
 
 pub const SIDE_MIN: f32 = 240.0;
 pub const SIDE_MAX: f32 = 900.0;
@@ -140,6 +172,38 @@ mod tests {
         assert_eq!((loaded.side_width, loaded.window), (SIDE_MIN, None));
         assert!(loaded.side_open, "a field left out keeps its default");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_header_cards_share_one_height_and_bracket_the_lockup() {
+        let painted = |row: &&str| row.contains(|pixel| pixel != '.');
+        let first = CORGI_PIXELS.iter().position(painted).unwrap();
+        let last = CORGI_PIXELS.iter().rposition(painted).unwrap();
+        // The top rule, through the middle of the title row, is on the
+        // corgi's first painted row; the bottom rule on its last.
+        let top_rule = CARD_TITLE_ROW / 2.0;
+        assert_eq!(top_rule, first as f32 * PIXEL);
+        assert_eq!(CARD_HEIGHT, (last + 1) as f32 * PIXEL);
+        // HERD's counts, the most lines a card holds, fit under the title
+        // and above the bottom rule.
+        let lines = crate::format::herd(&[]).len() as f32;
+        assert!(CARD_TITLE_ROW + lines * CARD_LINE + 1.0 <= CARD_HEIGHT);
+        // The letters sit inside the rules, a pixel clear of each.
+        assert_eq!(WORDMARK_TOP, top_rule + PIXEL);
+        assert_eq!(WORDMARK_TOP + WORDMARK_HEIGHT, CARD_HEIGHT - PIXEL);
+        assert_eq!(
+            corgi_core::art::wordmark_pixels().len() as f32 * PIXEL,
+            WORDMARK_HEIGHT
+        );
+    }
+
+    #[test]
+    fn the_narrowest_window_still_holds_the_corgi_and_the_letters() {
+        let corgi = CORGI_PIXELS[0].len() as f32 * PIXEL;
+        let wordmark = corgi_core::art::wordmark_pixels()[0].len() as f32 * PIXEL;
+        let lockup = corgi + CORGI_GAP + wordmark;
+        assert_eq!(lockup, 448.0);
+        assert!(lockup + 2.0 * HEADER_PADDING <= WINDOW_MIN.0);
     }
 
     #[test]

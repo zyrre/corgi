@@ -159,6 +159,11 @@ pub fn vendor(model: &str) -> Option<Hsla> {
         .map(hsla)
 }
 
+/// A brand color, fixed in every theme: the corgi's coat and details.
+pub fn brand_color(color: palette::Color) -> Option<Hsla> {
+    brand_rgb(color).map(hsla)
+}
+
 fn brand_rgb(color: palette::Color) -> Option<Rgb> {
     match color {
         palette::Color::Indexed(index) => Some(palette::indexed_rgb(index)),

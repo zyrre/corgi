@@ -6,6 +6,7 @@ use ratatui::{
     widgets::{Padding, Paragraph},
 };
 
+use corgi_core::art::{CORGI_PIXELS, WORDMARK, corgi_color};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
@@ -17,10 +18,7 @@ use crate::{
 
 use super::status::model_color;
 use super::{MERGE_MARK, bold, clip, rounded_block};
-use crate::theme::{
-    brand::{CORGI_COAT, CORGI_DARK, CORGI_GLINT, CORGI_INNER_EAR, CORGI_TONGUE, CORGI_WHITE},
-    roles,
-};
+use crate::theme::{self, roles};
 
 // Each subscription gets ten content columns: exactly `Weekly 99%`, with one
 // blank column between the content and each side of its border.
@@ -288,50 +286,10 @@ fn draw_usage_notes(frame: &mut Frame<'_>, band: Rect, x: u16, app: &App) {
     );
 }
 
-// The mascot is pixel art: every character below is one pixel, and the
-// half-block glyphs fit two pixel rows into one terminal cell, so these
-// fourteen rows fill seven terminal rows, the same as the wordmark. The
-// first and last pixel rows are blank so the art can sit one *pixel* below
-// the top of the screen, which is half a terminal row. `o` is the coat, `d`
-// the inner ear, `w` the blaze, cheeks and muzzle, `k` the eyes, nose and
-// mouth corners, `h` the glint in each eye and `p` the tongue.
-const CORGI_PIXELS: [&str; 14] = [
-    "................",
-    ".o............o.",
-    ".oo..........oo.",
-    ".odo........odo.",
-    ".oddo......oddo.",
-    ".oooooooooooooo.",
-    ".ookkoowwookkoo.",
-    ".ookhoowwoohkoo.",
-    ".wwooowwwwoooww.",
-    ".wwwwwwkkwwwwww.",
-    "..wwwwkwwkwwww..",
-    "...wwwwppwwww...",
-    ".....wwwwww.....",
-    "................",
-];
+// The supervisor and the wordmark are `corgi_core::art`'s, which the desktop
+// window draws too.
 const CORGI_ROWS: u16 = CORGI_PIXELS.len() as u16 / 2;
 const CORGI_WIDTH: u16 = CORGI_PIXELS[0].len() as u16;
-// The coat and its details are brand colors, fixed in every theme (see
-// `crate::theme::brand`).
-// Omarchy's own wordmark is Delta Corps Priest 1: solid three-cell stems,
-// corners chamfered with half blocks, and crossbars split into a `▄▄` over a
-// `▀▀`. This is a CORGI cut of that alphabet, shortened to five rows so the
-// mascot beside it stays the taller of the two, and set tight: a single column
-// between letters rather than the two Omarchy itself uses.
-//
-// Every part of a letter is keyed to the two-column counter: the R's `▄▄` and
-// `▀▀`, the diagonal shoulder under its leg, and the G's spur. Narrowing the
-// counter means redrawing each of them, not shifting them, or the fill overruns
-// the stems and the leg's shoulder is left floating.
-const WORDMARK: [&str; 5] = [
-    "▄██████ ▄██████▄ ▄███████ ▄██████▄ ▄██",
-    "███ ▀██ ███  ███ ███  ███ ███      ███",
-    "███     ███  ███ ███▄▄██▀ ███ ████ ███",
-    "███ ▄██ ███  ███ ███▀▀██▄ ███  ███ ███",
-    "██████▀ ▀██████▀ ███  ▀██ ▀██████▀ ██▀",
-];
 // Every row is padded to the same width, which the tests hold to this value so
 // the header can reserve the space before it renders the letters.
 const WORDMARK_WIDTH: u16 = 38;
@@ -384,16 +342,9 @@ fn draw_corgi(frame: &mut Frame<'_>, area: Rect) {
     }
 }
 
+// The coat and its details are brand colors, fixed in every theme.
 fn pixel_color(pixel: char) -> Option<Color> {
-    match pixel {
-        'o' => Some(CORGI_COAT),
-        'd' => Some(CORGI_INNER_EAR),
-        'w' => Some(CORGI_WHITE),
-        'k' => Some(CORGI_DARK),
-        'h' => Some(CORGI_GLINT),
-        'p' => Some(CORGI_TONGUE),
-        _ => None,
-    }
+    corgi_color(pixel).map(theme::color)
 }
 
 // One terminal cell holding the pixel above and the pixel below. An unpainted
@@ -545,6 +496,7 @@ mod tests {
     use crate::{
         model::{AgentState, DashboardAgent},
         test_support::{buffer_text, lines_text, test_app, test_terminal},
+        theme::brand::{CORGI_COAT, CORGI_DARK, CORGI_WHITE},
         ui::draw,
         usage::{PlanUsage, Provider},
     };

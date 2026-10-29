@@ -24,7 +24,7 @@ use gpui::{
 };
 
 use crate::{
-    layout::Layout,
+    layout::{Layout, WINDOW_MIN},
     options::{Options, Parsed, USAGE},
     window::CorgiWindow,
 };
@@ -80,7 +80,7 @@ fn main() -> ExitCode {
                         title: Some(title.into()),
                         ..Default::default()
                     }),
-                    window_min_size: Some(size(px(640.), px(420.))),
+                    window_min_size: Some(size(px(WINDOW_MIN.0), px(WINDOW_MIN.1))),
                     focus: !background,
                     ..Default::default()
                 },

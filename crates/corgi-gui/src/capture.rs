@@ -7,12 +7,14 @@
 //! - `key:KEYS` types each space-separated keystroke (`p`, `escape`,
 //!   `shift-tab`), as GPUI parses them;
 //! - `type:TEXT` types the text, character by character;
+//! - `size:WxH` resizes the window, as a tiling window manager may have
+//!   sized it otherwise (float it there first);
 //! - `shot:NAME` writes `NAME.png`, the window as last drawn;
 //! - `quit` ends the app.
 
 use std::{path::PathBuf, time::Duration};
 
-use gpui::{AnyWindowHandle, App, AppContext, Keystroke, WindowHandle};
+use gpui::{AnyWindowHandle, App, AppContext, Keystroke, WindowHandle, px, size};
 
 use crate::window::CorgiWindow;
 
@@ -64,6 +66,19 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                         cx.background_executor()
                             .timer(Duration::from_millis(30))
                             .await;
+                    }
+                }
+                "size" => {
+                    let parsed = argument
+                        .split_once('x')
+                        .and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?)));
+                    match parsed {
+                        Some((width, height)) => {
+                            let _ = cx.update_window(any, |_, window, _| {
+                                window.resize(size(px(width), px(height)))
+                            });
+                        }
+                        None => eprintln!("capture: bad size {argument}"),
                     }
                 }
                 "shot" => {
