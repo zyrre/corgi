@@ -63,6 +63,11 @@ list drops directories that do not exist, so a test that saves it to a file
 must remember real directories (made in its `ScratchDir`), not made-up paths
 such as `/repos/a`.
 
+A test's Git repositories name their branch on both sides: `git init -b main`,
+and `git init --bare -b main` for a remote. A plain `git init` follows the
+user's `init.defaultBranch`, and a clone of a bare remote whose `HEAD` names
+`master` checks out an unborn `master`, so pushing `main` fails there.
+
 The supervisor's role and the `[Corgi]` lines Corgi types into its box
 (handover requests, merge, conflict and push lines) are pinned by tests in
 `crates/corgi-core/src/supervisor.rs`, and the merge lines also by the
