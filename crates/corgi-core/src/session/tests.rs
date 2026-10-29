@@ -1037,3 +1037,121 @@ fn retain_forgets_the_sessions_of_closed_panes() {
     assert_eq!(reader.transcripts.keys().collect::<Vec<_>>(), [&kept_path]);
     assert_eq!(reader.facts(&kept).task.as_deref(), Some("Fix it"));
 }
+
+/// A Claude Code pane in `cwd` whose session Herdr does not know, with the
+/// `session` token a status-line bridge reports for it, if any.
+fn reported_claude(pane_id: &str, session: Option<&str>, cwd: &str) -> AgentInfo {
+    AgentInfo {
+        agent: Some("claude".into()),
+        pane_id: pane_id.into(),
+        cwd: Some(cwd.into()),
+        tokens: session
+            .map(|session| (STATUS_LINE_SESSION_TOKEN.to_string(), session.to_string()))
+            .into_iter()
+            .collect(),
+        ..AgentInfo::default()
+    }
+}
+
+/// A transcript in `project` whose only turn is the prompt `said`.
+fn said(project: &Path, session: &str, said: &str) -> PathBuf {
+    let path = project.join(format!("{session}.jsonl"));
+    write(
+        &path,
+        &[&format!(
+            r#"{{"type":"user","message":{{"role":"user","content":"{said}"}}}}"#
+        )],
+    );
+    path
+}
+
+fn shown(reader: &mut SessionReader, info: &AgentInfo) -> Vec<String> {
+    reader
+        .transcript(info)
+        .iter()
+        .map(|entry| entry.text.clone())
+        .collect()
+}
+
+#[test]
+fn claude_panes_sharing_a_directory_each_show_the_session_their_token_names() {
+    let home = TempDir::new("reader-shared-cwd");
+    let project = claude_project(&home, "-repos-weather");
+    said(&project, "supervisor", "Plan the release");
+    let notes = said(&project, "notes", "Write the notes");
+    filetime(&notes);
+    let supervisor = reported_claude("p1", Some("supervisor"), "/repos/weather");
+    let notes = reported_claude("p2", Some("notes"), "/repos/weather");
+
+    let mut reader = SessionReader {
+        home: Some(home.to_path_buf()),
+        ..SessionReader::among([&supervisor, &notes].into_iter())
+    };
+    assert_eq!(shown(&mut reader, &supervisor), ["Plan the release"]);
+    assert_eq!(shown(&mut reader, &notes), ["Write the notes"]);
+    assert_eq!(
+        reader.facts(&supervisor).task.as_deref(),
+        Some("Plan the release")
+    );
+
+    // Herdr's own identity comes first, should the token lag behind it.
+    let mut identified = supervisor.clone();
+    identified.agent_session = Some(AgentSession {
+        value: "notes".into(),
+        ..AgentSession::default()
+    });
+    assert_eq!(shown(&mut reader, &identified), ["Write the notes"]);
+}
+
+#[test]
+fn a_cleared_claude_pane_shows_the_session_its_token_names_now() {
+    let home = TempDir::new("reader-token-clear");
+    let project = claude_project(&home, "-repos-weather");
+    said(&project, "before", "Fix the uploader");
+    let mut info = reported_claude("p1", Some("before"), "/repos/weather");
+    let mut reader = reader(&home);
+    assert_eq!(shown(&mut reader, &info), ["Fix the uploader"]);
+
+    said(&project, "after", "Write the notes");
+    info.tokens
+        .insert(STATUS_LINE_SESSION_TOKEN.into(), "after".into());
+    assert_eq!(shown(&mut reader, &info), ["Write the notes"]);
+}
+
+#[test]
+fn an_unidentified_claude_pane_borrows_no_transcript_from_a_shared_directory() {
+    let home = TempDir::new("reader-unidentified-claude");
+    let project = claude_project(&home, "-repos-weather");
+    said(&project, "notes", "Write the notes");
+    let unknown = reported_claude("p1", None, "/repos/weather");
+    let notes = reported_claude("p2", Some("notes"), "/repos/weather");
+    let codex = AgentInfo {
+        agent: Some("codex".into()),
+        ..reported_claude("p3", Some("notes"), "/repos/weather")
+    };
+
+    // Alone in its directory, it shows the newest transcript there; a Codex
+    // pane beside it writes no Claude Code transcript.
+    let mut reader = SessionReader {
+        home: Some(home.to_path_buf()),
+        ..SessionReader::among([&unknown, &codex].into_iter())
+    };
+    assert_eq!(shown(&mut reader, &unknown), ["Write the notes"]);
+    // A Codex pane takes no identity from a token.
+    assert!(shown(&mut reader, &codex).is_empty());
+
+    reader.retain([&unknown, &notes, &codex].into_iter());
+    assert!(shown(&mut reader, &unknown).is_empty());
+    assert_eq!(reader.facts(&unknown), SessionFacts::default());
+    assert_eq!(shown(&mut reader, &notes), ["Write the notes"]);
+
+    // The newest transcript is looked for again, so a session started in the
+    // pane since replaces the one it showed.
+    reader.retain([&unknown].into_iter());
+    assert_eq!(shown(&mut reader, &unknown), ["Write the notes"]);
+    let cleared = said(&project, "cleared", "Start over");
+    filetime(&cleared);
+    assert_eq!(shown(&mut reader, &unknown), ["Write the notes"]);
+    age_lookups(&mut reader, MISS_RETRY);
+    assert_eq!(shown(&mut reader, &unknown), ["Start over"]);
+}

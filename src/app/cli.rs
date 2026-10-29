@@ -685,7 +685,7 @@ pub fn report(args: &[String]) -> Result<()> {
             .cloned()
     });
     let printed = match (&connected, running) {
-        (Some((client, _)), Some(agent)) => print_running_report(client, &agent, target),
+        (Some((client, app)), Some(agent)) => print_running_report(client, app, &agent, target),
         _ => inbox_report(target)?
             .with_context(|| format!("no running agent named {target}, and no report kept for it"))
             .and_then(|(dir, item)| print_kept_report(target, &dir, &item)),
@@ -702,6 +702,7 @@ pub fn report(args: &[String]) -> Result<()> {
 /// said more than; else the newest thing it said, or its screen.
 fn print_running_report(
     client: &HerdrClient,
+    app: &App,
     agent: &crate::model::DashboardAgent,
     target: &str,
 ) -> Result<()> {
@@ -714,7 +715,10 @@ fn print_running_report(
         .map(|item| (dir, item));
     if let Some((dir, item)) = kept {
         print_kept_report(name, &dir, &item)?;
-    } else if let Some(entry) = SessionReader::default().facts(info).report {
+    } else if let Some(entry) = SessionReader::among(app.agents.iter().map(|agent| &agent.info))
+        .facts(info)
+        .report
+    {
         println!("{}", entry.text);
     } else {
         eprintln!("(no readable transcript for {target}; showing its screen)");
