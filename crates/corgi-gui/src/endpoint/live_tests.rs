@@ -131,6 +131,8 @@ struct Driver {
     events: Receiver<Event>,
     viewer: Viewer,
     surface: Option<std::sync::Arc<PaneSurfaceFrame>>,
+    /// What programs put on the clipboard, in order.
+    clipboard: Vec<String>,
 }
 
 impl Driver {
@@ -150,6 +152,7 @@ impl Driver {
             events,
             viewer: Viewer::new(true),
             surface: None,
+            clipboard: Vec::new(),
         }
     }
 
@@ -169,6 +172,7 @@ impl Driver {
                         self.surface = Some(surface);
                     }
                 }
+                Ok(Event::Clipboard(text)) => self.clipboard.push(text),
                 Ok(Event::Ended(why)) => panic!("the connection ended: {why}"),
                 Ok(_) => {}
                 Err(_) => {}
@@ -243,6 +247,17 @@ fn live_herdr() {
     driver.until("the typed command's output", |d| {
         d.screen().contains("\ntyped-42")
     });
+
+    // A program's OSC 52 write comes decoded; Herdr keeps only the
+    // clipboard's, not the primary selection's, so that one never comes.
+    client
+        .run_in_pane(
+            &agent.root_pane_id,
+            r#"printf '\033]52;p;%s\a\033]52;c;%s\a' "$(printf primary | base64)" "$(printf 'W=~/.herdr/corgi' | base64)""#,
+        )
+        .unwrap();
+    driver.until("the clipboard write", |d| !d.clipboard.is_empty());
+    assert_eq!(driver.clipboard, ["W=~/.herdr/corgi"]);
 
     // Leaving parks the connection, then deactivates it.
     driver.viewer.show(None);

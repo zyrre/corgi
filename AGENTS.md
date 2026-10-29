@@ -154,8 +154,17 @@ Build with `--features capture`, then run with `CORGI_GUI_BACKGROUND=1`
 `wait:3000;key:n;type:Fix it;shot:form;quit`) and `CORGI_GUI_CAPTURE_DIR`;
 script steps are trimmed, so a trailing space in `type:` is lost;
 `CORGI_GUI_APPEARANCE=light` checks the light theme without changing the
-system's. Move the window to AeroSpace workspace 4 the moment it appears
-(see the user's instructions); `render_to_image` still captures it there.
+system's, and `CORGI_GUI_FONT_FILES` (font files separated by `:`) loads
+fonts for that process alone on macOS, to check a font the machine lacks
+without installing it. Ghostty draws Nerd Font icons from fonts built into
+it, so icons in a user's Ghostty do not mean a Nerd Font is installed; the
+step `glyphs:TEXT` logs which font draws each character in the terminal,
+and works without a redraw. While the Mac's screen is locked
+(`ioreg -n Root -d1 | grep CGSSessionScreenIsLocked`), the window draws its
+first frame and no more, so every shot repeats it, and AeroSpace does not
+list the window. Move the window to AeroSpace workspace 4 the moment it
+appears (see the user's instructions); `render_to_image` still captures it
+there.
 AeroSpace tiles the window to fill that workspace whatever size
 `gui-layout.json` kept, so for a shot at a given width, float it
 (`aerospace layout --window-id <id> floating`) and size it with a
@@ -198,6 +207,10 @@ It is easiest as a scratch Cargo crate depending on `crates/corgi-core` by
 path; build its palette with
 `Theme::new(Palette::catppuccin(light), Source::Catppuccin, false, true).rgb_roles()`,
 as `serve::state::theme_colors` does.
+Built from a real serve's hello and snapshot lines, with the socket and the
+agent's pane, tab and workspace changed, it can name a real throwaway Herdr:
+the focus view then shows a live terminal of that session beside made-up
+side-panel content.
 When moving its window, look the id up after launch each time: AeroSpace
 can still list the last run's closed window for a moment.
 

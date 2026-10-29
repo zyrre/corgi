@@ -92,7 +92,7 @@ impl Render for CorgiWindow {
             .flex_col()
             .bg(colors.background)
             .text_color(colors.roles.text)
-            .font_family(self.font.clone())
+            .font(self.font.clone())
             .text_size(px(TEXT_SIZE))
             .line_height(px(TEXT_SIZE * LINE_HEIGHT))
             .on_key_down(cx.listener(|this, event, window, cx| {

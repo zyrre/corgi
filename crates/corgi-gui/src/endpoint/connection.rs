@@ -75,7 +75,7 @@ pub enum Event {
         id: String,
         result: Result<Value, ApiError>,
     },
-    /// A program in a pane set the clipboard (OSC 52).
+    /// A program in a pane set the clipboard (OSC 52), with this text.
     Clipboard(String),
     /// The connection is over; nothing more comes.
     Ended(String),
@@ -505,7 +505,10 @@ impl Session {
                     }));
                 }
             }
-            ServerMessage::Clipboard { data } => steps.push(Step::Event(Event::Clipboard(data))),
+            ServerMessage::Clipboard { data } => match clipboard_text(&data) {
+                Some(text) => steps.push(Step::Event(Event::Clipboard(text))),
+                None => tracing::debug!("dropped a clipboard write that is not base64 text"),
+            },
             ServerMessage::ServerShutdown { reason } => {
                 return Err(reason.unwrap_or_else(|| "Herdr shut down".into()));
             }
@@ -516,6 +519,19 @@ impl Session {
         }
         Ok(steps)
     }
+}
+
+/// The text of Herdr's `Clipboard` message: always the program's bytes in
+/// standard base64, as Herdr's own client reads it. Herdr forwards only
+/// writes to the standard clipboard (OSC 52's `c` or empty target), and only
+/// `text/plain`, so there is no target to choose here. Anything that is not
+/// base64 of UTF-8 text is dropped rather than put on the clipboard as is.
+fn clipboard_text(data: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 /// An endpoint answer's result, or Herdr's error.

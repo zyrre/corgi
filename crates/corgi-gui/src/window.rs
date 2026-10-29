@@ -7,8 +7,8 @@ use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 use corgi_core::protocol::{Agent, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, KeyDownEvent, Pixels, ScrollHandle,
-    SharedString, Subscription, Task, Window, WindowVisibility,
+    App, AppContext, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent, Pixels,
+    ScrollHandle, Subscription, Task, Window, WindowVisibility,
 };
 
 use crate::{
@@ -57,7 +57,7 @@ pub struct CorgiWindow {
     pub visible: bool,
     pub system_light: bool,
     pub colors: Colors,
-    pub font: SharedString,
+    pub font: Font,
     pub focus: FocusHandle,
     pub form_focus: FocusHandle,
     pub prompt_input: Entity<TextInput>,
@@ -78,19 +78,14 @@ pub struct CorgiWindow {
 }
 
 impl CorgiWindow {
-    pub fn new(
-        options: Options,
-        font: SharedString,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(options: Options, font: Font, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let forced_light = forced_light(std::env::var("CORGI_GUI_APPEARANCE").ok().as_deref());
         let system_light = forced_light.unwrap_or_else(|| is_light(window.appearance()));
         let store = Store::default();
         let colors = Colors::new(&store.state.palette, system_light);
         let field = field_colors(&colors);
         let prompt_input = cx.new(|cx| TextInput::new("Type a prompt", field, cx));
-        let terminal = cx.new(|cx| TerminalView::new(font.clone(), cx));
+        let terminal = cx.new(|cx| TerminalView::new(font.family.clone(), cx));
         let task_input = cx.new(|cx| TextInput::new("Describe the task", field, cx));
         let layout_path = Layout::path();
         let layout = Layout::load(layout_path.as_deref());

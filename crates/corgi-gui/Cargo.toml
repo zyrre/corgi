@@ -36,6 +36,8 @@ unicode-segmentation = "1.12"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Herdr's endpoint protocol frames its messages with bincode 2 (`src/endpoint/`).
 bincode = { version = "2", default-features = false, features = ["serde", "std"] }
+# Herdr sends a program's OSC 52 clipboard text base64-encoded.
+base64 = "0.22"
 # The lifted painter's: cell widths, and its diagnostics.
 unicode-width = "0.2.2"
 tracing = "0.1"

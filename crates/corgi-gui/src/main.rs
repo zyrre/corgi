@@ -4,6 +4,7 @@
 
 mod dialogs;
 mod endpoint;
+mod fonts;
 mod form;
 mod format;
 mod herdr_ui;
@@ -22,9 +23,7 @@ mod capture;
 
 use std::process::ExitCode;
 
-use gpui::{
-    App, AppContext, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptions, px, size,
-};
+use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
 use crate::{
     layout::{Layout, WINDOW_MIN},
@@ -35,19 +34,6 @@ use crate::{
 /// The Wayland app id, and the X11 class: what a compositor's window rules
 /// match, such as Hyprland's `class`.
 const APP_ID: &str = "corgi-gui";
-
-/// Monospace fonts tried in order off macOS: the user's Nerd Font first,
-/// then common ones. `CORGI_GUI_FONT` names another.
-const LINUX_FONTS: &[&str] = &[
-    "CaskaydiaMono Nerd Font",
-    "CaskaydiaMono Nerd Font Mono",
-    "CaskaydiaCove Nerd Font",
-    "JetBrainsMono Nerd Font",
-    "JetBrains Mono",
-    "DejaVu Sans Mono",
-    "Noto Sans Mono",
-    "Liberation Mono",
-];
 
 fn main() -> ExitCode {
     let options = match Options::parse(std::env::args().skip(1)) {
@@ -66,8 +52,16 @@ fn main() -> ExitCode {
     gpui_platform::application().run(move |cx: &mut App| {
         text_input::bind_keys(cx);
         window::bind_app_keys(cx);
-        let font = pick_font(cx);
+        #[cfg(feature = "capture")]
+        capture::register_fonts();
+        let installed = cx.text_system().all_font_names();
+        let font = fonts::window_font(
+            std::env::var("CORGI_GUI_FONT").ok(),
+            &installed,
+            cfg!(target_os = "macos"),
+        );
         eprintln!("corgi-gui: drawing with the font {font}");
+        let font = fonts::with_fallbacks(font, &installed);
         let saved = Layout::load(Layout::path().as_deref()).window;
         let (width, height) = saved.unwrap_or((1280.0, 820.0));
         let bounds = Bounds::centered(None, size(px(width), px(height)), cx);
@@ -113,24 +107,4 @@ fn main() -> ExitCode {
         let _ = window;
     });
     ExitCode::SUCCESS
-}
-
-/// The monospace font for this platform: `CORGI_GUI_FONT`, else Menlo on
-/// macOS, else the first of `LINUX_FONTS` installed (Menlo does not exist
-/// elsewhere, and a proportional fallback breaks the rows' alignment).
-fn pick_font(cx: &App) -> SharedString {
-    if let Ok(font) = std::env::var("CORGI_GUI_FONT")
-        && !font.trim().is_empty()
-    {
-        return font.into();
-    }
-    if cfg!(target_os = "macos") {
-        return "Menlo".into();
-    }
-    let installed = cx.text_system().all_font_names();
-    LINUX_FONTS
-        .iter()
-        .find(|wanted| installed.iter().any(|name| name == *wanted))
-        .map(|font| SharedString::from(*font))
-        .unwrap_or_else(|| "monospace".into())
 }

@@ -19,18 +19,38 @@
 //!   platform does when it is minimised or occluded;
 //! - `size:WxH` resizes the window, as a tiling window manager may have
 //!   sized it otherwise (float it there first);
+//! - `glyphs:TEXT` logs the font each character of TEXT draws from in the
+//!   focus view's terminal: its own font, a fallback, or one the system
+//!   picked;
 //! - `shot:NAME` writes `NAME.png`, the window as last drawn;
 //! - `quit` ends the app.
+//!
+//! `CORGI_GUI_FONT_FILES`, font files separated by `:`, are installed for
+//! this process alone on macOS, so a check can draw with a font the machine
+//! does not have without installing it for its other apps.
 
 use std::{path::PathBuf, time::Duration};
 
 use gpui::{
-    AnyWindowHandle, App, AppContext, EntityInputHandler, Keystroke, Modifiers, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent,
-    WindowHandle, point, px, size,
+    AnyWindowHandle, App, AppContext, EntityInputHandler, Font, Hsla, Keystroke, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, ScrollDelta,
+    ScrollWheelEvent, TextRun, Window, WindowHandle, point, px, size,
 };
 
 use crate::window::CorgiWindow;
+
+/// Installs `CORGI_GUI_FONT_FILES` for this process, before the window's
+/// fonts are chosen.
+pub fn register_fonts() {
+    let Some(files) = std::env::var_os("CORGI_GUI_FONT_FILES") else {
+        return;
+    };
+    for file in std::env::split_paths(&files) {
+        if !crate::fonts::register_for_process(&file) {
+            eprintln!("corgi-gui: could not load the font file {}", file.display());
+        }
+    }
+}
 
 pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
     let Ok(script) = std::env::var("CORGI_GUI_SCRIPT") else {
@@ -220,6 +240,14 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                         });
                     });
                 }
+                "glyphs" => {
+                    let _ = cx.update_window(any, |root, window, cx| {
+                        if let Ok(root) = root.downcast::<CorgiWindow>() {
+                            let font = root.read(cx).terminal.read(cx).font().clone();
+                            eprintln!("capture: {}", glyph_fonts(&font, argument, window));
+                        }
+                    });
+                }
                 "hide" | "show" => {
                     let visible = verb == "show";
                     let _ = cx.update_window(any, |root, _, cx| {
@@ -288,4 +316,44 @@ fn link_modifier() -> Modifiers {
             ..Modifiers::default()
         }
     }
+}
+
+/// Which font draws each character of `text` in `font`.
+fn glyph_fonts(font: &Font, text: &str, window: &Window) -> String {
+    let system = window.text_system();
+    let own = system.resolve_font(font);
+    let fallbacks: Vec<_> = font
+        .fallbacks
+        .iter()
+        .flat_map(|fallbacks| fallbacks.fallback_list())
+        .map(|name| (system.resolve_font(&gpui::font(name.clone())), name.clone()))
+        .collect();
+    let line = system.layout_line(
+        text,
+        px(13.0),
+        &[TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color: Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    );
+    let mut drawn = Vec::new();
+    for run in &line.runs {
+        for glyph in &run.glyphs {
+            let symbol = text[glyph.index..].chars().next().unwrap_or(' ');
+            let from = if run.font_id == own {
+                format!("{} itself", font.family)
+            } else if let Some((_, name)) = fallbacks.iter().find(|(id, _)| *id == run.font_id) {
+                format!("the fallback {name}")
+            } else {
+                format!("a font the system picked ({:?})", run.font_id)
+            };
+            drawn.push(format!("U+{:04X} from {from}", u32::from(symbol)));
+        }
+    }
+    format!("glyphs in {}: {}", font.family, drawn.join(", "))
 }

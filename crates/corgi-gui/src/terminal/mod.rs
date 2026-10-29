@@ -46,6 +46,7 @@ use crate::endpoint::{
     },
     viewer::{PARK_LABEL, Status, Viewer},
 };
+use crate::fonts;
 use crate::herdr_ui::{
     config::Theme,
     terminal::{InputTarget, WheelAccumulator, key_input, viewport, wheel_target},
@@ -69,21 +70,6 @@ const FIRST_BACKOFF: Duration = Duration::from_millis(500);
 const MAX_BACKOFF: Duration = Duration::from_secs(10);
 /// How long quitting gives Herdr to park the connection.
 const PARK_ON_QUIT: Duration = Duration::from_millis(100);
-
-/// Monospace fonts with Nerd Font icons, preferred for the terminal when
-/// installed; then the window's own font.
-const NERD_FONTS: &[&str] = &[
-    "JetBrainsMono Nerd Font Mono",
-    "JetBrainsMono Nerd Font",
-    "MesloLGS Nerd Font Mono",
-    "MesloLGS NF",
-    "CaskaydiaMono Nerd Font Mono",
-    "CaskaydiaMono Nerd Font",
-    "CaskaydiaCove Nerd Font Mono",
-    "Hack Nerd Font Mono",
-    "FiraCode Nerd Font Mono",
-    "SauceCodePro Nerd Font Mono",
-];
 
 /// What the view asks of the window around it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,8 +169,9 @@ impl TerminalView {
                     let wanted = std::env::var("CORGI_GUI_TERMINAL_FONT")
                         .ok()
                         .filter(|font| !font.trim().is_empty());
-                    let family = pick_font(wanted, &text.all_font_names(), &fallback.family);
-                    let font = gpui::font(family);
+                    let installed = text.all_font_names();
+                    let family = fonts::terminal_font(wanted, &installed, &fallback.family);
+                    let font = fonts::with_fallbacks(family, &installed);
                     for weight in [gpui::FontWeight::NORMAL, gpui::FontWeight::BOLD] {
                         for style in [gpui::FontStyle::Normal, gpui::FontStyle::Italic] {
                             text.resolve_font(&Font {
@@ -198,7 +185,7 @@ impl TerminalView {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if chosen.family != this.font.family {
+                if chosen != this.font {
                     eprintln!(
                         "corgi-gui: the terminal draws with the font {}",
                         chosen.family
@@ -250,6 +237,12 @@ impl TerminalView {
     }
 
     // ---- What the window asks ----
+
+    /// The font the grid draws with, once it is chosen.
+    #[cfg(feature = "capture")]
+    pub fn font(&self) -> &Font {
+        &self.font
+    }
 
     /// The Herdr session `corgi serve` reads; `None` over ssh. A different
     /// session drops the connection to the old one.
@@ -1087,19 +1080,6 @@ fn open_url(url: &str, cx: &mut Context<TerminalView>) {
     cx.open_url(url);
 }
 
-/// The terminal's font: `wanted` if installed, else the first Nerd Font
-/// installed, else `fallback`, the window's.
-pub fn pick_font(wanted: Option<String>, installed: &[String], fallback: &str) -> SharedString {
-    let has = |name: &str| installed.iter().any(|font| font == name);
-    if let Some(wanted) = wanted.filter(|wanted| has(wanted)) {
-        return wanted.into();
-    }
-    NERD_FONTS.iter().find(|font| has(font)).map_or_else(
-        || SharedString::from(fallback.to_string()),
-        |font| (*font).into(),
-    )
-}
-
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.cell_width = self.painter.borrow_mut().cell_width(&self.font, window, cx);
@@ -1231,31 +1211,5 @@ impl Render for TerminalView {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .child(div().size_full().p(px(PADDING)).child(terminal))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_terminal_font_prefers_a_named_one_then_a_nerd_font_then_the_windows() {
-        let installed = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
-        let fonts = installed(&[
-            "Menlo",
-            "Hack Nerd Font Mono",
-            "JetBrainsMono Nerd Font Mono",
-        ]);
-        assert_eq!(
-            pick_font(None, &fonts, "Menlo"),
-            "JetBrainsMono Nerd Font Mono"
-        );
-        assert_eq!(pick_font(Some("Menlo".into()), &fonts, "Menlo"), "Menlo");
-        // A name that is not installed is passed over.
-        assert_eq!(
-            pick_font(Some("Nope".into()), &fonts, "Menlo"),
-            "JetBrainsMono Nerd Font Mono"
-        );
-        assert_eq!(pick_font(None, &installed(&["Menlo"]), "Menlo"), "Menlo");
     }
 }

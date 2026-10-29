@@ -1226,6 +1226,7 @@ name = "corgi-gui"
 version = "0.2.3"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bincode",
  "corgi-core",
  "futures",

@@ -305,6 +305,31 @@ fn answers_are_put_together_from_their_chunks() {
     );
 }
 
+#[test]
+fn a_program_s_clipboard_write_arrives_decoded() {
+    let written = |data: &str| match Session::default()
+        .receive(ServerMessage::Clipboard { data: data.into() })
+        .unwrap()
+        .as_slice()
+    {
+        [Step::Event(Event::Clipboard(text))] => Some(text.clone()),
+        [] => None,
+        _ => panic!("one clipboard write at most"),
+    };
+    // What Claude Code's copy sent: Herdr base64-encodes the OSC 52 bytes.
+    assert_eq!(
+        written("Vz1+Ly5oZXJkci93b3JrdHJlZXMvY29yZ2kv").as_deref(),
+        Some("W=~/.herdr/worktrees/corgi/")
+    );
+    assert_eq!(
+        written("aMOpbGxv4pyTCg==").as_deref(),
+        Some("h\u{e9}llo\u{2713}\n")
+    );
+    // Not base64, or not text: nothing reaches the clipboard.
+    assert_eq!(written("not base64!"), None);
+    assert_eq!(written("/w=="), None);
+}
+
 /// Reads one framed message from `stream`, as Herdr's server does.
 fn read_client(stream: &mut UnixStream) -> ClientMessage {
     let mut prefix = [0; 4];
