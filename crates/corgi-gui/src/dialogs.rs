@@ -226,6 +226,14 @@ impl Dialogs {
                 }
                 None
             }
+            // No dialog: the card shows it closing until the ledger drops it.
+            Purpose::CloseQuestion { .. } => {
+                match error {
+                    Some(error) => self.say(error, true),
+                    None => self.say(message.unwrap_or_else(|| "Closing".into()), false),
+                }
+                None
+            }
             Purpose::Prompt | Purpose::Answer => {
                 match (error, &mut self.open) {
                     (

@@ -231,7 +231,8 @@ Exactly one per request, with its `id`.
   screen, else `waiting for your input`.
 - `questions` are the numbered questions the supervisor has open with the
   user, from its ledger: the `questions` of each ledger id's newest line
-  whose work is not finished. Answer one with `answer`. `id` is empty for a
+  whose work is not finished. Answer one with `answer`, or close it
+  unanswered with `close_question`. `id` is empty for a
   question the supervisor listed without a number.
 - `held` counts the inbox items Corgi holds back: Herdr never confirmed a
   delivery of them (the connection failed, or Herdr failed while typing),
@@ -313,6 +314,7 @@ finish.
 | `watch` | `pane_id` or `null` | | The session whose transcript the state carries. |
 | `prompt` | `pane_id`, `text` | | Types `text` into the agent and submits it. |
 | `answer` | `project_root`, `question`, `text` | | Answers a numbered question. |
+| `close_question` | `project_root`, `question` | | Closes a numbered question without answering it. |
 | `new_agent_form` | `pane_id`?, `project`?, `harness`?, `model`? | | The new-agent form, preset. |
 | `spawn` | `project`, `new_project`, `harness`, `model`, `effort`, `task`, `checkout` | | Starts the agent. |
 | `start_supervisor` | `project_root` | | Starts the project's supervisor, or names the running one. |
@@ -348,6 +350,20 @@ before retrying.` and never includes the text.
 Prompts the project's running supervisor with `Q4: B, keep it`, the form its
 role asks the user to answer in. `question` is `Q4`, `q4` or `4`. Refused
 when no supervisor runs for the project.
+
+### `close_question`
+
+```json
+{"id":3,"command":"close_question","project_root":"/repos/weather","question":"Q4"}
+```
+
+Puts one `[Corgi]` line in the supervisor's inbox, `The user closed Q4
+without answering. Drop it from the ledger.`, which goes out as wakes do: once
+the supervisor is between turns, or when it next runs, so it works with no
+supervisor running. Closing it again before the line goes out still sends
+one. Corgi does not write the ledger: the question stays in `questions`
+until the supervisor drops it, so show it as closing until then. Refused
+for a `question` that is not a number or not open in the ledger.
 
 ### `new_agent_form` and `spawn`
 

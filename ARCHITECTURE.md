@@ -595,9 +595,13 @@ when stdin closes and no command is still running.
   `launch_agent`, `dashboard_supervisor_plan`, `merge_form`/`run_merge`
   with the dashboard's follow-ups (clear the tag, tell the supervisor, hand
   a conflict or failed push over), `close_form`/`close`, `tag_agent`,
-  `go_to_agent`, `open_checkout` and the digest lookups. Quick commands run
-  on the loop's thread; those that wait on Herdr, Git or a harness run on
-  one of their own and reply from there, a panic becoming an error reply.
+  `go_to_agent`, `open_checkout` and the digest lookups. `close_question`
+  has no dashboard key: it adds `supervisor::question_closed_message` to the
+  supervisor's inbox, delivered like a wake, and the role says how to drop
+  the question from the ledger, which only the supervisor writes. Quick
+  commands run on the loop's thread; those that wait on Herdr, Git or a
+  harness run on one of their own and reply from there, a panic becoming an
+  error reply.
   Merges in progress are kept by pane between `merge_check`, `merge` and
   `merge_handoff`.
 - `focus` and `edit` are the commands that call Herdr's focus methods,

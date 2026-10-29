@@ -20,6 +20,7 @@ use corgi_core::{
     digest::memory::{DigestLookup, digest_lookup},
     harness::Harness,
     herdr::HerdrError,
+    inbox::{Item, Kind},
     launch::{
         Checkout, FormRow, LaunchPlan, NewAgentValues, dashboard_supervisor_plan, is_new_project,
         launch_agent, launch_steps, new_agent_plan, starts_supervisor,
@@ -41,7 +42,10 @@ use corgi_core::{
 };
 use serde_json::Value;
 
-use super::{Server, Shared, state::question_number};
+use super::{
+    Server, Shared,
+    state::{open_questions, question_number},
+};
 
 /// Why a merge cannot go on with the form it has.
 const NO_MERGE: &str = "no merge is open for this agent; send merge_check first";
@@ -118,6 +122,10 @@ impl Server {
                 question,
                 text,
             } => self.answer(id, &project_root, &question, text),
+            Command::CloseQuestion {
+                project_root,
+                question,
+            } => self.close_question(id, &project_root, &question),
             Command::NewAgentForm {
                 pane_id,
                 project,
@@ -234,6 +242,54 @@ impl Server {
             deliver(shared, &pane_id, &format!("Q{number}: {}", text.trim()))?;
             Ok(ReplyResult::Done {
                 message: format!("Answered Q{number}"),
+            })
+        });
+    }
+
+    /// Closes the supervisor's open question `question` (`Q3`) without an
+    /// answer: an inbox line asks the supervisor to drop it from its
+    /// ledger, typed in once it is between turns, or when it next runs.
+    /// The question leaves the list once the ledger no longer has it.
+    fn close_question(&mut self, id: u64, root: &str, question: &str) {
+        let Some(number) = question_number(question) else {
+            return self.refuse(
+                id,
+                format!("{question:?} is not a question number such as Q3"),
+            );
+        };
+        let root = root.trim_end_matches('/').to_string();
+        let handle = format!("Q{number}");
+        if !open_questions(&self.shared.inboxes, &root)
+            .iter()
+            .any(|open| open.id == handle)
+        {
+            return self.refuse(id, format!("{handle} is not open for {root}"));
+        }
+        let supervisor = self
+            .agents
+            .iter()
+            .find(|agent| agent.supervisor && agent.project_root.trim_end_matches('/') == root)
+            .map(|agent| agent.info.display_name().to_string());
+        self.work(id, true, move |shared| {
+            // One key per question: closing it twice before the line goes
+            // out still sends it once.
+            let item = Item {
+                project: root,
+                source: "serve".into(),
+                kind: Kind::Note,
+                key: format!("{handle} closed"),
+                text: supervisor::question_closed_message(number),
+                ..Default::default()
+            };
+            shared
+                .inboxes
+                .notify(item)
+                .context("The supervisor could not be told")?;
+            Ok(ReplyResult::Done {
+                message: match supervisor {
+                    Some(name) => format!("Asked {name} to drop {handle}"),
+                    None => format!("{handle} is dropped once the supervisor starts"),
+                },
             })
         });
     }
