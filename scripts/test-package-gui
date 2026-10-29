@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Shell test for scripts/package-gui.sh with a fake `cargo`, which "builds"
+# by writing marker binaries, so nothing is compiled.
+#
+# Run directly: scripts/test-package-gui
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$script_dir/.." && pwd)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/corgi-package-test.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+# The fake cargo writes both release binaries into the target directory the
+# script reads, and logs its arguments.
+mkdir -p "$work/bin" "$work/target/release" "$work/out"
+cat > "$work/bin/cargo" <<'CARGO'
+#!/usr/bin/env bash
+echo "$*" >> "$CARGO_TARGET_DIR/calls.log"
+for binary in corgi corgi-gui; do
+  printf '#!/bin/sh\necho %s\n' "$binary" > "$CARGO_TARGET_DIR/release/$binary"
+  chmod +x "$CARGO_TARGET_DIR/release/$binary"
+done
+CARGO
+chmod +x "$work/bin/cargo"
+
+archive="$(CARGO="$work/bin/cargo" CARGO_TARGET_DIR="$work/target" \
+  bash "$root/scripts/package-gui.sh" "$work/out")"
+version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' "$root/Cargo.toml")"
+
+grep -qx 'build --release --locked' "$work/target/calls.log" || fail "the corgi binary was not built"
+grep -qx 'build --release --locked -p corgi-gui' "$work/target/calls.log" || fail "the GUI was not built"
+[ -f "$archive" ] || fail "no archive at $archive"
+
+mkdir "$work/unpacked"
+case "$(uname -s)" in
+  Darwin)
+    [[ "$archive" == */corgi-gui-$version-macos-*.zip ]] || fail "unexpected name $archive"
+    ditto -x -k "$archive" "$work/unpacked"
+    app="$work/unpacked/Corgi.app"
+    for file in Contents/MacOS/corgi-gui Contents/MacOS/corgi; do
+      [ -x "$app/$file" ] || fail "missing $file"
+    done
+    for file in Contents/Resources/LICENSE Contents/Resources/LICENSE-APACHE; do
+      [ -f "$app/$file" ] || fail "missing $file"
+    done
+    plutil -lint "$app/Contents/Info.plist" >/dev/null || fail "bad Info.plist"
+    grep -q "<string>$version</string>" "$app/Contents/Info.plist" || fail "no version in Info.plist"
+    ;;
+  *)
+    [[ "$archive" == */corgi-gui-$version-linux-*.tar.gz ]] || fail "unexpected name $archive"
+    tar -xzf "$archive" -C "$work/unpacked"
+    dir="$work/unpacked/corgi-gui-$version"
+    for file in bin/corgi-gui bin/corgi; do
+      [ -x "$dir/$file" ] || fail "missing $file"
+    done
+    for file in LICENSE LICENSE-APACHE share/applications/corgi-gui.desktop; do
+      [ -f "$dir/$file" ] || fail "missing $file"
+    done
+    grep -qx 'StartupWMClass=corgi-gui' "$dir/share/applications/corgi-gui.desktop" ||
+      fail "the desktop entry does not name the app id"
+    ;;
+esac
+
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck "$root/scripts/package-gui.sh" "$root/scripts/test-package-gui"
+fi
+echo "ok: $(basename "$archive")"
