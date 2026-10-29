@@ -10,6 +10,12 @@ Copyright 2022 - 2025 Zed Industries, Inc.
 Herdr UI (https://github.com/penso/herdr-gpui), revision a5b2df2
 (2026-10-28)
 Copyright 2026 Fabien Penso
+- src/herdr_ui/terminal_painter.rs and src/herdr_ui/terminal_painter/ are
+  Herdr UI's terminal painter, crates/herdr-gpui/src/terminal_painter.rs and
+  its submodules, with their imports changed and their tests left out.
+- src/herdr_ui/terminal.rs and src/herdr_ui/config.rs keep parts of Herdr
+  UI's crates/herdr-gpui/src/terminal.rs, config/theme.rs and
+  config/font_weight.rs.
 - src/endpoint/protocol.rs is adapted from Herdr UI's crates/herdr-protocol
   (wire.rs, endpoint.rs, frame.rs, codec.rs), and the image types in
   src/endpoint/mod.rs from its crates/herdr-client.

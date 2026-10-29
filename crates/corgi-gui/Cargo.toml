@@ -19,23 +19,31 @@ path = "src/main.rs"
 [features]
 # In-app screenshots through GPUI's `Window::render_to_image`, for checking
 # the window without screen-recording permission (`CORGI_GUI_CAPTURE`).
-capture = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+capture = ["gpui/test-support", "gpui_platform/test-support"]
 
 [dependencies]
 anyhow.workspace = true
 corgi-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# Pinned to the version Herdr UI's terminal painter uses, so the terminals of
-# a later phase can add it without a version conflict.
+# The version Herdr UI's terminal painter (`src/herdr_ui/`) is written for.
 gpui = { package = "gpui-pre", version = "=0.3.6" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.6", features = ["font-kit", "runtime_shaders", "wayland"] }
 futures = "0.3"
 unicode-segmentation = "1.12"
-# Only to write the `capture` feature's screenshots; GPUI already uses it.
-image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# Images a pane places, and the `capture` feature's screenshots; GPUI
+# already uses it.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Herdr's endpoint protocol frames its messages with bincode 2 (`src/endpoint/`).
 bincode = { version = "2", default-features = false, features = ["serde", "std"] }
+# The lifted painter's: cell widths, and its diagnostics.
+unicode-width = "0.2.2"
+tracing = "0.1"
+
+[lints.rust]
+# Herdr UI's painter, lifted unchanged, gates its benchmarks on a feature of
+# Herdr UI's that this crate does not have.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("integration-test"))'] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

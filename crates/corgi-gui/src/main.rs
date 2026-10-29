@@ -6,6 +6,7 @@ mod dialogs;
 mod endpoint;
 mod form;
 mod format;
+mod herdr_ui;
 mod layout;
 mod link;
 mod options;
