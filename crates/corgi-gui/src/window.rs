@@ -3,7 +3,7 @@
 
 use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
-use corgi_core::protocol::{Agent, Command, Question};
+use corgi_core::protocol::{Agent, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, KeyDownEvent, Pixels, ScrollHandle,
@@ -449,9 +449,16 @@ impl CorgiWindow {
         cx.notify();
     }
 
+    /// Collapses `group`'s card, or expands it if collapsed: ← and →, a
+    /// click on its top edge, a right click anywhere in its frame. The
+    /// selection stays, unless collapsing hides it.
     pub fn toggle_card(&mut self, group: &str, cx: &mut Context<Self>) {
-        if !self.collapsed.remove(group) {
-            self.collapsed.insert(group.to_string());
+        let Some(project) = self.store.project(group) else {
+            return;
+        };
+        let moved = flip_card(&mut self.collapsed, project, self.selected.as_deref());
+        if let Some(supervisor) = moved {
+            self.select(supervisor, cx);
         }
         self.reconcile(cx);
         cx.notify();
@@ -479,6 +486,13 @@ impl CorgiWindow {
     }
 
     // ---- Actions ----
+
+    /// What a double click on an agent's row does. Phase 3 opens the
+    /// agent's session in a terminal focus view here, and only here; until
+    /// then it opens the prompt dialog.
+    pub fn open_agent(&mut self, pane_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_prompt(Some(pane_id), window, cx);
+    }
 
     pub fn open_prompt(
         &mut self,
@@ -798,18 +812,8 @@ impl CorgiWindow {
             "left" | "right" => {
                 let Some(group) = selected_group else { return };
                 let collapse = keystroke.key == "left";
-                let is_card = self.store.project(&group).is_some_and(|p| p.card);
-                if is_card && collapse != self.collapsed.contains(&group) {
+                if collapse != self.collapsed.contains(&group) {
                     self.toggle_card(&group, cx);
-                    // Collapsing moves the selection onto the supervisor.
-                    if collapse
-                        && let Some(supervisor) = self
-                            .store
-                            .project(&group)
-                            .and_then(|p| p.supervisor.clone())
-                    {
-                        self.select(supervisor, cx);
-                    }
                 }
             }
             "p" => self.open_prompt(None, window, cx),
@@ -1015,3 +1019,82 @@ pub fn bind_app_keys(cx: &mut App) {
 }
 
 gpui::actions!(corgi, [Quit]);
+
+/// Collapses `project`'s card in `collapsed`, or expands it if collapsed; a
+/// project with no card has nothing to collapse. Returns the row to select
+/// when collapsing hides `selected`, one of its workers: its supervisor,
+/// which a collapsed card still shows.
+fn flip_card(
+    collapsed: &mut HashSet<String>,
+    project: &Project,
+    selected: Option<&str>,
+) -> Option<String> {
+    if !project.card || collapsed.remove(&project.group) {
+        return None;
+    }
+    collapsed.insert(project.group.clone());
+    let hidden = selected.is_some_and(|selected| {
+        project.supervisor.as_deref() != Some(selected)
+            && project.agents.iter().any(|id| id == selected)
+    });
+    if hidden {
+        project.supervisor.clone()
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(group: &str) -> Project {
+        Project {
+            group: group.into(),
+            card: true,
+            supervisor: Some(format!("{group}-sup")),
+            agents: vec![format!("{group}-sup"), format!("{group}-worker")],
+            ..Project::default()
+        }
+    }
+
+    #[test]
+    fn a_card_flips_and_keeps_the_selection_while_it_shows() {
+        let mut collapsed = HashSet::new();
+        let shop = card("shop");
+        // Another project's row, or the supervisor, stays selected.
+        assert_eq!(flip_card(&mut collapsed, &shop, Some("other")), None);
+        assert!(collapsed.contains("shop"));
+        assert_eq!(flip_card(&mut collapsed, &shop, Some("other")), None);
+        assert!(collapsed.is_empty(), "a second flip expands it");
+        assert_eq!(flip_card(&mut collapsed, &shop, Some("shop-sup")), None);
+        assert_eq!(flip_card(&mut collapsed, &shop, None), None);
+        assert!(collapsed.is_empty());
+    }
+
+    #[test]
+    fn collapsing_a_card_over_its_selected_worker_selects_its_supervisor() {
+        let mut collapsed = HashSet::new();
+        let shop = card("shop");
+        assert_eq!(
+            flip_card(&mut collapsed, &shop, Some("shop-worker")),
+            Some("shop-sup".to_string())
+        );
+        // Expanding hides nothing.
+        assert_eq!(flip_card(&mut collapsed, &shop, Some("shop-sup")), None);
+    }
+
+    #[test]
+    fn a_project_with_no_card_does_not_collapse() {
+        let mut collapsed = HashSet::new();
+        let scratch = Project {
+            card: false,
+            ..card("scratch")
+        };
+        assert_eq!(
+            flip_card(&mut collapsed, &scratch, Some("scratch-worker")),
+            None
+        );
+        assert!(collapsed.is_empty());
+    }
+}

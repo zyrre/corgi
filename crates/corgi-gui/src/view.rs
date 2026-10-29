@@ -1,11 +1,11 @@
-//! What the window draws: the header (the corgi, the herd's counts, plan
-//! usage), the overview of project cards and agent rows, the transcript
-//! under it, the supervisor's side panel, the status bar and the dialogs.
-//! Every color comes from `theme::Colors`.
+//! What the window draws: the header (the corgi and the wordmark, the
+//! herd's counts, plan usage), the overview of framed projects and their
+//! agent rows, the transcript under it, the supervisor's side panel, the
+//! status bar and the dialogs. Every color comes from `theme::Colors`.
 
 use corgi_core::protocol::{Activity, Agent, MergeOutcome, Project};
 use gpui::{
-    AnyElement, ClickEvent, Context, CursorStyle, FontWeight, Hsla, InteractiveElement,
+    AnyElement, ClickEvent, Context, CursorStyle, Div, FontWeight, Hsla, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, relative,
 };
@@ -14,37 +14,27 @@ use crate::{
     dialogs::{Dialog, Merge, MergeStage, Steps, outcome_line},
     form::Row,
     format::{self, Piece, Tone},
-    layout::{Split, TRANSCRIPT_MIN},
+    layout::{
+        CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, HEADER_HEIGHT, HEADER_PADDING,
+        PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
+    },
     store::Connection,
     theme,
     window::{CorgiWindow, Drag},
 };
 
 const TEXT_SIZE: f32 = 13.0;
+/// The body text's line height, in text sizes.
+const LINE_HEIGHT: f32 = 1.45;
 
 /// What a toolbar button does.
 type Action = fn(&mut CorgiWindow, &mut Window, &mut Context<CorgiWindow>);
-const PIXEL: f32 = 4.0;
-
-/// The dashboard's corgi, two pixels a terminal cell there, one square
-/// here. Kept in step with `CORGI_PIXELS` in `src/ui/header.rs`: `o` coat,
-/// `d` inner ear, `w` blaze, `k` eyes and nose, `h` glint, `p` tongue.
-const CORGI_PIXELS: [&str; 14] = [
-    "................",
-    ".o............o.",
-    ".oo..........oo.",
-    ".odo........odo.",
-    ".oddo......oddo.",
-    ".oooooooooooooo.",
-    ".ookkoowwookkoo.",
-    ".ookhoowwoohkoo.",
-    ".wwooowwwwoooww.",
-    ".wwwwwwkkwwwwww.",
-    "..wwwwkwwkwwww..",
-    "...wwwwppwwww...",
-    ".....wwwwww.....",
-    "................",
-];
+/// What a click on a frame's top edge does.
+type EdgeClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut gpui::App)>;
+/// The width of a frame's rounded corner piece in its top edge.
+const FRAME_CORNER: f32 = 8.0;
+/// A header card's narrowest, about the dashboard's fifteen cells.
+const CARD_MIN_WIDTH: f32 = 15.0 * PIXEL;
 
 impl Render for CorgiWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -80,7 +70,7 @@ impl Render for CorgiWindow {
             .text_color(colors.roles.text)
             .font_family(self.font.clone())
             .text_size(px(TEXT_SIZE))
-            .line_height(px(TEXT_SIZE * 1.45))
+            .line_height(px(TEXT_SIZE * LINE_HEIGHT))
             .on_key_down(cx.listener(|this, event, window, cx| {
                 if this.dialogs.open.is_some() {
                     this.dialog_key(event, window, cx);
@@ -143,33 +133,43 @@ impl CorgiWindow {
 
     // ---- Header ----
 
+    /// The dashboard's header in the same order: the corgi, the wordmark,
+    /// then HERD and a card per plan, packed left at one height. A window
+    /// too narrow for them all wraps the cards under the letters.
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         let now = self.store.now();
         let state = &self.store.state;
-        let herd = format::herd(&state.agents);
-        let card = |title: SharedString, title_color: Hsla, lines: Vec<AnyElement>| {
-            div()
-                .flex()
-                .flex_col()
-                .px_3()
-                .py_1()
-                .min_w(px(150.))
-                .border_1()
-                .border_color(title_color.opacity(0.6))
-                .rounded_md()
-                .child(
-                    div()
-                        .text_color(title_color)
-                        .font_weight(FontWeight::BOLD)
-                        .child(title),
-                )
-                .children(lines)
+        let card = |title: SharedString, color: Hsla, lines: Vec<AnyElement>| {
+            framed(
+                SharedString::from(format!("card-{title}")),
+                CARD_TITLE_ROW,
+                color,
+                div()
+                    .text_color(color)
+                    .font_weight(FontWeight::BOLD)
+                    .child(title)
+                    .into_any_element(),
+                None,
+                None,
+                div()
+                    .flex()
+                    .flex_col()
+                    .px_2()
+                    .line_height(px(CARD_LINE))
+                    .children(lines),
+            )
+            .flex_none()
+            .h(px(CARD_HEIGHT))
+            .min_w(px(CARD_MIN_WIDTH))
         };
         let herd_card = card(
             "HERD".into(),
-            colors.roles.warning,
-            herd.iter().map(|piece| self.piece(piece, None)).collect(),
+            self.tone(format::herd_tone(&state.agents), None),
+            format::herd(&state.agents)
+                .iter()
+                .map(|piece| self.piece(piece, None))
+                .collect(),
         );
         let usage_cards = state.usage.iter().map(|usage| {
             let lines = format::usage_lines(usage, now)
@@ -186,36 +186,37 @@ impl CorgiWindow {
             let title_color = theme::vendor(&usage.title).unwrap_or(colors.roles.accent);
             card(usage.title.clone().into(), title_color, lines)
         });
+        let lockup = div()
+            .flex()
+            .flex_row()
+            .flex_none()
+            .gap(px(CORGI_GAP))
+            .h(px(HEADER_HEIGHT))
+            .mr(px(WORDMARK_CARD_GAP - CARD_GAP))
+            // A light theme's background all but hides the white blaze, so
+            // the corgi stands on a grey tile there.
+            .child(
+                corgi_art()
+                    .rounded_lg()
+                    .when_some(colors.corgi_tile(), |corgi, tile| corgi.bg(tile)),
+            )
+            .child(
+                div()
+                    .mt(px(WORDMARK_TOP))
+                    .child(wordmark_art(colors.supervisor())),
+            );
         div()
             .flex()
             .flex_row()
             .flex_wrap()
-            .items_center()
-            .gap_4()
-            .px_4()
+            .items_start()
+            .gap_x(px(CARD_GAP))
+            .gap_y(px(PIXEL))
+            .px(px(HEADER_PADDING))
             .py_2()
             .border_b_1()
             .border_color(colors.roles.rule)
-            .child(corgi_art())
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .text_size(px(34.))
-                            .line_height(px(38.))
-                            .font_weight(FontWeight::BLACK)
-                            .text_color(colors.supervisor())
-                            .child("CORGI"),
-                    )
-                    .child(
-                        div()
-                            .text_color(colors.roles.muted)
-                            .child(format!("on {}", self.options.place())),
-                    ),
-            )
-            .child(div().flex_1())
+            .child(lockup)
             .child(herd_card)
             .children(usage_cards)
             .on_mouse_down(
@@ -437,47 +438,49 @@ impl CorgiWindow {
         } else {
             colors.roles.accent
         };
-        let group = project.group.clone();
-        let heading = div()
-            .id(SharedString::from(format!("heading-{}", project.group)))
+        // The name in the middle of the frame's top edge, the checkout
+        // dimmed after it.
+        let title = div()
             .flex()
             .flex_row()
             .gap_2()
             .items_center()
+            .min_w_0()
             .child(
                 div()
+                    .flex_none()
                     .text_color(title_color)
                     .font_weight(FontWeight::BOLD)
                     .child(project.group.clone()),
             )
-            .child(
-                div()
-                    .text_color(colors.roles.muted)
-                    .child(corgi_core::paths::tilde(&project.root)),
-            )
+            .when(!project.root.is_empty(), |title| {
+                title.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(colors.roles.muted)
+                        .child(corgi_core::paths::tilde(&project.root)),
+                )
+            })
             .children(format::held(project.held).map(|held| self.piece(&held, None)))
-            .when(project.card, |heading| {
-                heading
-                    .child(div().flex_1())
-                    .child(div().text_color(colors.roles.muted).child(if collapsed {
-                        "→ expand"
-                    } else {
-                        "← collapse"
-                    }))
-                    .cursor(CursorStyle::PointingHand)
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.toggle_card(&group, cx);
-                    }))
-            });
-        if !project.card {
-            return div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(heading)
-                .children(rows)
-                .into_any_element();
-        }
+            .into_any_element();
+        let corner = project.card.then(|| {
+            div()
+                .text_color(colors.roles.muted)
+                .child(if collapsed {
+                    "→ expand"
+                } else {
+                    "← collapse"
+                })
+                .into_any_element()
+        });
+        let group = project.group.clone();
+        let right_click_group = group.clone();
+        let toggle = project.card.then(|| -> EdgeClick {
+            Box::new(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.toggle_card(&group, cx);
+            }))
+        });
         let footer = collapsed.then(|| {
             div()
                 .flex()
@@ -517,19 +520,32 @@ impl CorgiWindow {
                         )
                 }))
         });
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .p_2()
-            .rounded_md()
-            .border_1()
-            .border_color(colors.roles.rule)
-            .bg(colors.panel)
-            .child(heading)
-            .children(rows)
-            .children(footer)
-            .into_any_element()
+        framed(
+            SharedString::from(format!("heading-{}", project.group)),
+            TEXT_SIZE * LINE_HEIGHT,
+            colors.roles.rule,
+            title,
+            corner,
+            toggle,
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .px_2()
+                .pb_2()
+                .children(rows)
+                .children(footer),
+        )
+        .id(SharedString::from(format!("project-{}", project.group)))
+        // A right click anywhere in the frame collapses or expands it,
+        // leaving the selection be. Rows take only left clicks.
+        .on_aux_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
+            if event.is_right_click() {
+                this.toggle_card(&right_click_group, cx);
+                cx.stop_propagation();
+            }
+        }))
+        .into_any_element()
     }
 
     fn agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
@@ -630,7 +646,7 @@ impl CorgiWindow {
                 this.select(pane_id.clone(), cx);
                 window.focus(&this.focus, cx);
                 if event.click_count() == 2 {
-                    this.open_prompt(Some(pane_id.clone()), window, cx);
+                    this.open_agent(pane_id.clone(), window, cx);
                 }
             }))
             .into_any_element()
@@ -1122,7 +1138,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .text_color(colors.roles.muted)
-                    .child("j/k select · ←/→ card · 1–9 answer"),
+                    .child("j/k select · ←/→ or right-click card · 1–9 answer"),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -1704,37 +1720,115 @@ fn keycap(key: &str, fill: Hsla, text: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// The corgi in the brand's fixed colors, one square per pixel.
-fn corgi_art() -> impl IntoElement {
-    use corgi_core::palette::brand;
-    let color = |pixel: char| {
-        let brand = match pixel {
-            'o' => brand::CORGI_COAT,
-            'd' => brand::CORGI_INNER_EAR,
-            'w' => brand::CORGI_WHITE,
-            'k' => brand::CORGI_DARK,
-            'h' => brand::CORGI_GLINT,
-            'p' => brand::CORGI_TONGUE,
-            _ => return None,
-        };
-        match brand {
-            corgi_core::palette::Color::Indexed(index) => {
-                Some(theme::hsla(corgi_core::palette::indexed_rgb(index)))
-            }
-            _ => None,
-        }
-    };
+/// A rounded frame closed on all four sides, as the dashboard draws its
+/// boxes: `title` in the middle of the top edge, `corner` at its right end,
+/// `body` inside. The top edge is `row` tall, its rule running through the
+/// middle behind the title; a click anywhere on it does `on_edge_click`.
+fn framed(
+    id: SharedString,
+    row: f32,
+    edge: Hsla,
+    title: AnyElement,
+    corner: Option<AnyElement>,
+    on_edge_click: Option<EdgeClick>,
+    body: impl IntoElement,
+) -> Div {
+    let half = px(row / 2.0);
+    let rule = || div().h(half).mt(half).border_t_1().border_color(edge);
+    // Two equal halves either side of the title keep it in the middle of
+    // the frame, whatever the corner holds.
+    let left = div()
+        .flex()
+        .flex_row()
+        .flex_1()
+        .child(
+            rule()
+                .flex_none()
+                .w(px(FRAME_CORNER))
+                .border_l_1()
+                .rounded_tl_md(),
+        )
+        .child(rule().flex_1());
+    let right = div()
+        .flex()
+        .flex_row()
+        .flex_1()
+        .child(rule().flex_1())
+        .children(corner.map(|corner| div().flex_none().px_1().child(corner)))
+        .child(
+            rule()
+                .flex_none()
+                .w(px(FRAME_CORNER))
+                .border_r_1()
+                .rounded_tr_md(),
+        );
+    let top = div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .h(px(row))
+        .line_height(px(row))
+        .child(left)
+        .child(div().flex().min_w_0().overflow_hidden().px_1().child(title))
+        .child(right)
+        .when_some(on_edge_click, |top, click| {
+            top.cursor(CursorStyle::PointingHand).on_click(click)
+        });
+    div().flex().flex_col().child(top).child(
+        div()
+            .flex_1()
+            .border_l_1()
+            .border_r_1()
+            .border_b_1()
+            .rounded_b_md()
+            .border_color(edge)
+            .child(body),
+    )
+}
+
+/// Pixel art, one square per pixel, `None` left to the background. A run
+/// of one color is one box, so the art shows no seams between its squares.
+fn pixel_art(rows: impl Iterator<Item = Vec<Option<Hsla>>>) -> Div {
     div()
         .flex()
         .flex_col()
         .flex_none()
-        .children(CORGI_PIXELS.iter().map(|row| {
-            div().flex().flex_row().children(row.chars().map(|pixel| {
-                let square = div().w(px(PIXEL)).h(px(PIXEL));
-                match color(pixel) {
-                    Some(color) => square.bg(color),
-                    None => square,
+        .children(rows.map(|row| {
+            let mut runs: Vec<(Option<Hsla>, usize)> = Vec::new();
+            for pixel in row {
+                match runs.last_mut() {
+                    Some((color, count)) if *color == pixel => *count += 1,
+                    _ => runs.push((pixel, 1)),
                 }
-            }))
+            }
+            div()
+                .flex()
+                .flex_row()
+                .h(px(PIXEL))
+                .children(runs.into_iter().map(|(color, count)| {
+                    div()
+                        .flex_none()
+                        .w(px(count as f32 * PIXEL))
+                        .h(px(PIXEL))
+                        .when_some(color, |square, color| square.bg(color))
+                }))
         }))
+}
+
+/// The supervisor's corgi in the brand's fixed colors.
+fn corgi_art() -> Div {
+    pixel_art(corgi_core::art::CORGI_PIXELS.iter().map(|row| {
+        row.chars()
+            .map(|pixel| corgi_core::art::corgi_color(pixel).and_then(theme::brand_color))
+            .collect()
+    }))
+}
+
+/// The CORGI wordmark in `color`.
+fn wordmark_art(color: Hsla) -> Div {
+    pixel_art(
+        corgi_core::art::wordmark_pixels()
+            .into_iter()
+            .map(|row| row.into_iter().map(|on| on.then_some(color)).collect()),
+    )
 }

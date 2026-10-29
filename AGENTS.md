@@ -155,9 +155,16 @@ Build with `--features capture`, then run with `CORGI_GUI_BACKGROUND=1`
 `CORGI_GUI_APPEARANCE=light` checks the light theme without changing the
 system's. Move the window to AeroSpace workspace 4 the moment it appears
 (see the user's instructions); `render_to_image` still captures it there.
+AeroSpace tiles the window to fill that workspace whatever size
+`gui-layout.json` kept, so for a shot at a given width, float it
+(`aerospace layout --window-id <id> floating`) and size it with a
+`size:640x760` step; 640 wide is the window's minimum.
 Script steps run through the untyped window handle (`cx.update_window`):
 updating the typed `WindowHandle<CorgiWindow>` leases the root view, and a
 key dispatched inside that lease panics when its listener updates the view.
+A scripted click (`click:X,Y`, `right:X,Y`, `double:X,Y`) moves the mouse to
+the point before pressing: without the move, the elements under it are not
+hovered and the click reaches none of them.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 

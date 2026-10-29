@@ -203,6 +203,27 @@ pub fn herd(agents: &[Agent]) -> Vec<Piece> {
     ]
 }
 
+/// The HERD card's frame, as the dashboard colors it: the most pressing
+/// state any agent is in, blocked before working, merge and done.
+pub fn herd_tone(agents: &[Agent]) -> Tone {
+    let any = |wanted: AgentState| {
+        agents
+            .iter()
+            .any(|agent| !agent.ready_to_merge && agent.state == wanted)
+    };
+    if any(AgentState::Blocked) {
+        Tone::Warning
+    } else if any(AgentState::Working) {
+        Tone::Accent
+    } else if agents.iter().any(|agent| agent.ready_to_merge) {
+        Tone::Merge
+    } else if any(AgentState::Done) {
+        Tone::Success
+    } else {
+        Tone::Muted
+    }
+}
+
 /// One plan-usage card as lines: the plan and the reading's age, then each
 /// window's use and when it resets.
 pub fn usage_lines(card: &UsageCard, now: u64) -> Vec<Vec<Piece>> {
@@ -384,6 +405,9 @@ mod tests {
                 "· 0 IDLE"
             ]
         );
+        assert_eq!(herd_tone(&agents), Tone::Accent);
+        assert_eq!(herd_tone(&agents[1..]), Tone::Merge);
+        assert_eq!(herd_tone(&[]), Tone::Muted);
         assert_eq!(marker(Activity::default().kind), "○");
     }
 
