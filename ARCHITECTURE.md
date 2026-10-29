@@ -595,9 +595,13 @@ when stdin closes and no command is still running.
   `launch_agent`, `dashboard_supervisor_plan`, `merge_form`/`run_merge`
   with the dashboard's follow-ups (clear the tag, tell the supervisor, hand
   a conflict or failed push over), `close_form`/`close`, `tag_agent`,
-  `go_to_agent`, `open_checkout` and the digest lookups. Quick commands run
-  on the loop's thread; those that wait on Herdr, Git or a harness run on
-  one of their own and reply from there, a panic becoming an error reply.
+  `go_to_agent`, `open_checkout` and the digest lookups. `close_question`
+  has no dashboard key: it adds `supervisor::question_closed_message` to the
+  supervisor's inbox, delivered like a wake, and the role says how to drop
+  the question from the ledger, which only the supervisor writes. Quick
+  commands run on the loop's thread; those that wait on Herdr, Git or a
+  harness run on one of their own and reply from there, a panic becoming an
+  error reply.
   Merges in progress are kept by pane between `merge_check`, `merge` and
   `merge_handoff`.
 - `focus` and `edit` are the commands that call Herdr's focus methods,
@@ -653,7 +657,9 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
 - GPUI's `on_click` fires only for the left button; right and middle clicks
   go to `on_aux_click`, told apart by `ClickEvent::is_right_click`. Nested
   elements do not block each other's mouse events, so a project frame's
-  `on_aux_click` also gets the right clicks that land on its rows.
+  `on_aux_click` also gets the right clicks that land on its rows. A
+  nested element's `on_click` that calls `cx.stop_propagation()` does stop
+  its parent's `on_click`, which the question card's × relies on.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still

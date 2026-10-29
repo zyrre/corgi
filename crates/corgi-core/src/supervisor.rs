@@ -839,6 +839,13 @@ pub fn push_failed_message(merge: &MergeLanded<'_>) -> String {
     )
 }
 
+/// The line that tells a supervisor the user closed its question `Q<number>`
+/// without answering it, so it drops the question from its ledger. The role
+/// says how.
+pub fn question_closed_message(number: u32) -> String {
+    format!("{WAKE_PREFIX} The user closed Q{number} without answering. Drop it from the ledger.")
+}
+
 /// `The user merged <worker> (task "…"), branch <branch>, into <base> at
 /// <commit>`, the part both merge lines share.
 fn merged_clause(merge: &MergeLanded<'_>) -> String {
@@ -1816,6 +1823,21 @@ mod tests {
         assert!(!role.contains("read ARCHITECTURE.md"));
         assert!(role.contains("`/state/supervisors/corgi`"));
         assert!(!role.contains("{{"));
+    }
+
+    #[test]
+    fn a_closed_question_is_one_line_the_role_says_how_to_handle() {
+        assert_eq!(
+            question_closed_message(40),
+            "[Corgi] The user closed Q40 without answering. Drop it from the ledger."
+        );
+        assert!(ROLE.contains(
+            "- When Corgi says the user closed a question without answering, append a\n  \
+             ledger line without it for each unfinished id whose newest line lists it\n  \
+             (`\"questions\":[]` once none remain, with the status that now fits:\n  \
+             `reported` if the work still needs your review, else as it was). Never\n  \
+             ask it again or list it in `Still open:`; reply in at most one line."
+        ));
     }
 
     #[test]

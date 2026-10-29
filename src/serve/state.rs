@@ -162,7 +162,7 @@ fn worker_counts(workers: &[&DashboardAgent]) -> WorkerCounts {
 }
 
 /// The numbered questions the ledger of `root`'s supervisor leaves open.
-fn open_questions(inboxes: &Inboxes, root: &str) -> Vec<Question> {
+pub(super) fn open_questions(inboxes: &Inboxes, root: &str) -> Vec<Question> {
     let Some(ledger) = inboxes
         .dir(root)
         .and_then(|dir| fs::read_to_string(dir.join(LEDGER_FILE)).ok())
