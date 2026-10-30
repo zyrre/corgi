@@ -1454,11 +1454,24 @@ impl CorgiWindow {
             .pt(px(DIALOG_TOP))
             .bg(colors.background.opacity(0.55))
             .occlude()
+            // A left click outside the dialog does what Esc does, and
+            // nothing under it sees the click.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.escape_dialog(window, cx);
+                }),
+            )
             .child(
                 div()
                     .id("dialog")
                     .key_context("Dialog")
                     .track_focus(&self.form_focus)
+                    // A click in the dialog is not outside it: a child's
+                    // listener runs before its parent's, so the layer's
+                    // never hears it. The dialog's own children heard it first.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .w(px(720.))
                     .max_w(relative(0.92))
                     .flex()

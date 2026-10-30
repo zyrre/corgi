@@ -195,6 +195,32 @@ impl Dialogs {
         self.flash = Some(Flash::new(text, error));
     }
 
+    /// What Esc does to the open dialog, and a click outside it too: a
+    /// list open in the form closes first, a form creating its agent stays,
+    /// and a running merge goes on with its outcome said when it ends. A
+    /// stopped merge is left to the user through `corgi serve`, and its
+    /// dialog closes on the reply: that action is returned, to send.
+    pub fn escape(&mut self) -> Option<MergeAction> {
+        match &mut self.open {
+            None => {}
+            Some(Dialog::NewAgent(new)) => {
+                if new.key(form::Key::Escape) == form::Effect::Cancel {
+                    self.open = None;
+                }
+            }
+            Some(Dialog::Merge(merge))
+                if merge
+                    .actions()
+                    .iter()
+                    .any(|(_, action)| *action == MergeAction::Dismiss) =>
+            {
+                return Some(MergeAction::Dismiss);
+            }
+            Some(_) => self.open = None,
+        }
+        None
+    }
+
     /// Shows a long command's progress in its dialog.
     pub fn progress(&mut self, purpose: &Purpose, progress: &Progress) {
         match (&mut self.open, purpose) {
@@ -688,6 +714,70 @@ mod tests {
         assert!(matches!(&dialogs.open, Some(Dialog::Close(close)) if close.dirty.is_some()));
         dialogs.lost(&[Purpose::Close, Purpose::Quiet]);
         assert!(matches!(&dialogs.open, Some(Dialog::Close(close)) if close.error.is_some()));
+    }
+
+    #[test]
+    fn esc_closes_one_level_and_leaves_what_cannot_be_cancelled() {
+        let mut dialogs = Dialogs {
+            open: Some(prompt_dialog()),
+            ..Dialogs::default()
+        };
+        assert_eq!(dialogs.escape(), None);
+        assert_eq!(dialogs.open, None);
+        // Nothing open: nothing happens.
+        assert_eq!(dialogs.escape(), None);
+
+        // The form's list closes first, then the form.
+        let mut new = NewAgent::new(NewAgentForm::default());
+        new.key(form::Key::Down);
+        new.key(form::Key::Space);
+        assert!(new.picker.is_some());
+        dialogs.open = Some(Dialog::NewAgent(Box::new(new)));
+        dialogs.escape();
+        assert!(matches!(&dialogs.open, Some(Dialog::NewAgent(new)) if new.picker.is_none()));
+        dialogs.escape();
+        assert_eq!(dialogs.open, None);
+
+        // A form creating its agent cannot be cancelled.
+        let mut new = NewAgent::new(NewAgentForm::default());
+        new.running = Some(Steps::default());
+        dialogs.open = Some(Dialog::NewAgent(Box::new(new)));
+        dialogs.escape();
+        assert!(matches!(dialogs.open, Some(Dialog::NewAgent(_))));
+
+        dialogs.open = Some(Dialog::NewAgentLoading);
+        dialogs.escape();
+        assert_eq!(dialogs.open, None);
+
+        // A merge closes, running or not, unless it stopped for the user:
+        // then serve is told, and the dialog waits for its reply.
+        let merge = |stage| {
+            Some(Dialog::Merge(Box::new(Merge {
+                form: MergeForm::default(),
+                stage,
+                progress: Steps::default(),
+            })))
+        };
+        for stage in [MergeStage::Confirm, MergeStage::Running] {
+            dialogs.open = merge(stage);
+            assert_eq!(dialogs.escape(), None);
+            assert_eq!(dialogs.open, None);
+        }
+        dialogs.open = merge(MergeStage::Outcome(MergeOutcome::Conflicted {
+            files: vec!["a.rs".into()],
+            supervisor: None,
+        }));
+        assert_eq!(dialogs.escape(), Some(MergeAction::Dismiss));
+        assert!(matches!(dialogs.open, Some(Dialog::Merge(_))));
+
+        dialogs.open = Some(Dialog::Close(Close {
+            form: CloseForm::default(),
+            dirty: None,
+            running: true,
+            error: None,
+        }));
+        dialogs.escape();
+        assert_eq!(dialogs.open, None);
     }
 
     #[test]
