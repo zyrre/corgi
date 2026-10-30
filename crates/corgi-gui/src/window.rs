@@ -64,6 +64,8 @@ pub struct CorgiWindow {
     pub task_input: Entity<TextInput>,
     pub overview_scroll: ScrollHandle,
     pub transcript_scroll: ScrollHandle,
+    /// The answer box's question text, back at its top for each question.
+    pub question_scroll: ScrollHandle,
     pub drag: Option<Drag>,
     /// The focus view's terminal, kept while the overview shows so its
     /// connection stays warm, parked and inactive.
@@ -188,6 +190,7 @@ impl CorgiWindow {
             task_input,
             overview_scroll: ScrollHandle::new(),
             transcript_scroll: ScrollHandle::new(),
+            question_scroll: ScrollHandle::new(),
             drag: None,
             terminal,
             focus_view: None,
@@ -672,6 +675,7 @@ impl CorgiWindow {
             input.clear(cx);
             input.set_placeholder(format!("Your answer to {handle}"));
         });
+        self.question_scroll = ScrollHandle::new();
         self.dialogs.open = Some(Dialog::Answer {
             project_root,
             question,

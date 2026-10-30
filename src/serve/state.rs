@@ -2,10 +2,19 @@
 //! colors turned into the protocol's data, and the changes between two
 //! states as a delta's.
 
-use std::{collections::HashMap, env, fs};
+use std::{
+    collections::HashMap,
+    env,
+    fs::{self, File},
+    io::Read,
+    path::Path,
+};
 
 use corgi_core::{
-    digest::{all_open_questions, lookup::LEDGER_FILE},
+    digest::{
+        all_open_questions,
+        lookup::{LEDGER_FILE, QUESTIONS_DIR},
+    },
     herdr::HerdrClient,
     model::{self, AgentState, DashboardAgent, PromptCacheKind},
     palette::{self, Palette, Rgb, Source, Theme},
@@ -161,21 +170,60 @@ fn worker_counts(workers: &[&DashboardAgent]) -> WorkerCounts {
     counts
 }
 
-/// The numbered questions the ledger of `root`'s supervisor leaves open.
+/// The numbered questions the ledger of `root`'s supervisor leaves open,
+/// each with its whole text when the supervisor saved it.
 pub(super) fn open_questions(inboxes: &Inboxes, root: &str) -> Vec<Question> {
-    let Some(ledger) = inboxes
-        .dir(root)
-        .and_then(|dir| fs::read_to_string(dir.join(LEDGER_FILE)).ok())
-    else {
+    let Some(dir) = inboxes.dir(root) else {
+        return Vec::new();
+    };
+    let Ok(ledger) = fs::read_to_string(dir.join(LEDGER_FILE)) else {
         return Vec::new();
     };
     all_open_questions(&ledger)
         .into_iter()
         .map(|(agent, question)| {
             let (id, title) = split_question(&question);
-            Question { id, title, agent }
+            let text = if id.is_empty() {
+                String::new()
+            } else {
+                question_text(&dir.join(QUESTIONS_DIR).join(format!("{id}.md")))
+            };
+            Question {
+                id,
+                title,
+                agent,
+                text,
+            }
         })
         .collect()
+}
+
+/// The most of a question's file a snapshot carries.
+pub(super) const QUESTION_TEXT_BYTES: u64 = 64 * 1024;
+
+/// The text of the question file at `path`, at most
+/// [`QUESTION_TEXT_BYTES`] of it; empty when there is none. Only a plain
+/// file is read: a link is not followed, and a pipe would block.
+pub(super) fn question_text(path: &Path) -> String {
+    if !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()) {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    if File::open(path)
+        .and_then(|file| file.take(QUESTION_TEXT_BYTES + 1).read_to_end(&mut bytes))
+        .is_err()
+    {
+        return String::new();
+    }
+    let cut = bytes.len() as u64 > QUESTION_TEXT_BYTES;
+    bytes.truncate(QUESTION_TEXT_BYTES as usize);
+    let text = String::from_utf8_lossy(&bytes);
+    if cut {
+        // The cut can split a character.
+        format!("{}…", text.trim_end_matches('\u{FFFD}').trim_end())
+    } else {
+        text.trim_end().to_string()
+    }
 }
 
 /// `Q2: Keep the old flag?` as its handle, `Q2`, and title. A question

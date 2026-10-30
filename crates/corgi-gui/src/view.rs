@@ -26,6 +26,8 @@ use crate::{
 };
 
 const TEXT_SIZE: f32 = 13.0;
+/// The space above a dialog.
+const DIALOG_TOP: f32 = 110.0;
 /// The body text's line height, in text sizes.
 const LINE_HEIGHT: f32 = 1.45;
 
@@ -1373,7 +1375,11 @@ impl CorgiWindow {
                         &question.id
                     }
                 ),
-                Some(question.title.clone()),
+                Some(if question.text.is_empty() {
+                    div().child(question.title.clone()).into_any_element()
+                } else {
+                    self.question_text(question.text.clone(), window)
+                }),
                 *sending,
                 error.as_deref(),
             ),
@@ -1383,7 +1389,6 @@ impl CorgiWindow {
             Some(Dialog::Close(close)) => self.close_dialog(close, cx),
             None => div().into_any_element(),
         };
-        let _ = window;
         // A refused prompt keeps the keyboard; its frame says so.
         let frame = if self.dialogs.open.as_ref().is_some_and(Dialog::refused) {
             colors.roles.danger
@@ -1399,7 +1404,7 @@ impl CorgiWindow {
             .flex()
             .items_start()
             .justify_center()
-            .pt(px(110.))
+            .pt(px(DIALOG_TOP))
             .bg(colors.background.opacity(0.55))
             .occlude()
             .child(
@@ -1467,10 +1472,30 @@ impl CorgiWindow {
             }))
     }
 
+    /// A question as the supervisor asked it, its lines kept, scrolling
+    /// when it is taller than the window leaves room for.
+    fn question_text(&self, text: String, window: &Window) -> AnyElement {
+        // What the dialog's top margin, title, answer field and hints take.
+        let around = DIALOG_TOP + 190.0;
+        let room = (f32::from(window.viewport_size().height) - around).clamp(80.0, 420.0);
+        div()
+            .id("question-text")
+            .max_h(px(room))
+            .overflow_y_scroll()
+            .track_scroll(&self.question_scroll)
+            .px_2()
+            .py_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(self.colors.roles.rule)
+            .child(text)
+            .into_any_element()
+    }
+
     fn text_dialog(
         &self,
         title: String,
-        question: Option<String>,
+        question: Option<AnyElement>,
         sending: bool,
         error: Option<&str>,
     ) -> AnyElement {
@@ -1480,7 +1505,7 @@ impl CorgiWindow {
             .flex_col()
             .gap_2()
             .child(self.dialog_title(title))
-            .children(question.map(|question| div().child(question)))
+            .children(question)
             .child(self.field_box(self.prompt_input.clone().into_any_element()))
             .when(sending, |d| {
                 d.child(

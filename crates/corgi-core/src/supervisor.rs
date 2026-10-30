@@ -840,10 +840,13 @@ pub fn push_failed_message(merge: &MergeLanded<'_>) -> String {
 }
 
 /// The line that tells a supervisor the user closed its question `Q<number>`
-/// without answering it, so it drops the question from its ledger. The role
-/// says how.
+/// without answering it, so it drops the question from its ledger and
+/// deletes its `questions/Q<n>.md`. The role says how.
 pub fn question_closed_message(number: u32) -> String {
-    format!("{WAKE_PREFIX} The user closed Q{number} without answering. Drop it from the ledger.")
+    format!(
+        "{WAKE_PREFIX} The user closed Q{number} without answering. Drop it from the ledger \
+         and delete its questions file."
+    )
 }
 
 /// `The user merged <worker> (task "…"), branch <branch>, into <base> at
@@ -1829,14 +1832,21 @@ mod tests {
     fn a_closed_question_is_one_line_the_role_says_how_to_handle() {
         assert_eq!(
             question_closed_message(40),
-            "[Corgi] The user closed Q40 without answering. Drop it from the ledger."
+            "[Corgi] The user closed Q40 without answering. Drop it from the ledger and delete its questions file."
         );
         assert!(ROLE.contains(
             "- When Corgi says the user closed a question without answering, append a\n  \
              ledger line without it for each unfinished id whose newest line lists it\n  \
              (`\"questions\":[]` once none remain, with the status that now fits:\n  \
-             `reported` if the work still needs your review, else as it was). Never\n  \
-             ask it again or list it in `Still open:`; reply in at most one line."
+             `reported` if the work still needs your review, else as it was), and\n  \
+             delete its `questions/` file. Never ask it again or list it in\n  \
+             `Still open:`; reply in at most one line."
+        ));
+        assert!(ROLE.contains(
+            "  also write it to `{{state}}/questions/Q<n>.md`, the whole block exactly\n  \
+             as shown, from its `###` line through `Until answered`. Delete that file\n  \
+             as soon as the question is answered, closed, dropped or replaced, so only\n  \
+             open questions have one."
         ));
     }
 

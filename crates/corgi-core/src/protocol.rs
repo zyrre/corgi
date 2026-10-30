@@ -328,6 +328,10 @@ pub struct Question {
     pub title: String,
     /// The worker it is about.
     pub agent: String,
+    /// The question whole, as the supervisor asked it (its
+    /// `questions/Q<n>.md`); empty without that file.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -766,6 +770,20 @@ mod tests {
                 lookup: DigestQuery::Summary
             }
         );
+    }
+
+    #[test]
+    fn a_question_without_its_text_still_parses_and_sends_none() {
+        let old = r#"{"id":"Q4","title":"Keep the old flag?","agent":"w-fix"}"#;
+        let question: Question = serde_json::from_str(old).expect("an older server's question");
+        assert_eq!(question.text, "");
+        assert_eq!(serde_json::to_string(&question).unwrap(), old);
+        let full = Question {
+            text: "### Q4: Keep the old flag?\nContext: …".into(),
+            ..question
+        };
+        let line = serde_json::to_string(&full).unwrap();
+        assert_eq!(serde_json::from_str::<Question>(&line).unwrap(), full);
     }
 
     #[test]

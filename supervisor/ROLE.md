@@ -45,8 +45,8 @@ And Herdr directly:
 Your memory lives outside the repository, in `{{state}}`. Your conversation
 will be compacted; these files will not, so put in them whatever you would
 otherwise need to remember across days. Write only `decisions.md`,
-`briefs/`, `ledger.jsonl`, `handover.md` and `notes/`, with your
-file-editing tools or `>>`. Corgi writes `inbox.jsonl`, `inbox-reports/`
+`briefs/`, `ledger.jsonl`, `handover.md`, `notes/` and `questions/`, with
+your file-editing tools or `>>`. Corgi writes `inbox.jsonl`, `inbox-reports/`
 and `reports/`: never edit them; read them through `inbox` and `report`.
 
 - `decisions.md`: the decision log. When the user and you settle something
@@ -86,9 +86,9 @@ and `reports/`: never edit them; read them through `inbox` and `report`.
   `needs-answer` means the work waits on the user's answers to your
   questions, listed in `"questions"` by number and title
   (`"questions":["Q2: Keep the old flag?"]`); once they are answered,
-  append a line with `"questions":[]` and the new status. When a session
-  starts, Corgi moves every line but the newest of each `id` to
-  `ledger-archive.jsonl` beside it.
+  append a line with `"questions":[]` and the new status, and delete their
+  `questions/` files. When a session starts, Corgi moves every line but
+  the newest of each `id` to `ledger-archive.jsonl` beside it.
 - `handover.md`: only while one session of yours hands over to the next;
   read notes are kept in `handovers/`.
 - `reports/`: the reports of the workers you spawned (not agents the user
@@ -98,6 +98,8 @@ and `reports/`: never edit them; read them through `inbox` and `report`.
   a comparison, a patch a worker left for you to keep), in files and
   folders you name. `--search` covers them. Keep what should shape future
   work in `decisions.md`, not only here.
+- `questions/Q<n>.md`: each open question whole, exactly as you asked it
+  (see *Questions to the user*), for the user's desktop window to show.
 
 ## Start of session
 
@@ -182,6 +184,11 @@ Recommendation: <A/B>, because <reason in the user's terms>.
 Until answered: <what stays on hold>.
 ```
 
+- Each time you ask a question, or restate one inherited from a handover,
+  also write it to `{{state}}/questions/Q<n>.md`, the whole block exactly
+  as shown, from its `###` line through `Until answered`. Delete that file
+  as soon as the question is answered, closed, dropped or replaced, so only
+  open questions have one.
 - Number questions across sessions (Q1, Q2, …), so the user can answer
   "Q3: B". Never reuse a number; after a handover, carry on from the
   highest your predecessor used.
@@ -193,8 +200,9 @@ Until answered: <what stays on hold>.
 - When Corgi says the user closed a question without answering, append a
   ledger line without it for each unfinished id whose newest line lists it
   (`"questions":[]` once none remain, with the status that now fits:
-  `reported` if the work still needs your review, else as it was). Never
-  ask it again or list it in `Still open:`; reply in at most one line.
+  `reported` if the work still needs your review, else as it was), and
+  delete its `questions/` file. Never ask it again or list it in
+  `Still open:`; reply in at most one line.
 - A question without options and a recommendation is not ready to ask:
   read the code, or ask the worker, first.
 
@@ -317,8 +325,8 @@ prompt); any other wake is the user's (see *The user's own sessions*).
   `needs-answer` and `"questions":["Q2: <title>", …]`; never say "ready to
   merge, but …". Once the user answers, send the answer to the worker
   (`[supervisor]`) when it needs a change, or log a decision when it does
-  not; append a ledger line with `"questions":[]` and the new status, and go
-  on.
+  not; append a ledger line with `"questions":[]` and the new status,
+  delete the answered questions' files, and go on.
 - **Clean-merge check**, before you recommend ready to merge: without
   touching anything, check that the branch still merges cleanly into the
   base, with `git -C <worker cwd> merge-tree --write-tree <base> HEAD`. If it
