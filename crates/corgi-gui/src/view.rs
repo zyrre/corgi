@@ -8,7 +8,7 @@ use corgi_core::protocol::{Activity, Agent, MergeOutcome, Project};
 use gpui::{
     AnyElement, ClickEvent, Context, CursorStyle, Div, FontWeight, Hsla, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::FluentBuilder, px, relative,
+    StatefulInteractiveElement, Styled, TextRun, Window, div, prelude::FluentBuilder, px, relative,
 };
 
 use crate::{
@@ -123,7 +123,7 @@ impl Render for CorgiWindow {
             .child(
                 div()
                     .when(!connected, |header| header.opacity(0.45))
-                    .child(self.header(cx)),
+                    .child(self.header(window, cx)),
             )
             .map(|root| {
                 if focus_view {
@@ -166,17 +166,40 @@ impl CorgiWindow {
             .into_any_element()
     }
 
+    /// One cell of the window's own monospace font at the body text size, so
+    /// a fixed count of character cells (a usage card's content width) can be
+    /// laid out in real pixels, as the terminal's grid measures its own.
+    fn monospace_cell_width(&self, window: &Window) -> f32 {
+        window
+            .text_system()
+            .shape_line(
+                "M".into(),
+                px(TEXT_SIZE),
+                &[TextRun {
+                    len: 1,
+                    font: self.font.clone(),
+                    color: self.colors.roles.text,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+            .width
+            .to_f64() as f32
+    }
+
     // ---- Header ----
 
     /// The dashboard's header in the same order: the corgi, the wordmark,
     /// then HERD and a card per plan, packed left at one height, and the
     /// light/dark toggle at the right end. A window too narrow for them all
     /// wraps the cards under the letters.
-    fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         let now = self.store.now();
         let state = &self.store.state;
-        let card = |title: SharedString, color: Hsla, lines: Vec<AnyElement>| {
+        let card_frame = |title: SharedString, color: Hsla, body: Div| {
             framed(
                 SharedString::from(format!("card-{title}")),
                 CARD_TITLE_ROW,
@@ -188,39 +211,43 @@ impl CorgiWindow {
                     .into_any_element(),
                 None,
                 None,
-                div()
-                    .flex()
-                    .flex_col()
-                    .px_2()
-                    .line_height(px(CARD_LINE))
-                    .children(lines),
+                body.line_height(px(CARD_LINE)),
             )
             .flex_none()
             .h(px(CARD_HEIGHT))
-            .min_w(px(CARD_MIN_WIDTH))
         };
-        let herd_card = card(
+        let herd_card = card_frame(
             "HERD".into(),
             self.tone(format::herd_tone(&state.agents), None),
-            format::herd(&state.agents)
-                .iter()
-                .map(|piece| self.piece(piece, None))
-                .collect(),
-        );
+            div().flex().flex_col().px_2().children(
+                format::herd(&state.agents)
+                    .iter()
+                    .map(|piece| self.piece(piece, None))
+                    .collect::<Vec<_>>(),
+            ),
+        )
+        .min_w(px(CARD_MIN_WIDTH));
+        // The usage card is as narrow as the dashboard's: a cell of padding
+        // either side of its fixed content width, in the window's own
+        // monospace font, so it never grows past that regardless of what a
+        // reading says.
+        let cell_width = self.monospace_cell_width(window);
+        let usage_card_width = (format::USAGE_CONTENT_WIDTH as f32 + 2.0) * cell_width + 2.0;
         let usage_cards = state.usage.iter().map(|usage| {
-            let lines = format::usage_lines(usage, now)
-                .into_iter()
-                .map(|line| {
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .children(line.iter().map(|piece| self.piece(piece, None)))
-                        .into_any_element()
-                })
-                .collect();
+            let lines = format::usage_lines(usage, now).into_iter().map(|line| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .when(line.align_right, |row| row.justify_end())
+                    .children(line.pieces.iter().map(|piece| self.piece(piece, None)))
+            });
             let title_color = theme::vendor(&usage.title).unwrap_or(colors.roles.accent);
-            card(usage.title.clone().into(), title_color, lines)
+            card_frame(
+                usage.title.clone().into(),
+                title_color,
+                div().flex().flex_col().px(px(cell_width)).children(lines),
+            )
+            .w(px(usage_card_width))
         });
         let lockup = div()
             .flex()
