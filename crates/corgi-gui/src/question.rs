@@ -389,6 +389,7 @@ impl CorgiWindow {
     /// beyond that.
     pub fn question_text(&self, text: &str) -> AnyElement {
         let colors = &self.colors;
+        let (ink, fill) = colors.reading();
         div()
             .id("question-text")
             .flex_shrink(1.)
@@ -400,17 +401,18 @@ impl CorgiWindow {
             .rounded_sm()
             .border_1()
             .border_color(colors.roles.rule)
+            .bg(fill)
             .font_family(self.ui_font.clone())
             .text_size(px(BODY_SIZE))
             .line_height(relative(BODY_LINE))
-            .text_color(colors.roles.text)
+            .text_color(ink)
             .child(self.document(&Form::parse(text)))
             .into_any_element()
     }
 
     fn body_ink(&self) -> Ink {
         Ink {
-            text: self.colors.roles.text,
+            text: self.colors.reading().0,
             code_fill: Some(self.colors.roles.keycap.opacity(0.6)),
         }
     }
@@ -494,7 +496,7 @@ impl CorgiWindow {
                                     div()
                                         .flex_none()
                                         .min_w(px(12.))
-                                        .text_color(colors.secondary(colors.roles.popup_fill))
+                                        .text_color(colors.secondary(colors.reading().1))
                                         .child(marker),
                                 )
                                 .child(div().flex_1().min_w_0().child(self.markdown(item, ink)))
@@ -538,7 +540,7 @@ impl CorgiWindow {
             )
             .children(heading.tag.as_ref().map(|tag| {
                 let color = if tag.to_ascii_lowercase().starts_with("no block") {
-                    colors.secondary(colors.roles.popup_fill)
+                    colors.secondary(colors.reading().1)
                 } else {
                     colors.roles.warning
                 };

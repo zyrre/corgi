@@ -152,9 +152,12 @@ for one to push.
 Build with `--features capture`, then run with `CORGI_GUI_BACKGROUND=1`
 (no focus taken), `CORGI_GUI_SCRIPT` (steps such as
 `wait:3000;key:n;type:Fix it;shot:form;quit`) and `CORGI_GUI_CAPTURE_DIR`;
-script steps are trimmed, so a trailing space in `type:` is lost;
+script steps are trimmed, so a trailing space in `type:` is lost; the
+window opens with no row selected, so a script reaches a row's actions
+(`a`, `p`, `1`–`9`) after a `key:j`;
 `CORGI_GUI_APPEARANCE=light` checks the light theme without changing the
-system's, and `CORGI_GUI_FONT_FILES` (font files separated by `:`) loads
+system's (a scripted click on the header's toggle switches that run alone;
+nothing is kept), and `CORGI_GUI_FONT_FILES` (font files separated by `:`) loads
 fonts for that process alone on macOS, to check a font the machine lacks
 without installing it. Ghostty draws Nerd Font icons from fonts built into
 it, so icons in a user's Ghostty do not mean a Nerd Font is installed; the
@@ -204,6 +207,9 @@ program instead: corgi-gui runs it with `serve …`, and any program that
 writes a `Hello` and a `Snapshot` (built with `corgi_core::protocol`, one
 JSON line each) and answers each `Request` line on stdin draws the window
 with no Herdr at all, and can delay or refuse a reply to show a state.
+To show a reconnect, kill that program alone with an anchored pattern
+(`pkill -f "^<path>/fake-serve"`): the window's own command line holds
+`--corgi <path>`, so an unanchored one kills the window too.
 It is easiest as a scratch Cargo crate depending on `crates/corgi-core` by
 path; build its palette with
 `Theme::new(Palette::catppuccin(light), Source::Catppuccin, false, true).rgb_roles()`,

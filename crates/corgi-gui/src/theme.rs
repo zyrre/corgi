@@ -38,25 +38,36 @@ pub fn forced_light(value: Option<&str>) -> Option<bool> {
     }
 }
 
+/// Whether to paint light, and whether the user chose it with the header's
+/// toggle: `CORGI_GUI_APPEARANCE`'s scheme, else the toggle's choice in this
+/// window, else the system's.
+pub fn appearance(forced: Option<bool>, chosen: Option<bool>, system: bool) -> (bool, bool) {
+    match (forced, chosen) {
+        (Some(light), _) => (light, false),
+        (None, Some(light)) => (light, true),
+        (None, None) => (system, false),
+    }
+}
+
 impl Colors {
     /// The palette's colors for `light`: the server's, or, before its first
     /// snapshot, Catppuccin Latte or Mocha as Corgi derives them itself.
-    pub fn new(palette: &PaletteSet, light: bool) -> Self {
+    /// `chosen` is true when the user picked `light` with the header's
+    /// toggle (see `sent_theme`).
+    pub fn new(palette: &PaletteSet, light: bool, chosen: bool) -> Self {
         let fallback = Theme::catppuccin(light, true);
         let fallback_roles = fallback.rgb_roles();
-        let sent = if light { &palette.light } else { &palette.dark };
-        let (foreground, background, roles) = if sent.roles.is_empty() {
-            (
+        let (foreground, background, roles) = match sent_theme(palette, light, chosen) {
+            None => (
                 fallback.palette.foreground,
                 fallback.palette.background,
                 fallback_roles,
-            )
-        } else {
-            (
+            ),
+            Some(sent) => (
                 parse_hex(&sent.foreground).unwrap_or(fallback.palette.foreground),
                 parse_hex(&sent.background).unwrap_or(fallback.palette.background),
                 roles_from(sent, fallback_roles),
-            )
+            ),
         };
         // A theme sent for one appearance only (Omarchy's, a forced one) is
         // painted as it is, whatever the system asks.
@@ -108,6 +119,14 @@ impl Colors {
     pub fn badge_text(&self, fill: Hsla) -> Hsla {
         let roles = &self.roles;
         readable(roles.badge_text, fill, &[roles.text, roles.foreground])
+    }
+
+    /// A long read on a dialog, a question's text: the foreground on the
+    /// background, the theme's own strongest pair, in a box off the
+    /// dialog's fill. Body text, a grey in Mocha, all but sinks into that
+    /// fill.
+    pub fn reading(&self) -> (Hsla, Hsla) {
+        (self.foreground, self.background)
     }
 
     /// Secondary text (times, separators, the checkout, a dialog's hints)
@@ -179,12 +198,24 @@ fn brand_rgb(color: palette::Color) -> Option<Rgb> {
     }
 }
 
+/// The theme the server sent for `light`: none before its first snapshot,
+/// and none when the user `chosen` `light` with the header's toggle and the
+/// theme is for the other appearance only (Omarchy sends one for both), so
+/// Catppuccin paints the appearance asked for until the toggle goes back.
+fn sent_theme(palette: &PaletteSet, light: bool, chosen: bool) -> Option<&ThemeColors> {
+    let sent = if light { &palette.light } else { &palette.dark };
+    let other = parse_hex(&sent.background).is_some_and(|rgb| palette::is_light(rgb) != light);
+    (!sent.roles.is_empty() && !(chosen && other)).then_some(sent)
+}
+
 /// A terminal's colors for `light`, as `Colors::new` picks the theme: the
 /// server's foreground, background and sixteen ANSI colors, or, before its
 /// first snapshot or for a color it left out, Catppuccin Latte's or Mocha's.
-pub fn terminal_palette(palette: &PaletteSet, light: bool) -> palette::Palette {
+pub fn terminal_palette(palette: &PaletteSet, light: bool, chosen: bool) -> palette::Palette {
     let mut colors = palette::Palette::catppuccin(light);
-    let sent = if light { &palette.light } else { &palette.dark };
+    let Some(sent) = sent_theme(palette, light, chosen) else {
+        return colors;
+    };
     if let Some(foreground) = parse_hex(&sent.foreground) {
         colors.foreground = foreground;
     }
@@ -282,8 +313,8 @@ mod tests {
     #[test]
     fn before_a_palette_arrives_the_window_follows_the_system_with_catppuccin() {
         let empty = PaletteSet::default();
-        let light = Colors::new(&empty, true);
-        let dark = Colors::new(&empty, false);
+        let light = Colors::new(&empty, true, false);
+        let dark = Colors::new(&empty, false, false);
         assert!(light.light && !dark.light);
         assert_eq!(light.background, hsla((0xef, 0xf1, 0xf5)));
         assert_eq!(dark.background, hsla((0x1e, 0x1e, 0x2e)));
@@ -309,10 +340,10 @@ mod tests {
             light: theme("#ffffff", "#0000ff"),
             dark: theme("#000000", "#ff0000"),
         };
-        let light = Colors::new(&palette, true);
+        let light = Colors::new(&palette, true, false);
         assert_eq!(light.roles.accent, hsla((0, 0, 255)));
         assert_eq!(light.roles.context_ramp[0], hsla((0, 255, 0)));
-        let dark = Colors::new(&palette, false);
+        let dark = Colors::new(&palette, false, false);
         assert_eq!(dark.roles.accent, hsla((255, 0, 0)));
         // A role not sent comes from Corgi's own theme.
         let fallback = Theme::catppuccin(false, true).rgb_roles();
@@ -323,12 +354,12 @@ mod tests {
             light: theme("#000000", "#ff0000"),
             dark: theme("#000000", "#ff0000"),
         };
-        assert!(!Colors::new(&omarchy, true).light);
+        assert!(!Colors::new(&omarchy, true, false).light);
     }
 
     #[test]
     fn states_and_vendors_take_their_colors() {
-        let colors = Colors::new(&PaletteSet::default(), false);
+        let colors = Colors::new(&PaletteSet::default(), false, false);
         assert_eq!(colors.state(AgentState::Done, true), colors.roles.merge);
         assert_eq!(
             colors.state(AgentState::Blocked, false),
@@ -345,8 +376,8 @@ mod tests {
     #[test]
     fn the_corgi_stands_on_a_tile_between_its_coat_and_blaze_only_when_light() {
         let empty = PaletteSet::default();
-        assert_eq!(Colors::new(&empty, false).corgi_tile(), None);
-        let latte = Colors::new(&empty, true);
+        assert_eq!(Colors::new(&empty, false, false).corgi_tile(), None);
+        let latte = Colors::new(&empty, true, false);
         let tile = latte.corgi_tile().expect("a tile in Latte");
         let coat = brand_color(brand::CORGI_COAT).unwrap();
         let blaze = brand_color(brand::CORGI_WHITE).unwrap();
@@ -361,7 +392,7 @@ mod tests {
     fn the_idle_badge_and_the_selected_row_read_in_mocha_and_latte() {
         let empty = PaletteSet::default();
         for light in [false, true] {
-            let colors = Colors::new(&empty, light);
+            let colors = Colors::new(&empty, light, false);
             let flavor = if light { "Latte" } else { "Mocha" };
             for state in [
                 AgentState::Working,
@@ -393,9 +424,73 @@ mod tests {
             }
         }
         // Mocha's IDLE badge: black on surface2 before, light text now.
-        let mocha = Colors::new(&empty, false);
+        let mocha = Colors::new(&empty, false, false);
         assert!(contrast(mocha.roles.badge_text, mocha.roles.muted) < VANISHES);
         assert!(contrast(mocha.badge_text(mocha.roles.muted), mocha.roles.muted) > 4.0);
         assert_eq!(mocha.badge_text(mocha.roles.accent), mocha.roles.badge_text);
+    }
+
+    #[test]
+    fn the_toggles_choice_wins_over_the_system_and_the_variable_over_both() {
+        // Not clicked in this window (each window starts so): the system's,
+        // followed as it changes.
+        assert_eq!(appearance(None, None, true), (true, false));
+        assert_eq!(appearance(None, None, false), (false, false));
+        // Clicked: the choice, whatever the system says, until the window
+        // closes.
+        assert_eq!(appearance(None, Some(false), true), (false, true));
+        assert_eq!(appearance(None, Some(true), false), (true, true));
+        // CORGI_GUI_APPEARANCE checks a theme whatever was chosen.
+        assert_eq!(appearance(Some(true), Some(false), false), (true, false));
+    }
+
+    #[test]
+    fn a_theme_sent_for_one_appearance_gives_way_only_to_a_chosen_other() {
+        let omarchy_dark = ThemeColors {
+            foreground: "#c0caf5".into(),
+            background: "#1a1b26".into(),
+            ansi: vec!["#15161e".into(), "#f7768e".into()],
+            roles: BTreeMap::from([("accent".to_string(), "#7dcfff".to_string())]),
+            context_ramp: Vec::new(),
+        };
+        let palette = PaletteSet {
+            source: "omarchy".into(),
+            light: omarchy_dark.clone(),
+            dark: omarchy_dark,
+        };
+        let sent = hsla((0x1a, 0x1b, 0x26));
+        // The system's light, not chosen: Omarchy as it is, as before.
+        assert_eq!(Colors::new(&palette, true, false).background, sent);
+        // Light chosen with the toggle: Latte, in the window and its
+        // terminal.
+        let latte = Colors::new(&palette, true, true);
+        assert!(latte.light);
+        assert_eq!(latte.background, hsla((0xef, 0xf1, 0xf5)));
+        assert_eq!(
+            terminal_palette(&palette, true, true),
+            palette::Palette::catppuccin(true)
+        );
+        // Back to dark: Omarchy's again.
+        let dark = Colors::new(&palette, false, true);
+        assert_eq!(dark.background, sent);
+        assert_eq!(dark.roles.accent, hsla((0x7d, 0xcf, 0xff)));
+        assert_eq!(
+            terminal_palette(&palette, false, true).ansi[1],
+            (0xf7, 0x76, 0x8e)
+        );
+    }
+
+    #[test]
+    fn a_questions_text_reads_at_seven_to_one_in_latte_and_mocha() {
+        let empty = PaletteSet::default();
+        for (light, flavor) in [(true, "Latte"), (false, "Mocha")] {
+            let colors = Colors::new(&empty, light, false);
+            let (text, fill) = colors.reading();
+            let ratio = contrast(text, fill);
+            assert!(ratio >= 7.0, "{flavor}: {ratio}");
+            // Body text on the dialog's fill, as it was, read worse.
+            let before = contrast(colors.roles.text, colors.roles.popup_fill);
+            assert!(before < 7.0 && before < ratio, "{flavor} before: {before}");
+        }
     }
 }

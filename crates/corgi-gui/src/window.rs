@@ -44,18 +44,31 @@ pub struct CorgiWindow {
     links_started: u64,
     backoff: Backoff,
     events: mpsc::UnboundedSender<(u64, LinkEvent)>,
-    /// The agent the keys act on.
+    /// The agent the keys act on: none at start, until a key or a click
+    /// picks one.
     pub selected: Option<String>,
+    /// A row has been picked since the window opened: from then on, when
+    /// the selected row goes, another is selected in its place.
+    picked: bool,
     /// The session `corgi serve` was asked to read the transcript of.
     watching: Option<String>,
     /// The project groups whose cards show only their supervisor.
     pub collapsed: HashSet<String>,
+    /// The card groups this connection to `corgi serve` has shown: a card
+    /// not among them starts collapsed, and one the user expanded stays so.
+    seen: HashSet<String>,
     /// The questions closed with ×, until the ledger drops them.
     pub closing: Closing,
     /// The window is on screen; while it is not, nothing is drawn and the
     /// transcript is not read.
     pub visible: bool,
-    pub system_light: bool,
+    /// The system's appearance, and `CORGI_GUI_APPEARANCE`'s, which wins
+    /// over it and the header's toggle (`theme::appearance`).
+    system_light: bool,
+    forced_light: Option<bool>,
+    /// The appearance the header's toggle chose, for this window only:
+    /// until it is clicked, the window follows the system.
+    chosen_light: Option<bool>,
     pub colors: Colors,
     pub font: Font,
     /// The proportional font a question's text is set in.
@@ -90,15 +103,16 @@ impl CorgiWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let forced_light = forced_light(std::env::var("CORGI_GUI_APPEARANCE").ok().as_deref());
-        let system_light = forced_light.unwrap_or_else(|| is_light(window.appearance()));
+        let system_light = is_light(window.appearance());
+        let layout_path = Layout::path();
+        let layout = Layout::load(layout_path.as_deref());
         let store = Store::default();
-        let colors = Colors::new(&store.state.palette, system_light);
+        let (light, chosen) = theme::appearance(forced_light, None, system_light);
+        let colors = Colors::new(&store.state.palette, light, chosen);
         let field = field_colors(&colors);
         let prompt_input = cx.new(|cx| TextInput::new("Type a prompt", field, cx));
         let terminal = cx.new(|cx| TerminalView::new(font.family.clone(), cx));
         let task_input = cx.new(|cx| TextInput::new("Describe the task", field, cx));
-        let layout_path = Layout::path();
-        let layout = Layout::load(layout_path.as_deref());
         let (events, mut receiver) = mpsc::unbounded::<(u64, LinkEvent)>();
 
         // Every line from `corgi serve` comes here; a burst that queued while
@@ -148,11 +162,10 @@ impl CorgiWindow {
         });
 
         let subscriptions = vec![
-            cx.observe_window_appearance(window, move |this, window, cx| {
-                if forced_light.is_none() {
-                    this.system_light = is_light(window.appearance());
-                    this.recolor(cx);
-                }
+            // Followed until the header's toggle chooses.
+            cx.observe_window_appearance(window, |this, window, cx| {
+                this.system_light = is_light(window.appearance());
+                this.recolor(cx);
             }),
             cx.observe_window_visibility(window, |this, visibility, _, cx| {
                 this.set_visible(visibility == WindowVisibility::Visible, cx);
@@ -185,11 +198,15 @@ impl CorgiWindow {
             backoff: Backoff::default(),
             events,
             selected: None,
+            picked: false,
             watching: None,
             collapsed: HashSet::new(),
+            seen: HashSet::new(),
             closing: Closing::default(),
             visible: window.is_visible(),
             system_light,
+            forced_light,
+            chosen_light: None,
             colors,
             font,
             ui_font,
@@ -255,6 +272,13 @@ impl CorgiWindow {
                 match received {
                     None => false,
                     Some(Received::State) => {
+                        let projects = &self.store.state.projects;
+                        let selected = self.selected.as_deref();
+                        if let Some(supervisor) =
+                            collapse_new(&mut self.collapsed, &mut self.seen, projects, selected)
+                        {
+                            self.selected = Some(supervisor);
+                        }
                         self.reconcile(cx);
                         true
                     }
@@ -282,6 +306,8 @@ impl CorgiWindow {
             }
             LinkEvent::Ended(why) => {
                 self.link = None;
+                // The next connection's state is fresh: every card collapses.
+                self.seen.clear();
                 self.watching = None;
                 let delay = self.backoff.next_delay();
                 self.store.lost(why, delay);
@@ -388,14 +414,12 @@ impl CorgiWindow {
     /// Keeps the selection on a row that exists, and the transcript read
     /// for it.
     fn reconcile(&mut self, cx: &mut Context<Self>) {
-        let visible = self.visible_agents();
-        let keep = self
-            .selected
-            .as_ref()
-            .is_some_and(|selected| visible.iter().any(|agent| &agent.pane_id == selected));
-        if !keep {
-            self.selected = visible.first().map(|agent| agent.pane_id.clone());
-        }
+        let visible: Vec<String> = self
+            .visible_agents()
+            .iter()
+            .map(|agent| agent.pane_id.clone())
+            .collect();
+        self.selected = reconciled(self.selected.take(), self.picked, &visible);
         self.closing.prune(&self.store.state);
         self.recolor(cx);
         self.sync_watch();
@@ -403,6 +427,7 @@ impl CorgiWindow {
 
     pub fn select(&mut self, pane_id: String, cx: &mut Context<Self>) {
         self.selected = Some(pane_id);
+        self.picked = true;
         if let Some(index) = self
             .visible_agents()
             .iter()
@@ -437,11 +462,14 @@ impl CorgiWindow {
         if agents.is_empty() {
             return;
         }
+        // With nothing selected, a step down selects the first row and a
+        // step up the last.
+        let before = if delta > 0 { -1 } else { agents.len() as isize };
         let at = self
             .selected
             .as_ref()
             .and_then(|selected| agents.iter().position(|agent| &agent.pane_id == selected))
-            .map_or(0, |at| at as isize);
+            .map_or(before, |at| at as isize);
         let next = (at + delta).clamp(0, agents.len() as isize - 1) as usize;
         let pane_id = agents[next].pane_id.clone();
         self.select(pane_id, cx);
@@ -501,8 +529,14 @@ impl CorgiWindow {
             .update(cx, |terminal, cx| terminal.set_socket(socket, false, cx));
     }
 
+    /// Whether to paint light, and whether the header's toggle chose it.
+    fn appearance(&self) -> (bool, bool) {
+        theme::appearance(self.forced_light, self.chosen_light, self.system_light)
+    }
+
     fn color_terminal(&self, cx: &mut Context<Self>) {
-        let palette = theme::terminal_palette(&self.store.state.palette, self.system_light);
+        let (light, chosen) = self.appearance();
+        let palette = theme::terminal_palette(&self.store.state.palette, light, chosen);
         let roles = &self.colors.roles;
         let (accent, muted, light) = (
             theme::rgb(roles.accent),
@@ -516,7 +550,8 @@ impl CorgiWindow {
     }
 
     fn recolor(&mut self, cx: &mut Context<Self>) {
-        let colors = Colors::new(&self.store.state.palette, self.system_light);
+        let (light, chosen) = self.appearance();
+        let colors = Colors::new(&self.store.state.palette, light, chosen);
         if colors != self.colors {
             self.colors = colors;
             let field = field_colors(&self.colors);
@@ -529,6 +564,16 @@ impl CorgiWindow {
             self.color_terminal(cx);
             cx.notify();
         }
+    }
+
+    /// The header's sun or moon: paints the appearance other than the one
+    /// showing, at once, and holds it over the system's until the window
+    /// closes; it is not kept. `CORGI_GUI_APPEARANCE` gives way.
+    pub fn toggle_appearance(&mut self, cx: &mut Context<Self>) {
+        self.forced_light = None;
+        self.chosen_light = Some(!self.colors.light);
+        self.recolor(cx);
+        cx.notify();
     }
 
     // ---- Layout ----
@@ -1212,6 +1257,51 @@ pub fn bind_app_keys(cx: &mut App) {
 
 gpui::actions!(corgi, [Quit]);
 
+/// Collapses each card of `projects` not yet `seen`, so the window opens,
+/// and a project new to it appears, on its supervisor; a card already seen
+/// keeps what the user made of it. Returns the row to select when a
+/// collapse hides `selected`: its project's supervisor.
+fn collapse_new(
+    collapsed: &mut HashSet<String>,
+    seen: &mut HashSet<String>,
+    projects: &[Project],
+    selected: Option<&str>,
+) -> Option<String> {
+    let mut moved = None;
+    for project in projects.iter().filter(|project| project.card) {
+        if seen.insert(project.group.clone()) {
+            collapsed.insert(project.group.clone());
+            moved = moved.or_else(|| hidden_by(project, selected));
+        }
+    }
+    moved
+}
+
+/// The supervisor to select when collapsing `project` hides `selected`, one
+/// of its workers.
+fn hidden_by(project: &Project, selected: Option<&str>) -> Option<String> {
+    let hidden = selected.is_some_and(|selected| {
+        project.supervisor.as_deref() != Some(selected)
+            && project.agents.iter().any(|id| id == selected)
+    });
+    if hidden {
+        project.supervisor.clone()
+    } else {
+        None
+    }
+}
+
+/// The selection once the rows changed to `visible`: kept while its row
+/// shows; else the first row, once the user has `picked` one; before
+/// that, none.
+fn reconciled(selected: Option<String>, picked: bool, visible: &[String]) -> Option<String> {
+    match selected {
+        Some(selected) if visible.contains(&selected) => Some(selected),
+        _ if picked => visible.first().cloned(),
+        _ => None,
+    }
+}
+
 /// Collapses `project`'s card in `collapsed`, or expands it if collapsed; a
 /// project with no card has nothing to collapse. Returns the row to select
 /// when collapsing hides `selected`, one of its workers: its supervisor,
@@ -1225,15 +1315,7 @@ fn flip_card(
         return None;
     }
     collapsed.insert(project.group.clone());
-    let hidden = selected.is_some_and(|selected| {
-        project.supervisor.as_deref() != Some(selected)
-            && project.agents.iter().any(|id| id == selected)
-    });
-    if hidden {
-        project.supervisor.clone()
-    } else {
-        None
-    }
+    hidden_by(project, selected)
 }
 
 #[cfg(test)]
@@ -1274,6 +1356,79 @@ mod tests {
         );
         // Expanding hides nothing.
         assert_eq!(flip_card(&mut collapsed, &shop, Some("shop-sup")), None);
+    }
+
+    #[test]
+    fn the_window_starts_with_every_card_collapsed() {
+        let scratch = Project {
+            card: false,
+            ..card("scratch")
+        };
+        let (mut collapsed, mut seen) = (HashSet::new(), HashSet::new());
+        let projects = [card("shop"), scratch, card("blog")];
+        assert_eq!(
+            collapse_new(&mut collapsed, &mut seen, &projects, None),
+            None
+        );
+        assert_eq!(
+            collapsed,
+            HashSet::from(["shop".to_string(), "blog".to_string()])
+        );
+        // Collapsed, a card shows its supervisor; expanding it hides nothing.
+        assert_eq!(flip_card(&mut collapsed, &card("shop"), None), None);
+        assert!(!collapsed.contains("shop"));
+    }
+
+    #[test]
+    fn a_new_card_starts_collapsed_and_an_expanded_one_stays_until_a_reconnect() {
+        let (mut collapsed, mut seen) = (HashSet::new(), HashSet::new());
+        let shop = card("shop");
+        collapse_new(&mut collapsed, &mut seen, std::slice::from_ref(&shop), None);
+        // The user expands shop and selects its worker.
+        flip_card(&mut collapsed, &shop, None);
+        let selected = Some("shop-worker");
+        // Refreshes keep it expanded; a project new to the window collapses,
+        // and the selection, not in it, stays.
+        let both = [shop.clone(), card("blog")];
+        assert_eq!(
+            collapse_new(&mut collapsed, &mut seen, &both, selected),
+            None
+        );
+        assert_eq!(collapsed, HashSet::from(["blog".to_string()]));
+        assert_eq!(
+            collapse_new(&mut collapsed, &mut seen, &both, selected),
+            None
+        );
+        assert!(!collapsed.contains("shop"));
+        // A reconnect forgets what was seen: every card collapses again, and
+        // the hidden worker's selection moves to its supervisor.
+        seen.clear();
+        assert_eq!(
+            collapse_new(&mut collapsed, &mut seen, &both, selected),
+            Some("shop-sup".to_string())
+        );
+        assert_eq!(
+            collapsed,
+            HashSet::from(["shop".to_string(), "blog".to_string()])
+        );
+    }
+
+    #[test]
+    fn nothing_is_selected_until_a_row_is_picked_then_a_gone_row_gives_way() {
+        let rows = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        // At start, and as snapshots come, no row is picked for the user.
+        assert_eq!(reconciled(None, false, &rows(&["a", "b"])), None);
+        assert_eq!(reconciled(None, false, &[]), None);
+        // A picked row stays while it shows.
+        let b = Some("b".to_string());
+        assert_eq!(reconciled(b.clone(), true, &rows(&["a", "b"])), b);
+        // Once picked, a row that goes gives way to the first, as before.
+        assert_eq!(
+            reconciled(b.clone(), true, &rows(&["a", "c"])),
+            Some("a".to_string())
+        );
+        assert_eq!(reconciled(b, true, &[]), None);
+        assert_eq!(reconciled(None, true, &rows(&["c"])), Some("c".to_string()));
     }
 
     #[test]

@@ -187,6 +187,28 @@ mod tests {
     }
 
     #[test]
+    fn a_file_that_kept_the_toggles_appearance_still_loads_and_drops_it() {
+        let dir = scratch("appearance");
+        let path = dir.join("gui-layout.json");
+        // An earlier build kept the header toggle's choice; it is no longer
+        // read, and the rest of the file is.
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, r#"{"side_width": 300, "light": true}"#).unwrap();
+        let loaded = Layout::load(Some(&path));
+        assert_eq!(loaded.side_width, 300.0);
+        assert_eq!(
+            loaded,
+            Layout {
+                side_width: 300.0,
+                ..Layout::default()
+            }
+        );
+        loaded.save(Some(&path));
+        assert!(!fs::read_to_string(&path).unwrap().contains("light"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn the_header_cards_share_one_height_and_bracket_the_lockup() {
         let painted = |row: &&str| row.contains(|pixel| pixel != '.');
         let first = CORGI_PIXELS.iter().position(painted).unwrap();

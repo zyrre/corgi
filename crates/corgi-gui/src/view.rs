@@ -169,8 +169,9 @@ impl CorgiWindow {
     // ---- Header ----
 
     /// The dashboard's header in the same order: the corgi, the wordmark,
-    /// then HERD and a card per plan, packed left at one height. A window
-    /// too narrow for them all wraps the cards under the letters.
+    /// then HERD and a card per plan, packed left at one height, and the
+    /// light/dark toggle at the right end. A window too narrow for them all
+    /// wraps the cards under the letters.
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         let now = self.store.now();
@@ -243,23 +244,61 @@ impl CorgiWindow {
         div()
             .flex()
             .flex_row()
-            .flex_wrap()
             .items_start()
             .gap_x(px(CARD_GAP))
-            .gap_y(px(PIXEL))
             .px(px(HEADER_PADDING))
             .py_2()
             .border_b_1()
             .border_color(colors.roles.rule)
-            .child(lockup)
-            .child(herd_card)
-            .children(usage_cards)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .flex_1()
+                    .min_w_0()
+                    .items_start()
+                    .gap_x(px(CARD_GAP))
+                    .gap_y(px(PIXEL))
+                    .child(lockup)
+                    .child(herd_card)
+                    .children(usage_cards),
+            )
+            .child(self.appearance_toggle(cx))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     window.focus(&this.focus, cx);
                 }),
             )
+    }
+
+    /// The sun or moon at the header's right end: the appearance a click
+    /// switches to, drawn as pixel art like the corgi, so no font need
+    /// have the glyph.
+    fn appearance_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let (art, color) = if colors.light {
+            (MOON, colors.roles.accent)
+        } else {
+            (SUN, colors.roles.warning)
+        };
+        div()
+            .id("appearance-toggle")
+            .flex_none()
+            .p(px(ICON_PIXEL * 3.0))
+            .rounded_md()
+            .cursor(CursorStyle::PointingHand)
+            .hover(|style| style.bg(colors.roles.keycap))
+            .child(pixel_art(
+                art.iter()
+                    .map(|row| row.chars().map(|on| (on == '#').then_some(color)).collect()),
+                ICON_PIXEL,
+            ))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.toggle_appearance(cx);
+                cx.stop_propagation();
+            }))
     }
 
     // ---- Toolbar ----
@@ -2009,9 +2048,40 @@ fn framed(
     )
 }
 
-/// Pixel art, one square per pixel, `None` left to the background. A run
-/// of one color is one box, so the art shows no seams between its squares.
-fn pixel_art(rows: impl Iterator<Item = Vec<Option<Hsla>>>) -> Div {
+/// The header toggle's icons, a pixel each `ICON_PIXEL` square: the moon
+/// switches to dark, the sun to light.
+const ICON_PIXEL: f32 = 2.0;
+const MOON: [&str; 11] = [
+    "...#.......",
+    "..##.......",
+    ".##........",
+    "###........",
+    "####.......",
+    "####.......",
+    "#####......",
+    "#######..##",
+    ".#########.",
+    "..#######..",
+    "...#####...",
+];
+const SUN: [&str; 11] = [
+    ".....#.....",
+    ".....#.....",
+    "..#.....#..",
+    "....###....",
+    "...#####...",
+    "##.#####.##",
+    "...#####...",
+    "....###....",
+    "..#.....#..",
+    ".....#.....",
+    ".....#.....",
+];
+
+/// Pixel art, one square of `size` per pixel, `None` left to the
+/// background. A run of one color is one box, so the art shows no seams
+/// between its squares.
+fn pixel_art(rows: impl Iterator<Item = Vec<Option<Hsla>>>, size: f32) -> Div {
     div()
         .flex()
         .flex_col()
@@ -2027,12 +2097,12 @@ fn pixel_art(rows: impl Iterator<Item = Vec<Option<Hsla>>>) -> Div {
             div()
                 .flex()
                 .flex_row()
-                .h(px(PIXEL))
+                .h(px(size))
                 .children(runs.into_iter().map(|(color, count)| {
                     div()
                         .flex_none()
-                        .w(px(count as f32 * PIXEL))
-                        .h(px(PIXEL))
+                        .w(px(count as f32 * size))
+                        .h(px(size))
                         .when_some(color, |square, color| square.bg(color))
                 }))
         }))
@@ -2040,11 +2110,14 @@ fn pixel_art(rows: impl Iterator<Item = Vec<Option<Hsla>>>) -> Div {
 
 /// The supervisor's corgi in the brand's fixed colors.
 fn corgi_art() -> Div {
-    pixel_art(corgi_core::art::CORGI_PIXELS.iter().map(|row| {
-        row.chars()
-            .map(|pixel| corgi_core::art::corgi_color(pixel).and_then(theme::brand_color))
-            .collect()
-    }))
+    pixel_art(
+        corgi_core::art::CORGI_PIXELS.iter().map(|row| {
+            row.chars()
+                .map(|pixel| corgi_core::art::corgi_color(pixel).and_then(theme::brand_color))
+                .collect()
+        }),
+        PIXEL,
+    )
 }
 
 /// The CORGI wordmark in `color`.
@@ -2053,5 +2126,6 @@ fn wordmark_art(color: Hsla) -> Div {
         corgi_core::art::wordmark_pixels()
             .into_iter()
             .map(|row| row.into_iter().map(|on| on.then_some(color)).collect()),
+        PIXEL,
     )
 }
