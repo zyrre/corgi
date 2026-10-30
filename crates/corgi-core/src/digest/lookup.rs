@@ -24,6 +24,9 @@ pub const LEDGER_ARCHIVE_FILE: &str = "ledger-archive.jsonl";
 pub const REPORTS_DIR: &str = "reports";
 /// The supervisor's own working notes and artifacts.
 pub const NOTES_DIR: &str = "notes";
+/// Each open question whole, `Q<n>.md`, as the supervisor asked it; it
+/// deletes the file once the question is closed.
+pub const QUESTIONS_DIR: &str = "questions";
 /// Files whose items are Corgi's to print, through `inbox` and `report`.
 const INBOX_PATHS: [&str; 2] = ["inbox.jsonl", "inbox-reports"];
 

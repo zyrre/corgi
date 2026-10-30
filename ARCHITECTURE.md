@@ -76,7 +76,8 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   └─ supervisors/<project>/ ─ the supervisor's files, written by Corgi at launch
                           and by the supervisor: ROLE.md, launch.json,
                           decisions.md, ledger.jsonl, briefs/, handover.md
-                          while one is under way, handovers/, notes/; at
+                          while one is under way, handovers/, notes/,
+                          questions/Q<n>.md while Q<n> is open; at
                           launch Corgi moves superseded ledger lines to
                           ledger-archive.jsonl;
                           and by Corgi only (`inbox.rs`, under inbox.lock):
@@ -582,8 +583,9 @@ when stdin closes and no command is still running.
 - `state.rs` turns the refresh's rows into the protocol's data: each row,
   the project cards with their worker counts and blocked workers (the
   dashboard's `project_runs` and `is_card`), each supervisor's open
-  numbered questions from its ledger (`digest::all_open_questions`), the
-  usage cards, the watched transcript and the palette, whose roles it sends
+  numbered questions from its ledger (`digest::all_open_questions`), each
+  with its `questions/Q<n>.md` (a plain file, at most 64 KB; a file for a
+  question the ledger does not list open is never read), the usage cards, the watched transcript and the palette, whose roles it sends
   in RGB for light and dark (the Omarchy theme, else Catppuccin). It never
   calls `palette::resolve`, which queries the terminal over stdin and stdout,
   where the protocol runs. It also computes
@@ -598,7 +600,8 @@ when stdin closes and no command is still running.
   `go_to_agent`, `open_checkout` and the digest lookups. `close_question`
   has no dashboard key: it adds `supervisor::question_closed_message` to the
   supervisor's inbox, delivered like a wake, and the role says how to drop
-  the question from the ledger, which only the supervisor writes. Quick
+  the question from the ledger and delete its file, which only the
+  supervisor writes. Quick
   commands run on the loop's thread; those that wait on Herdr, Git or a
   harness run on one of their own and reply from there, a panic becoming an
   error reply.

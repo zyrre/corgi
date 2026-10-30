@@ -508,6 +508,60 @@ fn the_first_lines_are_the_hello_and_a_snapshot_of_rows_cards_and_questions() {
 }
 
 #[test]
+fn an_open_questions_file_is_its_text_and_others_are_ignored() {
+    let scratch = ScratchDir::new("serve-question-text");
+    let (repo, worktree) = repository(&scratch);
+    ledger(&scratch);
+    let questions = scratch.join("state").join("weather").join("questions");
+    fs::create_dir_all(&questions).unwrap();
+    let asked = "### Q4: Keep the old flag?   [blocks: plan \"flags\"]\n\
+                 Context: the flag is read in one place.\n\
+                 Options:\n  A. Keep it.\n  B. Drop it.\n\
+                 Recommendation: B.\n\
+                 Until answered: no brief.";
+    fs::write(questions.join("Q4.md"), format!("{asked}\n\n")).unwrap();
+    // Q9 is not open in the ledger: its file is left alone.
+    fs::write(questions.join("Q9.md"), "### Q9: Gone?").unwrap();
+    let herdr = FakeHerdr::start("serve-qtext", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    let open = &state.projects[0].questions;
+    assert_eq!(open.len(), 1);
+    assert_eq!((open[0].id.as_str(), open[0].text.as_str()), ("Q4", asked));
+
+    // The supervisor deletes the file: the question keeps only its title.
+    fs::remove_file(questions.join("Q4.md")).unwrap();
+    let changes = session.refresh().expect("a delta");
+    let project = changes.iter().find_map(|change| match change {
+        Change::Project(project) => Some(project),
+        _ => None,
+    });
+    let open = &project.expect("the project's card").questions;
+    assert_eq!(open[0].title, "Keep the old flag?");
+    assert_eq!(open[0].text, "");
+    session.close();
+}
+
+#[test]
+fn a_question_file_is_read_up_to_its_cap_and_only_when_plain() {
+    use super::state::{QUESTION_TEXT_BYTES, question_text};
+    let scratch = ScratchDir::new("serve-question-cap");
+    let cap = QUESTION_TEXT_BYTES as usize;
+    let file = scratch.join("Q1.md");
+    // A two-byte character straddles the cap.
+    fs::write(&file, format!("{}é and more", "x".repeat(cap - 1))).unwrap();
+    assert_eq!(question_text(&file), format!("{}…", "x".repeat(cap - 1)));
+    fs::write(&file, "x".repeat(cap)).unwrap();
+    assert_eq!(question_text(&file), "x".repeat(cap));
+    assert_eq!(question_text(&scratch.join("missing.md")), "");
+    let link = scratch.join("Q2.md");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    assert_eq!(question_text(&link), "");
+    fs::create_dir(scratch.join("Q3.md")).unwrap();
+    assert_eq!(question_text(&scratch.join("Q3.md")), "");
+}
+
+#[test]
 fn a_refresh_sends_only_what_changed_and_resync_the_whole_state() {
     let scratch = ScratchDir::new("serve-delta");
     let (repo, worktree) = repository(&scratch);
@@ -687,7 +741,7 @@ fn closing_a_question_queues_one_line_for_the_supervisor_running_or_not() {
         assert!(items.iter().all(|item| item.kind == Kind::Note));
         corgi_core::inbox::prompt_text(&items)
     };
-    let line = "[Corgi] The user closed Q4 without answering. Drop it from the ledger.";
+    let line = "[Corgi] The user closed Q4 without answering. Drop it from the ledger and delete its questions file.";
 
     let error = session
         .refused(json!({"command": "close_question", "project_root": root, "question": "four"}))
