@@ -39,8 +39,8 @@ pub fn forced_light(value: Option<&str>) -> Option<bool> {
 }
 
 /// Whether to paint light, and whether the user chose it with the header's
-/// toggle: `CORGI_GUI_APPEARANCE`'s scheme, else the toggle's kept choice,
-/// else the system's.
+/// toggle: `CORGI_GUI_APPEARANCE`'s scheme, else the toggle's choice in this
+/// window, else the system's.
 pub fn appearance(forced: Option<bool>, chosen: Option<bool>, system: bool) -> (bool, bool) {
     match (forced, chosen) {
         (Some(light), _) => (light, false),
@@ -432,10 +432,12 @@ mod tests {
 
     #[test]
     fn the_toggles_choice_wins_over_the_system_and_the_variable_over_both() {
-        // Never clicked: the system's, followed as it changes.
+        // Not clicked in this window (each window starts so): the system's,
+        // followed as it changes.
         assert_eq!(appearance(None, None, true), (true, false));
         assert_eq!(appearance(None, None, false), (false, false));
-        // Chosen: the choice, whatever the system says.
+        // Clicked: the choice, whatever the system says, until the window
+        // closes.
         assert_eq!(appearance(None, Some(false), true), (false, true));
         assert_eq!(appearance(None, Some(true), false), (true, true));
         // CORGI_GUI_APPEARANCE checks a theme whatever was chosen.

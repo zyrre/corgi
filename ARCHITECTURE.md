@@ -629,7 +629,9 @@ the side panel with the selected project's supervisor, its numbered
 questions and its blocked workers, and a status bar. It opens with every
 project card collapsed and no row selected, the session pane empty, until
 a key or a click picks a row; from then on, a selected row that goes gives
-way to the first. The session and the
+way to the first. A card the window has not shown before, or any card after
+it connects again, starts collapsed too (and a hidden selected worker gives
+way to its supervisor); one the user expanded stays so across refreshes. The session and the
 side panel open and close, and the edges between them drag; their sizes, and
 the window's, are kept in `$STATE/gui-layout.json`. Enter or a double click
 on a row opens the **focus view**: that agent's live Herdr terminal in place
@@ -670,9 +672,10 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   as the system's appearance (Catppuccin Latte or Mocha, or the Omarchy theme
   for both), and the vendor and corgi colors from `palette::brand`. The
   header's sun or moon (pixel art, so no font need have it) switches to the
-  other appearance and keeps the choice in `gui-layout.json`, which then
-  wins over the system's; `CORGI_GUI_APPEARANCE` wins over both. Chosen
-  against a theme sent for one appearance only, Catppuccin paints the
+  other appearance and holds it over the system's until the window closes;
+  it is not kept, so each window starts on the system's appearance (or
+  `CORGI_GUI_APPEARANCE`'s, a test override) and follows it until clicked.
+  Chosen against a theme sent for one appearance only, Catppuccin paints the
   appearance chosen, and switching back paints the sent theme again.
 - GPUI's `on_click` fires only for the left button; right and middle clicks
   go to `on_aux_click`, told apart by `ClickEvent::is_right_click`. Nested

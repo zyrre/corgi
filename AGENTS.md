@@ -156,8 +156,8 @@ script steps are trimmed, so a trailing space in `type:` is lost; the
 window opens with no row selected, so a script reaches a row's actions
 (`a`, `p`, `1`–`9`) after a `key:j`;
 `CORGI_GUI_APPEARANCE=light` checks the light theme without changing the
-system's or the header toggle's choice (`"light"` in the run's
-`gui-layout.json`, which a scripted click on the toggle writes), and `CORGI_GUI_FONT_FILES` (font files separated by `:`) loads
+system's (a scripted click on the header's toggle switches that run alone;
+nothing is kept), and `CORGI_GUI_FONT_FILES` (font files separated by `:`) loads
 fonts for that process alone on macOS, to check a font the machine lacks
 without installing it. Ghostty draws Nerd Font icons from fonts built into
 it, so icons in a user's Ghostty do not mean a Nerd Font is installed; the

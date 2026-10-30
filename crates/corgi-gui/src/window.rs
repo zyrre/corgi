@@ -54,8 +54,9 @@ pub struct CorgiWindow {
     watching: Option<String>,
     /// The project groups whose cards show only their supervisor.
     pub collapsed: HashSet<String>,
-    /// No snapshot has come yet; the first collapses every card.
-    collapse_at_start: bool,
+    /// The card groups this connection to `corgi serve` has shown: a card
+    /// not among them starts collapsed, and one the user expanded stays so.
+    seen: HashSet<String>,
     /// The questions closed with ×, until the ledger drops them.
     pub closing: Closing,
     /// The window is on screen; while it is not, nothing is drawn and the
@@ -65,6 +66,9 @@ pub struct CorgiWindow {
     /// over it and the header's toggle (`theme::appearance`).
     system_light: bool,
     forced_light: Option<bool>,
+    /// The appearance the header's toggle chose, for this window only:
+    /// until it is clicked, the window follows the system.
+    chosen_light: Option<bool>,
     pub colors: Colors,
     pub font: Font,
     /// The proportional font a question's text is set in.
@@ -103,7 +107,7 @@ impl CorgiWindow {
         let layout_path = Layout::path();
         let layout = Layout::load(layout_path.as_deref());
         let store = Store::default();
-        let (light, chosen) = theme::appearance(forced_light, layout.light, system_light);
+        let (light, chosen) = theme::appearance(forced_light, None, system_light);
         let colors = Colors::new(&store.state.palette, light, chosen);
         let field = field_colors(&colors);
         let prompt_input = cx.new(|cx| TextInput::new("Type a prompt", field, cx));
@@ -197,11 +201,12 @@ impl CorgiWindow {
             picked: false,
             watching: None,
             collapsed: HashSet::new(),
-            collapse_at_start: true,
+            seen: HashSet::new(),
             closing: Closing::default(),
             visible: window.is_visible(),
             system_light,
             forced_light,
+            chosen_light: None,
             colors,
             font,
             ui_font,
@@ -267,8 +272,12 @@ impl CorgiWindow {
                 match received {
                     None => false,
                     Some(Received::State) => {
-                        if std::mem::take(&mut self.collapse_at_start) {
-                            self.collapsed = card_groups(&self.store.state.projects);
+                        let projects = &self.store.state.projects;
+                        let selected = self.selected.as_deref();
+                        if let Some(supervisor) =
+                            collapse_new(&mut self.collapsed, &mut self.seen, projects, selected)
+                        {
+                            self.selected = Some(supervisor);
                         }
                         self.reconcile(cx);
                         true
@@ -297,6 +306,8 @@ impl CorgiWindow {
             }
             LinkEvent::Ended(why) => {
                 self.link = None;
+                // The next connection's state is fresh: every card collapses.
+                self.seen.clear();
                 self.watching = None;
                 let delay = self.backoff.next_delay();
                 self.store.lost(why, delay);
@@ -520,7 +531,7 @@ impl CorgiWindow {
 
     /// Whether to paint light, and whether the header's toggle chose it.
     fn appearance(&self) -> (bool, bool) {
-        theme::appearance(self.forced_light, self.layout.light, self.system_light)
+        theme::appearance(self.forced_light, self.chosen_light, self.system_light)
     }
 
     fn color_terminal(&self, cx: &mut Context<Self>) {
@@ -556,12 +567,11 @@ impl CorgiWindow {
     }
 
     /// The header's sun or moon: paints the appearance other than the one
-    /// showing, at once, and keeps it, so it wins over the system's from
-    /// then on, in this run and the next. `CORGI_GUI_APPEARANCE` gives way.
+    /// showing, at once, and holds it over the system's until the window
+    /// closes; it is not kept. `CORGI_GUI_APPEARANCE` gives way.
     pub fn toggle_appearance(&mut self, cx: &mut Context<Self>) {
         self.forced_light = None;
-        self.layout.light = Some(!self.colors.light);
-        self.save_layout();
+        self.chosen_light = Some(!self.colors.light);
         self.recolor(cx);
         cx.notify();
     }
@@ -1247,14 +1257,38 @@ pub fn bind_app_keys(cx: &mut App) {
 
 gpui::actions!(corgi, [Quit]);
 
-/// The groups of the projects with a card: all collapsed when the window
-/// opens, so it starts on the supervisors.
-fn card_groups(projects: &[Project]) -> HashSet<String> {
-    projects
-        .iter()
-        .filter(|project| project.card)
-        .map(|project| project.group.clone())
-        .collect()
+/// Collapses each card of `projects` not yet `seen`, so the window opens,
+/// and a project new to it appears, on its supervisor; a card already seen
+/// keeps what the user made of it. Returns the row to select when a
+/// collapse hides `selected`: its project's supervisor.
+fn collapse_new(
+    collapsed: &mut HashSet<String>,
+    seen: &mut HashSet<String>,
+    projects: &[Project],
+    selected: Option<&str>,
+) -> Option<String> {
+    let mut moved = None;
+    for project in projects.iter().filter(|project| project.card) {
+        if seen.insert(project.group.clone()) {
+            collapsed.insert(project.group.clone());
+            moved = moved.or_else(|| hidden_by(project, selected));
+        }
+    }
+    moved
+}
+
+/// The supervisor to select when collapsing `project` hides `selected`, one
+/// of its workers.
+fn hidden_by(project: &Project, selected: Option<&str>) -> Option<String> {
+    let hidden = selected.is_some_and(|selected| {
+        project.supervisor.as_deref() != Some(selected)
+            && project.agents.iter().any(|id| id == selected)
+    });
+    if hidden {
+        project.supervisor.clone()
+    } else {
+        None
+    }
 }
 
 /// The selection once the rows changed to `visible`: kept while its row
@@ -1281,15 +1315,7 @@ fn flip_card(
         return None;
     }
     collapsed.insert(project.group.clone());
-    let hidden = selected.is_some_and(|selected| {
-        project.supervisor.as_deref() != Some(selected)
-            && project.agents.iter().any(|id| id == selected)
-    });
-    if hidden {
-        project.supervisor.clone()
-    } else {
-        None
-    }
+    hidden_by(project, selected)
 }
 
 #[cfg(test)]
@@ -1338,15 +1364,53 @@ mod tests {
             card: false,
             ..card("scratch")
         };
-        let collapsed = card_groups(&[card("shop"), scratch, card("blog")]);
+        let (mut collapsed, mut seen) = (HashSet::new(), HashSet::new());
+        let projects = [card("shop"), scratch, card("blog")];
+        assert_eq!(
+            collapse_new(&mut collapsed, &mut seen, &projects, None),
+            None
+        );
         assert_eq!(
             collapsed,
             HashSet::from(["shop".to_string(), "blog".to_string()])
         );
         // Collapsed, a card shows its supervisor; expanding it hides nothing.
-        let mut collapsed = collapsed;
         assert_eq!(flip_card(&mut collapsed, &card("shop"), None), None);
         assert!(!collapsed.contains("shop"));
+    }
+
+    #[test]
+    fn a_new_card_starts_collapsed_and_an_expanded_one_stays_until_a_reconnect() {
+        let (mut collapsed, mut seen) = (HashSet::new(), HashSet::new());
+        let shop = card("shop");
+        collapse_new(&mut collapsed, &mut seen, std::slice::from_ref(&shop), None);
+        // The user expands shop and selects its worker.
+        flip_card(&mut collapsed, &shop, None);
+        let selected = Some("shop-worker");
+        // Refreshes keep it expanded; a project new to the window collapses,
+        // and the selection, not in it, stays.
+        let both = [shop.clone(), card("blog")];
+        assert_eq!(
+            collapse_new(&mut collapsed, &mut seen, &both, selected),
+            None
+        );
+        assert_eq!(collapsed, HashSet::from(["blog".to_string()]));
+        assert_eq!(
+            collapse_new(&mut collapsed, &mut seen, &both, selected),
+            None
+        );
+        assert!(!collapsed.contains("shop"));
+        // A reconnect forgets what was seen: every card collapses again, and
+        // the hidden worker's selection moves to its supervisor.
+        seen.clear();
+        assert_eq!(
+            collapse_new(&mut collapsed, &mut seen, &both, selected),
+            Some("shop-sup".to_string())
+        );
+        assert_eq!(
+            collapsed,
+            HashSet::from(["shop".to_string(), "blog".to_string()])
+        );
     }
 
     #[test]

@@ -60,9 +60,6 @@ pub struct Layout {
     pub focus_side_width: f32,
     /// The window's size when it was last closed.
     pub window: Option<(f32, f32)>,
-    /// The appearance the header's toggle chose, light or dark; `None`,
-    /// until it is first clicked, follows the system.
-    pub light: Option<bool>,
 }
 
 impl Default for Layout {
@@ -75,7 +72,6 @@ impl Default for Layout {
             focus_side_open: true,
             focus_side_width: 340.0,
             window: None,
-            light: None,
         }
     }
 }
@@ -191,31 +187,24 @@ mod tests {
     }
 
     #[test]
-    fn the_toggles_appearance_is_kept_and_a_file_from_before_it_follows_the_system() {
+    fn a_file_that_kept_the_toggles_appearance_still_loads_and_drops_it() {
         let dir = scratch("appearance");
         let path = dir.join("gui-layout.json");
-        for light in [Some(false), Some(true)] {
-            let layout = Layout {
-                light,
-                ..Layout::default()
-            };
-            layout.save(Some(&path));
-            let loaded = Layout::load(Some(&path));
-            assert_eq!(loaded.light, light);
-            // Kept, the choice wins over the system's.
-            let system = !light.unwrap();
-            assert_eq!(
-                crate::theme::appearance(None, loaded.light, system),
-                (light.unwrap(), true)
-            );
-        }
-        fs::write(&path, r#"{"side_width": 300}"#).unwrap();
+        // An earlier build kept the header toggle's choice; it is no longer
+        // read, and the rest of the file is.
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, r#"{"side_width": 300, "light": true}"#).unwrap();
         let loaded = Layout::load(Some(&path));
-        assert_eq!(loaded.light, None);
+        assert_eq!(loaded.side_width, 300.0);
         assert_eq!(
-            crate::theme::appearance(None, loaded.light, true),
-            (true, false)
+            loaded,
+            Layout {
+                side_width: 300.0,
+                ..Layout::default()
+            }
         );
+        loaded.save(Some(&path));
+        assert!(!fs::read_to_string(&path).unwrap().contains("light"));
         let _ = fs::remove_dir_all(&dir);
     }
 
