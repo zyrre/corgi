@@ -212,7 +212,11 @@ agent's pane, tab and workspace changed, it can name a real throwaway Herdr:
 the focus view then shows a live terminal of that session beside made-up
 side-panel content.
 When moving its window, look the id up after launch each time: AeroSpace
-can still list the last run's closed window for a moment.
+can still list the last run's closed window for a moment. Find it by its
+process id, never by app name, since the user may have a corgi-gui window
+of their own open:
+`aerospace list-windows --all --json --format '%{window-id} %{app-name} %{app-pid}'`
+lists `app-pid` only when `--format` asks for it.
 
 Text on a fill other than the background (a badge, the selected row's bar,
 a dialog) takes its color through `Colors::badge_text` or
