@@ -60,6 +60,9 @@ pub struct Layout {
     pub focus_side_width: f32,
     /// The window's size when it was last closed.
     pub window: Option<(f32, f32)>,
+    /// The appearance the header's toggle chose, light or dark; `None`,
+    /// until it is first clicked, follows the system.
+    pub light: Option<bool>,
 }
 
 impl Default for Layout {
@@ -72,6 +75,7 @@ impl Default for Layout {
             focus_side_open: true,
             focus_side_width: 340.0,
             window: None,
+            light: None,
         }
     }
 }
@@ -183,6 +187,35 @@ mod tests {
         let loaded = Layout::load(Some(&path));
         assert_eq!((loaded.side_width, loaded.window), (SIDE_MIN, None));
         assert!(loaded.side_open, "a field left out keeps its default");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_toggles_appearance_is_kept_and_a_file_from_before_it_follows_the_system() {
+        let dir = scratch("appearance");
+        let path = dir.join("gui-layout.json");
+        for light in [Some(false), Some(true)] {
+            let layout = Layout {
+                light,
+                ..Layout::default()
+            };
+            layout.save(Some(&path));
+            let loaded = Layout::load(Some(&path));
+            assert_eq!(loaded.light, light);
+            // Kept, the choice wins over the system's.
+            let system = !light.unwrap();
+            assert_eq!(
+                crate::theme::appearance(None, loaded.light, system),
+                (light.unwrap(), true)
+            );
+        }
+        fs::write(&path, r#"{"side_width": 300}"#).unwrap();
+        let loaded = Layout::load(Some(&path));
+        assert_eq!(loaded.light, None);
+        assert_eq!(
+            crate::theme::appearance(None, loaded.light, true),
+            (true, false)
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -142,7 +142,7 @@ for limits, retry behavior and the Claude documentation/fixture verification.
 
 ## Desktop window (preview)
 
-`corgi-gui` is a native window, on macOS and on Linux (Wayland), that shows what the dashboard shows: project cards and agent rows, the plan-usage header, the selected agent's session under the overview, and a side panel with the project's supervisor and its numbered questions, each opening in full, as the supervisor asked it (its Markdown rendered), to be answered there. It prompts agents, answers questions, starts agents and supervisors, tags, merges and closes, keyboard first: `j`/`k` select, `↵` shows or hides the session, `\` the side panel, `p` prompt, `n` new agent, `s` supervisor, `m` merge, `t` tag, `x` close, `1`–`9` answer a question. Drag the edges between the panes to resize them; the window keeps its sizes. It follows the system's light or dark scheme, or the Omarchy theme when there is one. It has no terminals yet.
+`corgi-gui` is a native window, on macOS and on Linux (Wayland), that shows what the dashboard shows: project cards and agent rows, the plan-usage header, the selected agent's session under the overview, and a side panel with the project's supervisor and its numbered questions, each opening in full, as the supervisor asked it (its Markdown rendered), to be answered there. It prompts agents, answers questions, starts agents and supervisors, tags, merges and closes, keyboard first: `j`/`k` select, `↵` shows or hides the session, `\` the side panel, `p` prompt, `n` new agent, `s` supervisor, `m` merge, `t` tag, `x` close, `1`–`9` answer a question. Drag the edges between the panes to resize them; the window keeps its sizes. It follows the system's light or dark scheme, or the Omarchy theme when there is one; the sun/moon button at the header's right end switches between light and dark and remembers the choice. It has no terminals yet.
 
 It runs `corgi serve` (the [protocol](docs/serve-protocol.md)) on this machine, or on another one over SSH, and reconnects by itself, showing the last state dimmed meanwhile:
 
@@ -159,7 +159,7 @@ cargo build --release && cargo build --release -p corgi-gui
 ./target/release/corgi-gui
 ```
 
-On Linux the window's Wayland app id, which compositor rules match, is `corgi-gui`. It uses CaskaydiaMono Nerd Font where installed, else the first of a few common monospace fonts, and Menlo on macOS; `CORGI_GUI_FONT` names another. `CORGI_GUI_APPEARANCE=light` or `dark` overrides the system's scheme.
+On Linux the window's Wayland app id, which compositor rules match, is `corgi-gui`. It uses CaskaydiaMono Nerd Font where installed, else the first of a few common monospace fonts, and Menlo on macOS; `CORGI_GUI_FONT` names another. `CORGI_GUI_APPEARANCE=light` or `dark` overrides the system's scheme and the button's choice.
 
 ## Install
 
