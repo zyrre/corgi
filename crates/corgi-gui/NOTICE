@@ -1,0 +1,29 @@
+corgi-gui includes code from other projects under the Apache License,
+Version 2.0. The license's text is in LICENSE-APACHE beside this file. Each
+file taken from another project names it at its top and says how it was
+changed.
+
+Zed (https://github.com/zed-industries/zed)
+Copyright 2022 - 2025 Zed Industries, Inc.
+- src/text_input.rs is adapted from GPUI's text input example.
+
+Herdr UI (https://github.com/penso/herdr-gpui), revision a5b2df2
+(2026-10-28)
+Copyright 2026 Fabien Penso
+- src/herdr_ui/terminal_painter.rs and src/herdr_ui/terminal_painter/ are
+  Herdr UI's terminal painter, crates/herdr-gpui/src/terminal_painter.rs and
+  its submodules, with their imports changed and their tests left out.
+- src/herdr_ui/terminal.rs and src/herdr_ui/config.rs keep parts of Herdr
+  UI's crates/herdr-gpui/src/terminal.rs, config/theme.rs and
+  config/font_weight.rs.
+- src/terminal/input.rs and src/terminal/selection.rs follow Herdr UI's
+  input.rs and terminal/selection.rs.
+- src/endpoint/protocol.rs is adapted from Herdr UI's crates/herdr-protocol
+  (wire.rs, endpoint.rs, frame.rs, codec.rs), and the image types in
+  src/endpoint/mod.rs from its crates/herdr-client.
+
+Herdr (https://github.com/herdrdev/herdr)
+- Herdr UI's crates/herdr-protocol adapts Herdr 0.9.1 (commit 856b64b9):
+  src/protocol/{wire,endpoint}.rs, src/input/model.rs,
+  src/api/schema/common.rs and src/config/model.rs. No upstream NOTICE file
+  was present at that revision.

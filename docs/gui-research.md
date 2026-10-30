@@ -874,6 +874,23 @@ opened.
     screen read from Herdr);
   - a font chosen per platform;
   - flicker during compositor resizes, judged by eye.
+- **Phase 3's local terminal is built (2026-10-29).** Enter or a double click
+  opens an agent's live terminal in the focus view, through one endpoint
+  connection behind `crates/corgi-gui/src/endpoint/` (tested against Herdr
+  0.9.0), painted with Herdr UI's painter lifted into `src/herdr_ui/`. The
+  interactive layer above is done: keys and text (IME and dead keys through
+  the platform's input handler), paste, selection with copy read back from
+  Herdr, the wheel and Shift+PageUp/Down through Herdr's scrollback, links,
+  and a font looked up off the UI thread (a Nerd Font when installed). The
+  park tab and the deactivation rules of §9 are in `endpoint/viewer.rs`; one
+  rule was added: a new connection says hello active and rests on the park
+  tab before it shows anything, so the user's tab is claimed at most for a
+  few milliseconds, and only when no client owns it. Measured (throwaway
+  Herdr, macOS): key to painted frame p50 7.3 ms, p90 11.6 ms; idle 0.8 %
+  CPU, GPUI's display link. Still open: terminals over `--ssh`, a real
+  Claude Code session (the check used a scripted stand-in, since Claude
+  Code's credentials are in the Keychain), Linux/Hyprland and Codex checks
+  by hand, and compositor-resize flicker.
 
 ## Open questions
 

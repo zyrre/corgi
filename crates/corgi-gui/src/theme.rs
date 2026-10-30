@@ -179,6 +179,26 @@ fn brand_rgb(color: palette::Color) -> Option<Rgb> {
     }
 }
 
+/// A terminal's colors for `light`, as `Colors::new` picks the theme: the
+/// server's foreground, background and sixteen ANSI colors, or, before its
+/// first snapshot or for a color it left out, Catppuccin Latte's or Mocha's.
+pub fn terminal_palette(palette: &PaletteSet, light: bool) -> palette::Palette {
+    let mut colors = palette::Palette::catppuccin(light);
+    let sent = if light { &palette.light } else { &palette.dark };
+    if let Some(foreground) = parse_hex(&sent.foreground) {
+        colors.foreground = foreground;
+    }
+    if let Some(background) = parse_hex(&sent.background) {
+        colors.background = background;
+    }
+    for (slot, hex) in colors.ansi.iter_mut().zip(&sent.ansi) {
+        if let Some(rgb) = parse_hex(hex) {
+            *slot = rgb;
+        }
+    }
+    colors
+}
+
 /// The roles `sent` names, the rest from `fallback`.
 fn roles_from(sent: &ThemeColors, mut roles: Roles<Rgb>) -> Roles<Rgb> {
     for (name, hex) in &sent.roles {
@@ -226,6 +246,13 @@ pub fn parse_hex(hex: &str) -> Option<Rgb> {
     }
     let channel = |at: usize| u8::from_str_radix(&digits[at..at + 2], 16).ok();
     Some((channel(0)?, channel(2)?, channel(4)?))
+}
+
+/// A color as RGB bytes.
+pub fn rgb(color: Hsla) -> Rgb {
+    let rgba = color.to_rgb();
+    let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    (byte(rgba.r), byte(rgba.g), byte(rgba.b))
 }
 
 pub fn hsla((r, g, b): Rgb) -> Hsla {

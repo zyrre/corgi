@@ -169,8 +169,8 @@ and `cargo clippy` at the root cover both. The third is out of the default
 members:
 
 - `crates/corgi-gui`, the desktop window (`corgi-gui`), drawn with GPUI
-  (`gpui-pre =0.3.6`, the version Herdr UI's terminal painter pins, so the
-  terminals of a later phase can use it). GPUI needs Rust 1.96, so the crate
+  (`gpui-pre =0.3.6`, the version Herdr UI's terminal painter is written
+  for; the focus view's terminal uses that painter). GPUI needs Rust 1.96, so the crate
   has its own `rust-version`; build and test it with `-p corgi-gui`. Only it
   depends on GPUI, and the `corgi` binary never builds it. It shares the
   workspace's `Cargo.lock`: adding GPUI moved no version the other two crates
@@ -625,7 +625,11 @@ overview of project cards and rows, the selected agent's session under it,
 the side panel with the selected project's supervisor, its numbered
 questions and its blocked workers, and a status bar. The session and the
 side panel open and close, and the edges between them drag; their sizes, and
-the window's, are kept in `$STATE/gui-layout.json`.
+the window's, are kept in `$STATE/gui-layout.json`. Enter or a double click
+on a row opens the **focus view**: that agent's live Herdr terminal in place
+of the overview, beside a side panel of its own (open or closed and its
+width kept apart from the overview's). Cmd+Esc (Ctrl+Shift+Esc on Linux), or
+the bar's "← Overview", goes back; plain Esc stays the terminal program's.
 
 - `link.rs` starts the child and reads its stdout on a thread of its own,
   each line a `ServerMessage`; a line it cannot read (a newer server's) is
@@ -664,9 +668,82 @@ the window's, are kept in `$STATE/gui-layout.json`.
   Wayland app id `corgi-gui`, and picks a monospace font that exists there
   (Menlo does not).
 - The `capture` feature drives the window from `CORGI_GUI_SCRIPT` (keys,
-  clicks, waits) and writes screenshots with GPUI's `render_to_image`, for checking
+  clicks, drags, the wheel, an input method's composition, hiding and
+  showing) and writes screenshots with GPUI's `render_to_image`, for checking
   it without screen recording; `CORGI_GUI_BACKGROUND` opens it without
-  taking focus.
+  taking focus, and `CORGI_GUI_URL_LOG` writes a clicked link to a file
+  instead of opening it.
+
+**The focus view's terminal** (`src/endpoint/`, `src/herdr_ui/`,
+`src/terminal/`) is Herdr's own: the window connects to the
+session's `herdr-client.sock`, beside the `herdr.sock` that `corgi serve`'s
+hello names, and speaks **endpoint generation 1**, the protocol Herdr's own
+UI uses. Herdr runs the program, interprets its output and sends the cells
+of the tab's surface; the window paints them, with no terminal emulator of
+its own, and sends keys, text, paste and the mouse as semantic events,
+which Herdr encodes for the program's modes (kitty keyboard,
+modifyOtherKeys, bracketed paste), so Shift+Enter, Alt+Enter and Ctrl+J do
+what they do in Herdr. Terminals are local only: over `--ssh` the focus view
+says so.
+
+- `endpoint/` is the one place that knows that protocol, so a Herdr upgrade
+  that breaks it breaks it there. It was written and tested against **Herdr
+  0.9.0**, its types checked field by field against 0.9.0's wire
+  declarations (bincode encodes by position). `protocol.rs` holds the
+  messages, adapted from Herdr UI's `herdr-protocol`; `connection.rs` one
+  socket, read on a thread and written on another: Herdr runs one endpoint
+  request at a time per connection (another is refused `endpoint_busy`)
+  except `client_shell.surface.set`, so the writer keeps everything behind a
+  request until it is answered. Only the newest surface is kept for the
+  window to take when it draws, so a burst is drawn once. `viewer.rs` is what
+  the window's terminal does with its connection (below); `live_tests.rs`
+  runs all of it against a throwaway Herdr (`--ignored`).
+- `herdr_ui/` is Herdr UI's terminal painter (Apache-2.0, see `NOTICE`),
+  lifted with only its imports changed: cells, box drawing and powerline
+  symbols as shapes, colour emoji, pane images, the IME composition.
+- `terminal/` is the interactive layer around it, Corgi's own: the GPUI view
+  and its connection, the keys the view keeps (`keys.rs`), the platform's
+  input handler for text, dead keys and IMEs (`input.rs`), selection and
+  copy (`selection.rs`, in Herdr's scrollback rows; the copied text is read
+  back with `pane.selection.read`), links (`links.rs`: OSC 8 hyperlinks and
+  web addresses, wrapped ones too, opened with the link modifier held), the
+  wheel and Shift+PageUp/PageDown (sent for Herdr to route: to the
+  program's mouse reports, the alternate screen's arrows, or its
+  scrollback), resizing (settled for 30 ms, then sent) and the terminal's
+  colors (the cells', and the ones Herdr answers a program's color queries
+  with). The terminal's font is looked up and loaded off the UI thread: a
+  Nerd Font when one is installed, else the window's
+  (`CORGI_GUI_TERMINAL_FONT` names another).
+
+The connection's rules, which follow from how Herdr 0.9.0 sizes tabs:
+
+- An **active** connection claims the size of the tab it is on, when it is
+  activated and whenever it moves, and `tab.focus` is refused while it is
+  inactive. So the window keeps one empty **park tab**, the only tab of a
+  workspace labelled `corgi-gui (parked terminal)`, made with the JSON
+  API's `workspace.create` (no focus) when needed, found again by its label,
+  and closed when the window quits. The connection moves there before it is
+  deactivated, and is activated there with `surface.set` and `tab.focus`
+  sent together.
+- A connection is opened only to show a terminal. It starts on Herdr's
+  focused tab, the user's, and says hello already active: Herdr then claims
+  that tab's size only when no client owns it (the user's window reached it
+  through a JSON focus call and has not typed there since). Before showing
+  anything it rests on the park tab, moving there and deactivating, which
+  hands such a tab back within milliseconds (measured: 18 ms, park workspace
+  made included); then it is activated there and moved to its tab.
+- Leaving the focus view, hiding or minimising the window, and quitting
+  park and deactivate the connection; quitting then closes it (GPUI gives
+  quitting 200 ms, so it waits 100 ms for Herdr rather than for answers).
+  Deactivating gives every tab the connection sized back to the clients that
+  view it.
+- The window never calls the JSON focus methods and never moves the user's
+  view; it moves only its own connection. When Herdr moves it anyway (a JSON
+  focus call, a create with focus, the tab closed), the terminal is **gone**:
+  the window says so, parks, and offers to open it again; it never follows.
+- With the user's Herdr window on the same tab, the last client to interact
+  sizes it, as with two Herdr windows: typing in either takes the size, and
+  the other shows the program at that size, cropped or padded.
 
 ### Herdr restarts
 
