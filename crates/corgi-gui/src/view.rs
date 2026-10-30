@@ -16,8 +16,8 @@ use crate::{
     form::Row,
     format::{self, Piece, Tone},
     layout::{
-        CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, HEADER_HEIGHT, HEADER_PADDING,
-        PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
+        CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, FONT_SIZE, HEADER_HEIGHT,
+        HEADER_PADDING, PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
     store::Connection,
     terminal::keys,
@@ -25,7 +25,9 @@ use crate::{
     window::{CorgiWindow, Drag},
 };
 
-const TEXT_SIZE: f32 = 13.0;
+const TEXT_SIZE: f32 = FONT_SIZE;
+/// GPUI's rem at the default text size.
+const REM: f32 = 16.0;
 /// The space above a dialog, and the least below it.
 const DIALOG_TOP: f32 = 110.0;
 const DIALOG_BOTTOM: f32 = 24.0;
@@ -52,6 +54,9 @@ impl Render for CorgiWindow {
         let dialog = self.dialogs.open.is_some();
         let viewport = window.viewport_size();
         let focus_view = self.focus_view.is_some();
+        // Spacing given in rems grows and shrinks with the text, as a page
+        // does when a browser zooms it.
+        window.set_rem_size(px(REM * self.layout.text_scale()));
 
         let body = if focus_view {
             // The terminal stays bright while `corgi serve` reconnects: it
@@ -96,8 +101,8 @@ impl Render for CorgiWindow {
             .bg(colors.background)
             .text_color(colors.roles.text)
             .font(self.font.clone())
-            .text_size(px(TEXT_SIZE))
-            .line_height(px(TEXT_SIZE * LINE_HEIGHT))
+            .text_size(self.scaled(TEXT_SIZE))
+            .line_height(self.scaled(TEXT_SIZE * LINE_HEIGHT))
             .on_key_down(cx.listener(|this, event, window, cx| {
                 if this.dialogs.open.is_some() {
                     this.dialog_key(event, window, cx);
@@ -170,16 +175,20 @@ impl CorgiWindow {
 
     /// The dashboard's header in the same order: the corgi, the wordmark,
     /// then HERD and a card per plan, packed left at one height, and the
-    /// light/dark toggle at the right end. A window too narrow for them all
-    /// wraps the cards under the letters.
+    /// text size's buttons and the light/dark toggle at the right end. A
+    /// window too narrow for them all wraps the cards under the letters.
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         let now = self.store.now();
         let state = &self.store.state;
+        // A card's lines follow the text; its title row, height and least
+        // width keep the corgi's measures until larger text needs more.
+        let scale = self.layout.text_scale();
+        let grow = scale.max(1.0);
         let card = |title: SharedString, color: Hsla, lines: Vec<AnyElement>| {
             framed(
                 SharedString::from(format!("card-{title}")),
-                CARD_TITLE_ROW,
+                CARD_TITLE_ROW * grow,
                 color,
                 div()
                     .text_color(color)
@@ -192,12 +201,12 @@ impl CorgiWindow {
                     .flex()
                     .flex_col()
                     .px_2()
-                    .line_height(px(CARD_LINE))
+                    .line_height(px(CARD_LINE * scale))
                     .children(lines),
             )
             .flex_none()
-            .h(px(CARD_HEIGHT))
-            .min_w(px(CARD_MIN_WIDTH))
+            .h(px(CARD_HEIGHT * grow))
+            .min_w(px(CARD_MIN_WIDTH * grow))
         };
         let herd_card = card(
             "HERD".into(),
@@ -264,7 +273,15 @@ impl CorgiWindow {
                     .child(herd_card)
                     .children(usage_cards),
             )
-            .child(self.appearance_toggle(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .child(self.font_button(false, cx))
+                    .child(self.font_button(true, cx))
+                    .child(self.appearance_toggle(cx)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -299,6 +316,43 @@ impl CorgiWindow {
                 this.toggle_appearance(cx);
                 cx.stop_propagation();
             }))
+    }
+
+    /// "A−" or "A+" left of the toggle, in the same pixel art: the
+    /// window's text a point smaller or `larger`. One at its end of the
+    /// range is greyed and takes no click.
+    fn font_button(&self, larger: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let enabled = self.layout.can_step_font(larger);
+        let (id, art) = if larger {
+            ("font-larger", FONT_LARGER)
+        } else {
+            ("font-smaller", FONT_SMALLER)
+        };
+        let color = if enabled {
+            colors.roles.text
+        } else {
+            colors.roles.muted.opacity(0.5)
+        };
+        div()
+            .id(id)
+            .flex_none()
+            .p(px(ICON_PIXEL * 3.0))
+            .rounded_md()
+            .child(pixel_art(
+                art.iter()
+                    .map(|row| row.chars().map(|on| (on == '#').then_some(color)).collect()),
+                ICON_PIXEL,
+            ))
+            .when(enabled, |button| {
+                button
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|style| style.bg(colors.roles.keycap))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.step_font(larger, cx);
+                        cx.stop_propagation();
+                    }))
+            })
     }
 
     // ---- Toolbar ----
@@ -695,7 +749,7 @@ impl CorgiWindow {
         });
         framed(
             SharedString::from(format!("heading-{}", project.group)),
-            TEXT_SIZE * LINE_HEIGHT,
+            TEXT_SIZE * LINE_HEIGHT * self.layout.text_scale(),
             colors.roles.rule,
             title,
             corner,
@@ -749,7 +803,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .px_1()
-                    .min_w(px(68.))
+                    .min_w(self.scaled(68.))
                     .flex()
                     .justify_center()
                     .bg(badge_color)
@@ -851,7 +905,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .flex_none()
-                    .w(px(12.))
+                    .w(self.scaled(12.))
                     .text_color(marker_color)
                     .child(format::marker(activity.kind)),
             )
@@ -954,7 +1008,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .flex_none()
-                    .w(px(12.))
+                    .w(self.scaled(12.))
                     .text_color(self.tone(format::marker_tone(entry.kind), None))
                     .child(format::marker(entry.kind)),
             )
@@ -1255,7 +1309,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .flex_none()
-                    .w(px(12.))
+                    .w(self.scaled(12.))
                     .text_color(self.tone(format::marker_tone(activity.kind), None))
                     .child(format::marker(activity.kind)),
             )
@@ -1459,7 +1513,7 @@ impl CorgiWindow {
                     .id("dialog")
                     .key_context("Dialog")
                     .track_focus(&self.form_focus)
-                    .w(px(720.))
+                    .w(self.scaled(720.))
                     .max_w(relative(0.92))
                     .flex()
                     .flex_col()
@@ -1631,18 +1685,18 @@ impl CorgiWindow {
                     .items_center()
                     .gap_2()
                     .px_1()
-                    .py(px(2.))
+                    .py(self.scaled(2.))
                     .rounded_sm()
                     .when(focused, |r| r.bg(colors.roles.focus_bar))
                     .child(
                         div()
-                            .w(px(12.))
+                            .w(self.scaled(12.))
                             .text_color(colors.roles.accent)
                             .child(if focused { "▶" } else { "" }),
                     )
                     .child(
                         div()
-                            .w(px(80.))
+                            .w(self.scaled(80.))
                             .flex_none()
                             .text_color(if focused {
                                 colors.roles.text
@@ -1709,7 +1763,7 @@ impl CorgiWindow {
         div()
             .flex()
             .flex_col()
-            .ml(px(104.))
+            .ml(self.scaled(104.))
             .mb_1()
             .p_1()
             .rounded_sm()
@@ -2076,6 +2130,34 @@ const SUN: [&str; 11] = [
     "..#.....#..",
     ".....#.....",
     ".....#.....",
+];
+
+/// The text size's buttons: an A, and a minus or plus above its right.
+const FONT_SMALLER: [&str; 11] = [
+    "...........",
+    "...........",
+    "......#####",
+    "...........",
+    "...#.......",
+    "..#.#......",
+    "..#.#......",
+    ".#...#.....",
+    ".#####.....",
+    "#.....#....",
+    "#.....#....",
+];
+const FONT_LARGER: [&str; 11] = [
+    "........#..",
+    "........#..",
+    "......#####",
+    "........#..",
+    "...#....#..",
+    "..#.#......",
+    "..#.#......",
+    ".#...#.....",
+    ".#####.....",
+    "#.....#....",
+    "#.....#....",
 ];
 
 /// Pixel art, one square of `size` per pixel, `None` left to the

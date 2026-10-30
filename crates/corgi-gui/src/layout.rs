@@ -1,7 +1,8 @@
 //! The window's fixed layout: the header's measurements, and the overview,
 //! the transcript split under it and the side panel beside it, and the focus
 //! view's terminal with its own side panel, which open and close and keep
-//! their sizes across runs in `$STATE/gui-layout.json`.
+//! their sizes across runs in `$STATE/gui-layout.json`, as does the size of
+//! the window's text.
 
 use std::{fs, path::Path, path::PathBuf};
 
@@ -46,6 +47,13 @@ pub const TRANSCRIPT_MAX: f32 = 1400.0;
 /// The overview keeps at least this much height beside the transcript.
 pub const OVERVIEW_MIN: f32 = 160.0;
 
+/// The window's text size in points, the body's and the terminal's, which
+/// the header's buttons step a point at a time between the least and the
+/// most; everything else drawn as text keeps its size relative to it.
+pub const FONT_SIZE: f32 = 13.0;
+pub const FONT_SIZE_MIN: f32 = 10.0;
+pub const FONT_SIZE_MAX: f32 = 26.0;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
@@ -60,6 +68,8 @@ pub struct Layout {
     pub focus_side_width: f32,
     /// The window's size when it was last closed.
     pub window: Option<(f32, f32)>,
+    /// The text size the header's buttons chose.
+    pub font_size: f32,
 }
 
 impl Default for Layout {
@@ -72,6 +82,7 @@ impl Default for Layout {
             focus_side_open: true,
             focus_side_width: 340.0,
             window: None,
+            font_size: FONT_SIZE,
         }
     }
 }
@@ -122,7 +133,37 @@ impl Layout {
         self.window = self
             .window
             .filter(|(width, height)| *width >= 400.0 && *height >= 300.0);
+        self.font_size = if self.font_size.is_finite() {
+            self.font_size.round().clamp(FONT_SIZE_MIN, FONT_SIZE_MAX)
+        } else {
+            FONT_SIZE
+        };
         self
+    }
+
+    /// The text's size against the default's: what every size drawn as
+    /// text is multiplied by.
+    pub fn text_scale(&self) -> f32 {
+        self.font_size / FONT_SIZE
+    }
+
+    /// Whether the text can be made `larger` (or smaller) a step.
+    pub fn can_step_font(&self, larger: bool) -> bool {
+        if larger {
+            self.font_size < FONT_SIZE_MAX
+        } else {
+            self.font_size > FONT_SIZE_MIN
+        }
+    }
+
+    /// The text a point `larger` or smaller; false at the end of the range.
+    pub fn step_font(&mut self, larger: bool) -> bool {
+        if !self.can_step_font(larger) {
+            return false;
+        }
+        let step = if larger { 1.0 } else { -1.0 };
+        self.font_size = (self.font_size + step).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+        true
     }
 
     /// Resizes `split` by a drag of `delta` pixels: a side panel grows as
@@ -262,6 +303,48 @@ mod tests {
         assert_eq!(loaded.focus_side_width, Layout::default().focus_side_width);
         layout.drag(Split::FocusSide, 10_000.0);
         assert_eq!(layout.focus_side_width, SIDE_MIN);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_text_size_steps_a_point_within_its_range() {
+        let mut layout = Layout::default();
+        assert_eq!(layout.font_size, FONT_SIZE);
+        assert_eq!(layout.text_scale(), 1.0);
+        assert!(layout.step_font(true));
+        assert_eq!(layout.font_size, FONT_SIZE + 1.0);
+        while layout.step_font(true) {}
+        assert_eq!(layout.font_size, FONT_SIZE_MAX);
+        assert!(!layout.can_step_font(true));
+        assert!(layout.can_step_font(false));
+        assert_eq!(layout.text_scale(), 2.0, "the most is twice today's");
+        while layout.step_font(false) {}
+        assert_eq!(layout.font_size, FONT_SIZE_MIN);
+        assert!(!layout.can_step_font(false));
+        assert!(!layout.step_font(false), "a button at its end does nothing");
+        assert_eq!(layout.font_size, FONT_SIZE_MIN);
+        assert!((0.75..0.8).contains(&layout.text_scale()));
+    }
+
+    #[test]
+    fn the_text_size_is_kept_and_an_older_or_odd_file_gives_a_sane_one() {
+        let dir = scratch("font-size");
+        let path = dir.join("gui-layout.json");
+        let mut layout = Layout::default();
+        layout.step_font(true);
+        layout.step_font(true);
+        layout.save(Some(&path));
+        assert_eq!(Layout::load(Some(&path)).font_size, FONT_SIZE + 2.0);
+        // A file from before the buttons has today's size.
+        fs::write(&path, r#"{"side_width": 300, "side_open": false}"#).unwrap();
+        let loaded = Layout::load(Some(&path));
+        assert_eq!(loaded.font_size, FONT_SIZE);
+        assert!(!loaded.side_open);
+        // One edited by hand is brought back into range, on a whole point.
+        for (kept, loaded) in [("3", FONT_SIZE_MIN), ("90", FONT_SIZE_MAX), ("14.4", 14.0)] {
+            fs::write(&path, format!(r#"{{"font_size": {kept}}}"#)).unwrap();
+            assert_eq!(Layout::load(Some(&path)).font_size, loaded, "{kept}");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

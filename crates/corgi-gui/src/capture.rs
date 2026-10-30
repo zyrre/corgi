@@ -17,6 +17,8 @@
 //!   input method or a dead key shows it, then commit TEXT (`ime:´>é`);
 //! - `hide` and `show` tell the window it was hidden or shown, as the
 //!   platform does when it is minimised or occluded;
+//! - `deactivate` and `activate` tell it the user went to another window
+//!   and came back, as the platform does, without taking the focus;
 //! - `size:WxH` resizes the window, as a tiling window manager may have
 //!   sized it otherwise (float it there first);
 //! - `glyphs:TEXT` logs the font each character of TEXT draws from in the
@@ -256,6 +258,18 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                     let _ = cx.update_window(any, |root, _, cx| {
                         if let Ok(root) = root.downcast::<CorgiWindow>() {
                             root.update(cx, |root, cx| root.set_visible(visible, cx));
+                        }
+                    });
+                }
+                "activate" | "deactivate" => {
+                    let active = verb == "activate";
+                    let _ = cx.update_window(any, |root, window, cx| {
+                        if let Ok(root) = root.downcast::<CorgiWindow>() {
+                            let terminal = root.read(cx).terminal.clone();
+                            terminal.update(cx, |terminal, _| {
+                                terminal.scripted_active = Some(active);
+                                terminal.report_focus(window);
+                            });
                         }
                     });
                 }

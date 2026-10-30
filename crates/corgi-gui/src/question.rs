@@ -403,7 +403,7 @@ impl CorgiWindow {
             .border_color(colors.roles.rule)
             .bg(fill)
             .font_family(self.ui_font.clone())
-            .text_size(px(BODY_SIZE))
+            .text_size(self.scaled(BODY_SIZE))
             .line_height(relative(BODY_LINE))
             .text_color(ink)
             .child(self.document(&Form::parse(text)))
@@ -468,7 +468,7 @@ impl CorgiWindow {
         div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(self.scaled(6.))
             .children(blocks.iter().map(|block| -> AnyElement {
                 match block {
                     Block::Paragraph(inline) => {
@@ -482,7 +482,7 @@ impl CorgiWindow {
                     Block::List { start, items } => div()
                         .flex()
                         .flex_col()
-                        .gap(px(2.))
+                        .gap(self.scaled(2.))
                         .children(items.iter().enumerate().map(|(index, item)| {
                             let marker = match start {
                                 Some(first) => format!("{}.", first + index as u64),
@@ -495,7 +495,7 @@ impl CorgiWindow {
                                 .child(
                                     div()
                                         .flex_none()
-                                        .min_w(px(12.))
+                                        .min_w(self.scaled(12.))
                                         .text_color(colors.secondary(colors.reading().1))
                                         .child(marker),
                                 )
@@ -508,7 +508,7 @@ impl CorgiWindow {
                         .rounded_sm()
                         .bg(colors.roles.keycap.opacity(0.6))
                         .font(self.font.clone())
-                        .text_size(px(13.))
+                        .text_size(self.scaled(13.))
                         .line_height(relative(1.45))
                         .child(code.clone())
                         .into_any_element(),
@@ -530,10 +530,10 @@ impl CorgiWindow {
             .flex()
             .flex_col()
             .items_start()
-            .gap(px(6.))
+            .gap(self.scaled(6.))
             .child(
                 div()
-                    .text_size(px(TITLE_SIZE))
+                    .text_size(self.scaled(TITLE_SIZE))
                     .line_height(relative(1.3))
                     .font_weight(FontWeight::BOLD)
                     .child(self.inline(&flat(&heading.title), ink)),
@@ -545,13 +545,13 @@ impl CorgiWindow {
                     colors.roles.warning
                 };
                 div()
-                    .px(px(7.))
-                    .py(px(1.))
+                    .px(self.scaled(7.))
+                    .py(self.scaled(1.))
                     .rounded_md()
                     .border_1()
                     .border_color(color.opacity(0.6))
                     .bg(color.opacity(0.14))
-                    .text_size(px(12.))
+                    .text_size(self.scaled(12.))
                     .line_height(relative(1.4))
                     .child(self.inline(
                         &flat(tag),
@@ -571,7 +571,7 @@ impl CorgiWindow {
         div()
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(self.scaled(12.))
             .children(
                 form.heading
                     .as_ref()
@@ -586,16 +586,17 @@ impl CorgiWindow {
                     Part::Options(choices) => div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
+                        .gap(self.scaled(8.))
                         .child(self.markdown(&blocks("**Options:**"), &ink))
                         .children(choices.iter().map(|choice| {
                             div()
                                 .flex()
                                 .flex_row()
-                                .gap(px(10.))
-                                .pl(px(6.))
+                                .gap(self.scaled(10.))
+                                .pl(self.scaled(6.))
                                 .child(letter_badge(
                                     &choice.letter,
+                                    self.layout.text_scale(),
                                     colors.roles.accent,
                                     colors.badge_text(colors.roles.accent),
                                 ))
@@ -613,20 +614,21 @@ impl CorgiWindow {
     }
 }
 
-/// An option's letter on a filled square.
-fn letter_badge(letter: &str, fill: Hsla, text: Hsla) -> impl IntoElement {
+/// An option's letter on a filled square, its sizes `scale` times their
+/// default.
+fn letter_badge(letter: &str, scale: f32, fill: Hsla, text: Hsla) -> impl IntoElement {
     div()
         .flex_none()
-        .mt(px(2.))
-        .w(px(20.))
-        .h(px(20.))
+        .mt(px(2. * scale))
+        .w(px(20. * scale))
+        .h(px(20. * scale))
         .flex()
         .items_center()
         .justify_center()
         .rounded_md()
         .bg(fill)
         .text_color(text)
-        .text_size(px(12.))
+        .text_size(px(12. * scale))
         .font_weight(FontWeight::BOLD)
         .child(letter.to_string())
 }

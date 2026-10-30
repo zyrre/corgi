@@ -21,6 +21,11 @@
 //!   the park tab does the same.
 //! - Deactivating releases every tab the connection sized, so Herdr's own
 //!   window takes back the sizes of the tabs it shows.
+//! - A client takes the size of the tab it is on from whoever had it by
+//!   typing there or by reporting that its terminal gained focus; moving to
+//!   a tab another client owns does not. The terminal reports focus gained
+//!   when the window becomes active again, which takes the shown tab's size
+//!   back after the user worked in Herdr's own window.
 //! - Herdr moves a connection when someone calls its JSON focus methods,
 //!   creates something with focus, or closes the tab it is on. Any change of
 //!   the tab it is on that the window did not ask for means the terminal is
