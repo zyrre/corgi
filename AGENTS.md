@@ -160,9 +160,10 @@ without installing it. Ghostty draws Nerd Font icons from fonts built into
 it, so icons in a user's Ghostty do not mean a Nerd Font is installed; the
 step `glyphs:TEXT` logs which font draws each character in the terminal,
 and works without a redraw. While the Mac's screen is locked
-(`ioreg -n Root -d1 | grep CGSSessionScreenIsLocked`), the window draws its
-first frame and no more, so every shot repeats it, and AeroSpace does not
-list the window. Move the window to AeroSpace workspace 4 the moment it
+(`ioreg -n Root -d1 | grep CGSSessionScreenIsLocked`), the platform asks
+for the window's first frame and no more, so `shot` and the click steps
+draw a frame themselves (a click would otherwise hit-test that first
+frame); other steps still see it, and AeroSpace does not list the window. Move the window to AeroSpace workspace 4 the moment it
 appears (see the user's instructions); `render_to_image` still captures it
 there.
 AeroSpace tiles the window to fill that workspace whatever size

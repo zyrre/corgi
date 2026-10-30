@@ -41,6 +41,8 @@ base64 = "0.22"
 # The lifted painter's: cell widths, and its diagnostics.
 unicode-width = "0.2.2"
 tracing = "0.1"
+# A question's Markdown in the answer dialog.
+pulldown-cmark = { version = "0.13.5", default-features = false }
 
 [lints.rust]
 # Herdr UI's painter, lifted unchanged, gates its benchmarks on a feature of

@@ -3,6 +3,8 @@
 //! Font, whose icons prompts and status lines (Starship, cship) draw. Every
 //! other Nerd Font installed is a font's fallback, so the icons still show
 //! when the font itself, such as one `CORGI_GUI_FONT` names, lacks them.
+//! Running text, a question's in the answer dialog, is set in a
+//! proportional font.
 
 use gpui::{Font, FontFallbacks, SharedString};
 
@@ -55,6 +57,35 @@ pub fn window_font(wanted: Option<String>, installed: &[String], macos: bool) ->
         .iter()
         .find(has)
         .map_or_else(|| "monospace".into(), |font| (*font).into())
+}
+
+/// Proportional fonts tried for running text off macOS, in order. GPUI
+/// takes `.SystemUIFont` to mean IBM Plex Sans there, which Zed bundles and
+/// a desktop seldom has; its own fallbacks start with a monospace font.
+const UI_FONTS: &[&str] = &[
+    "Inter",
+    "IBM Plex Sans",
+    "Adwaita Sans",
+    "Cantarell",
+    "Ubuntu",
+    "Noto Sans",
+    "DejaVu Sans",
+    "Liberation Sans",
+];
+
+/// The font for running text: the system's on macOS (San Francisco), else
+/// the first of `UI_FONTS` installed, else `window`, the window's own.
+pub fn ui_font(installed: &[String], macos: bool, window: &str) -> SharedString {
+    if macos {
+        return ".SystemUIFont".into();
+    }
+    UI_FONTS
+        .iter()
+        .find(|name| installed.iter().any(|font| font == **name))
+        .map_or_else(
+            || SharedString::from(window.to_string()),
+            |font| (*font).into(),
+        )
 }
 
 /// The terminal's font: `wanted` (`CORGI_GUI_TERMINAL_FONT`) if installed,
@@ -160,6 +191,18 @@ mod tests {
         assert_eq!(
             window_font(None, &installed(&["Symbols Nerd Font Mono"]), true),
             "Menlo"
+        );
+    }
+
+    #[test]
+    fn running_text_takes_the_system_font_on_macos_else_an_installed_sans() {
+        let fonts = installed(&["DejaVu Sans", "Noto Sans", "JetBrains Mono"]);
+        assert_eq!(ui_font(&fonts, true, "Menlo"), ".SystemUIFont");
+        assert_eq!(ui_font(&fonts, false, "JetBrains Mono"), "Noto Sans");
+        // Without one, the window's font still draws it.
+        assert_eq!(
+            ui_font(&installed(&["JetBrains Mono"]), false, "JetBrains Mono"),
+            "JetBrains Mono"
         );
     }
 

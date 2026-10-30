@@ -8,7 +8,7 @@ use corgi_core::protocol::{Agent, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent, Pixels,
-    ScrollHandle, Subscription, Task, Window, WindowVisibility,
+    ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility,
 };
 
 use crate::{
@@ -58,6 +58,8 @@ pub struct CorgiWindow {
     pub system_light: bool,
     pub colors: Colors,
     pub font: Font,
+    /// The proportional font a question's text is set in.
+    pub ui_font: SharedString,
     pub focus: FocusHandle,
     pub form_focus: FocusHandle,
     pub prompt_input: Entity<TextInput>,
@@ -80,7 +82,13 @@ pub struct CorgiWindow {
 }
 
 impl CorgiWindow {
-    pub fn new(options: Options, font: Font, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        options: Options,
+        font: Font,
+        ui_font: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let forced_light = forced_light(std::env::var("CORGI_GUI_APPEARANCE").ok().as_deref());
         let system_light = forced_light.unwrap_or_else(|| is_light(window.appearance()));
         let store = Store::default();
@@ -184,6 +192,7 @@ impl CorgiWindow {
             system_light,
             colors,
             font,
+            ui_font,
             focus: cx.focus_handle(),
             form_focus: cx.focus_handle(),
             prompt_input,

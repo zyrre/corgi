@@ -11,6 +11,7 @@ mod herdr_ui;
 mod layout;
 mod link;
 mod options;
+mod question;
 mod store;
 mod terminal;
 mod text_input;
@@ -61,6 +62,7 @@ fn main() -> ExitCode {
             cfg!(target_os = "macos"),
         );
         eprintln!("corgi-gui: drawing with the font {font}");
+        let ui_font = fonts::ui_font(&installed, cfg!(target_os = "macos"), &font);
         let font = fonts::with_fallbacks(font, &installed);
         let saved = Layout::load(Layout::path().as_deref()).window;
         let (width, height) = saved.unwrap_or((1280.0, 820.0));
@@ -82,7 +84,7 @@ fn main() -> ExitCode {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let view = cx.new(|cx| CorgiWindow::new(options, font, window, cx));
+                    let view = cx.new(|cx| CorgiWindow::new(options, font, ui_font, window, cx));
                     let kept = view.downgrade();
                     // Keep the window's size for the next run.
                     window.on_window_should_close(cx, move |window, cx| {

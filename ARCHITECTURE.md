@@ -654,6 +654,13 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   wrong machine) points at the row a refused `spawn` names; the merge dialog
   shows the steps, the outcome and the follow-ups the outcome allows; the
   close dialog asks again for a dirty worktree.
+- `question.rs` draws a question's full text in the answer dialog: it splits
+  the supervisor's form (`supervisor/ROLE.md`) into the heading and its
+  `[blocks: …]` tag, the labelled parts and the lettered options, and
+  renders the Markdown inside each with `pulldown-cmark`, line breaks kept;
+  text off the form is plain Markdown. It is set in a proportional font
+  (`fonts::ui_font`), inline code in the window's. The box gives way to the
+  answer field and scrolls, so the field stays in view in a short window.
 - `theme.rs` takes every color from the palette `serve` sends, light or dark
   as the system's appearance (Catppuccin Latte or Mocha, or the Omarchy theme
   for both), and the vendor and corgi colors from `palette::brand`.
@@ -669,7 +676,8 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   applied, so it is current when shown again.
 - On Linux it enables `gpui-pre-platform`'s `wayland` feature and sets the
   Wayland app id `corgi-gui`, and picks a monospace font that exists there
-  (Menlo does not).
+  (Menlo does not), and a proportional one for running text: GPUI's
+  `.SystemUIFont` means IBM Plex Sans there, which a desktop seldom has.
 - The `capture` feature drives the window from `CORGI_GUI_SCRIPT` (keys,
   clicks, drags, the wheel, an input method's composition, hiding and
   showing) and writes screenshots with GPUI's `render_to_image`, for checking

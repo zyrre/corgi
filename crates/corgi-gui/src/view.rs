@@ -26,8 +26,9 @@ use crate::{
 };
 
 const TEXT_SIZE: f32 = 13.0;
-/// The space above a dialog.
+/// The space above a dialog, and the least below it.
 const DIALOG_TOP: f32 = 110.0;
+const DIALOG_BOTTOM: f32 = 24.0;
 /// The body text's line height, in text sizes.
 const LINE_HEIGHT: f32 = 1.45;
 
@@ -1360,7 +1361,13 @@ impl CorgiWindow {
                 sending,
                 error,
                 ..
-            }) => self.text_dialog(format!("Prompt {agent}"), None, *sending, error.as_deref()),
+            }) => self.text_dialog(
+                format!("Prompt {agent}"),
+                None,
+                *sending,
+                error.as_deref(),
+                window,
+            ),
             Some(Dialog::Answer {
                 question,
                 sending,
@@ -1378,10 +1385,11 @@ impl CorgiWindow {
                 Some(if question.text.is_empty() {
                     div().child(question.title.clone()).into_any_element()
                 } else {
-                    self.question_text(question.text.clone(), window)
+                    self.question_text(&question.text)
                 }),
                 *sending,
                 error.as_deref(),
+                window,
             ),
             Some(Dialog::NewAgent(new)) => self.form_dialog(new, cx),
             Some(Dialog::NewAgentLoading) => self.loading_dialog(),
@@ -1472,41 +1480,31 @@ impl CorgiWindow {
             }))
     }
 
-    /// A question as the supervisor asked it, its lines kept, scrolling
-    /// when it is taller than the window leaves room for.
-    fn question_text(&self, text: String, window: &Window) -> AnyElement {
-        // What the dialog's top margin, title, answer field and hints take.
-        let around = DIALOG_TOP + 190.0;
-        let room = (f32::from(window.viewport_size().height) - around).clamp(80.0, 420.0);
-        div()
-            .id("question-text")
-            .max_h(px(room))
-            .overflow_y_scroll()
-            .track_scroll(&self.question_scroll)
-            .px_2()
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(self.colors.roles.rule)
-            .child(text)
-            .into_any_element()
-    }
-
     fn text_dialog(
         &self,
         title: String,
         question: Option<AnyElement>,
         sending: bool,
         error: Option<&str>,
+        window: &Window,
     ) -> AnyElement {
         let colors = &self.colors;
+        // No taller than the window leaves below the dialog's top margin,
+        // its padding and frame (34) and a bottom margin: the question
+        // gives way and scrolls, so the field and the hints stay in view.
+        let tallest = f32::from(window.viewport_size().height) - DIALOG_TOP - 34.0 - DIALOG_BOTTOM;
         div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(self.dialog_title(title))
+            .max_h(px(tallest.max(0.0)))
+            .child(div().flex_none().child(self.dialog_title(title)))
             .children(question)
-            .child(self.field_box(self.prompt_input.clone().into_any_element()))
+            .child(
+                div()
+                    .flex_none()
+                    .child(self.field_box(self.prompt_input.clone().into_any_element())),
+            )
             .when(sending, |d| {
                 d.child(
                     div()

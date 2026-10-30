@@ -120,6 +120,9 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                         Modifiers::default()
                     };
                     let _ = cx.update_window(any, |_, window, cx| {
+                        // Hit-test what the window shows now, not the first
+                        // frame a locked screen leaves it with.
+                        window.draw(cx).clear(cx);
                         // Over the point first, so its elements are hovered.
                         window.dispatch_event(
                             PlatformInput::MouseMove(MouseMoveEvent {
@@ -276,6 +279,9 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                         .timer(Duration::from_millis(300))
                         .await;
                     let path = dir.join(format!("{argument}.png"));
+                    // Draw the frame here as well: while the screen is
+                    // locked the platform asks for none after the first.
+                    let _ = cx.update_window(any, |_, window, cx| window.draw(cx).clear(cx));
                     let _ = cx.update_window(any, |_, window, _| match window.render_to_image() {
                         Ok(image) => match image.save(&path) {
                             Ok(()) => eprintln!("capture: wrote {}", path.display()),
