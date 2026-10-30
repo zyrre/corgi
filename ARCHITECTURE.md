@@ -872,7 +872,9 @@ status lines of its passes.
   and it can take the lock back. A pass that begins clears the flag. A
   burst of 16 hooks makes a few passes and delivers once.
 - **Time limits.** No pass starts after five seconds; what is still dirty
-  then is left to the next hook. A watchdog thread ends the process after 30
+  then is left to the next hook. A pass whose stops include a transcript
+  not yet showing its turn's reply takes up to two seconds more, once for
+  all of them (see the wakes' reports below). A watchdog thread ends the process after 30
   seconds (exit code 124) whatever it is doing, since Herdr gives a hung
   hook no time limit and its slot is taken for good. The wake lock goes
   with the process. Every Herdr call has its own deadline, so the watchdog
@@ -1084,7 +1086,17 @@ status lines of its passes.
   saved, so the next refresh finds the same stop and adds it.
 - When an agent rests, its report, what `corgi report` printed then (the
   newest thing said in its transcript, else its screen), goes into the item:
-  inline up to 4 KB, else in `inbox-reports/<id>.md`. For a worker the
+  inline up to 4 KB, else in `inbox-reports/<id>.md`. The newest reply is
+  taken only when it comes after the newest user record holding text (the
+  prompt, brief or line that started the turn; never a tool result) and
+  after the turn's last tool call. Herdr sees a turn end on the screen, and
+  Claude Code writes its records about a tenth of a second later, so a pass
+  can find the turn's prompt there and only the turn before's reply. Such a
+  transcript is read again, for those agents alone, over two seconds
+  (`REPORT_REREADS`), then the wake goes without a report, never the older
+  reply or the screen. A turn the transcript marks ended (Claude Code's
+  `turn_duration`, Codex's `task_complete`) with no reply since has none,
+  and is not waited for. For a worker the
   supervisor spawned (its wake carries the `request` id) whose report comes
   from its transcript, the same report is also written, under the inbox
   lock, to its own new file in `reports/`, `YYYYMMDD-HHMMSS-<request id>.md`

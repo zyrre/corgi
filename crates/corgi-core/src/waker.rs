@@ -20,7 +20,7 @@ use crate::{
     job::Job,
     model::{AgentState, DashboardAgent},
     paths::{dir_name, socket_state_file},
-    session::SessionReader,
+    session::{SessionFacts, SessionReader, TurnState},
     supervisor::{self, SUPERVISOR_TOKEN},
     time::unix_now,
 };
@@ -35,6 +35,17 @@ use crate::{
 /// How long a supervisor that handed over has to exit, polled this often.
 const SUPERVISOR_EXIT_POLLS: usize = 60;
 const SUPERVISOR_EXIT_POLL_DELAY: Duration = Duration::from_millis(250);
+/// The pauses before each read again of a resting agent's transcript that
+/// does not yet show how its turn ended, two seconds in all. Claude Code
+/// writes its records about a tenth of a second after they happen, and Herdr
+/// can see the turn end on the screen sooner.
+const REPORT_REREADS: [Duration; 5] = [
+    Duration::from_millis(150),
+    Duration::from_millis(250),
+    Duration::from_millis(350),
+    Duration::from_millis(500),
+    Duration::from_millis(750),
+];
 
 /// Wakes each project's supervisor when another agent of that project stops:
 /// every agent whose project has a running supervisor counts, whoever started
@@ -97,6 +108,8 @@ pub struct SupervisorWaker {
     /// Recovery holds suppress outgoing work while preserving observed baselines.
     recovery_held: HashSet<String>,
     recovery_store: Option<crate::recovery::Store>,
+    /// The pauses before reading a report again ([`REPORT_REREADS`]).
+    report_rereads: &'static [Duration],
 }
 
 impl Default for SupervisorWaker {
@@ -120,6 +133,7 @@ impl Default for SupervisorWaker {
             replacements: Vec::new(),
             recovery_held: HashSet::new(),
             recovery_store: None,
+            report_rereads: &REPORT_REREADS,
         }
     }
 }
@@ -298,6 +312,22 @@ pub struct Captured {
     /// Whether it is the newest thing said in its transcript, rather than
     /// its screen.
     pub transcript: bool,
+}
+
+/// What reading a resting agent's report found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Capture {
+    /// The report to quote, or none.
+    Found(Option<Captured>),
+    /// The transcript does not yet show how the agent's turn ended, so its
+    /// newest reply may be an older turn's: read it again.
+    Behind,
+}
+
+impl From<Option<Captured>> for Capture {
+    fn from(report: Option<Captured>) -> Self {
+        Self::Found(report)
+    }
 }
 
 /// A stop to add to a supervisor's inbox, found at one refresh.
@@ -552,13 +582,15 @@ impl SupervisorWaker {
     }
 
     /// A waker that keeps its inboxes, its record, its handovers, its
-    /// dirty flag and its wake lock under `base`.
+    /// dirty flag and its wake lock under `base`, and reads a report again
+    /// as often as any other but without pausing.
     #[cfg(any(test, feature = "test-support"))]
     pub fn in_dir(base: &Path) -> Self {
         let mut waker = Self::with_inboxes(Inboxes {
             base: Some(base.to_path_buf()),
         });
         waker.lock_path = Some(base.join("wake.lock"));
+        waker.report_rereads = &[Duration::ZERO; REPORT_REREADS.len()];
         waker
     }
 
@@ -603,18 +635,22 @@ impl SupervisorWaker {
 
     /// Records the agents' states from one refresh, adding an item to the
     /// supervisor's inbox for each one that stopped, with the report `report`
-    /// captures for one that rests. At the first refresh this dashboard
+    /// captures for one that rests. A report whose transcript is behind is
+    /// read again, for the agents behind alone, after each of the pauses of
+    /// `report_rereads`, and left out if it is behind still: the wake then
+    /// names the command that prints it, rather than quote an older turn's
+    /// reply. At the first refresh this dashboard
     /// leads, it takes up the record the one before left, so what changed
     /// while none led is news, and an agent the supervisor spawned that appeared
     /// and finished meanwhile is reported once, if it is done or has a
     /// report from its transcript. A stop that cannot be added is tried
     /// again at the next refresh. Returns the error of an inbox or the
     /// record that could not be written.
-    pub fn observe(
+    pub fn observe<R: Into<Capture>>(
         &mut self,
         agents: &[DashboardAgent],
         corgi_bin: &Path,
-        mut report: impl FnMut(&DashboardAgent) -> Option<Captured>,
+        mut report: impl FnMut(&DashboardAgent) -> R,
     ) -> Option<String> {
         let supervisors: HashSet<&str> = agents
             .iter()
@@ -683,10 +719,30 @@ impl SupervisorWaker {
             }
         }
         self.agents.retain(|name, _| seen.contains(name));
+        let mut captures: Vec<Capture> = stops
+            .iter()
+            .map(|stop| match stop.state {
+                AgentState::Done | AgentState::Idle => report(stop.agent).into(),
+                _ => Capture::Found(None),
+            })
+            .collect();
+        for pause in self.report_rereads {
+            if !captures.contains(&Capture::Behind) {
+                break;
+            }
+            thread::sleep(*pause);
+            for (stop, capture) in stops.iter().zip(&mut captures) {
+                if *capture == Capture::Behind {
+                    *capture = report(stop.agent).into();
+                }
+            }
+        }
         let mut error = None;
-        for stop in stops {
-            let resting = matches!(stop.state, AgentState::Done | AgentState::Idle);
-            let report = resting.then(|| report(stop.agent)).flatten();
+        for (stop, capture) in stops.into_iter().zip(captures) {
+            let report = match capture {
+                Capture::Found(report) => report,
+                Capture::Behind => None,
+            };
             // One that only appeared needs something to show for it: its
             // screen may be one that never started.
             if stop.appeared
@@ -934,7 +990,7 @@ impl SupervisorWaker {
         &mut self,
         client: &HerdrClient,
         agents: &[DashboardAgent],
-        report: impl FnMut(&DashboardAgent) -> Option<Captured>,
+        report: impl FnMut(&DashboardAgent) -> Capture,
     ) -> Option<String> {
         if !self.leading() {
             return None;
@@ -1159,21 +1215,41 @@ fn captured_report(
     sessions: &mut SessionReader,
     client: &HerdrClient,
     agent: &DashboardAgent,
-) -> Option<Captured> {
-    let said = sessions.facts(&agent.info).report.map(|entry| Captured {
-        text: entry.text,
-        transcript: true,
-    });
-    said.or_else(|| {
-        let read = client
-            .read_agent(&agent.info.pane_id, ReadSource::RecentUnwrapped, Some(120))
-            .ok()?;
-        Some(Captured {
+) -> Capture {
+    if let Some(capture) = transcript_report(&sessions.facts(&agent.info)) {
+        return capture;
+    }
+    client
+        .read_agent(&agent.info.pane_id, ReadSource::RecentUnwrapped, Some(120))
+        .ok()
+        .map(|read| Captured {
             text: read.text.trim_end().to_string(),
             transcript: false,
         })
-    })
-    .filter(|report| !report.text.trim().is_empty())
+        .filter(|report| !report.text.trim().is_empty())
+        .into()
+}
+
+/// The report a transcript's `facts` give, if they give one: the newest
+/// reply, when it is the newest turn's. A transcript whose newest turn shows
+/// no reply yet is behind, and one whose turn ended without one has no
+/// report; neither falls back to the screen, which would show the turn
+/// before as readily.
+fn transcript_report(facts: &SessionFacts) -> Option<Capture> {
+    match facts.turn {
+        Some(TurnState::Open) => Some(Capture::Behind),
+        Some(TurnState::Silent) => Some(Capture::Found(None)),
+        Some(TurnState::Answered) | None => facts
+            .report
+            .as_ref()
+            .filter(|entry| !entry.text.trim().is_empty())
+            .map(|entry| {
+                Capture::Found(Some(Captured {
+                    text: entry.text.clone(),
+                    transcript: true,
+                }))
+            }),
+    }
 }
 
 /// Whether the user is writing in `supervisor`'s input box, so that nothing is
@@ -1681,6 +1757,200 @@ mod tests {
               not run report for it:\n> radar report\n[Corgi] End of w-radar's report."
             ]
         );
+    }
+
+    /// `w-radar`, a worker of `/repos/weather` on `harness` whose session
+    /// `s-radar` has its transcript at the returned path under `home`.
+    fn transcribed_worker(
+        home: &Path,
+        harness: &str,
+        state: AgentState,
+        change: u64,
+    ) -> (DashboardAgent, PathBuf) {
+        let mut agent = weather_worker("w-radar", state, change, true);
+        agent.info.agent = Some(harness.into());
+        agent.info.cwd = Some("/repos/weather".into());
+        agent.info.agent_session = Some(crate::model::AgentSession {
+            value: "s-radar".into(),
+            ..Default::default()
+        });
+        let dir = match harness {
+            "claude" => home.join(".claude/projects/-repos-weather"),
+            _ => home.join(".codex/sessions/2026/10/30"),
+        };
+        fs::create_dir_all(&dir).unwrap();
+        let file = match harness {
+            "claude" => "s-radar.jsonl",
+            _ => "rollout-2026-10-30T12-00-00-s-radar.jsonl",
+        };
+        (agent, dir.join(file))
+    }
+
+    /// A turn that answered "Waiting for discovery.", then a `[supervisor]`
+    /// prompt whose turn ran a command, as `harness` writes them.
+    fn earlier_turns(harness: &str) -> Vec<&'static str> {
+        match harness {
+            "claude" => vec![
+                r#"{"type":"user","message":{"content":"Run discovery."}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Waiting for discovery."}]}}"#,
+                r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#,
+                r#"{"type":"user","message":{"content":"[supervisor] Noted. Your plan?"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#,
+                r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"a b"}]}}"#,
+            ],
+            _ => vec![
+                r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"Run discovery."}}"#,
+                r#"{"type":"event_msg","payload":{"type":"agent_message","message":"Waiting for discovery."}}"#,
+                r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+                r#"{"type":"event_msg","payload":{"type":"user_message","message":"[supervisor] Noted. Your plan?"}}"#,
+                r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+                r#"{"type":"response_item","payload":{"type":"function_call_output","output":"a b"}}"#,
+            ],
+        }
+    }
+
+    /// The reply "My plan: disable it.", as `harness` writes it.
+    fn plan_reply(harness: &str) -> &'static str {
+        match harness {
+            "claude" => {
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"My plan: disable it."}]}}"#
+            }
+            _ => {
+                r#"{"type":"event_msg","payload":{"type":"agent_message","message":"My plan: disable it."}}"#
+            }
+        }
+    }
+
+    /// The record that ends a turn, as `harness` writes it.
+    fn turn_end(harness: &str) -> &'static str {
+        match harness {
+            "claude" => r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#,
+            _ => r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
+        }
+    }
+
+    fn write_lines(path: &Path, lines: &[&str]) {
+        fs::write(
+            path,
+            lines
+                .iter()
+                .map(|line| format!("{line}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+    }
+
+    /// One refresh whose reports `sessions` reads from the transcripts, as
+    /// the dashboard and the hooks read them, with `late` added to `path`
+    /// just after the first read, as a CLI writes its records a moment after
+    /// Herdr sees its turn end. Returns what was typed into the supervisor's
+    /// box and how often a report was read.
+    fn transcript_refresh(
+        waker: &mut SupervisorWaker,
+        agents: &[DashboardAgent],
+        sessions: &mut SessionReader,
+        path: &Path,
+        late: &[&str],
+    ) -> (Vec<String>, usize) {
+        let mut reads = 0;
+        let read = |agent: &DashboardAgent| {
+            reads += 1;
+            let capture =
+                transcript_report(&sessions.facts(&agent.info)).unwrap_or(Capture::Found(None));
+            if reads == 1 && !late.is_empty() {
+                let mut lines = fs::read_to_string(path).unwrap();
+                lines.extend(late.iter().map(|line| format!("{line}\n")));
+                fs::write(path, lines).unwrap();
+            }
+            capture
+        };
+        assert_eq!(waker.observe(agents, Path::new("/opt/corgi"), read), None);
+        let mut sent = Vec::new();
+        waker.deliver(
+            agents,
+            |_| false,
+            |supervisor, text| {
+                sent.push(format!("{supervisor}: {text}"));
+                true
+            },
+        );
+        (sent, reads)
+    }
+
+    const PLAN_QUOTED: &str = "supervisor-weather: [Corgi] w-radar is done. Its report follows, \
+        quoted, so you need not run report for it:\n> My plan: disable it.\n[Corgi] End of \
+        w-radar's report.";
+    const NOTHING_QUOTED: &str =
+        "supervisor-weather: [Corgi] w-radar is done. Run: /opt/corgi report w-radar";
+
+    /// Waits for the turn that ended to show in `harness`'s transcript: the
+    /// wake gets `turn`'s report when the transcript has gained `late` by the
+    /// next read. Returns what was typed into the supervisor's box and how
+    /// often the report was read.
+    fn wake_after(harness: &str, turn: &[&str], late: &[&str]) -> (Vec<String>, usize) {
+        let scratch = ScratchDir::new("waker-transcript");
+        let home = scratch.join("home");
+        let mut waker = SupervisorWaker::in_dir(&scratch.join("state"));
+        let mut sessions = SessionReader::in_home(&home);
+        let (working, path) = transcribed_worker(&home, harness, AgentState::Working, 1);
+        let (done, _) = transcribed_worker(&home, harness, AgentState::Done, 2);
+        let supervisor = weather_supervisor(AgentState::Idle);
+        write_lines(&path, turn);
+        transcript_refresh(
+            &mut waker,
+            &[supervisor.clone(), working],
+            &mut sessions,
+            &path,
+            &[],
+        );
+        transcript_refresh(&mut waker, &[supervisor, done], &mut sessions, &path, late)
+    }
+
+    #[test]
+    fn a_wake_quotes_the_reply_the_transcript_gains_after_the_stop_is_seen() {
+        for harness in ["claude", "codex"] {
+            let (sent, reads) = wake_after(
+                harness,
+                &earlier_turns(harness),
+                &[plan_reply(harness), turn_end(harness)],
+            );
+            // Not the turn before's "Waiting for discovery.".
+            assert_eq!(sent, [PLAN_QUOTED], "{harness}");
+            assert_eq!(reads, 2, "{harness}");
+        }
+    }
+
+    #[test]
+    fn a_transcript_still_behind_after_the_rereads_wakes_without_a_quote() {
+        for harness in ["claude", "codex"] {
+            let (sent, reads) = wake_after(harness, &earlier_turns(harness), &[]);
+            assert_eq!(sent, [NOTHING_QUOTED], "{harness}");
+            assert_eq!(reads, 1 + REPORT_REREADS.len(), "{harness}");
+        }
+    }
+
+    #[test]
+    fn a_turn_of_tool_calls_alone_quotes_no_older_reply_and_waits_for_nothing() {
+        for harness in ["claude", "codex"] {
+            let mut turn = earlier_turns(harness);
+            turn.push(turn_end(harness));
+            let (sent, reads) = wake_after(harness, &turn, &[]);
+            assert_eq!(sent, [NOTHING_QUOTED], "{harness}");
+            assert_eq!(reads, 1, "{harness}");
+        }
+    }
+
+    #[test]
+    fn a_transcript_that_already_holds_the_reply_is_quoted_at_the_first_read() {
+        for harness in ["claude", "codex"] {
+            let mut turn = earlier_turns(harness);
+            turn.push(plan_reply(harness));
+            let (sent, reads) = wake_after(harness, &turn, &[]);
+            assert_eq!(sent, [PLAN_QUOTED], "{harness}");
+            assert_eq!(reads, 1, "{harness}");
+        }
     }
 
     #[test]
@@ -2497,9 +2767,9 @@ mod tests {
         waker.recovery_held.clear();
         assert!(
             waker
-                .observe(&agents, Path::new("/usr/bin/true"), |_| panic!(
-                    "old stop replayed"
-                ))
+                .observe(&agents, Path::new("/usr/bin/true"), |_| -> Capture {
+                    panic!("old stop replayed")
+                })
                 .is_none()
         );
         assert!(

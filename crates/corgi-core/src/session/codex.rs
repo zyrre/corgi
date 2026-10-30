@@ -9,7 +9,7 @@ use super::{
     SessionFacts, TAIL_STEPS, TASK_HEAD_BYTES, context_percent,
     tail::{Fold, Head, Tail},
     text::{
-        Conversation, Event, assistant_kind, field, is_spoken, record_effort, shell_command,
+        Conversation, Event, Mark, assistant_kind, field, is_spoken, record_effort, shell_command,
         spoken_text, task_prompt, tool_call,
     },
 };
@@ -128,6 +128,7 @@ impl CodexScan {
             message: self.conversation.message(),
             tool: self.conversation.tool(),
             report: self.conversation.report(),
+            turn: self.conversation.turn(),
             last_activity: self.written_at,
         }
     }
@@ -213,7 +214,8 @@ pub fn codex_task(record: &Value) -> Option<String> {
 /// thinking, and `function_call`, `local_shell_call`, or `custom_tool_call`
 /// items for tools. The `event_msg` stream repeats some of these as they
 /// happen. The row reads it too, so a command shows while it still runs; the
-/// transcript leaves it out, where it would double every entry.
+/// transcript leaves it out, where it would double every entry. It also marks
+/// where each turn starts and ends, which neither view shows.
 pub fn codex_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
     let payload = &record["payload"];
     match (record["type"].as_str(), payload["type"].as_str()) {
@@ -293,6 +295,13 @@ pub fn codex_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
                 emit(Event::said(assistant_kind(text), text).row_only());
             }
         }
+        (Some("event_msg"), Some("task_started" | "turn_started")) => {
+            emit(Event::marks(Mark::Start));
+        }
+        (
+            Some("event_msg"),
+            Some("task_complete" | "turn_complete" | "task_aborted" | "turn_aborted"),
+        ) => emit(Event::marks(Mark::End)),
         (Some("event_msg"), Some("agent_reasoning")) => {
             if let Some(text) = payload["text"].as_str() {
                 emit(Event::said(ActivityKind::Thinking, text).row_only());

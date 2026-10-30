@@ -1155,3 +1155,176 @@ fn an_unidentified_claude_pane_borrows_no_transcript_from_a_shared_directory() {
     age_lookups(&mut reader, MISS_RETRY);
     assert_eq!(shown(&mut reader, &unknown), ["Start over"]);
 }
+
+/// The newest turn's state in `facts`, and the report they give.
+fn turn_of(facts: SessionFacts) -> (Option<TurnState>, Option<String>) {
+    (facts.turn, facts.report.map(|report| report.text))
+}
+
+#[test]
+fn a_claude_turn_whose_reply_is_not_written_yet_is_open_until_it_is() {
+    let directory = TempDir::new("claude-turn-open");
+    let path = directory.join("session.jsonl");
+    write(
+        &path,
+        &[
+            r#"{"type":"user","message":{"content":"Wait for discovery."}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Waiting for discovery to write the list."}]}}"#,
+            r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#,
+            r#"{"type":"user","message":{"content":"[supervisor] Noted. What is your plan?"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Plan it."}]}}"#,
+        ],
+    );
+    let mut file = ClaudeFile::default();
+    // The prompt and the thinking are written; the reply is not: the newest
+    // reply is the turn before's.
+    assert_eq!(
+        turn_of(file.facts(&path, None)),
+        (
+            Some(TurnState::Open),
+            Some("Waiting for discovery to write the list.".into())
+        )
+    );
+    append(
+        &path,
+        concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Understood. My plan: disable it."}]}}"#,
+            "\n",
+        ),
+    );
+    assert_eq!(
+        turn_of(file.facts(&path, None)),
+        (
+            Some(TurnState::Answered),
+            Some("Understood. My plan: disable it.".into())
+        )
+    );
+}
+
+#[test]
+fn a_claude_turn_of_tool_calls_alone_ends_silent_and_its_results_start_nothing() {
+    let directory = TempDir::new("claude-turn-silent");
+    let path = directory.join("session.jsonl");
+    let earlier = [
+        r#"{"type":"user","message":{"content":"Say hi."}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hi."}]}}"#,
+        r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#,
+        r#"{"type":"user","message":{"content":"Touch the file."}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Touching it."}]}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"touch f"}}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"done"}]}}"#,
+    ];
+    write(&path, &earlier);
+    // A reply before the tool call is not the turn's last word.
+    assert_eq!(claude_facts(&path, None).turn, Some(TurnState::Open));
+    write(
+        &path,
+        &[
+            &earlier[..],
+            &[r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#],
+        ]
+        .concat(),
+    );
+    assert_eq!(claude_facts(&path, None).turn, Some(TurnState::Silent));
+    // A reply after the tool result answers the turn, ended or not.
+    write(
+        &path,
+        &[
+            &earlier[..],
+            &[r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Touched."}]}}"#],
+        ]
+        .concat(),
+    );
+    assert_eq!(
+        turn_of(claude_facts(&path, None)),
+        (Some(TurnState::Answered), Some("Touched.".into()))
+    );
+}
+
+#[test]
+fn a_claude_turn_starts_with_any_user_text_even_one_no_view_shows() {
+    let directory = TempDir::new("claude-turn-starts");
+    let path = directory.join("session.jsonl");
+    let answered = [
+        r#"{"type":"user","message":{"content":"Run the tests."}}"#,
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"They pass."}]}}"#,
+        r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#,
+    ];
+    for start in [
+        // A background task's notification.
+        r#"{"type":"user","message":{"content":"<task-notification>\n<task-id>b7</task-id>\n</task-notification>"}}"#,
+        // Another session's message, which Claude Code records as meta.
+        r#"{"type":"user","isMeta":true,"message":{"content":"Another Claude session sent a message: hi"}}"#,
+        // A pasted brief.
+        r#"{"type":"user","message":{"content":[{"type":"text","text":"<pasted_content id=\"a1\">\nThe brief\n</pasted_content>"}]}}"#,
+    ] {
+        write(&path, &[&answered[..], &[start]].concat());
+        assert_eq!(
+            turn_of(claude_facts(&path, None)),
+            (Some(TurnState::Open), Some("They pass.".into())),
+            "{start}"
+        );
+    }
+    // A subagent's records belong to no turn of the session's.
+    write(
+        &path,
+        &[
+            &answered[..],
+            &[r#"{"type":"user","isSidechain":true,"message":{"content":"Search the code."}}"#],
+        ]
+        .concat(),
+    );
+    assert_eq!(claude_facts(&path, None).turn, Some(TurnState::Answered));
+}
+
+/// A Codex rollout of `records`, each a `type` and a `payload`.
+fn codex_rollout_of(path: &Path, records: &[&str]) {
+    let lines: Vec<String> = records
+        .iter()
+        .map(|record| format!(r#"{{"timestamp":"2026-10-30T12:00:00Z",{record}}}"#))
+        .collect();
+    write(path, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_codex_turn_is_open_until_its_reply_is_written_and_silent_when_it_ends_without_one() {
+    let directory = TempDir::new("codex-turn");
+    let path = directory.join("rollout.jsonl");
+    let earlier = [
+        r#""type":"event_msg","payload":{"type":"task_started"}"#,
+        r#""type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say hi."}]}"#,
+        r#""type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi."}]}"#,
+        r#""type":"event_msg","payload":{"type":"agent_message","message":"Hi."}"#,
+        r#""type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Hi."}"#,
+        r#""type":"event_msg","payload":{"type":"task_started"}"#,
+        r#""type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"[supervisor] List the files."}]}"#,
+        r#""type":"event_msg","payload":{"type":"user_message","message":"[supervisor] List the files."}"#,
+        r#""type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}"}"#,
+        r#""type":"response_item","payload":{"type":"function_call_output","output":"a b"}"#,
+    ];
+    codex_rollout_of(&path, &earlier);
+    assert_eq!(
+        turn_of(codex_facts(&path)),
+        (Some(TurnState::Open), Some("Hi.".into()))
+    );
+    let mut ended = earlier.to_vec();
+    ended
+        .push(r#""type":"event_msg","payload":{"type":"task_complete","last_agent_message":null}"#);
+    codex_rollout_of(&path, &ended);
+    assert_eq!(codex_facts(&path).turn, Some(TurnState::Silent));
+    let mut answered = earlier.to_vec();
+    answered.extend([
+        r#""type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a and b."}]}"#,
+        r#""type":"event_msg","payload":{"type":"agent_message","message":"a and b."}"#,
+    ]);
+    codex_rollout_of(&path, &answered);
+    assert_eq!(
+        turn_of(codex_facts(&path)),
+        (Some(TurnState::Answered), Some("a and b.".into()))
+    );
+    // A turn that starts with no prompt the views show is a turn all the same.
+    let mut started = answered.clone();
+    started.push(r#""type":"event_msg","payload":{"type":"turn_started"}"#);
+    codex_rollout_of(&path, &started);
+    assert_eq!(codex_facts(&path).turn, Some(TurnState::Open));
+}

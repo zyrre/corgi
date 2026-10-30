@@ -123,6 +123,30 @@ pub struct SessionFacts {
     /// The same newest thing said as `message`, but whole rather than cut to
     /// a dashboard row: the source of `corgi report`.
     pub report: Option<Activity>,
+    /// How the newest turn stands in the file, which says whether `report`
+    /// is that turn's: unknown when the file shows no prompt, reply or tool
+    /// call.
+    pub turn: Option<TurnState>,
+}
+
+/// How the newest turn of a session stands in its file.
+///
+/// A turn starts with a user record: a prompt, a brief, a `[supervisor]` or
+/// `[Corgi]` line typed in, or something the CLI starts one with itself (a
+/// background task's notification, another session's message); a tool
+/// result does not. The CLIs write their files a little after the screen
+/// shows the turn over, so a reader can find the turn's prompt or its last
+/// tool call there and not yet its reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnState {
+    /// A reply is the newest thing since the turn started and since its
+    /// last tool call: the turn's report.
+    Answered,
+    /// The file marks the turn ended with no reply after its start or its
+    /// last tool call: the turn said nothing to report.
+    Silent,
+    /// Neither yet: the turn's reply may still be on its way to the file.
+    Open,
 }
 
 /// Resolves the session file of every agent pane and follows what it says.
@@ -189,6 +213,16 @@ impl SessionReader {
         let mut reader = Self::default();
         reader.retain(live);
         reader
+    }
+
+    /// A reader that looks for session files under `home` in place of
+    /// `$HOME`, which holds no Claude Code settings.
+    #[cfg(test)]
+    pub(crate) fn in_home(home: &Path) -> Self {
+        Self {
+            home: Some(home.to_path_buf()),
+            ..Self::default()
+        }
     }
 
     /// Facts for one agent, or an empty set when its CLI writes no session
