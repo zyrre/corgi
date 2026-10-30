@@ -19,6 +19,7 @@ use crate::{
         CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, HEADER_HEIGHT, HEADER_PADDING,
         PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
+    question,
     store::Connection,
     terminal::keys,
     theme,
@@ -1378,7 +1379,16 @@ impl CorgiWindow {
                 Some(if question.text.is_empty() {
                     div().child(question.title.clone()).into_any_element()
                 } else {
-                    self.question_text(question.text.clone(), window)
+                    // What the dialog's top margin, title, answer field
+                    // and hints take.
+                    let room = f32::from(window.viewport_size().height) - (DIALOG_TOP + 190.0);
+                    // MOCKUP: the styled looks take what the window has.
+                    let room = if question::look().is_some() {
+                        room.max(80.0)
+                    } else {
+                        room.clamp(80.0, 420.0)
+                    };
+                    self.question_text(&question.text, room, cx)
                 }),
                 *sending,
                 error.as_deref(),
@@ -1470,26 +1480,6 @@ impl CorgiWindow {
                             .child(label.to_string()),
                     )
             }))
-    }
-
-    /// A question as the supervisor asked it, its lines kept, scrolling
-    /// when it is taller than the window leaves room for.
-    fn question_text(&self, text: String, window: &Window) -> AnyElement {
-        // What the dialog's top margin, title, answer field and hints take.
-        let around = DIALOG_TOP + 190.0;
-        let room = (f32::from(window.viewport_size().height) - around).clamp(80.0, 420.0);
-        div()
-            .id("question-text")
-            .max_h(px(room))
-            .overflow_y_scroll()
-            .track_scroll(&self.question_scroll)
-            .px_2()
-            .py_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(self.colors.roles.rule)
-            .child(text)
-            .into_any_element()
     }
 
     fn text_dialog(
