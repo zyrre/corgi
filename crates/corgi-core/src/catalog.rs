@@ -14,6 +14,7 @@ use crate::{
     defaults::{HarnessConfig, HarnessDefaults},
     harness::Harness,
     job::Job,
+    last_harness,
 };
 
 /// Shown in the model field while no model is selected, meaning the harness
@@ -145,17 +146,31 @@ impl ModelCatalogs {
     }
 }
 
-/// The harness preselected in the new-agent form: `CORGI_DEFAULT_AGENT` if
-/// set, otherwise the first installed harness in the form's order, otherwise
+/// The harness preselected in the new-agent form: the one the last spawn
+/// used, if it is still installed; otherwise `CORGI_DEFAULT_AGENT` if set,
+/// otherwise the first installed harness in the form's order, otherwise
 /// `codex`.
 pub fn default_harness() -> Harness {
-    default_harness_from(env::var("CORGI_DEFAULT_AGENT").ok(), &Harness::installed())
+    default_harness_from(
+        last_harness::state_file().and_then(|path| last_harness::read(&path)),
+        env::var("CORGI_DEFAULT_AGENT").ok(),
+        &Harness::installed(),
+    )
 }
 
-fn default_harness_from(override_kind: Option<String>, installed: &[Harness]) -> Harness {
-    override_kind
+fn default_harness_from(
+    last_used: Option<String>,
+    override_kind: Option<String>,
+    installed: &[Harness],
+) -> Harness {
+    last_used
         .map(|kind| Harness::from_typed(&kind))
-        .filter(|harness| !harness.kind().is_empty())
+        .filter(|harness| installed.contains(harness))
+        .or_else(|| {
+            override_kind
+                .map(|kind| Harness::from_typed(&kind))
+                .filter(|harness| !harness.kind().is_empty())
+        })
         .or_else(|| {
             Harness::KNOWN
                 .iter()
@@ -295,25 +310,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_harness_prefers_override_then_installed_cli() {
+    fn default_harness_prefers_last_used_then_override_then_installed_cli() {
+        let both = [Harness::Codex, Harness::Claude];
+        // The last spawn wins over the override and the installed order.
         assert_eq!(
-            default_harness_from(Some(" Claude ".into()), &[Harness::Codex]),
+            default_harness_from(Some("claude".into()), Some("codex".into()), &both),
             Harness::Claude
         );
         assert_eq!(
-            default_harness_from(Some(String::new()), &[Harness::Claude]),
-            Harness::Claude
+            default_harness_from(Some(" Codex ".into()), Some("claude".into()), &both),
+            Harness::Codex
         );
-        // The first installed harness in the form's order, whichever it is.
+        // A last-used harness that is gone falls back to the override, then
+        // to the installed order.
         assert_eq!(
-            default_harness_from(None, &[Harness::OpenCode, Harness::Codex]),
+            default_harness_from(
+                Some("claude".into()),
+                Some("opencode".into()),
+                &[Harness::Codex]
+            ),
+            Harness::OpenCode
+        );
+        assert_eq!(
+            default_harness_from(Some("claude".into()), None, &[Harness::OpenCode]),
+            Harness::OpenCode
+        );
+        assert_eq!(
+            default_harness_from(Some("aider".into()), None, &both),
             Harness::Codex
         );
         assert_eq!(
-            default_harness_from(None, &[Harness::OpenCode]),
+            default_harness_from(Some("claude".into()), None, &[]),
+            Harness::Codex
+        );
+        // With nothing recorded: the override, then the first installed.
+        assert_eq!(
+            default_harness_from(None, Some(" Claude ".into()), &[Harness::Codex]),
+            Harness::Claude
+        );
+        assert_eq!(
+            default_harness_from(None, Some(String::new()), &[Harness::Claude]),
+            Harness::Claude
+        );
+        assert_eq!(
+            default_harness_from(None, None, &[Harness::OpenCode, Harness::Codex]),
+            Harness::Codex
+        );
+        assert_eq!(
+            default_harness_from(None, None, &[Harness::OpenCode]),
             Harness::OpenCode
         );
-        assert_eq!(default_harness_from(None, &[]), Harness::Codex);
+        assert_eq!(default_harness_from(None, None, &[]), Harness::Codex);
     }
 
     #[test]

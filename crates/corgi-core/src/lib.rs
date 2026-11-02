@@ -21,6 +21,7 @@ pub mod hook;
 pub mod inbox;
 mod inbox_privacy;
 pub mod job;
+pub mod last_harness;
 pub mod launch;
 pub mod markers;
 pub mod merge;

@@ -388,7 +388,9 @@ The form preset as the dashboard's `n` presets it: the project of `pane_id`
 (its repository's primary checkout, so the new agent gets a sibling
 worktree; never a scratch agent's home directory), else `project`, else the
 project used most recently, else the first known one. `harness` defaults to
-`CORGI_DEFAULT_AGENT`, else the first installed harness; send the form's
+the harness of the last spawn from any path (the form, `corgi spawn`, a
+supervisor start), if it is still installed, else `CORGI_DEFAULT_AGENT`, else
+the first installed harness; send the form's
 `harness` and `model` again to get the lists for them.
 
 ```json
