@@ -1110,15 +1110,16 @@ impl CorgiWindow {
             return;
         }
         let key = keystroke.key.as_str();
+        if key == "escape" {
+            cx.stop_propagation();
+            self.escape_dialog(window, cx);
+            return;
+        }
         let handled = match &mut self.dialogs.open {
             None => false,
             Some(Dialog::Prompt { .. } | Dialog::Answer { .. }) => match key {
                 "enter" => {
                     self.submit_text(cx);
-                    true
-                }
-                "escape" => {
-                    self.dialogs.open = None;
                     true
                 }
                 _ => false,
@@ -1130,37 +1131,12 @@ impl CorgiWindow {
                     }
                     true
                 }
-                "escape" => {
-                    // A running merge goes on; its outcome is said when it ends.
-                    let action = merge
-                        .actions()
-                        .iter()
-                        .rev()
-                        .find(|(_, action)| {
-                            matches!(action, MergeAction::Done | MergeAction::Dismiss)
-                        })
-                        .map(|(_, action)| *action);
-                    match action {
-                        Some(MergeAction::Dismiss) => self.merge_action(MergeAction::Dismiss, cx),
-                        _ => self.dialogs.open = None,
-                    }
-                    true
-                }
                 _ => false,
             },
-            Some(Dialog::NewAgentLoading) => {
-                if key == "escape" {
-                    self.dialogs.open = None;
-                }
-                true
-            }
+            Some(Dialog::NewAgentLoading) => true,
             Some(Dialog::Close(_)) => match key {
                 "enter" => {
                     self.confirm_close(cx);
-                    true
-                }
-                "escape" => {
-                    self.dialogs.open = None;
                     true
                 }
                 _ => false,
@@ -1202,6 +1178,15 @@ impl CorgiWindow {
             self.focus_dialog_now(window, cx);
             cx.notify();
         }
+    }
+
+    /// Esc in a dialog, or a click outside it: see `Dialogs::escape`.
+    pub fn escape_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(action) = self.dialogs.escape() {
+            self.merge_action(action, cx);
+        }
+        self.focus_dialog_now(window, cx);
+        cx.notify();
     }
 
     /// Puts the keyboard where the open dialog wants it, at the next frame.

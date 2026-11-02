@@ -8,6 +8,7 @@ use corgi_core::{
     time::LocalTime,
     usage::UsageWindow,
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// A prompt cache with less than this left is worth prompting soon.
 const CACHE_WARN_SECONDS: u64 = 5 * 60;
@@ -224,44 +225,144 @@ pub fn herd_tone(agents: &[Agent]) -> Tone {
     }
 }
 
-/// One plan-usage card as lines: the plan and the reading's age, then each
-/// window's use and when it resets.
-pub fn usage_lines(card: &UsageCard, now: u64) -> Vec<Vec<Piece>> {
-    let heading = match &card.usage {
-        Some(usage) if !usage.plan_type.is_empty() => {
-            Piece::new(&usage.plan_type, Tone::Text).bold()
+/// One line of a plan-usage card: its pieces, flush left unless `align_right`
+/// says the whole line (a reset countdown) sits flush right, as the
+/// dashboard's `Alignment::Right` does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageLine {
+    pub pieces: Vec<Piece>,
+    pub align_right: bool,
+}
+
+impl UsageLine {
+    fn left(pieces: Vec<Piece>) -> Self {
+        Self {
+            pieces,
+            align_right: false,
         }
-        Some(_) => Piece::new("—", Tone::Muted),
-        None if card.error.is_some() => Piece::new("unavailable", Tone::Muted),
-        None => Piece::new("loading…", Tone::Muted),
-    };
-    let mut first = vec![heading];
-    if let (Some(_), Some(fetched_at)) = (&card.usage, card.fetched_at) {
-        first.push(Piece::new(
-            format!("{} ago", reading_age(now.saturating_sub(fetched_at))),
-            Tone::Muted,
-        ));
     }
-    let window = |label: &str, window: Option<&UsageWindow>| -> Vec<Piece> {
-        match window {
-            None => vec![Piece::new(label, Tone::Muted), Piece::new("—", Tone::Muted)],
-            Some(window) => vec![
-                Piece::new(label, Tone::Muted),
-                Piece::new(
-                    format!("{}%", window.used_percent),
-                    usage_tone(window.used_percent),
-                )
-                .bold(),
-                Piece::new(reset_countdown(window.resets_at, now), Tone::Accent),
-            ],
+
+    fn right(pieces: Vec<Piece>) -> Self {
+        Self {
+            pieces,
+            align_right: true,
         }
-    };
+    }
+}
+
+/// The dashboard's usage card content, in character cells: `Weekly 99%`,
+/// mirrored from `USAGE_CONTENT_WIDTH` in `src/ui/header.rs`. Keep both in
+/// step if the card's layout changes.
+pub(crate) const USAGE_CONTENT_WIDTH: usize = 10;
+
+/// One plan-usage card as the dashboard's five lines: the plan and the
+/// reading's age; each window's use and, on its own line, when it resets.
+pub fn usage_lines(card: &UsageCard, now: u64) -> Vec<UsageLine> {
     let usage = card.usage.as_ref();
+    let five_hour = usage.and_then(|usage| usage.five_hour.as_ref());
+    let week = usage.and_then(|usage| usage.week.as_ref());
     vec![
-        first,
-        window("5h", usage.and_then(|usage| usage.five_hour.as_ref())),
-        window("Weekly", usage.and_then(|usage| usage.week.as_ref())),
+        usage_heading_line(card, now),
+        usage_percent_line("5h", five_hour),
+        usage_reset_line(five_hour, now),
+        usage_percent_line("Weekly", week),
+        usage_reset_line(week, now),
     ]
+}
+
+/// The card is titled with the provider, so its first row carries only the
+/// subscription, or why there is none to show, and how old the reading is,
+/// right-aligned and dim. The row never outgrows the card: the age drops its
+/// "ago" first, then the subscription is clipped.
+fn usage_heading_line(card: &UsageCard, now: u64) -> UsageLine {
+    let (text, tone, bold) = match &card.usage {
+        Some(usage) if !usage.plan_type.is_empty() => (usage.plan_type.clone(), Tone::Text, true),
+        Some(_) => ("—".to_string(), Tone::Muted, false),
+        None if card.error.is_some() => ("unavailable".to_string(), Tone::Muted, false),
+        None => ("loading…".to_string(), Tone::Muted, false),
+    };
+    let mut heading = Piece::new(text, tone);
+    if bold {
+        heading = heading.bold();
+    }
+    let age = card
+        .usage
+        .as_ref()
+        .and(card.fetched_at)
+        .map(|fetched_at| reading_age(now.saturating_sub(fetched_at)));
+    let Some(age) = age else {
+        return UsageLine::left(vec![heading]);
+    };
+    let width = USAGE_CONTENT_WIDTH;
+    let long = format!("{age} ago");
+    let age = if heading.text.width() + 1 + long.width() <= width {
+        long
+    } else {
+        age
+    };
+    heading.text = clip(&heading.text, width.saturating_sub(1 + age.width()));
+    let padding = width.saturating_sub(heading.text.width() + age.width());
+    heading.text.push_str(&" ".repeat(padding));
+    UsageLine::left(vec![heading, Piece::new(age, Tone::Muted)])
+}
+
+/// Clips `text` to `width` columns, marking a clipped tail with an ellipsis.
+fn clip(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    format!("{}…", leading_columns(text, width - 1))
+}
+
+/// The longest start of `text` that fits in `width` columns.
+fn leading_columns(text: &str, width: usize) -> &str {
+    let mut used = 0;
+    for (index, character) in text.char_indices() {
+        used += character.width().unwrap_or(0);
+        if used > width {
+            return &text[..index];
+        }
+    }
+    text
+}
+
+fn usage_percent_line(label: &'static str, window: Option<&UsageWindow>) -> UsageLine {
+    let (percent, tone, bold) = window.map_or_else(
+        || ("—".to_string(), Tone::Muted, false),
+        |window| {
+            (
+                format!("{}%", window.used_percent),
+                usage_tone(window.used_percent),
+                true,
+            )
+        },
+    );
+    // Keep an exhausted window accurate without clipping the percent sign.
+    let label = if label == "Weekly" && percent == "100%" {
+        "Week"
+    } else {
+        label
+    };
+    let padding = USAGE_CONTENT_WIDTH.saturating_sub(label.width() + percent.width());
+    let mut percent_piece = Piece::new(percent, tone);
+    if bold {
+        percent_piece = percent_piece.bold();
+    }
+    UsageLine::left(vec![
+        Piece::new(format!("{label}{}", " ".repeat(padding)), Tone::Muted),
+        percent_piece,
+    ])
+}
+
+fn usage_reset_line(window: Option<&UsageWindow>, now: u64) -> UsageLine {
+    let countdown = window.map_or_else(
+        || "—".to_string(),
+        |window| reset_countdown(window.resets_at, now),
+    );
+    UsageLine::right(vec![Piece::new(countdown, Tone::Accent)])
 }
 
 fn usage_tone(used_percent: u8) -> Tone {
@@ -437,17 +538,68 @@ mod tests {
             error: None,
         };
         let lines = usage_lines(&card, 10_000);
-        assert_eq!(texts(&lines[0]), ["max", "3m ago"]);
-        assert_eq!(texts(&lines[1]), ["5h", "70%", "2h 05m"]);
-        assert_eq!(lines[1][1].tone, Tone::Warning);
-        assert_eq!(texts(&lines[2]), ["Weekly", "—"]);
+        assert_eq!(
+            lines.len(),
+            5,
+            "heading, 5h use, 5h reset, weekly use, weekly reset"
+        );
+        assert_eq!(texts(&lines[0].pieces), ["max ", "3m ago"]);
+        assert!(lines[0].pieces[0].bold, "the plan type stands out");
+        assert!(!lines[0].align_right);
+        assert_eq!(texts(&lines[1].pieces), ["5h     ", "70%"]);
+        assert_eq!(lines[1].pieces[1].tone, Tone::Warning);
+        assert_eq!(texts(&lines[2].pieces), ["2h 05m"]);
+        assert!(
+            lines[2].align_right,
+            "a reset sits flush right, like the dashboard's"
+        );
+        assert_eq!(texts(&lines[3].pieces), ["Weekly   ", "—"]);
+        assert_eq!(texts(&lines[4].pieces), ["—"]);
+        assert!(lines[4].align_right);
+        for line in [&lines[1], &lines[3]] {
+            let width: usize = line.pieces.iter().map(|piece| piece.text.width()).sum();
+            assert_eq!(width, USAGE_CONTENT_WIDTH);
+        }
         let failed = UsageCard {
             usage: None,
             error: Some("no token".into()),
             ..card
         };
-        assert_eq!(texts(&usage_lines(&failed, 0)[0]), ["unavailable"]);
+        assert_eq!(texts(&usage_lines(&failed, 0)[0].pieces), ["unavailable"]);
         assert_eq!(reset_countdown(0, 5), "—");
         assert_eq!(reset_countdown(5 + 3 * 86_400 + 4 * 3600, 5), "3d 04h");
+    }
+
+    #[test]
+    fn an_exhausted_weekly_window_shortens_its_label_to_fit_the_percent() {
+        let full = UsageWindow {
+            used_percent: 100,
+            resets_at: 10_000,
+        };
+        let line = usage_percent_line("Weekly", Some(&full));
+        assert_eq!(texts(&line.pieces), ["Week  ", "100%"]);
+        let width: usize = line.pieces.iter().map(|piece| piece.text.width()).sum();
+        assert_eq!(width, USAGE_CONTENT_WIDTH);
+    }
+
+    #[test]
+    fn a_long_plan_name_clips_before_its_reading_age() {
+        let card = UsageCard {
+            provider: Provider::Claude,
+            title: "CLAUDE".into(),
+            usage: Some(PlanUsage {
+                provider: Provider::Claude,
+                plan_type: "A very long subscription name".into(),
+                five_hour: None,
+                week: None,
+                banked_resets: None,
+            }),
+            fetched_at: Some(10_000 - 30),
+            error: None,
+        };
+        let line = usage_heading_line(&card, 10_000);
+        let width: usize = line.pieces.iter().map(|piece| piece.text.width()).sum();
+        assert_eq!(width, USAGE_CONTENT_WIDTH);
+        assert_eq!(texts(&line.pieces).last(), Some(&"<1m"));
     }
 }

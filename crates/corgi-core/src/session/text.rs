@@ -7,7 +7,7 @@ use std::{borrow::Cow, collections::VecDeque, path::Path, sync::LazyLock};
 use regex::Regex;
 use serde_json::Value;
 
-use super::{TRANSCRIPT_ENTRIES, tail::Fold};
+use super::{TRANSCRIPT_ENTRIES, TurnState, tail::Fold};
 use crate::{
     activity::{MAX_MESSAGE_CHARS, MAX_TOOL_CHARS, MAX_TRANSCRIPT_CHARS, describe, describe_block},
     model::{Activity, ActivityKind},
@@ -33,6 +33,16 @@ pub struct Event<'a> {
     in_row: bool,
     /// Whether the expanded transcript lists it.
     in_transcript: bool,
+    /// A turn's start or end the record marks without saying anything
+    /// either view shows.
+    mark: Option<Mark>,
+}
+
+/// A turn's start or end, as a record marks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    Start,
+    End,
 }
 
 impl<'a> Event<'a> {
@@ -43,6 +53,17 @@ impl<'a> Event<'a> {
             call: false,
             in_row: true,
             in_transcript: true,
+            mark: None,
+        }
+    }
+
+    /// A turn's start or end, which neither view shows.
+    pub fn marks(mark: Mark) -> Self {
+        Self {
+            mark: Some(mark),
+            in_row: false,
+            in_transcript: false,
+            ..Self::said(ActivityKind::Prompt, "")
         }
     }
 
@@ -81,13 +102,28 @@ pub struct Conversation {
     /// newest thing in the session, but a user prompt or thinking sent since
     /// replaces `said` without being a report.
     reply: Option<(ActivityKind, String)>,
+    /// How the newest turn stands, which says whether `reply` is its own.
+    turn: Turn,
 }
 
 impl Conversation {
     /// Takes in the next event of a record, which is newer than the last.
     pub fn see(&mut self, event: &Event) {
+        if let Some(mark) = event.mark {
+            self.turn.see(match mark {
+                Mark::Start => Step::Start,
+                Mark::End => Step::End,
+            });
+            return;
+        }
         if event.text.trim().is_empty() {
             return;
+        }
+        match event.kind {
+            _ if event.call => self.turn.see(Step::Call),
+            ActivityKind::Message | ActivityKind::Question => self.turn.see(Step::Reply),
+            ActivityKind::Prompt => self.turn.see(Step::Start),
+            _ => {}
         }
         if !event.call && matches!(event.kind, ActivityKind::Message | ActivityKind::Question) {
             self.reply
@@ -109,6 +145,7 @@ impl Conversation {
             said: self.said.or(older.said),
             called: self.called.or(older.called),
             reply: self.reply.or(older.reply),
+            turn: self.turn.or(older.turn),
         }
     }
 
@@ -133,6 +170,71 @@ impl Conversation {
     pub fn report(&self) -> Option<Activity> {
         let (kind, text) = self.reply.as_ref()?;
         Some(describe_block(*kind, text, usize::MAX))
+    }
+
+    /// How the newest turn stands: whether [`Self::report`] is its own.
+    pub fn turn(&self) -> Option<TurnState> {
+        self.turn.state()
+    }
+}
+
+/// One step of a turn, as far as its report goes: its start, a reply, a
+/// tool call, or its end. Thinking is none: it comes before a reply or a
+/// call that says more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Start,
+    Reply,
+    Call,
+    End,
+}
+
+/// The steps of some records of a conversation, folded like the rest of it,
+/// newest first.
+#[derive(Debug, Default, Clone, Copy)]
+struct Turn {
+    /// The newest start, reply or tool call.
+    last: Option<Step>,
+    /// Whether the records hold a turn's start: an end older than that is
+    /// another turn's.
+    started: bool,
+    /// Whether a turn ended after the newest start the records hold, or
+    /// anywhere in them when they hold none.
+    ended: bool,
+}
+
+impl Turn {
+    fn see(&mut self, step: Step) {
+        match step {
+            Step::End => self.ended = true,
+            Step::Start => {
+                *self = Self {
+                    last: Some(step),
+                    started: true,
+                    ended: false,
+                }
+            }
+            Step::Reply | Step::Call => self.last = Some(step),
+        }
+    }
+
+    fn or(self, older: Self) -> Self {
+        Self {
+            last: self.last.or(older.last),
+            started: self.started || older.started,
+            ended: self.ended || (!self.started && older.ended),
+        }
+    }
+
+    /// A reply that is the newest step stands for the turn, ended or not:
+    /// a turn ends on its reply, and waiting for the end to be written would
+    /// slow every report down.
+    fn state(&self) -> Option<TurnState> {
+        Some(match (self.last?, self.ended) {
+            (Step::Reply, _) => TurnState::Answered,
+            (_, true) => TurnState::Silent,
+            _ => TurnState::Open,
+        })
     }
 }
 
