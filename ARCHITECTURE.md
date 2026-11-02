@@ -658,7 +658,10 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   with its own filter so a project typed over SSH is not looked up on the
   wrong machine) points at the row a refused `spawn` names; the merge dialog
   shows the steps, the outcome and the follow-ups the outcome allows; the
-  close dialog asks again for a dirty worktree.
+  close dialog asks again for a dirty worktree. `Dialogs::escape` is what
+  Esc does to each, and a left click outside the dialog does the same: the
+  form's open list closes before the form, a form creating its agent stays,
+  and a merge stopped for the user is dismissed through `serve`.
 - `question.rs` draws a question's full text in the answer dialog: it splits
   the supervisor's form (`supervisor/ROLE.md`) into the heading and its
   `[blocks: …]` tag, the labelled parts and the lettered options, and
@@ -682,7 +685,11 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   elements do not block each other's mouse events, so a project frame's
   `on_aux_click` also gets the right clicks that land on its rows. A
   nested element's `on_click` that calls `cx.stop_propagation()` does stop
-  its parent's `on_click`, which the question card's × relies on.
+  its parent's `on_click`, which the question card's × relies on. A
+  child's mouse listeners run before its parent's: the dialog layer closes
+  the dialog on a left mouse down and stops it there, so nothing under the
+  layer hears it, and the dialog stops its own, so the layer never hears a
+  click inside it, after the dialog's buttons and field have.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still
