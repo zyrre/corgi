@@ -80,6 +80,10 @@ On macOS, copying a rebuilt binary over an existing file (say, a copy of
 exit 137, because the kernel caches the old file's code signature. `rm` the
 destination before copying.
 
+macOS has no `timeout` command, so a command wrapped in it (`timeout 600
+cargo build`) silently never runs; behind a `grep` filter even the
+`command not found` is lost.
+
 `corgi digest`'s lookups (`--search`, `--show`, `--ledger`, `--brief`,
 `--decision`) need Herdr only to find the project's state directory. Test
 them with a `ScratchDir` as the state directory through `digest_lookup` in
@@ -182,6 +186,11 @@ key dispatched inside that lease panics when its listener updates the view.
 A scripted click (`click:X,Y`, `right:X,Y`, `double:X,Y`) moves the mouse to
 the point before pressing: without the move, the elements under it are not
 hovered and the click reaches none of them.
+The step `scroll` draws a frame and logs the overview's scroll offset, the
+selected row and the focus view's agent: a click on a row must leave the
+offset alone, and a key scroll it only as far as the row's edge
+(`src/rows.rs`). A selection that scrolls moves the offset while the frame is
+prepainted, so read it with `scroll`, not straight after a `key`.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 
@@ -193,9 +202,18 @@ To try the terminal by hand, run a program in the agent pane that turns on
 bracketed paste and the kitty keyboard protocol, as Claude Code does, and
 prints the bytes each key arrives as: a real Claude Code reads its
 credentials from the Keychain on macOS, which these runs must not touch.
+A real Claude Code runs without credentials or the Keychain as
+`claude --bare` with a dummy `ANTHROPIC_API_KEY`, a private `HOME` and
+`CLAUDE_CONFIG_DIR`, resuming (`--resume`) a hand-written transcript: it
+needs no API then, but still downloads the public plugin marketplace on
+its first start. Exit it with Ctrl+C Ctrl+C: killed twice in fullscreen,
+it turns fullscreen off by itself (`"fullscreenAutoDisabled":{"strikes":2}`
+in its `.claude.json`), and wheel tests then silently scroll 0 lines until
+that key is deleted.
 The script steps `drag`, `wheel`, `link`, `ime`, `hide`, `show`,
 `deactivate` and `activate` drive the terminal (a scripted window is never
-really active, so `activate` stands in for the user coming back to it); `CORGI_GUI_LATENCY=1` logs key-to-surface and key-to-frame times,
+really active, so `activate` stands in for the user coming back to it);
+`CORGI_GUI_LATENCY=1` logs key-to-surface and key-to-frame times,
 `CORGI_GUI_DEBUG_ENDPOINT=1` each snapshot, request and answer, and
 `CORGI_GUI_URL_LOG=<file>` writes a clicked link there instead of opening a
 browser. Copy and paste use the real clipboard: keep the user's text and put
@@ -212,7 +230,9 @@ For a screenshot that needs no real flow, `--corgi` can name a small
 program instead: corgi-gui runs it with `serve …`, and any program that
 writes a `Hello` and a `Snapshot` (built with `corgi_core::protocol`, one
 JSON line each) and answers each `Request` line on stdin draws the window
-with no Herdr at all, and can delay or refuse a reply to show a state.
+with no Herdr at all, and can delay or refuse a reply to show a state. A
+project with `card: false` draws its rows without the collapsed-by-default
+card around them, so a script's `key:j` reaches a row at once.
 To show a reconnect, kill that program alone with an anchored pattern
 (`pkill -f "^<path>/fake-serve"`): the window's own command line holds
 `--corgi <path>`, so an unanchored one kills the window too.

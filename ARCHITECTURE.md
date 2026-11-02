@@ -702,6 +702,13 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   header's, toolbar's or status bar's is measured (as the overview's
   column is, for the transcript's split) rather than estimated, since they
   grow with the text and the header wraps.
+- A click on a row never scrolls the overview, so a double click lands on
+  the row the first click selected; other selections scroll just far
+  enough to show their row. The overview's children are the project cards,
+  so `ScrollHandle::scroll_to_item` can target only a whole card. Row
+  positions come from `rows.rs`: each card records its rows' bounds with
+  `on_children_prepainted` (which exists only on `Div` and must be called
+  before `.id()`), and a reveal lands on the next prepaint.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still
