@@ -173,6 +173,14 @@ AeroSpace tiles the window to fill that workspace whatever size
 `gui-layout.json` kept, so for a shot at a given width, float it
 (`aerospace layout --window-id <id> floating`) and size it with a
 `size:640x760` step; 640 wide is the window's minimum.
+A capture that only needs made-up rows (no real agent, no Herdr) can skip
+the throwaway Herdr above entirely: `--corgi` takes any program, so point
+it at a small Rust binary (`corgi_core::protocol::{Hello, Snapshot,
+ServerMessage}`, serialized with `serde_json` one per line) that prints a
+hello and a snapshot built by hand and then parks; `corgi-gui` reads it
+like a real `corgi serve`. A project with `card: false` draws its rows
+without the collapsed-by-default card around them, so a script's `key:j`
+reaches a row at once.
 Script steps run through the untyped window handle (`cx.update_window`):
 updating the typed `WindowHandle<CorgiWindow>` leases the root view, and a
 key dispatched inside that lease panics when its listener updates the view.

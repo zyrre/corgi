@@ -1159,6 +1159,50 @@ impl CorgiWindow {
             }
         }
 
+        let ready = self.store.ready_to_merge(project);
+        if !ready.is_empty() {
+            panel = panel.child(section_title(
+                "READY TO MERGE".into(),
+                self.tone(Tone::Merge, None),
+            ));
+            for agent in ready {
+                let (badge, tone) = format::badge(agent);
+                let badge_color = self.tone(tone, None);
+                let pane_id = agent.pane_id.clone();
+                panel = panel.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "ready-to-merge-{}",
+                            agent.pane_id
+                        )))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|style| style.bg(colors.roles.focus_bar))
+                        .child(
+                            div()
+                                .px_1()
+                                .bg(badge_color)
+                                .text_color(colors.badge_text(badge_color))
+                                .font_weight(FontWeight::BOLD)
+                                .child(badge),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(agent.task.clone()),
+                        )
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.select(pane_id.clone(), cx);
+                        })),
+                );
+            }
+        }
+
         // The numbered questions, each answered in place.
         panel = panel.child(section_title(
             format!("OPEN QUESTIONS ({})", project.questions.len()),
