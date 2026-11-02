@@ -639,17 +639,19 @@ when stdin closes and no command is still running.
 into `corgi_core::protocol`'s types and keeps its copy of the state with
 `State::apply`. Its layout is fixed, plain GPUI with no dock: the header
 (the brand's pixel corgi, the HERD counts, a card per plan), a toolbar, the
-overview of project cards and rows, the selected agent's session under it,
-the side panel with the selected project's supervisor, its workers ready
+overview of project cards and rows, the selected row expandable into its
+session, the side panel with the selected project's supervisor, its workers ready
 to merge, its numbered questions, its open merge requests (a click opens
 one in the browser) and its blocked workers, and a status bar. It opens with every
-project card collapsed and no row selected, the session pane empty, until
-a key or a click picks a row; from then on, a selected row that goes gives
+project card collapsed and no row selected, until a key or a click picks a
+row; from then on, a selected row that goes gives
 way to the first. A card the window has not shown before, or any card after
 it connects again, starts collapsed too (and a hidden selected worker gives
-way to its supervisor); one the user expanded stays so across refreshes. The session and the
-side panel open and close, and the edges between them drag; their sizes, and
-the window's, are kept in `$STATE/gui-layout.json`. Enter or a double click
+way to its supervisor); one the user expanded stays so across refreshes. The side panel opens
+and closes and its edge drags; its size, and the window's, are kept in
+`$STATE/gui-layout.json` (fields an older build kept, such as the removed
+session pane's, are skipped). Space expands the selected row in place into
+its session's turns, as the dashboard's expanded session does (below). Enter or a double click
 on a row opens the **focus view**: that agent's live Herdr terminal in place
 of the overview, beside a side panel of its own (open or closed and its
 width kept apart from the overview's). Cmd+Esc (Ctrl+Shift+Esc on Linux), or
@@ -716,8 +718,37 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   that adds up rem spacing (`gap_*`, `p_*`, `py_*`) scales those terms too
   (`rem_px()`), not only its lines of text; a height that depends on the
   header's, toolbar's or status bar's is measured (as the overview's
-  column is, for the transcript's split) rather than estimated, since they
+  scroll handle is, for the expanded row) rather than estimated, since they
   grow with the text and the header wraps.
+- The expanded row (`transcript.rs`, `rows.rs`): Space grows the selected
+  row into its session's latest turns, down to the overview's bottom, and
+  `serve` reads that session's transcript only while a row is expanded
+  (`watch`). The overview draws its cards down to that row and no further,
+  the cards in a column stretched to the view's height at the current
+  offset (`Rows::expand`, from the last frame's view, so a frame whose view
+  differs, as after a resize, draws again), and the row's card, its body,
+  the row and the turns grow into it (`flex_1` all the way down, `framed`'s
+  body a flex column for it): the row grows where it is. Only when that leaves the turns
+  less than six lines does the overview scroll, to its end, the rows above
+  going off the top, as the dashboard's do; a key onto a row above the view
+  shows its top. The turns are one custom element that lays out its own
+  lines (the text fields' `wrap`, per paragraph; an older turn folded to two
+  lines with an ellipsis) and keeps them, with its scroll and selection, in
+  a `Transcript` shared with the window, so a press is hit-tested against
+  the lines drawn under it (`ShapedLine::closest_index_for_x`, or
+  `index_for_x` for the character under a double click). A place is a turn
+  and a byte offset in its text: when new turns come in above, the
+  selection and the scroll move down with their text (`shift`). The
+  element stops every mouse press it gets, so a click there neither
+  reaches the row (whose double click opens the terminal) nor the card
+  (whose right click collapses it); a press anywhere else clears the
+  selection. A double click takes a word as the focus view's terminal
+  does (`selection::separates`). Copying uses the terminal's copy chord;
+  a folded turn the selection covers from its start to its ellipsis is
+  copied whole, part of one as shown, turns a blank line apart. While the
+  window is moved off screen to an AeroSpace workspace it is told it is
+  hidden and stops watching, so a capture script needs `show` after a key
+  that expands.
 - A click on a row never scrolls the overview, so a double click lands on
   the row the first click selected; other selections scroll just far
   enough to show their row. The overview's children are the project cards,
@@ -727,7 +758,7 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   before `.id()`), and a reveal lands on the next prepaint.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
-  and asks `serve` to stop reading the transcript; messages are still
+  and asks `serve` to stop reading the expanded row's transcript; messages are still
   applied, so it is current when shown again.
 - On Linux it enables `gpui-pre-platform`'s `wayland` feature and sets the
   Wayland app id `corgi-gui`, and picks a monospace font that exists there

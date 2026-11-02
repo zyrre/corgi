@@ -497,7 +497,7 @@ fn one_line(text: &str) -> String {
 /// byte offset is drawn. A line breaks after the spaces that follow a word,
 /// those spaces hanging past the edge; a word wider than a line alone is
 /// broken between characters. Empty text is one empty line.
-fn wrap(text: &str, width: Pixels, x: impl Fn(usize) -> Pixels) -> Vec<Range<usize>> {
+pub(crate) fn wrap(text: &str, width: Pixels, x: impl Fn(usize) -> Pixels) -> Vec<Range<usize>> {
     let width = width.max(px(0.));
     let mut lines = Vec::new();
     let mut start = 0;

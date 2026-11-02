@@ -1,8 +1,7 @@
-//! The window's fixed layout: the header's measurements, and the overview,
-//! the transcript split under it and the side panel beside it, and the focus
-//! view's terminal with its own side panel, which open and close and keep
-//! their sizes across runs in `$STATE/gui-layout.json`, as does the size of
-//! the window's text.
+//! The window's fixed layout: the header's measurements, and the overview
+//! with the side panel beside it, and the focus view's terminal with its own
+//! side panel, which open and close and keep their sizes across runs in
+//! `$STATE/gui-layout.json`, as does the size of the window's text.
 
 use std::{fs, path::Path, path::PathBuf};
 
@@ -42,10 +41,6 @@ pub const HEADER_PADDING: f32 = 16.0;
 
 pub const SIDE_MIN: f32 = 240.0;
 pub const SIDE_MAX: f32 = 900.0;
-pub const TRANSCRIPT_MIN: f32 = 100.0;
-pub const TRANSCRIPT_MAX: f32 = 1400.0;
-/// The overview keeps at least this much height beside the transcript.
-pub const OVERVIEW_MIN: f32 = 160.0;
 
 /// The window's text size in points, the body's and the terminal's, which
 /// the header's buttons step a point at a time between the least and the
@@ -54,15 +49,14 @@ pub const FONT_SIZE: f32 = 13.0;
 pub const FONT_SIZE_MIN: f32 = 10.0;
 pub const FONT_SIZE_MAX: f32 = 26.0;
 
+/// A file kept by an older build may hold fields no longer read, such as the
+/// session pane's (`transcript_open`, `transcript_height`): they are skipped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
     /// The side panel: the selected project's supervisor and its questions.
     pub side_open: bool,
     pub side_width: f32,
-    /// The selected agent's transcript, under the overview.
-    pub transcript_open: bool,
-    pub transcript_height: f32,
     /// The side panel beside the focus view's terminal.
     pub focus_side_open: bool,
     pub focus_side_width: f32,
@@ -77,8 +71,6 @@ impl Default for Layout {
         Self {
             side_open: true,
             side_width: 380.0,
-            transcript_open: true,
-            transcript_height: 260.0,
             focus_side_open: true,
             focus_side_width: 340.0,
             window: None,
@@ -91,7 +83,6 @@ impl Default for Layout {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Split {
     Side,
-    Transcript,
     /// The focus view's terminal and its side panel.
     FocusSide,
 }
@@ -129,7 +120,6 @@ impl Layout {
     fn clamped(mut self) -> Self {
         self.side_width = self.side_width.clamp(SIDE_MIN, SIDE_MAX);
         self.focus_side_width = self.focus_side_width.clamp(SIDE_MIN, SIDE_MAX);
-        self.transcript_height = self.transcript_height.clamp(TRANSCRIPT_MIN, TRANSCRIPT_MAX);
         self.window = self
             .window
             .filter(|(width, height)| *width >= 400.0 && *height >= 300.0);
@@ -167,7 +157,7 @@ impl Layout {
     }
 
     /// Resizes `split` by a drag of `delta` pixels: a side panel grows as
-    /// its edge moves left, the transcript as its edge moves up.
+    /// its edge moves left.
     pub fn drag(&mut self, split: Split, delta: f32) {
         match split {
             Split::Side => {
@@ -176,19 +166,7 @@ impl Layout {
             Split::FocusSide => {
                 self.focus_side_width = (self.focus_side_width - delta).clamp(SIDE_MIN, SIDE_MAX);
             }
-            Split::Transcript => {
-                self.transcript_height =
-                    (self.transcript_height - delta).clamp(TRANSCRIPT_MIN, TRANSCRIPT_MAX);
-            }
         }
-    }
-
-    /// The transcript's height in a main column `available` pixels tall,
-    /// leaving the overview its minimum.
-    pub fn transcript_height_in(&self, available: f32) -> f32 {
-        self.transcript_height
-            .min(available - OVERVIEW_MIN)
-            .max(TRANSCRIPT_MIN.min(available / 2.0))
     }
 }
 
@@ -209,7 +187,6 @@ mod tests {
         assert_eq!(Layout::load(Some(&path)), Layout::default());
         let mut layout = Layout {
             side_open: false,
-            transcript_open: false,
             window: Some((1200.0, 800.0)),
             ..Layout::default()
         };
@@ -349,14 +326,38 @@ mod tests {
     }
 
     #[test]
-    fn drags_stay_in_range_and_the_overview_keeps_its_room() {
+    fn a_file_from_before_the_inline_session_still_loads_and_drops_its_pane() {
+        let dir = scratch("session-pane");
+        let path = dir.join("gui-layout.json");
+        // Builds with a session pane under the overview kept its split.
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &path,
+            r#"{"side_open": false, "side_width": 300, "transcript_open": false,
+                "transcript_height": 420, "font_size": 15}"#,
+        )
+        .unwrap();
+        let loaded = Layout::load(Some(&path));
+        assert_eq!(
+            loaded,
+            Layout {
+                side_open: false,
+                side_width: 300.0,
+                font_size: 15.0,
+                ..Layout::default()
+            }
+        );
+        loaded.save(Some(&path));
+        assert!(!fs::read_to_string(&path).unwrap().contains("transcript"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn side_panel_drags_stay_in_range() {
         let mut layout = Layout::default();
-        layout.drag(Split::Transcript, 10_000.0);
-        assert_eq!(layout.transcript_height, TRANSCRIPT_MIN);
-        layout.drag(Split::Transcript, -10_000.0);
-        assert_eq!(layout.transcript_height, TRANSCRIPT_MAX);
-        assert_eq!(layout.transcript_height_in(700.0), 700.0 - OVERVIEW_MIN);
-        // A tiny window splits its height rather than going negative.
-        assert_eq!(layout.transcript_height_in(150.0), 75.0);
+        layout.drag(Split::Side, 10_000.0);
+        assert_eq!(layout.side_width, SIDE_MIN);
+        layout.drag(Split::Side, -10_000.0);
+        assert_eq!(layout.side_width, SIDE_MAX);
     }
 }

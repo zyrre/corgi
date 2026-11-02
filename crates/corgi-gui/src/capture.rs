@@ -7,8 +7,9 @@
 //! - `key:KEYS` types each space-separated keystroke (`p`, `escape`,
 //!   `shift-tab`), as GPUI parses them;
 //! - `type:TEXT` types the text, character by character;
-//! - `click:X,Y`, `right:X,Y` and `double:X,Y` click the left button, the
-//!   right one, or the left one twice, at window point (X, Y); `link:X,Y`
+//! - `click:X,Y`, `right:X,Y`, `double:X,Y` and `triple:X,Y` click the left
+//!   button, the right one, or the left one twice or three times, at window
+//!   point (X, Y); `link:X,Y`
 //!   clicks with the link modifier held (Cmd on macOS, Ctrl elsewhere);
 //! - `drag:X1,Y1,X2,Y2` presses the left button at the first point, moves to
 //!   the second with it held, and lets go there;
@@ -106,7 +107,7 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                             .await;
                     }
                 }
-                "click" | "right" | "double" | "link" => {
+                "click" | "right" | "double" | "triple" | "link" => {
                     let Some([x, y]) = numbers::<2>(argument) else {
                         eprintln!("capture: bad point {argument}");
                         continue;
@@ -117,7 +118,11 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                     } else {
                         MouseButton::Left
                     };
-                    let clicks = if verb == "double" { 2 } else { 1 };
+                    let clicks = match verb {
+                        "double" => 2,
+                        "triple" => 3,
+                        _ => 1,
+                    };
                     let modifiers = if verb == "link" {
                         link_modifier()
                     } else {
