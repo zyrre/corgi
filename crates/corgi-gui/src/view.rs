@@ -30,6 +30,10 @@ const TEXT_SIZE: f32 = 13.0;
 /// The space above a dialog, and the least below it.
 const DIALOG_TOP: f32 = 110.0;
 const DIALOG_BOTTOM: f32 = 24.0;
+/// The most lines a dialog's text field grows to before it scrolls.
+const FIELD_LINES: f32 = 8.0;
+/// A field box's padding and border, above and below its text.
+const FIELD_FRAME: f32 = 10.0;
 /// The body text's line height, in text sizes.
 const LINE_HEIGHT: f32 = 1.45;
 
@@ -1469,7 +1473,7 @@ impl CorgiWindow {
                 error.as_deref(),
                 window,
             ),
-            Some(Dialog::NewAgent(new)) => self.form_dialog(new, cx),
+            Some(Dialog::NewAgent(new)) => self.form_dialog(new, window, cx),
             Some(Dialog::NewAgentLoading) => self.loading_dialog(),
             Some(Dialog::Merge(merge)) => self.merge_dialog(merge, cx),
             Some(Dialog::Close(close)) => self.close_dialog(close, cx),
@@ -1537,8 +1541,27 @@ impl CorgiWindow {
             .child(title)
     }
 
-    fn field_box(&self, field: AnyElement) -> impl IntoElement {
+    /// The height of a line of the window's text, as its fields set it.
+    fn text_line(&self) -> f32 {
+        TEXT_SIZE * LINE_HEIGHT
+    }
+
+    /// How many lines a dialog's text field grows to before it scrolls:
+    /// FIELD_LINES, fewer when the dialog's `others`, the rest of it at its
+    /// least, would not fit in `tallest` beside them.
+    fn field_lines(&self, tallest: f32, others: f32) -> f32 {
+        ((tallest - others - FIELD_FRAME) / self.text_line())
+            .floor()
+            .clamp(1.0, FIELD_LINES)
+    }
+
+    /// A text field's box, `lines` of text tall at most: the field grows
+    /// to that as its text wraps, then scrolls.
+    fn field_box(&self, field: AnyElement, lines: f32) -> impl IntoElement {
         div()
+            .flex()
+            .flex_col()
+            .max_h(px(lines * self.text_line() + FIELD_FRAME))
             .px_2()
             .py_1()
             .rounded_sm()
@@ -1580,10 +1603,18 @@ impl CorgiWindow {
         window: &Window,
     ) -> AnyElement {
         let colors = &self.colors;
-        // No taller than the window leaves below the dialog's top margin,
-        // its padding and frame (34) and a bottom margin: the question
-        // gives way and scrolls, so the field and the hints stay in view.
-        let tallest = f32::from(window.viewport_size().height) - DIALOG_TOP - 34.0 - DIALOG_BOTTOM;
+        // The question gives way and scrolls, so the field and the hints
+        // stay in view.
+        let tallest = dialog_room(window);
+        // The field leaves room for the title, the hints, a sending or
+        // error line, the gaps between them, and a question's first lines.
+        let line = self.text_line();
+        let question_least = if question.is_some() {
+            line * 3.0 + 18.0
+        } else {
+            0.0
+        };
+        let field_lines = self.field_lines(tallest, line * 3.0 + 4.0 * 8.0 + 6.0 + question_least);
         div()
             .flex()
             .flex_col()
@@ -1592,9 +1623,9 @@ impl CorgiWindow {
             .child(div().flex_none().child(self.dialog_title(title)))
             .children(question)
             .child(
-                div()
-                    .flex_none()
-                    .child(self.field_box(self.prompt_input.clone().into_any_element())),
+                div().flex_none().child(
+                    self.field_box(self.prompt_input.clone().into_any_element(), field_lines),
+                ),
             )
             .when(sending, |d| {
                 d.child(
@@ -1633,14 +1664,25 @@ impl CorgiWindow {
             .into_any_element()
     }
 
-    fn form_dialog(&self, new: &crate::form::NewAgent, cx: &mut Context<Self>) -> AnyElement {
+    fn form_dialog(
+        &self,
+        new: &crate::form::NewAgent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = &self.colors;
+        // The task leaves room for the other rows, an open list's first
+        // lines, a note, the hints and the gaps between them.
+        let task_lines = self.field_lines(
+            dialog_room(window),
+            (self.text_line() + 4.0) * (new.rows().len() + 6) as f32 + 4.0 * 8.0,
+        );
         let mut rows = div().flex().flex_col();
         for row in new.rows() {
             let focused = new.row == row;
             let value: AnyElement = match row {
                 Row::Task => self
-                    .field_box(self.task_input.clone().into_any_element())
+                    .field_box(self.task_input.clone().into_any_element(), task_lines)
                     .into_any_element(),
                 _ => {
                     let shown = new.shown(row);
@@ -2010,6 +2052,12 @@ impl CorgiWindow {
             )
             .into_any_element()
     }
+}
+
+/// How tall a dialog's content may be: what the window leaves below the
+/// dialog's top margin, its padding and frame (34) and a bottom margin.
+fn dialog_room(window: &Window) -> f32 {
+    f32::from(window.viewport_size().height) - DIALOG_TOP - 34.0 - DIALOG_BOTTOM
 }
 
 fn section_title(text: String, color: Hsla) -> impl IntoElement {
