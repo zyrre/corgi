@@ -1763,7 +1763,8 @@ threads" section of the newest note in `handovers/`, labelled with its date
 as the previous session's; every ledger id whose
 newest line is not `merged`, `abandoned` or `done` (finished work with
 nothing to merge), joined by agent name with the running agents (a missing
-one shows `**NOT RUNNING**`); the last 10 finished ids; the newest
+one shows `**NOT RUNNING**`, an id without an agent, such as a question
+about a plan, `no worker`); the last 10 finished ids; the newest
 decisions in full, whole entries up to 8 KB but at least 3; the titles of
 the rest, newest first up to 3 KB, and a line counting any beyond; and a
 footer with the number of superseded entries hidden, how to read one in full,

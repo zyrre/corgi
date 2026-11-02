@@ -73,7 +73,9 @@ The supervisor's role and the `[Corgi]` lines Corgi types into its box
 `crates/corgi-core/src/supervisor.rs`, and the merge lines also by the
 exact-inbox-text tests in `src/app/merge.rs`: change the wording, update
 both. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
-matter, since those tests match their text with `contains`.
+matter, since those tests match their text with `contains`. Another test
+there caps `ROLE.md` at three quarters of 34,516 bytes, and it is nearly
+full: a role addition must trim something else.
 
 On macOS, copying a rebuilt binary over an existing file (say, a copy of
 `target/release/corgi` kept to compare before and after) gets it killed with

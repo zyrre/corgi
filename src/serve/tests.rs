@@ -26,8 +26,8 @@ use corgi_core::{
     inbox::{Inbox, Kind},
     projects::ProjectMemory,
     protocol::{
-        Change, Command as Wire, MergeOutcome, PaletteSet, Reply, ReplyResult, ServerMessage,
-        State, ThemeColors,
+        Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply, ReplyResult,
+        ServerMessage, State, ThemeColors,
     },
     test_support::{ScratchDir, fake_herdr},
     waker::SupervisorWaker,
@@ -513,6 +513,41 @@ fn the_first_lines_are_the_hello_and_a_snapshot_of_rows_cards_and_questions() {
     assert_eq!(projects[1]["scratch"], true);
     assert_eq!(projects[1]["card"], false);
     assert_eq!(projects[1]["root"], "");
+    session.close();
+}
+
+#[test]
+fn a_question_about_a_plan_is_listed_with_its_text_and_no_worker() {
+    let scratch = ScratchDir::new("serve-plan-question");
+    let (repo, worktree) = repository(&scratch);
+    let dir = scratch.join("state").join("weather");
+    fs::create_dir_all(dir.join("questions")).unwrap();
+    fs::write(
+        dir.join("ledger.jsonl"),
+        concat!(
+            r#"{"id":"20261102-plan-mrs","agent":"","status":"needs-answer","questions":["Q52: Which MRs?"],"summary":"Plan: MRs panel"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let asked = "### Q52: Which MRs?   [blocks: plan \"MRs panel\"]\n\
+                 Context: none yet.\n\
+                 Options:\n  A. Mine.\n  B. All.\n\
+                 Recommendation: A.\n\
+                 Until answered: no brief.";
+    fs::write(dir.join("questions").join("Q52.md"), asked).unwrap();
+    let herdr = FakeHerdr::start("serve-planq", herd(&repo, &worktree, "idle"));
+    let session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    assert_eq!(
+        state.projects[0].questions,
+        [Question {
+            id: "Q52".into(),
+            title: "Which MRs?".into(),
+            agent: String::new(),
+            text: asked.into(),
+        }]
+    );
     session.close();
 }
 

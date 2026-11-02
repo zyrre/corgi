@@ -346,7 +346,8 @@ pub struct Question {
     /// number.
     pub id: String,
     pub title: String,
-    /// The worker it is about.
+    /// The worker it is about; empty for a question no worker waits on,
+    /// such as one about a plan.
     pub agent: String,
     /// The question whole, as the supervisor asked it (its
     /// `questions/Q<n>.md`); empty without that file.

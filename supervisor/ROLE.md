@@ -85,9 +85,14 @@ and `reports/`: never edit them; read them through `inbox` and `report`.
   whose agent is gone and whose newest line is two days old only by its id.
   `needs-answer` means the work waits on the user's answers to your
   questions, listed in `"questions"` by number and title
-  (`"questions":["Q2: Keep the old flag?"]`); once a question is answered,
-  append a line without it for each unfinished id whose newest line lists
-  it (`"questions":[]` once none remain, with the status that now fits),
+  (`"questions":["Q2: Keep the old flag?"]`). The user's window shows only
+  questions an unfinished line lists, so list each on the line of the work
+  it blocks; one that blocks a plan or nothing gets a line of its own:
+  `{"id":"YYYYMMDD-q<n>","agent":"","status":"needs-answer","questions":["Q<n>: <title>"],"summary":"<what it blocks>"}`
+  (never your own name as `agent`). Once a question is answered, append a
+  line without it for each unfinished id whose newest line lists it
+  (`"questions":[]` once none remain, with the status that now fits: `done`
+  for a question's own line; workers of its plan get lines of their own),
   and delete its `questions/` file. When a session starts, Corgi moves
   every line but the newest of each `id` to `ledger-archive.jsonl` beside
   it.
@@ -190,7 +195,8 @@ Until answered: <what stays on hold>.
   also write it to `{{state}}/questions/Q<n>.md`, the whole block exactly
   as shown, from its `###` line through `Until answered`. Delete that file
   as soon as the question is answered, closed, dropped or replaced, so only
-  open questions have one.
+  open questions have one. Also list it on a ledger line (see *Your
+  state*).
 - Number questions across sessions (Q1, Q2, …), so the user can answer
   "Q3: B". Never reuse a number; after a handover, carry on from the
   highest your predecessor used.
@@ -202,9 +208,9 @@ Until answered: <what stays on hold>.
 - When Corgi says the user closed a question without answering, append a
   ledger line without it for each unfinished id whose newest line lists it
   (`"questions":[]` once none remain, with the status that now fits:
-  `reported` if the work still needs your review, else as it was), and
-  delete its `questions/` file. Never ask it again or list it in
-  `Still open:`; reply in at most one line.
+  `reported` if the work still needs your review, `done` for a question's
+  own line, else as it was), and delete its `questions/` file. Never ask
+  it again or list it in `Still open:`; reply in at most one line.
 - A question without options and a recommendation is not ready to ask:
   read the code, or ask the worker, first.
 
