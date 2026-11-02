@@ -7,9 +7,9 @@
 use corgi_core::protocol::{Activity, Agent, MergeOutcome, Project};
 use gpui::{
     AnyElement, ClickEvent, Context, CursorStyle, Div, FontWeight, Hsla, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, TextRun, Window, canvas, div, prelude::FluentBuilder, px,
-    relative,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
+    SharedString, StatefulInteractiveElement, Styled, TextRun, Window, canvas, div,
+    prelude::FluentBuilder, px, relative,
 };
 
 use crate::{
@@ -46,6 +46,9 @@ const DIALOG_BORDER: f32 = 2.0;
 const DIVIDER: f32 = 4.0;
 /// The body text's line height, in text sizes.
 const LINE_HEIGHT: f32 = 1.45;
+/// How far a press on the header moves before it drags the window, so a
+/// click that wobbles stays a click.
+const WINDOW_DRAG_SLOP: f64 = 4.0;
 
 /// What a toolbar button does.
 type Action = fn(&mut CorgiWindow, &mut Window, &mut Context<CorgiWindow>);
@@ -291,6 +294,12 @@ impl CorgiWindow {
                     .mt(px(WORDMARK_TOP))
                     .child(wordmark_art(colors.supervisor())),
             );
+        // macOS draws no title bar (`main.rs`), so the window is dragged
+        // by its header: a press there that then moves a few pixels moves
+        // the window, and a click on a button stays a click. Linux leaves
+        // moving to its compositor.
+        let press = window.use_keyed_state("header-press", cx, |_, _| None::<Point<Pixels>>);
+        let pressed = press.clone();
         div()
             .flex()
             .flex_row()
@@ -325,10 +334,26 @@ impl CorgiWindow {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    pressed.update(cx, |pressed, _| *pressed = Some(event.position));
                     window.focus(&this.focus, cx);
                 }),
             )
+            .when(cfg!(target_os = "macos"), |header| {
+                header.on_mouse_move(move |event: &MouseMoveEvent, window, cx| {
+                    let Some(from) = *press.read(cx) else {
+                        return;
+                    };
+                    let held = event.pressed_button == Some(MouseButton::Left);
+                    if held && (event.position - from).magnitude() < WINDOW_DRAG_SLOP {
+                        return;
+                    }
+                    press.update(cx, |pressed, _| *pressed = None);
+                    if held {
+                        window.start_window_move();
+                    }
+                })
+            })
     }
 
     /// The sun or moon at the header's right end: the appearance a click

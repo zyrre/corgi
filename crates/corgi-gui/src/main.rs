@@ -25,7 +25,9 @@ mod capture;
 
 use std::process::ExitCode;
 
-use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size,
+};
 
 use crate::{
     layout::{Layout, WINDOW_MIN},
@@ -36,6 +38,13 @@ use crate::{
 /// The Wayland app id, and the X11 class: what a compositor's window rules
 /// match, such as Hyprland's `class`.
 const APP_ID: &str = "corgi-gui";
+
+/// How far left of the window the close, minimize and zoom buttons are
+/// kept, out of sight; GPUI keeps them there and puts them back in full
+/// screen. They stay, enabled, for what reads a window's buttons through
+/// Accessibility: AeroSpace floats a window without an enabled full screen
+/// button. Keys do what they did (`window::bind_app_keys`).
+const TRAFFIC_LIGHTS_LEFT: f32 = 200.0;
 
 fn main() -> ExitCode {
     let options = match Options::parse(std::env::args().skip(1)) {
@@ -76,10 +85,16 @@ fn main() -> ExitCode {
                     // Wayland: without an app id no compositor rule can
                     // match the window.
                     app_id: Some(APP_ID.into()),
+                    // macOS: no title bar strip; the content, its header
+                    // first, starts at the window's top edge, and the
+                    // header moves the window (`view.rs`). Linux ignores
+                    // all three.
                     titlebar: Some(TitlebarOptions {
                         title: Some(title.into()),
-                        ..Default::default()
+                        appears_transparent: true,
+                        traffic_light_position: Some(point(px(-TRAFFIC_LIGHTS_LEFT), px(0.0))),
                     }),
+                    app_owns_titlebar_drag: true,
                     window_min_size: Some(size(px(WINDOW_MIN.0), px(WINDOW_MIN.1))),
                     focus: !background,
                     ..Default::default()
@@ -89,12 +104,7 @@ fn main() -> ExitCode {
                     let kept = view.downgrade();
                     // Keep the window's size for the next run.
                     window.on_window_should_close(cx, move |window, cx| {
-                        let size = window.bounds().size;
-                        let _ = kept.update(cx, |view, _| {
-                            view.layout.window =
-                                Some((f32::from(size.width), f32::from(size.height)));
-                            view.save_layout();
-                        });
+                        let _ = kept.update(cx, |view, _| view.keep_window_size(window));
                         true
                     });
                     view

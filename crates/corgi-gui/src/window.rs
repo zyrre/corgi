@@ -579,6 +579,13 @@ impl CorgiWindow {
         self.layout.save(self.layout_path.as_deref());
     }
 
+    /// Keeps `window`'s size for the next run, as it closes.
+    pub fn keep_window_size(&mut self, window: &Window) {
+        let size = window.bounds().size;
+        self.layout.window = Some((f32::from(size.width), f32::from(size.height)));
+        self.save_layout();
+    }
+
     /// The window's text a point `larger` or smaller, the terminal's with
     /// it, kept for the next run.
     pub fn step_font(&mut self, larger: bool, cx: &mut Context<Self>) {
@@ -1257,9 +1264,42 @@ pub fn bind_app_keys(cx: &mut App) {
     };
     cx.bind_keys([gpui::KeyBinding::new(quit, Quit, None)]);
     cx.on_action(|_: &Quit, cx| cx.quit());
+    // macOS draws no title bar buttons (`main.rs`), so their usual keys do
+    // what they did.
+    if cfg!(target_os = "macos") {
+        cx.bind_keys([
+            gpui::KeyBinding::new("cmd-w", CloseWindow, None),
+            gpui::KeyBinding::new("cmd-m", Minimize, None),
+            gpui::KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+        ]);
+        cx.on_action(|_: &CloseWindow, cx| {
+            on_active_window(cx, |view, window| {
+                view.keep_window_size(window);
+                window.remove_window();
+            });
+        });
+        cx.on_action(|_: &Minimize, cx| on_active_window(cx, |_, window| window.minimize_window()));
+        cx.on_action(|_: &ToggleFullScreen, cx| {
+            on_active_window(cx, |_, window| window.toggle_fullscreen());
+        });
+    }
 }
 
-gpui::actions!(corgi, [Quit]);
+gpui::actions!(corgi, [Quit, CloseWindow, Minimize, ToggleFullScreen]);
+
+/// Runs `act` on the window in front, once the key that asked for it is
+/// handled: the window cannot be updated while its key is dispatched.
+fn on_active_window(cx: &mut App, act: impl FnOnce(&mut CorgiWindow, &mut Window) + 'static) {
+    let Some(handle) = cx
+        .active_window()
+        .and_then(|handle| handle.downcast::<CorgiWindow>())
+    else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |view, window, _| act(view, window));
+    });
+}
 
 /// Collapses each card of `projects` not yet `seen`, so the window opens,
 /// and a project new to it appears, on its supervisor; a card already seen
