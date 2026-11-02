@@ -206,7 +206,9 @@ For a screenshot that needs no real flow, `--corgi` can name a small
 program instead: corgi-gui runs it with `serve …`, and any program that
 writes a `Hello` and a `Snapshot` (built with `corgi_core::protocol`, one
 JSON line each) and answers each `Request` line on stdin draws the window
-with no Herdr at all, and can delay or refuse a reply to show a state.
+with no Herdr at all, and can delay or refuse a reply to show a state. A
+project with `card: false` draws its rows without the collapsed-by-default
+card around them, so a script's `key:j` reaches a row at once.
 To show a reconnect, kill that program alone with an anchored pattern
 (`pkill -f "^<path>/fake-serve"`): the window's own command line holds
 `--corgi <path>`, so an unanchored one kills the window too.
