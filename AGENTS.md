@@ -190,6 +190,14 @@ To try the terminal by hand, run a program in the agent pane that turns on
 bracketed paste and the kitty keyboard protocol, as Claude Code does, and
 prints the bytes each key arrives as: a real Claude Code reads its
 credentials from the Keychain on macOS, which these runs must not touch.
+A real Claude Code runs without credentials or the Keychain as
+`claude --bare` with a dummy `ANTHROPIC_API_KEY`, a private `HOME` and
+`CLAUDE_CONFIG_DIR`, resuming (`--resume`) a hand-written transcript: it
+needs no API then, but still downloads the public plugin marketplace on
+its first start. Exit it with Ctrl+C Ctrl+C: killed twice in fullscreen,
+it turns fullscreen off by itself (`"fullscreenAutoDisabled":{"strikes":2}`
+in its `.claude.json`), and wheel tests then silently scroll 0 lines until
+that key is deleted.
 The script steps `drag`, `wheel`, `link`, `ime`, `hide` and `show` drive the
 terminal; `CORGI_GUI_LATENCY=1` logs key-to-surface and key-to-frame times,
 `CORGI_GUI_DEBUG_ENDPOINT=1` each snapshot, request and answer, and
