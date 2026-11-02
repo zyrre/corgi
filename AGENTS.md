@@ -80,6 +80,10 @@ On macOS, copying a rebuilt binary over an existing file (say, a copy of
 exit 137, because the kernel caches the old file's code signature. `rm` the
 destination before copying.
 
+macOS has no `timeout` command, so a command wrapped in it (`timeout 600
+cargo build`) silently never runs; behind a `grep` filter even the
+`command not found` is lost.
+
 `corgi digest`'s lookups (`--search`, `--show`, `--ledger`, `--brief`,
 `--decision`) need Herdr only to find the project's state directory. Test
 them with a `ScratchDir` as the state directory through `digest_lookup` in

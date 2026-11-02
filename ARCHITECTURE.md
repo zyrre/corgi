@@ -690,6 +690,13 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   the dialog on a left mouse down and stops it there, so nothing under the
   layer hears it, and the dialog stops its own, so the layer never hears a
   click inside it, after the dialog's buttons and field have.
+- A click on a row never scrolls the overview, so a double click lands on
+  the row the first click selected; other selections scroll just far
+  enough to show their row. The overview's children are the project cards,
+  so `ScrollHandle::scroll_to_item` can target only a whole card. Row
+  positions come from `rows.rs`: each card records its rows' bounds with
+  `on_children_prepainted` (which exists only on `Div` and must be called
+  before `.id()`), and a reveal lands on the next prepaint.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still
