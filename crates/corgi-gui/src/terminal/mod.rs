@@ -56,9 +56,10 @@ use keys::Chord;
 use links::Link;
 use selection::{Region, Selection};
 
-/// The terminal's text size and cell height, in pixels.
-pub const FONT_SIZE: f32 = 13.0;
-pub const CELL_HEIGHT: f32 = 17.0;
+/// The terminal's text size and cell height, in pixels, at the window's
+/// default text size; the header's buttons scale both.
+const FONT_SIZE: f32 = 13.0;
+const CELL_HEIGHT: f32 = 17.0;
 /// Room between the grid and the view's edges.
 const PADDING: f32 = 6.0;
 /// A size the layout settles on for this long is sent to Herdr.
@@ -103,7 +104,12 @@ pub struct TerminalView {
     visible: bool,
     painter: Rc<RefCell<TerminalPainter>>,
     font: Font,
+    /// The text's size and the cells' height, scaled with the window's text.
+    font_size: f32,
+    cell_height: f32,
     cell_width: f32,
+    /// The cells' colors, kept for when the text size changes.
+    theme: Theme,
     host_theme: Vec<ClientHostThemeUpdate>,
     background: u32,
     /// The size the view's bounds hold, and the one Herdr was last told.
@@ -132,6 +138,10 @@ pub struct TerminalView {
     arrived: Option<Instant>,
     /// Whether Herdr was last told the terminal has the keyboard.
     reported_focus: Option<bool>,
+    /// Whether the window is active, as a script step said, in place of the
+    /// platform's: a scripted window runs in the background, never active.
+    #[cfg(feature = "capture")]
+    pub scripted_active: Option<bool>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -210,7 +220,10 @@ impl TerminalView {
             visible: true,
             painter: Rc::new(RefCell::new(TerminalPainter::default())),
             font,
+            font_size: FONT_SIZE,
+            cell_height: CELL_HEIGHT,
             cell_width: 8.0,
+            theme: Theme::default(),
             host_theme: Vec::new(),
             background: 0,
             grid: None,
@@ -232,6 +245,8 @@ impl TerminalView {
             typed: None,
             arrived: None,
             reported_focus: None,
+            #[cfg(feature = "capture")]
+            scripted_active: None,
             _tasks: vec![pump, fonts],
         }
     }
@@ -316,9 +331,8 @@ impl TerminalView {
             *slot = pack(color);
         }
         self.background = theme.background;
-        self.painter
-            .borrow_mut()
-            .set_appearance(FONT_SIZE, CELL_HEIGHT, theme);
+        self.theme = theme;
+        self.apply_appearance();
         let color = |(r, g, b): Rgb| ClientHostColor { r, g, b };
         self.host_theme = vec![
             ClientHostThemeUpdate::DefaultColor {
@@ -343,6 +357,45 @@ impl TerminalView {
         ];
         if let Some(connection) = &self.connection {
             connection.host_theme(self.host_theme.clone());
+        }
+    }
+
+    /// The window's text at `scale` times its default size: the cells grow
+    /// or shrink with it, and the grid they make is measured again and sent
+    /// to Herdr, as when the window is resized.
+    pub fn set_text_scale(&mut self, scale: f32, cx: &mut Context<Self>) {
+        let (font_size, cell_height) = (FONT_SIZE * scale, (CELL_HEIGHT * scale).round());
+        if (font_size, cell_height) == (self.font_size, self.cell_height) {
+            return;
+        }
+        self.font_size = font_size;
+        self.cell_height = cell_height;
+        self.apply_appearance();
+        cx.notify();
+    }
+
+    fn apply_appearance(&mut self) {
+        self.painter.borrow_mut().set_appearance(
+            self.font_size,
+            self.cell_height,
+            self.theme.clone(),
+        );
+    }
+
+    /// Tells Herdr whether the terminal has the keyboard: the view has the
+    /// focus in a window that is active. Herdr passes it on to a program
+    /// that asked for focus reports, and a terminal that gains it takes its
+    /// tab's size back from any other client showing that tab, such as
+    /// Herdr's own window after the user worked there and came back here.
+    pub fn report_focus(&mut self, window: &Window) {
+        let active = window.is_window_active();
+        #[cfg(feature = "capture")]
+        let active = self.scripted_active.unwrap_or(active);
+        let focused = self.focus.is_focused(window) && active;
+        if let Some(connection) = &self.connection
+            && let Some(focused) = focus_change(&mut self.reported_focus, focused)
+        {
+            connection.focus(focused);
         }
     }
 
@@ -649,7 +702,7 @@ impl TerminalView {
     /// The pane of the agent, or the pane under a point in grid pixels.
     fn pane_at(&self, x: f32, y: f32) -> Option<&PaneSurfacePane> {
         let surface = self.shown()?;
-        let (cell_width, cell_height) = (self.cell_width, CELL_HEIGHT);
+        let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         surface
             .panes
             .iter()
@@ -697,24 +750,25 @@ impl TerminalView {
             f32::from(bounds.size.width),
             f32::from(bounds.size.height),
             self.cell_width,
-            CELL_HEIGHT,
+            self.cell_height,
         );
         let geometry = Geometry {
             size,
             cell_width_px: self.cell_width.round().max(1.0) as u32,
-            cell_height_px: CELL_HEIGHT as u32,
+            cell_height_px: self.cell_height as u32,
         };
         if self.grid == Some(geometry) {
             return;
         }
         // Said on stderr, for aiming scripted clicks and checking resizes.
         eprintln!(
-            "corgi-gui: terminal grid at ({:.0}, {:.0}), {}x{} cells of {:.2}x{CELL_HEIGHT} px",
+            "corgi-gui: terminal grid at ({:.0}, {:.0}), {}x{} cells of {:.2}x{} px",
             f32::from(bounds.origin.x),
             f32::from(bounds.origin.y),
             size.cols,
             size.rows,
             self.cell_width,
+            self.cell_height,
         );
         self.grid = Some(geometry);
         if self.connection.is_none() {
@@ -876,7 +930,7 @@ impl TerminalView {
     fn link_at(&self, x: f32, y: f32) -> Option<Link> {
         let surface = self.shown()?;
         let pane = self.pane_at(x, y)?;
-        let (column, row) = (x / self.cell_width, y / CELL_HEIGHT);
+        let (column, row) = (x / self.cell_width, y / self.cell_height);
         if column < 0.0 || row < 0.0 {
             return None;
         }
@@ -912,7 +966,7 @@ impl TerminalView {
             return;
         };
         // A program that reads the mouse gets the press; Shift selects anyway.
-        if let Some(target) = wheel_target(&surface, x, y, self.cell_width, CELL_HEIGHT)
+        if let Some(target) = wheel_target(&surface, x, y, self.cell_width, self.cell_height)
             && target.mouse_reporting
             && !event.modifiers.shift
             && let InputTarget::Pane(pane_id) = &target.target
@@ -940,7 +994,7 @@ impl TerminalView {
             &Region::of(pane),
             &surface.frame,
             x / self.cell_width,
-            y / CELL_HEIGHT,
+            y / self.cell_height,
             event.click_count,
         );
         cx.notify();
@@ -956,7 +1010,8 @@ impl TerminalView {
                     MouseButton::Right => ClientMouseButton::Right,
                     _ => ClientMouseButton::Middle,
                 };
-                if let Some(target) = wheel_target(&surface, x, y, self.cell_width, CELL_HEIGHT)
+                if let Some(target) =
+                    wheel_target(&surface, x, y, self.cell_width, self.cell_height)
                     && let Some(connection) = &self.connection
                 {
                     let drag = target.mouse_event(ClientMouseKind::Drag(button), event.modifiers);
@@ -980,7 +1035,7 @@ impl TerminalView {
                         &region,
                         &surface.frame,
                         x / self.cell_width,
-                        y / CELL_HEIGHT,
+                        y / self.cell_height,
                     );
                 }
                 cx.notify();
@@ -998,7 +1053,8 @@ impl TerminalView {
                     MouseButton::Right => ClientMouseButton::Right,
                     _ => ClientMouseButton::Middle,
                 };
-                if let Some(target) = wheel_target(&surface, x, y, self.cell_width, CELL_HEIGHT)
+                if let Some(target) =
+                    wheel_target(&surface, x, y, self.cell_width, self.cell_height)
                     && let Some(connection) = &self.connection
                 {
                     let release = target.mouse_event(ClientMouseKind::Up(button), event.modifiers);
@@ -1037,20 +1093,29 @@ impl TerminalView {
             return;
         };
         let (x, y) = self.local(event.position);
-        let Some(target) = wheel_target(&surface, x, y, self.cell_width, CELL_HEIGHT) else {
+        let Some(target) = wheel_target(&surface, x, y, self.cell_width, self.cell_height) else {
             self.wheel = WheelAccumulator::default();
             return;
         };
         let notch = NonZeroU16::new(NOTCH_LINES).unwrap_or(NonZeroU16::MIN);
         let steps = self
             .wheel
-            .steps(&target, event, self.cell_width, CELL_HEIGHT, notch);
+            .steps(&target, event, self.cell_width, self.cell_height, notch);
         let inputs: Vec<_> = target.wheel_events(steps, event.modifiers).collect();
         if let (InputTarget::Pane(pane_id), Some(connection)) = (&target.target, &self.connection) {
             connection.input(pane_id, inputs);
         }
         cx.stop_propagation();
     }
+}
+
+/// The focus report to send when the terminal has the keyboard or not,
+/// given the last one sent; `None` when Herdr knows already.
+fn focus_change(reported: &mut Option<bool>, focused: bool) -> Option<bool> {
+    (*reported != Some(focused)).then(|| {
+        *reported = Some(focused);
+        focused
+    })
 }
 
 /// Writes what the connection does to stderr, with
@@ -1083,22 +1148,14 @@ pub(crate) fn open_url(url: &str, cx: &App) {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.cell_width = self.painter.borrow_mut().cell_width(&self.font, window, cx);
-        // A program that asked for focus reports learns when the terminal
-        // has the keyboard.
-        let focused = self.focus.is_focused(window);
-        if let Some(connection) = &self.connection
-            && self.reported_focus != Some(focused)
-        {
-            connection.focus(focused);
-            self.reported_focus = Some(focused);
-        }
+        self.report_focus(window);
         let typed = self.arrived.take();
         let entity = cx.entity();
         let weak = entity.downgrade();
         let focus = self.focus.clone();
         let painter = self.painter.clone();
         let font = self.font.clone();
-        let cell_width = self.cell_width;
+        let (cell_width, cell_height) = (self.cell_width, self.cell_height);
         let background = self.background;
         let surface = self.shown().cloned();
         let images = self.images.clone();
@@ -1178,7 +1235,7 @@ impl Render for TerminalView {
                             Some(&surface),
                             bounds.origin,
                             cell_width,
-                            CELL_HEIGHT,
+                            cell_height,
                         );
                         painter.paint_composition(&marked, cursor.origin, bounds, &font, window);
                     }
@@ -1211,5 +1268,22 @@ impl Render for TerminalView {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::mouse_up))
             .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .child(div().size_full().p(px(PADDING)).child(terminal))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::focus_change;
+
+    #[test]
+    fn coming_back_to_the_window_reports_the_focus_again() {
+        let mut reported = None;
+        assert_eq!(focus_change(&mut reported, true), Some(true));
+        assert_eq!(focus_change(&mut reported, true), None, "said once");
+        // The user goes to Herdr's own window, which may take the tab's
+        // size, and comes back: Herdr hears the terminal regain the
+        // keyboard, which gives the tab this window's size again.
+        assert_eq!(focus_change(&mut reported, false), Some(false));
+        assert_eq!(focus_change(&mut reported, true), Some(true));
     }
 }

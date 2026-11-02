@@ -21,6 +21,14 @@
 //!   the park tab does the same.
 //! - Deactivating releases every tab the connection sized, so Herdr's own
 //!   window takes back the sizes of the tabs it shows.
+//! - A client takes the size of the tab it is on from whoever had it by
+//!   moving there with its own `tab.focus` (Herdr's own window does the
+//!   same when it switches tabs), by typing there, or by reporting that its
+//!   terminal gained focus; saying hello on it takes it only when no client
+//!   owns it. So the terminal moves to its tab even when it started there,
+//!   and reports focus gained when the window becomes active again, which
+//!   takes the shown tab's size back after the user worked in Herdr's own
+//!   window.
 //! - Herdr moves a connection when someone calls its JSON focus methods,
 //!   creates something with focus, or closes the tab it is on. Any change of
 //!   the tab it is on that the window did not ask for means the terminal is
@@ -234,10 +242,11 @@ impl Viewer {
                 _ => vec![Step::Activate(false)],
             },
             // Started on the tab it is to show: whatever it claimed there is
-            // wanted.
+            // wanted, and it moves there all the same, since only moving
+            // takes the tab's size from a client that owns it.
             Some(tab_id) if self.active && self.fresh && self.location.as_ref() == Some(tab_id) => {
                 self.fresh = false;
-                Vec::new()
+                vec![Step::Focus(tab_id.clone())]
             }
             Some(_) if self.active && self.fresh => match self.park.clone() {
                 None => Vec::new(),

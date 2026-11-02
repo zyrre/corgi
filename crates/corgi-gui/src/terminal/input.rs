@@ -12,7 +12,7 @@ use gpui::{
     WeakEntity, Window,
 };
 
-use super::{CELL_HEIGHT, TerminalView};
+use super::TerminalView;
 use crate::herdr_ui::terminal::{input_area, input_cursor_bounds};
 
 impl EntityInputHandler for TerminalView {
@@ -96,8 +96,13 @@ impl EntityInputHandler for TerminalView {
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let surface = self.shown().map(|surface| surface.as_ref());
-        let cursor = input_cursor_bounds(surface, self.bounds.origin, self.cell_width, CELL_HEIGHT);
-        let area = input_area(surface, self.bounds, self.cell_width, CELL_HEIGHT);
+        let cursor = input_cursor_bounds(
+            surface,
+            self.bounds.origin,
+            self.cell_width,
+            self.cell_height,
+        );
+        let area = input_area(surface, self.bounds, self.cell_width, self.cell_height);
         Some(self.painter.borrow().composition_bounds(
             &self.marked,
             range,

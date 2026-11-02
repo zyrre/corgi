@@ -8,7 +8,7 @@ use corgi_core::protocol::{Agent, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent, Pixels,
-    ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility,
+    ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility, px,
 };
 
 use crate::{
@@ -79,6 +79,9 @@ pub struct CorgiWindow {
     pub prompt_input: Entity<TextInput>,
     pub task_input: Entity<TextInput>,
     pub overview_scroll: ScrollHandle,
+    /// The overview's column as last laid out, the transcript's split
+    /// included; 0 before the first layout.
+    pub main_column_height: f32,
     /// Where the overview's rows were drawn, to scroll one into view.
     pub rows: Rows,
     pub transcript_scroll: ScrollHandle,
@@ -173,6 +176,13 @@ impl CorgiWindow {
             cx.observe_window_visibility(window, |this, visibility, _, cx| {
                 this.set_visible(visibility == WindowVisibility::Visible, cx);
             }),
+            // Coming back to the window gives the terminal the keyboard
+            // again, which takes back its tab's size from Herdr's own
+            // window if the user worked there meanwhile.
+            cx.observe_window_activation(window, |this, window, cx| {
+                this.terminal
+                    .update(cx, |terminal, _| terminal.report_focus(window));
+            }),
             cx.subscribe(
                 &terminal,
                 |this, _, event: &TerminalEvent, cx| match event {
@@ -218,6 +228,7 @@ impl CorgiWindow {
             prompt_input,
             task_input,
             overview_scroll: ScrollHandle::new(),
+            main_column_height: 0.0,
             rows: Rows::default(),
             transcript_scroll: ScrollHandle::new(),
             question_scroll: ScrollHandle::new(),
@@ -230,6 +241,9 @@ impl CorgiWindow {
         };
         this.sync_terminal_socket(cx);
         this.color_terminal(cx);
+        let scale = this.layout.text_scale();
+        this.terminal
+            .update(cx, |terminal, cx| terminal.set_text_scale(scale, cx));
         this.connect(cx);
         window.focus(&this.focus, cx);
         this
@@ -563,6 +577,24 @@ impl CorgiWindow {
 
     pub fn save_layout(&self) {
         self.layout.save(self.layout_path.as_deref());
+    }
+
+    /// The window's text a point `larger` or smaller, the terminal's with
+    /// it, kept for the next run.
+    pub fn step_font(&mut self, larger: bool, cx: &mut Context<Self>) {
+        if !self.layout.step_font(larger) {
+            return;
+        }
+        self.save_layout();
+        let scale = self.layout.text_scale();
+        self.terminal
+            .update(cx, |terminal, cx| terminal.set_text_scale(scale, cx));
+        cx.notify();
+    }
+
+    /// `size` pixels at the window's text size.
+    pub fn scaled(&self, size: f32) -> Pixels {
+        px(size * self.layout.text_scale())
     }
 
     /// Shows or hides the side panel: the focus view's own, or the

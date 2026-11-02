@@ -183,7 +183,10 @@ for the window's first frame and no more, so `shot` and the click steps
 draw a frame themselves (a click would otherwise hit-test that first
 frame); other steps still see it, and AeroSpace does not list the window. Move the window to AeroSpace workspace 4 the moment it
 appears (see the user's instructions); `render_to_image` still captures it
-there.
+there. Moved there, the window counts as occluded: it may be told it is
+hidden, and it draws no frames until a `shot` step draws one, so the focus
+view's terminal neither measures its grid nor connects. Repeat `show` after
+the move and take a throwaway shot before the ones that count.
 AeroSpace tiles the window to fill that workspace whatever size
 `gui-layout.json` kept, so for a shot at a given width, float it
 (`aerospace layout --window-id <id> floating`) and size it with a
@@ -218,8 +221,10 @@ its first start. Exit it with Ctrl+C Ctrl+C: killed twice in fullscreen,
 it turns fullscreen off by itself (`"fullscreenAutoDisabled":{"strikes":2}`
 in its `.claude.json`), and wheel tests then silently scroll 0 lines until
 that key is deleted.
-The script steps `drag`, `wheel`, `link`, `ime`, `hide` and `show` drive the
-terminal; `CORGI_GUI_LATENCY=1` logs key-to-surface and key-to-frame times,
+The script steps `drag`, `wheel`, `link`, `ime`, `hide`, `show`,
+`deactivate` and `activate` drive the terminal (a scripted window is never
+really active, so `activate` stands in for the user coming back to it);
+`CORGI_GUI_LATENCY=1` logs key-to-surface and key-to-frame times,
 `CORGI_GUI_DEBUG_ENDPOINT=1` each snapshot, request and answer, and
 `CORGI_GUI_URL_LOG=<file>` writes a clicked link there instead of opening a
 browser. Copy and paste use the real clipboard: keep the user's text and put
@@ -228,7 +233,9 @@ it back. To see what a user's own Herdr window shows meanwhile, attach
 integration questions take Esc; install nothing). A tab that a JSON focus
 call (`herdr workspace focus`) moved that window to is owned by no client
 until something is typed there, which is when a new connection could claim
-its size.
+its size. A client takes a tab's size from another by typing in it or by
+reporting that its terminal gained focus; to see who has it, have the pane
+print `stty size`, since every client lays the tab out at its own size.
 
 For a screenshot that needs no real flow, `--corgi` can name a small
 program instead: corgi-gui runs it with `serve …`, and any program that

@@ -709,7 +709,15 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
 - In `CorgiWindow`'s render, `window.line_height()` is the window's
   default (26 px), not the line height of the 13 px text the root div sets,
   which holds only inside that div; a size counted in lines of text, such
-  as a dialog's cap on its text field, takes the view's own (`text_line()`).
+  as a dialog's cap on its text field, takes the view's own (`text_line()`),
+  which follows the header's A−/A+ text size and is rounded to a whole
+  pixel, as GPUI rounds every line height it lays out.
+- The A−/A+ text size scales GPUI's rem size with it, so a pixel budget
+  that adds up rem spacing (`gap_*`, `p_*`, `py_*`) scales those terms too
+  (`rem_px()`), not only its lines of text; a height that depends on the
+  header's, toolbar's or status bar's is measured (as the overview's
+  column is, for the transcript's split) rather than estimated, since they
+  grow with the text and the header wraps.
 - A click on a row never scrolls the overview, so a double click lands on
   the row the first click selected; other selections scroll just far
   enough to show their row. The overview's children are the project cards,

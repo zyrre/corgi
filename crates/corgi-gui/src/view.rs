@@ -8,7 +8,8 @@ use corgi_core::protocol::{Activity, Agent, MergeOutcome, Project};
 use gpui::{
     AnyElement, ClickEvent, Context, CursorStyle, Div, FontWeight, Hsla, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, TextRun, Window, div, prelude::FluentBuilder, px, relative,
+    StatefulInteractiveElement, Styled, TextRun, Window, canvas, div, prelude::FluentBuilder, px,
+    relative,
 };
 
 use crate::{
@@ -16,8 +17,8 @@ use crate::{
     form::Row,
     format::{self, Piece, Tone},
     layout::{
-        CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, HEADER_HEIGHT, HEADER_PADDING,
-        PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
+        CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, FONT_SIZE, HEADER_HEIGHT,
+        HEADER_PADDING, PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
     rows::Pick,
     store::Connection,
@@ -26,14 +27,23 @@ use crate::{
     window::{CorgiWindow, Drag},
 };
 
-const TEXT_SIZE: f32 = 13.0;
+const TEXT_SIZE: f32 = FONT_SIZE;
+/// GPUI's rem at the default text size.
+const REM: f32 = 16.0;
 /// The space above a dialog, and the least below it.
 const DIALOG_TOP: f32 = 110.0;
 const DIALOG_BOTTOM: f32 = 24.0;
 /// The most lines a dialog's text field grows to before it scrolls.
 const FIELD_LINES: f32 = 8.0;
-/// A field box's padding and border, above and below its text.
-const FIELD_FRAME: f32 = 10.0;
+/// A field box's padding (`py_1`, in rems, so it follows the text size)
+/// and its border, above and below its text.
+const FIELD_PADDING: f32 = 8.0;
+const FIELD_BORDER: f32 = 2.0;
+/// A dialog's padding (`p_4`, in rems) and its border, above and below it.
+const DIALOG_PADDING: f32 = 32.0;
+const DIALOG_BORDER: f32 = 2.0;
+/// The transcript's divider, across the overview's column.
+const DIVIDER: f32 = 4.0;
 /// The body text's line height, in text sizes.
 const LINE_HEIGHT: f32 = 1.45;
 
@@ -57,6 +67,9 @@ impl Render for CorgiWindow {
         let dialog = self.dialogs.open.is_some();
         let viewport = window.viewport_size();
         let focus_view = self.focus_view.is_some();
+        // Spacing given in rems grows and shrinks with the text, as a page
+        // does when a browser zooms it.
+        window.set_rem_size(px(REM * self.layout.text_scale()));
 
         let body = if focus_view {
             // The terminal stays bright while `corgi serve` reconnects: it
@@ -101,8 +114,8 @@ impl Render for CorgiWindow {
             .bg(colors.background)
             .text_color(colors.roles.text)
             .font(self.font.clone())
-            .text_size(px(TEXT_SIZE))
-            .line_height(px(TEXT_SIZE * LINE_HEIGHT))
+            .text_size(self.scaled(TEXT_SIZE))
+            .line_height(self.scaled(TEXT_SIZE * LINE_HEIGHT))
             .on_key_down(cx.listener(|this, event, window, cx| {
                 if this.dialogs.open.is_some() {
                     this.dialog_key(event, window, cx);
@@ -171,15 +184,16 @@ impl CorgiWindow {
             .into_any_element()
     }
 
-    /// One cell of the window's own monospace font at the body text size, so
-    /// a fixed count of character cells (a usage card's content width) can be
-    /// laid out in real pixels, as the terminal's grid measures its own.
+    /// One cell of the window's own monospace font at the body text's size,
+    /// so a fixed count of character cells (a usage card's content width)
+    /// can be laid out in real pixels, as the terminal's grid measures its
+    /// own.
     fn monospace_cell_width(&self, window: &Window) -> f32 {
         window
             .text_system()
             .shape_line(
                 "M".into(),
-                px(TEXT_SIZE),
+                self.scaled(TEXT_SIZE),
                 &[TextRun {
                     len: 1,
                     font: self.font.clone(),
@@ -198,16 +212,20 @@ impl CorgiWindow {
 
     /// The dashboard's header in the same order: the corgi, the wordmark,
     /// then HERD and a card per plan, packed left at one height, and the
-    /// light/dark toggle at the right end. A window too narrow for them all
-    /// wraps the cards under the letters.
+    /// text size's buttons and the light/dark toggle at the right end. A
+    /// window too narrow for them all wraps the cards under the letters.
     fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         let now = self.store.now();
         let state = &self.store.state;
+        // A card's lines follow the text; its title row, height and least
+        // width keep the corgi's measures until larger text needs more.
+        let scale = self.layout.text_scale();
+        let grow = scale.max(1.0);
         let card_frame = |title: SharedString, color: Hsla, body: Div| {
             framed(
                 SharedString::from(format!("card-{title}")),
-                CARD_TITLE_ROW,
+                CARD_TITLE_ROW * grow,
                 color,
                 div()
                     .text_color(color)
@@ -216,10 +234,10 @@ impl CorgiWindow {
                     .into_any_element(),
                 None,
                 None,
-                body.line_height(px(CARD_LINE)),
+                body.line_height(px(CARD_LINE * scale)),
             )
             .flex_none()
-            .h(px(CARD_HEIGHT))
+            .h(px(CARD_HEIGHT * grow))
         };
         let herd_card = card_frame(
             "HERD".into(),
@@ -231,7 +249,7 @@ impl CorgiWindow {
                     .collect::<Vec<_>>(),
             ),
         )
-        .min_w(px(CARD_MIN_WIDTH));
+        .min_w(px(CARD_MIN_WIDTH * grow));
         // The usage card is as narrow as the dashboard's: a cell of padding
         // either side of its fixed content width, in the window's own
         // monospace font, so it never grows past that regardless of what a
@@ -296,7 +314,15 @@ impl CorgiWindow {
                     .child(herd_card)
                     .children(usage_cards),
             )
-            .child(self.appearance_toggle(cx))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_none()
+                    .child(self.font_button(false, cx))
+                    .child(self.font_button(true, cx))
+                    .child(self.appearance_toggle(cx)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -331,6 +357,43 @@ impl CorgiWindow {
                 this.toggle_appearance(cx);
                 cx.stop_propagation();
             }))
+    }
+
+    /// "A−" or "A+" left of the toggle, in the same pixel art: the
+    /// window's text a point smaller or `larger`. One at its end of the
+    /// range is greyed and takes no click.
+    fn font_button(&self, larger: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        let enabled = self.layout.can_step_font(larger);
+        let (id, art) = if larger {
+            ("font-larger", FONT_LARGER)
+        } else {
+            ("font-smaller", FONT_SMALLER)
+        };
+        let color = if enabled {
+            colors.roles.text
+        } else {
+            colors.roles.muted.opacity(0.5)
+        };
+        div()
+            .id(id)
+            .flex_none()
+            .p(px(ICON_PIXEL * 3.0))
+            .rounded_md()
+            .child(pixel_art(
+                art.iter()
+                    .map(|row| row.chars().map(|on| (on == '#').then_some(color)).collect()),
+                ICON_PIXEL,
+            ))
+            .when(enabled, |button| {
+                button
+                    .cursor(CursorStyle::PointingHand)
+                    .hover(|style| style.bg(colors.roles.keycap))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.step_font(larger, cx);
+                        cx.stop_propagation();
+                    }))
+            })
     }
 
     // ---- Toolbar ----
@@ -588,14 +651,43 @@ impl CorgiWindow {
 
     fn main_column(&self, window_height: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let transcript_open = self.layout.transcript_open;
-        // The header, toolbar and status bar take about this much.
-        let available = (window_height - 180.0).max(TRANSCRIPT_MIN * 2.0);
-        let transcript_height = self.layout.transcript_height_in(available);
+        // The column's height as last laid out, less the divider: the
+        // header, toolbar and status bar take more as the text grows, and
+        // the header wraps in a narrow window. Before the first layout, the
+        // window's less about what they take at today's text size.
+        let available = if self.main_column_height > 0.0 {
+            self.main_column_height - DIVIDER
+        } else {
+            (window_height - 180.0).max(TRANSCRIPT_MIN * 2.0)
+        };
+        let transcript_height = self.layout.transcript_height_in(available.max(0.0));
+        let entity = cx.entity().downgrade();
+        let measure = canvas(
+            move |bounds, _, cx| {
+                let height = f32::from(bounds.size.height);
+                let _ = entity.update(cx, |this, cx| {
+                    if (this.main_column_height - height).abs() >= 1.0 {
+                        this.main_column_height = height;
+                        cx.notify();
+                    }
+                });
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
         div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
+            // Nothing in it draws over the status bar, even for the frame
+            // before a new height is measured.
+            .overflow_hidden()
+            .child(measure)
             .child(self.overview(cx))
             .when(transcript_open, |column| {
                 column
@@ -737,7 +829,7 @@ impl CorgiWindow {
         });
         framed(
             SharedString::from(format!("heading-{}", project.group)),
-            TEXT_SIZE * LINE_HEIGHT,
+            TEXT_SIZE * LINE_HEIGHT * self.layout.text_scale(),
             colors.roles.rule,
             title,
             corner,
@@ -792,7 +884,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .px_1()
-                    .min_w(px(68.))
+                    .min_w(self.scaled(68.))
                     .flex()
                     .justify_center()
                     .bg(badge_color)
@@ -894,7 +986,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .flex_none()
-                    .w(px(12.))
+                    .w(self.scaled(12.))
                     .text_color(marker_color)
                     .child(format::marker(activity.kind)),
             )
@@ -997,7 +1089,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .flex_none()
-                    .w(px(12.))
+                    .w(self.scaled(12.))
                     .text_color(self.tone(format::marker_tone(entry.kind), None))
                     .child(format::marker(entry.kind)),
             )
@@ -1208,8 +1300,10 @@ impl CorgiWindow {
                                 .truncate()
                                 .child(agent.task.clone()),
                         )
+                        // The worker's row is in the overview, not under the
+                        // mouse: it scrolls into view.
                         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.select(pane_id.clone(), cx);
+                            this.select(pane_id.clone(), Pick::Reveal, cx);
                         })),
                 );
             }
@@ -1384,7 +1478,7 @@ impl CorgiWindow {
             .child(
                 div()
                     .flex_none()
-                    .w(px(12.))
+                    .w(self.scaled(12.))
                     .text_color(self.tone(format::marker_tone(activity.kind), None))
                     .child(format::marker(activity.kind)),
             )
@@ -1428,7 +1522,10 @@ impl CorgiWindow {
                 .w(px(4.))
                 .h_full()
                 .cursor(CursorStyle::ResizeLeftRight),
-            Split::Transcript => handle.h(px(4.)).w_full().cursor(CursorStyle::ResizeUpDown),
+            Split::Transcript => handle
+                .h(px(DIVIDER))
+                .w_full()
+                .cursor(CursorStyle::ResizeUpDown),
         }
     }
 
@@ -1601,7 +1698,7 @@ impl CorgiWindow {
                     // listener runs before its parent's, so the layer's
                     // never hears it. The dialog's own children heard it first.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .w(px(720.))
+                    .w(self.scaled(720.))
                     .max_w(relative(0.92))
                     .flex()
                     .flex_col()
@@ -1629,16 +1726,18 @@ impl CorgiWindow {
 
     /// The height of a line of the window's text, as its fields set it.
     fn text_line(&self) -> f32 {
-        TEXT_SIZE * LINE_HEIGHT
+        text_line(self.layout.text_scale())
     }
 
-    /// How many lines a dialog's text field grows to before it scrolls:
-    /// FIELD_LINES, fewer when the dialog's `others`, the rest of it at its
-    /// least, would not fit in `tallest` beside them.
+    /// `size` pixels of spacing given in rems (`gap_2`, `py_1`), which
+    /// follow the text size.
+    fn rem_px(&self, size: f32) -> f32 {
+        size * self.layout.text_scale()
+    }
+
+    /// How many lines a dialog's text field grows to before it scrolls.
     fn field_lines(&self, tallest: f32, others: f32) -> f32 {
-        ((tallest - others - FIELD_FRAME) / self.text_line())
-            .floor()
-            .clamp(1.0, FIELD_LINES)
+        field_lines(tallest, others, self.layout.text_scale())
     }
 
     /// A text field's box, `lines` of text tall at most: the field grows
@@ -1647,7 +1746,7 @@ impl CorgiWindow {
         div()
             .flex()
             .flex_col()
-            .max_h(px(lines * self.text_line() + FIELD_FRAME))
+            .max_h(px(field_height(lines, self.layout.text_scale())))
             .px_2()
             .py_1()
             .rounded_sm()
@@ -1691,16 +1790,19 @@ impl CorgiWindow {
         let colors = &self.colors;
         // The question gives way and scrolls, so the field and the hints
         // stay in view.
-        let tallest = dialog_room(window);
+        let tallest = dialog_room(window, self.layout.text_scale());
         // The field leaves room for the title, the hints, a sending or
         // error line, the gaps between them, and a question's first lines.
         let line = self.text_line();
         let question_least = if question.is_some() {
-            line * 3.0 + 18.0
+            line * 3.0 + self.rem_px(18.0)
         } else {
             0.0
         };
-        let field_lines = self.field_lines(tallest, line * 3.0 + 4.0 * 8.0 + 6.0 + question_least);
+        let field_lines = self.field_lines(
+            tallest,
+            line * 3.0 + self.rem_px(4.0 * 8.0 + 6.0) + question_least,
+        );
         div()
             .flex()
             .flex_col()
@@ -1760,8 +1862,9 @@ impl CorgiWindow {
         // The task leaves room for the other rows, an open list's first
         // lines, a note, the hints and the gaps between them.
         let task_lines = self.field_lines(
-            dialog_room(window),
-            (self.text_line() + 4.0) * (new.rows().len() + 6) as f32 + 4.0 * 8.0,
+            dialog_room(window, self.layout.text_scale()),
+            (self.text_line() + self.rem_px(4.0)) * (new.rows().len() + 6) as f32
+                + self.rem_px(4.0 * 8.0),
         );
         let mut rows = div().flex().flex_col();
         for row in new.rows() {
@@ -1811,18 +1914,18 @@ impl CorgiWindow {
                     .items_center()
                     .gap_2()
                     .px_1()
-                    .py(px(2.))
+                    .py(self.scaled(2.))
                     .rounded_sm()
                     .when(focused, |r| r.bg(colors.roles.focus_bar))
                     .child(
                         div()
-                            .w(px(12.))
+                            .w(self.scaled(12.))
                             .text_color(colors.roles.accent)
                             .child(if focused { "▶" } else { "" }),
                     )
                     .child(
                         div()
-                            .w(px(80.))
+                            .w(self.scaled(80.))
                             .flex_none()
                             .text_color(if focused {
                                 colors.roles.text
@@ -1889,7 +1992,7 @@ impl CorgiWindow {
         div()
             .flex()
             .flex_col()
-            .ml(px(104.))
+            .ml(self.scaled(104.))
             .mb_1()
             .p_1()
             .rounded_sm()
@@ -2141,9 +2244,36 @@ impl CorgiWindow {
 }
 
 /// How tall a dialog's content may be: what the window leaves below the
-/// dialog's top margin, its padding and frame (34) and a bottom margin.
-fn dialog_room(window: &Window) -> f32 {
-    f32::from(window.viewport_size().height) - DIALOG_TOP - 34.0 - DIALOG_BOTTOM
+/// dialog's top margin, its padding and frame and a bottom margin, with the
+/// text `scale` times its default size.
+fn dialog_room(window: &Window, scale: f32) -> f32 {
+    f32::from(window.viewport_size().height)
+        - DIALOG_TOP
+        - (DIALOG_PADDING * scale + DIALOG_BORDER)
+        - DIALOG_BOTTOM
+}
+
+/// The height of a line of the window's text at `scale` times its default
+/// size, rounded to a whole pixel as GPUI lays its lines out
+/// (`line_height_in_pixels`), so lines counted with it fill a box exactly.
+fn text_line(scale: f32) -> f32 {
+    (TEXT_SIZE * LINE_HEIGHT * scale).round()
+}
+
+/// A text field's box `lines` of text tall, with its padding and border.
+fn field_height(lines: f32, scale: f32) -> f32 {
+    lines * text_line(scale) + FIELD_PADDING * scale + FIELD_BORDER
+}
+
+/// How many lines a dialog's text field grows to before it scrolls, at
+/// text `scale` times its default size: FIELD_LINES, fewer when the
+/// dialog's `others`, the rest of it at its least, would not fit in
+/// `tallest` beside them.
+fn field_lines(tallest: f32, others: f32, scale: f32) -> f32 {
+    // A hair's tolerance, so room for exactly a line counts as one.
+    ((tallest - others - FIELD_PADDING * scale - FIELD_BORDER) / text_line(scale) + 1e-3)
+        .floor()
+        .clamp(1.0, FIELD_LINES)
 }
 
 fn section_title(text: String, color: Hsla) -> impl IntoElement {
@@ -2264,6 +2394,34 @@ const SUN: [&str; 11] = [
     ".....#.....",
 ];
 
+/// The text size's buttons: an A, and a minus or plus above its right.
+const FONT_SMALLER: [&str; 11] = [
+    "...........",
+    "...........",
+    "......#####",
+    "...........",
+    "...#.......",
+    "..#.#......",
+    "..#.#......",
+    ".#...#.....",
+    ".#####.....",
+    "#.....#....",
+    "#.....#....",
+];
+const FONT_LARGER: [&str; 11] = [
+    "........#..",
+    "........#..",
+    "......#####",
+    "........#..",
+    "...#....#..",
+    "..#.#......",
+    "..#.#......",
+    ".#...#.....",
+    ".#####.....",
+    "#.....#....",
+    "#.....#....",
+];
+
 /// Pixel art, one square of `size` per pixel, `None` left to the
 /// background. A run of one color is one box, so the art shows no seams
 /// between its squares.
@@ -2314,4 +2472,45 @@ fn wordmark_art(color: Hsla) -> Div {
             .map(|row| row.into_iter().map(|on| on.then_some(color)).collect()),
         PIXEL,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::{FONT_SIZE_MAX, FONT_SIZE_MIN};
+
+    #[test]
+    fn a_fields_line_cap_follows_the_text_size() {
+        let (small, large) = (FONT_SIZE_MIN / FONT_SIZE, FONT_SIZE_MAX / FONT_SIZE);
+        // With room to spare, the field grows to its eight lines at any
+        // size, and its box is eight lines of that size tall.
+        for scale in [small, 1.0, large] {
+            assert_eq!(field_lines(2000.0, 100.0, scale), FIELD_LINES);
+            let box_height = field_height(FIELD_LINES, scale);
+            assert_eq!(box_height, 8.0 * text_line(scale) + 8.0 * scale + 2.0);
+        }
+        // A line is as tall as GPUI lays it out: the root's line height,
+        // rounded to a pixel.
+        for scale in [small, 1.0, large] {
+            let root = f32::from(px(TEXT_SIZE * LINE_HEIGHT * scale));
+            assert_eq!(text_line(scale), root.round());
+        }
+        assert_eq!(
+            (text_line(small), text_line(1.0), text_line(large)),
+            (15.0, 19.0, 38.0)
+        );
+        // Room for exactly eight lines at today's size holds fewer at the
+        // largest, and still eight, no more, at the smallest.
+        let room = field_height(FIELD_LINES, 1.0) + 100.0;
+        assert_eq!(field_lines(room, 100.0, 1.0), FIELD_LINES);
+        assert_eq!(field_lines(room, 100.0, small), FIELD_LINES);
+        let fewer = field_lines(room, 100.0, large);
+        assert_eq!(
+            fewer, 3.0,
+            "the eight lines' room holds three at twice the size"
+        );
+        assert!(field_height(fewer, large) <= room - 100.0);
+        // A window too short for any line still gives the field one.
+        assert_eq!(field_lines(50.0, 100.0, large), 1.0);
+    }
 }
