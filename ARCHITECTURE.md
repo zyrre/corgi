@@ -690,6 +690,10 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   the dialog on a left mouse down and stops it there, so nothing under the
   layer hears it, and the dialog stops its own, so the layer never hears a
   click inside it, after the dialog's buttons and field have.
+- In `CorgiWindow`'s render, `window.line_height()` is the window's
+  default (26 px), not the line height of the 13 px text the root div sets,
+  which holds only inside that div; a size counted in lines of text, such
+  as a dialog's cap on its text field, takes the view's own (`text_line()`).
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still
