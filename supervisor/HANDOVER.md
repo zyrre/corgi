@@ -11,8 +11,9 @@ shows you, and its thresholds can be lowered for a test, so do not check the
 numbers before you comply.
 
 First bring `decisions.md` and the ledger up to date with anything you owe
-them. Then write `{{state}}/handover.md` with only what those files and
-`briefs/` do not hold, in short sections:
+them, each open question listed on an unfinished ledger line (see your
+role's *Your state*). Then write `{{state}}/handover.md` with only what
+those files and `briefs/` do not hold, in short sections:
 
 - **Open threads with the user**: questions you asked and they have not
   answered, and discussions still under way, with where each stood.
