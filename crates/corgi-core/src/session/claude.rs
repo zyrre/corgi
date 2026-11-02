@@ -11,8 +11,8 @@ use super::{
     SessionFacts, TAIL_STEPS, TASK_HEAD_BYTES, context_percent,
     tail::{Fold, Head, Tail},
     text::{
-        Conversation, Event, assistant_kind, is_spoken, record_effort, spoken_text, task_prompt,
-        tool_call, unwrap_pasted,
+        Conversation, Event, Mark, assistant_kind, is_spoken, record_effort, spoken_text,
+        task_prompt, tool_call, unwrap_pasted,
     },
 };
 use crate::{
@@ -121,6 +121,7 @@ impl ClaudeScan {
             message: self.conversation.message(),
             tool: self.conversation.tool(),
             report: self.conversation.report(),
+            turn: self.conversation.turn(),
             last_activity: self.touched_at,
             ..SessionFacts::default()
         };
@@ -174,22 +175,36 @@ impl Fold for ClaudeScan {
 /// Claude Code writes one record per turn and one content block per thing
 /// that turn contained: `text` and `thinking` blocks for what was said,
 /// `tool_use` blocks for tools. Records of subagents and the meta messages the
-/// CLI inserts for itself are not part of the conversation.
+/// CLI inserts for itself are not part of the conversation, though a meta
+/// message, like any user record holding text, starts a turn: Claude Code
+/// starts one with another session's message or a scheduled task. A
+/// `turn_duration` record follows the turn's last reply and ends it.
 pub fn claude_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
-    if record["isSidechain"] == true || record["isMeta"] == true {
+    if record["isSidechain"] == true {
         return;
     }
     let content = &record["message"]["content"];
+    let meta = record["isMeta"] == true;
     match record["type"].as_str() {
         Some("user") => {
             let spoken = match content.as_str() {
+                _ if meta => None,
                 Some(text) => Some(unwrap_pasted(text)).filter(|text| is_spoken(text)),
                 None => spoken_text(content, "text").map(Cow::Borrowed),
             };
-            if let Some(text) = spoken {
-                emit(Event::said(ActivityKind::Prompt, text));
+            // A tool result is the only user record that holds no text.
+            let holds_text = content.is_string()
+                || content
+                    .as_array()
+                    .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "text"));
+            match spoken {
+                Some(text) => emit(Event::said(ActivityKind::Prompt, text)),
+                None if holds_text => emit(Event::marks(Mark::Start)),
+                None => {}
             }
         }
+        Some("system") if record["subtype"] == "turn_duration" => emit(Event::marks(Mark::End)),
+        _ if meta => {}
         Some("assistant") => {
             for block in content.as_array().into_iter().flatten() {
                 match block["type"].as_str() {

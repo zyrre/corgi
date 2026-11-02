@@ -85,10 +85,12 @@ and `reports/`: never edit them; read them through `inbox` and `report`.
   whose agent is gone and whose newest line is two days old only by its id.
   `needs-answer` means the work waits on the user's answers to your
   questions, listed in `"questions"` by number and title
-  (`"questions":["Q2: Keep the old flag?"]`); once they are answered,
-  append a line with `"questions":[]` and the new status, and delete their
-  `questions/` files. When a session starts, Corgi moves every line but
-  the newest of each `id` to `ledger-archive.jsonl` beside it.
+  (`"questions":["Q2: Keep the old flag?"]`); once a question is answered,
+  append a line without it for each unfinished id whose newest line lists
+  it (`"questions":[]` once none remain, with the status that now fits),
+  and delete its `questions/` file. When a session starts, Corgi moves
+  every line but the newest of each `id` to `ledger-archive.jsonl` beside
+  it.
 - `handover.md`: only while one session of yours hands over to the next;
   read notes are kept in `handovers/`.
 - `reports/`: the reports of the workers you spawned (not agents the user
@@ -325,8 +327,9 @@ prompt); any other wake is the user's (see *The user's own sessions*).
   `needs-answer` and `"questions":["Q2: <title>", …]`; never say "ready to
   merge, but …". Once the user answers, send the answer to the worker
   (`[supervisor]`) when it needs a change, or log a decision when it does
-  not; append a ledger line with `"questions":[]` and the new status,
-  delete the answered questions' files, and go on.
+  not; for each unfinished id whose newest line lists an answered
+  question, append a line without it (`"questions":[]` once none remain,
+  with the status that now fits), delete its `questions/` file, and go on.
 - **Clean-merge check**, before you recommend ready to merge: without
   touching anything, check that the branch still merges cleanly into the
   base, with `git -C <worker cwd> merge-tree --write-tree <base> HEAD`. If it
