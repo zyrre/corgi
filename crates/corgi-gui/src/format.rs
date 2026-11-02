@@ -4,7 +4,7 @@
 
 use corgi_core::{
     model::{AgentState, cache_countdown, compact_tokens},
-    protocol::{ActivityKind, Agent, Cache, UsageCard, WorkerCounts},
+    protocol::{ActivityKind, Agent, Cache, MergeRequest, UsageCard, WorkerCounts},
     time::LocalTime,
     usage::UsageWindow,
 };
@@ -178,6 +178,30 @@ pub fn held(count: usize) -> Option<Piece> {
         let items = if count == 1 { "item" } else { "items" };
         Piece::new(format!("⏸ {count} inbox {items} held"), Tone::Warning).bold()
     })
+}
+
+/// The side panel's heading over a project's open merge requests, `None`
+/// when it has none, which hides the section.
+pub fn merge_requests_title(requests: &[MergeRequest]) -> Option<String> {
+    (!requests.is_empty()).then(|| format!("OPEN MRS ({})", requests.len()))
+}
+
+/// The title of an open merge request as its row shows it: a draft's
+/// `Draft:`, `[Draft]` or `WIP:` prefix is left to the draft marker.
+pub fn merge_request_title(request: &MergeRequest) -> String {
+    let title = request.title.trim();
+    if !request.draft {
+        return title.to_string();
+    }
+    for prefix in ["draft:", "[draft]", "(draft)", "wip:", "[wip]"] {
+        if title.len() >= prefix.len()
+            && title.is_char_boundary(prefix.len())
+            && title[..prefix.len()].eq_ignore_ascii_case(prefix)
+        {
+            return title[prefix.len()..].trim_start().to_string();
+        }
+    }
+    title.to_string()
 }
 
 /// The HERD counts over every agent: working, blocked, merge, done, idle.
@@ -517,6 +541,41 @@ mod tests {
         assert_eq!(held(0), None);
         assert_eq!(held(1).unwrap().text, "⏸ 1 inbox item held");
         assert_eq!(held(3).unwrap().tone, Tone::Warning);
+    }
+
+    #[test]
+    fn open_merge_requests_show_only_when_there_are_some_and_drafts_lose_their_prefix() {
+        let request = |title: &str, draft: bool| MergeRequest {
+            id: "!1677".into(),
+            title: title.into(),
+            branch: "worktree/green-forest-025b".into(),
+            draft,
+            url: "https://gitlab.example.com/g/r/-/merge_requests/1677".into(),
+        };
+        assert_eq!(merge_requests_title(&[]), None);
+        assert_eq!(
+            merge_requests_title(&[request("A", false), request("B", true)]).as_deref(),
+            Some("OPEN MRS (2)")
+        );
+        assert_eq!(merge_request_title(&request("Fix it", false)), "Fix it");
+        assert_eq!(
+            merge_request_title(&request("Draft: Fix it", true)),
+            "Fix it"
+        );
+        assert_eq!(
+            merge_request_title(&request("DRAFT: Fix it", true)),
+            "Fix it"
+        );
+        assert_eq!(
+            merge_request_title(&request("[Draft] Fix it", true)),
+            "Fix it"
+        );
+        // Only a draft's prefix goes; a draft without one keeps its title.
+        assert_eq!(
+            merge_request_title(&request("Draft: kept", false)),
+            "Draft: kept"
+        );
+        assert_eq!(merge_request_title(&request("Dräft", true)), "Dräft");
     }
 
     #[test]

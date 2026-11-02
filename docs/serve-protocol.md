@@ -219,7 +219,9 @@ Exactly one per request, with its `id`.
  "workers":{"total":1,"blocked":1,"merge":0,"working":0,"done":0,"idle":0,"unknown":0},
  "blocked":[{"pane_id":"w2:p1","task":"Fix the forecast","waiting_on":"Waiting for your input"}],
  "questions":[{"id":"Q4","title":"Keep the old flag?","agent":"w-fix"}],
- "held":0}
+ "held":0,
+ "merge_requests":[{"id":"!1677","title":"Fix the forecast","branch":"worktree/green-forest-025b",
+                    "draft":false,"url":"https://gitlab.example.com/team/weather/-/merge_requests/1677"}]}
 ```
 
 - `card` is true for a project led by its running supervisor, which the
@@ -241,6 +243,17 @@ Exactly one per request, with its `id`.
   Show it: no window may have been open when it happened. A refusal before
   anything was typed (the supervisor not the pane's foreground process,
   blocked, gone) holds nothing; those items go out at a later pass.
+- `merge_requests` are the open merge requests (GitLab, `id` `!1677`) or
+  pull requests (GitHub, `id` `#12`) whose source `branch` is a linked
+  worktree's of the project or one its supervisor's ledger or ledger
+  archive names, as `glab mr list` or `gh pr list` last listed them, run as
+  the user where `serve` runs, every three minutes and when the projects
+  change. The forge is told from the `origin` remote's host: GitLab when
+  its name has `gitlab` or `glab` is configured for it, GitHub when it has
+  `github`. The field is left out when there are none, and when the CLI is
+  missing, not logged in or fails, or the remote is neither; a merged or
+  closed one drops out at the next listing. It arrives in a delta after
+  the snapshot, never holding one up.
 
 ### `UsageCard`: the plan-usage header
 

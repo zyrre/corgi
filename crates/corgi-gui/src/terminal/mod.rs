@@ -30,7 +30,7 @@ use corgi_core::{
 };
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    AppContext, Bounds, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Font,
+    App, AppContext, Bounds, ClipboardItem, Context, CursorStyle, EventEmitter, FocusHandle, Font,
     InteractiveElement, IntoElement, KeyDownEvent, Modifiers, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollWheelEvent,
     SharedString, Styled, Task, Window, canvas, div, fill, px, rgb,
@@ -1064,7 +1064,7 @@ fn debug(line: impl FnOnce() -> String) {
 /// Opens `url` in the system's browser. A capture build given
 /// `CORGI_GUI_URL_LOG` writes it to that file instead, so a scripted check
 /// opens nothing on the desktop.
-fn open_url(url: &str, cx: &mut Context<TerminalView>) {
+pub(crate) fn open_url(url: &str, cx: &App) {
     #[cfg(feature = "capture")]
     if let Some(log) = std::env::var_os("CORGI_GUI_URL_LOG") {
         use std::io::Write;

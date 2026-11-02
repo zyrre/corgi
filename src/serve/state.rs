@@ -142,6 +142,7 @@ pub(super) fn projects(
                     .collect(),
                 questions,
                 held,
+                merge_requests: Vec::new(),
             }
         })
         .collect()
