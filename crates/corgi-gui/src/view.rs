@@ -8,7 +8,8 @@ use corgi_core::protocol::{Activity, Agent, MergeOutcome, Project};
 use gpui::{
     AnyElement, ClickEvent, Context, CursorStyle, Div, FontWeight, Hsla, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, TextRun, Window, div, prelude::FluentBuilder, px, relative,
+    StatefulInteractiveElement, Styled, TextRun, Window, canvas, div, prelude::FluentBuilder, px,
+    relative,
 };
 
 use crate::{
@@ -40,6 +41,8 @@ const FIELD_BORDER: f32 = 2.0;
 /// A dialog's padding (`p_4`, in rems) and its border, above and below it.
 const DIALOG_PADDING: f32 = 32.0;
 const DIALOG_BORDER: f32 = 2.0;
+/// The transcript's divider, across the overview's column.
+const DIVIDER: f32 = 4.0;
 /// The body text's line height, in text sizes.
 const LINE_HEIGHT: f32 = 1.45;
 
@@ -645,14 +648,43 @@ impl CorgiWindow {
 
     fn main_column(&self, window_height: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let transcript_open = self.layout.transcript_open;
-        // The header, toolbar and status bar take about this much.
-        let available = (window_height - 180.0).max(TRANSCRIPT_MIN * 2.0);
-        let transcript_height = self.layout.transcript_height_in(available);
+        // The column's height as last laid out, less the divider: the
+        // header, toolbar and status bar take more as the text grows, and
+        // the header wraps in a narrow window. Before the first layout, the
+        // window's less about what they take at today's text size.
+        let available = if self.main_column_height > 0.0 {
+            self.main_column_height - DIVIDER
+        } else {
+            (window_height - 180.0).max(TRANSCRIPT_MIN * 2.0)
+        };
+        let transcript_height = self.layout.transcript_height_in(available.max(0.0));
+        let entity = cx.entity().downgrade();
+        let measure = canvas(
+            move |bounds, _, cx| {
+                let height = f32::from(bounds.size.height);
+                let _ = entity.update(cx, |this, cx| {
+                    if (this.main_column_height - height).abs() >= 1.0 {
+                        this.main_column_height = height;
+                        cx.notify();
+                    }
+                });
+            },
+            |_, (), _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full();
         div()
+            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
+            // Nothing in it draws over the status bar, even for the frame
+            // before a new height is measured.
+            .overflow_hidden()
+            .child(measure)
             .child(self.overview(cx))
             .when(transcript_open, |column| {
                 column
@@ -1390,7 +1422,10 @@ impl CorgiWindow {
                 .w(px(4.))
                 .h_full()
                 .cursor(CursorStyle::ResizeLeftRight),
-            Split::Transcript => handle.h(px(4.)).w_full().cursor(CursorStyle::ResizeUpDown),
+            Split::Transcript => handle
+                .h(px(DIVIDER))
+                .w_full()
+                .cursor(CursorStyle::ResizeUpDown),
         }
     }
 
@@ -2119,9 +2154,10 @@ fn dialog_room(window: &Window, scale: f32) -> f32 {
 }
 
 /// The height of a line of the window's text at `scale` times its default
-/// size.
+/// size, rounded to a whole pixel as GPUI lays its lines out
+/// (`line_height_in_pixels`), so lines counted with it fill a box exactly.
 fn text_line(scale: f32) -> f32 {
-    TEXT_SIZE * LINE_HEIGHT * scale
+    (TEXT_SIZE * LINE_HEIGHT * scale).round()
 }
 
 /// A text field's box `lines` of text tall, with its padding and border.
@@ -2353,8 +2389,16 @@ mod tests {
             let box_height = field_height(FIELD_LINES, scale);
             assert_eq!(box_height, 8.0 * text_line(scale) + 8.0 * scale + 2.0);
         }
-        assert_eq!(text_line(1.0), TEXT_SIZE * LINE_HEIGHT);
-        assert_eq!(text_line(large), 2.0 * text_line(1.0));
+        // A line is as tall as GPUI lays it out: the root's line height,
+        // rounded to a pixel.
+        for scale in [small, 1.0, large] {
+            let root = f32::from(px(TEXT_SIZE * LINE_HEIGHT * scale));
+            assert_eq!(text_line(scale), root.round());
+        }
+        assert_eq!(
+            (text_line(small), text_line(1.0), text_line(large)),
+            (15.0, 19.0, 38.0)
+        );
         // Room for exactly eight lines at today's size holds fewer at the
         // largest, and still eight, no more, at the smallest.
         let room = field_height(FIELD_LINES, 1.0) + 100.0;

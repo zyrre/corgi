@@ -78,6 +78,9 @@ pub struct CorgiWindow {
     pub prompt_input: Entity<TextInput>,
     pub task_input: Entity<TextInput>,
     pub overview_scroll: ScrollHandle,
+    /// The overview's column as last laid out, the transcript's split
+    /// included; 0 before the first layout.
+    pub main_column_height: f32,
     pub transcript_scroll: ScrollHandle,
     /// The answer box's question text, back at its top for each question.
     pub question_scroll: ScrollHandle,
@@ -222,6 +225,7 @@ impl CorgiWindow {
             prompt_input,
             task_input,
             overview_scroll: ScrollHandle::new(),
+            main_column_height: 0.0,
             transcript_scroll: ScrollHandle::new(),
             question_scroll: ScrollHandle::new(),
             drag: None,

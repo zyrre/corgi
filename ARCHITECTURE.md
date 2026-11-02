@@ -694,8 +694,14 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   default (26 px), not the line height of the 13 px text the root div sets,
   which holds only inside that div; a size counted in lines of text, such
   as a dialog's cap on its text field, takes the view's own (`text_line()`),
-  which follows the header's A−/A+ text size, as do the gaps given in rems
-  that the budget adds (`rem_px()`).
+  which follows the header's A−/A+ text size and is rounded to a whole
+  pixel, as GPUI rounds every line height it lays out.
+- The A−/A+ text size scales GPUI's rem size with it, so a pixel budget
+  that adds up rem spacing (`gap_*`, `p_*`, `py_*`) scales those terms too
+  (`rem_px()`), not only its lines of text; a height that depends on the
+  header's, toolbar's or status bar's is measured (as the overview's
+  column is, for the transcript's split) rather than estimated, since they
+  grow with the text and the header wraps.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still
