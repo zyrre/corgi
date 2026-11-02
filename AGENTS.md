@@ -179,6 +179,11 @@ key dispatched inside that lease panics when its listener updates the view.
 A scripted click (`click:X,Y`, `right:X,Y`, `double:X,Y`) moves the mouse to
 the point before pressing: without the move, the elements under it are not
 hovered and the click reaches none of them.
+The step `scroll` draws a frame and logs the overview's scroll offset, the
+selected row and the focus view's agent: a click on a row must leave the
+offset alone, and a key scroll it only as far as the row's edge
+(`src/rows.rs`). A selection that scrolls moves the offset while the frame is
+prepainted, so read it with `scroll`, not straight after a `key`.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 

@@ -19,6 +19,7 @@ use crate::{
         CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, HEADER_HEIGHT, HEADER_PADDING,
         PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
+    rows::Pick,
     store::Connection,
     terminal::keys,
     theme,
@@ -357,7 +358,9 @@ impl CorgiWindow {
             ("m", "Merge", can_merge, |this, _, cx| this.merge_check(cx)),
             (
                 "t",
-                if tagged { "Untag" } else { "Tag merge" },
+                // As wide as each other, so selecting a tagged row cannot
+                // rewrap the toolbar and move the overview under the mouse.
+                if tagged { "Untag    " } else { "Tag merge" },
                 has_agent,
                 |this, _, cx| this.toggle_tag(cx),
             ),
@@ -599,7 +602,10 @@ impl CorgiWindow {
 
     fn overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let state = &self.store.state;
+        // Prepainted after its cards, which record where their rows are.
+        let (rows, scroll) = (self.rows.clone(), self.overview_scroll.clone());
         let mut list = div()
+            .on_children_prepainted(move |_, window, _| rows.apply(&scroll, window))
             .id("overview")
             .flex()
             .flex_col()
@@ -626,13 +632,18 @@ impl CorgiWindow {
     fn project(&self, project: &Project, cx: &mut Context<Self>) -> AnyElement {
         let colors = &self.colors;
         let collapsed = project.card && self.collapsed.contains(&project.group);
-        let rows: Vec<AnyElement> = project
+        let agents: Vec<&Agent> = project
             .agents
             .iter()
             .filter(|id| !collapsed || project.supervisor.as_deref() == Some(id.as_str()))
             .filter_map(|id| self.store.agent(id))
+            .collect();
+        let ids: Vec<String> = agents.iter().map(|agent| agent.pane_id.clone()).collect();
+        let rows: Vec<AnyElement> = agents
+            .into_iter()
             .map(|agent| self.agent_row(agent, cx))
             .collect();
+        let places = self.rows.clone();
         let title_color = if project.card {
             colors.supervisor()
         } else {
@@ -734,7 +745,8 @@ impl CorgiWindow {
                 .px_2()
                 .pb_2()
                 .children(rows)
-                .children(footer),
+                .children(footer)
+                .on_children_prepainted(move |bounds, _, _| places.record(&ids, &bounds)),
         )
         .id(SharedString::from(format!("project-{}", project.group)))
         // A right click anywhere in the frame collapses or expands it,
@@ -843,7 +855,7 @@ impl CorgiWindow {
             .child(self.activity_line(&agent.message, 2, selected))
             .child(self.activity_line(&agent.tool, 1, selected))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                this.select(pane_id.clone(), cx);
+                this.select(pane_id.clone(), Pick::Click, cx);
                 window.focus(&this.focus, cx);
                 if event.click_count() == 2 {
                     this.open_agent(pane_id.clone(), window, cx);
@@ -1124,7 +1136,7 @@ impl CorgiWindow {
                                     if this.focus_view.is_some() {
                                         this.open_agent(pane_id.clone(), window, cx)
                                     } else {
-                                        this.select(pane_id.clone(), cx)
+                                        this.select(pane_id.clone(), Pick::Reveal, cx)
                                     }
                                 },
                             )),
