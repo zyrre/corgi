@@ -22,6 +22,8 @@
 //! - `glyphs:TEXT` logs the font each character of TEXT draws from in the
 //!   focus view's terminal: its own font, a fallback, or one the system
 //!   picked;
+//! - `scroll` draws a frame and logs the overview's scroll offset, the
+//!   selected row and the focus view's agent;
 //! - `shot:NAME` writes `NAME.png`, the window as last drawn;
 //! - `quit` ends the app.
 //!
@@ -248,6 +250,21 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                         if let Ok(root) = root.downcast::<CorgiWindow>() {
                             let font = root.read(cx).terminal.read(cx).font().clone();
                             eprintln!("capture: {}", glyph_fonts(&font, argument, window));
+                        }
+                    });
+                }
+                "scroll" => {
+                    let _ = cx.update_window(any, |root, window, cx| {
+                        // A selection scrolls as this frame is prepainted.
+                        window.draw(cx).clear(cx);
+                        if let Ok(root) = root.downcast::<CorgiWindow>() {
+                            let root = root.read(cx);
+                            eprintln!(
+                                "capture: overview offset {}, selected {:?}, focus view {:?}",
+                                f32::from(root.overview_scroll.offset().y),
+                                root.selected,
+                                root.focus_view,
+                            );
                         }
                     });
                 }

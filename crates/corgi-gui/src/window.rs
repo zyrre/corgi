@@ -17,6 +17,7 @@ use crate::{
     layout::{Layout, Split},
     link::{Backoff, Link, LinkEvent},
     options::Options,
+    rows::{Pick, Rows},
     store::{Closing, Connection, Outbox, Purpose, Received, Store},
     terminal::{
         Target, TerminalEvent, TerminalView,
@@ -78,6 +79,8 @@ pub struct CorgiWindow {
     pub prompt_input: Entity<TextInput>,
     pub task_input: Entity<TextInput>,
     pub overview_scroll: ScrollHandle,
+    /// Where the overview's rows were drawn, to scroll one into view.
+    pub rows: Rows,
     pub transcript_scroll: ScrollHandle,
     /// The answer box's question text, back at its top for each question.
     pub question_scroll: ScrollHandle,
@@ -215,6 +218,7 @@ impl CorgiWindow {
             prompt_input,
             task_input,
             overview_scroll: ScrollHandle::new(),
+            rows: Rows::default(),
             transcript_scroll: ScrollHandle::new(),
             question_scroll: ScrollHandle::new(),
             drag: None,
@@ -425,36 +429,15 @@ impl CorgiWindow {
         self.sync_watch();
     }
 
-    pub fn select(&mut self, pane_id: String, cx: &mut Context<Self>) {
+    /// Selects `pane_id`'s row. A click on it leaves the overview where it
+    /// is, so the row stays under the mouse; any other `pick` scrolls just
+    /// enough to show the row in full.
+    pub fn select(&mut self, pane_id: String, pick: Pick, cx: &mut Context<Self>) {
+        self.rows.pick(&pane_id, pick);
         self.selected = Some(pane_id);
         self.picked = true;
-        if let Some(index) = self
-            .visible_agents()
-            .iter()
-            .position(|agent| Some(&agent.pane_id) == self.selected.as_ref())
-        {
-            self.scroll_to_row(index);
-        }
         self.sync_watch();
         cx.notify();
-    }
-
-    fn scroll_to_row(&self, index: usize) {
-        // The overview's children are its projects; find the selected
-        // agent's project.
-        let Some(selected) = self.selected.as_deref() else {
-            return;
-        };
-        let _ = index;
-        if let Some(project) = self
-            .store
-            .state
-            .projects
-            .iter()
-            .position(|project| project.agents.iter().any(|id| id == selected))
-        {
-            self.overview_scroll.scroll_to_item(project);
-        }
     }
 
     fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -472,7 +455,7 @@ impl CorgiWindow {
             .map_or(before, |at| at as isize);
         let next = (at + delta).clamp(0, agents.len() as isize - 1) as usize;
         let pane_id = agents[next].pane_id.clone();
-        self.select(pane_id, cx);
+        self.select(pane_id, Pick::Reveal, cx);
     }
 
     /// Asks `corgi serve` to read the selected agent's transcript while the
@@ -610,7 +593,7 @@ impl CorgiWindow {
         };
         let moved = flip_card(&mut self.collapsed, project, self.selected.as_deref());
         if let Some(supervisor) = moved {
-            self.select(supervisor, cx);
+            self.select(supervisor, Pick::Reveal, cx);
         }
         self.reconcile(cx);
         cx.notify();
@@ -645,7 +628,11 @@ impl CorgiWindow {
         let Some(agent) = self.store.agent(&pane_id).cloned() else {
             return;
         };
-        self.select(pane_id.clone(), cx);
+        // A double click selected the row with its first click, and Enter
+        // acts on the selected row: neither moves the overview.
+        if self.selected.as_deref() != Some(pane_id.as_str()) {
+            self.select(pane_id.clone(), Pick::Reveal, cx);
+        }
         self.focus_view = Some(pane_id);
         let target = Target {
             pane_id: agent.pane_id,
@@ -989,7 +976,7 @@ impl CorgiWindow {
                     // A card collapsed still shows its supervisor.
                     self.collapsed.remove(&agent.project_group);
                 }
-                self.select(pane_id, cx);
+                self.select(pane_id, Pick::Reveal, cx);
             }
             Followup::Form(_) => {}
         }

@@ -12,6 +12,7 @@ mod layout;
 mod link;
 mod options;
 mod question;
+mod rows;
 mod store;
 mod terminal;
 mod text_input;
