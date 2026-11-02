@@ -683,6 +683,10 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   `on_aux_click` also gets the right clicks that land on its rows. A
   nested element's `on_click` that calls `cx.stop_propagation()` does stop
   its parent's `on_click`, which the question card's × relies on.
+- In `CorgiWindow`'s render, `window.line_height()` is the window's
+  default (26 px), not the line height of the 13 px text the root div sets,
+  which holds only inside that div; a size counted in lines of text, such
+  as a dialog's cap on its text field, takes the view's own (`text_line()`).
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the transcript; messages are still
