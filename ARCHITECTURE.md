@@ -591,6 +591,21 @@ when stdin closes and no command is still running.
   where the protocol runs. It also computes
   a delta: rows and projects replaced whole by key, removals, and the order
   whenever it changed.
+- `forge.rs` lists each project's open merge requests (GitLab) or pull
+  requests (GitHub) with `glab mr list` or `gh pr list` as the user, where
+  `serve` runs (so over `--ssh` on the remote host), on a thread of its own
+  every three minutes and whenever the projects change; the snapshot path
+  never waits on it, and the last answer is kept per root and laid onto the
+  projects as `merge_requests`. The forge is told from `origin`'s host (its
+  name has `gitlab` or `github`, or `glab`'s `config.yml` lists it, for a
+  self-hosted GitLab under any name). Only those whose source branch is a
+  linked worktree's or one the supervisor's `ledger.jsonl` or
+  `ledger-archive.jsonl` names are kept: the archive holds the reported
+  work whose MRs still wait for review. A missing or logged-out CLI, a
+  failed call or another forge leaves the field out, and logs why once
+  each to stderr only with `CORGI_SERVE_DEBUG` set, since the GUI shows
+  the child's stderr. Each call is killed after 30 s, and its output read
+  as it comes, since a list of 30 GitLab MRs outgrows a pipe's buffer.
 - `commands.rs` maps each command onto the core flow the dashboard's key
   runs: `prompt_agent` (never retried, never echoing the text), the
   new-agent form's presets and `launch::new_agent_plan` then
@@ -625,8 +640,9 @@ into `corgi_core::protocol`'s types and keeps its copy of the state with
 `State::apply`. Its layout is fixed, plain GPUI with no dock: the header
 (the brand's pixel corgi, the HERD counts, a card per plan), a toolbar, the
 overview of project cards and rows, the selected agent's session under it,
-the side panel with the selected project's supervisor, its numbered
-questions and its blocked workers, and a status bar. It opens with every
+the side panel with the selected project's supervisor, its workers ready
+to merge, its numbered questions, its open merge requests (a click opens
+one in the browser) and its blocked workers, and a status bar. It opens with every
 project card collapsed and no row selected, the session pane empty, until
 a key or a click picks a row; from then on, a selected row that goes gives
 way to the first. A card the window has not shown before, or any card after
@@ -1755,7 +1771,8 @@ threads" section of the newest note in `handovers/`, labelled with its date
 as the previous session's; every ledger id whose
 newest line is not `merged`, `abandoned` or `done` (finished work with
 nothing to merge), joined by agent name with the running agents (a missing
-one shows `**NOT RUNNING**`); the last 10 finished ids; the newest
+one shows `**NOT RUNNING**`, an id without an agent, such as a question
+about a plan, `no worker`); the last 10 finished ids; the newest
 decisions in full, whole entries up to 8 KB but at least 3; the titles of
 the rest, newest first up to 3 KB, and a line counting any beyond; and a
 footer with the number of superseded entries hidden, how to read one in full,

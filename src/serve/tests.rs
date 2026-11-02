@@ -26,15 +26,18 @@ use corgi_core::{
     inbox::{Inbox, Kind},
     projects::ProjectMemory,
     protocol::{
-        Change, Command as Wire, MergeOutcome, PaletteSet, Reply, ReplyResult, ServerMessage,
-        State, ThemeColors,
+        Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply, ReplyResult,
+        ServerMessage, State, ThemeColors,
     },
     test_support::{ScratchDir, fake_herdr},
     waker::SupervisorWaker,
 };
 use serde_json::{Value, json};
 
-use super::{Event, Options, Output, Server};
+use super::{
+    Event, Options, Output, Server,
+    forge::{self, ForgeCli},
+};
 
 /// A Herdr that answers every connection until it is dropped.
 struct FakeHerdr {
@@ -234,6 +237,11 @@ impl Session {
     /// A server on `herdr` keeping its state, inboxes and selection in
     /// `scratch`, refreshing only when asked.
     fn start(herdr: &FakeHerdr, scratch: &Path) -> Self {
+        Self::start_with_forge(herdr, scratch, None)
+    }
+
+    /// The same, asking the forges through `forge`.
+    fn start_with_forge(herdr: &FakeHerdr, scratch: &Path, forge: Option<ForgeCli>) -> Self {
         let client = HerdrClient::from_socket_path(&herdr.socket)
             .with_marker_record(scratch.join("markers.json"));
         let inboxes = SupervisorWaker::in_dir(&scratch.join("state")).inboxes();
@@ -250,6 +258,7 @@ impl Session {
             palette: fixed_palette,
             log: None,
             refresh_interval: Duration::from_secs(3600),
+            forge,
         };
         let (events, receiver) = mpsc::channel();
         let (sender, output) = mpsc::channel();
@@ -504,6 +513,41 @@ fn the_first_lines_are_the_hello_and_a_snapshot_of_rows_cards_and_questions() {
     assert_eq!(projects[1]["scratch"], true);
     assert_eq!(projects[1]["card"], false);
     assert_eq!(projects[1]["root"], "");
+    session.close();
+}
+
+#[test]
+fn a_question_about_a_plan_is_listed_with_its_text_and_no_worker() {
+    let scratch = ScratchDir::new("serve-plan-question");
+    let (repo, worktree) = repository(&scratch);
+    let dir = scratch.join("state").join("weather");
+    fs::create_dir_all(dir.join("questions")).unwrap();
+    fs::write(
+        dir.join("ledger.jsonl"),
+        concat!(
+            r#"{"id":"20261102-plan-mrs","agent":"","status":"needs-answer","questions":["Q52: Which MRs?"],"summary":"Plan: MRs panel"}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let asked = "### Q52: Which MRs?   [blocks: plan \"MRs panel\"]\n\
+                 Context: none yet.\n\
+                 Options:\n  A. Mine.\n  B. All.\n\
+                 Recommendation: A.\n\
+                 Until answered: no brief.";
+    fs::write(dir.join("questions").join("Q52.md"), asked).unwrap();
+    let herdr = FakeHerdr::start("serve-planq", herd(&repo, &worktree, "idle"));
+    let session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    assert_eq!(
+        state.projects[0].questions,
+        [Question {
+            id: "Q52".into(),
+            title: "Which MRs?".into(),
+            agent: String::new(),
+            text: asked.into(),
+        }]
+    );
     session.close();
 }
 
@@ -1056,4 +1100,207 @@ fn close_tag_focus_edit_and_digest_drive_their_flows() {
         (json!(false), json!(true))
     );
     session.close();
+}
+
+/// Each call a canned forge took: its program, arguments and directory.
+type ForgeCalls = Arc<Mutex<Vec<(String, Vec<String>, PathBuf)>>>;
+
+/// A forge whose `glab` and `gh` answer `answer`, recording each call.
+fn canned_forge(
+    answer: impl Fn(&str) -> Result<String, String> + Send + Sync + 'static,
+) -> (ForgeCli, ForgeCalls) {
+    let calls: ForgeCalls = Arc::default();
+    let recorded = calls.clone();
+    let cli = ForgeCli {
+        run: Arc::new(move |program: &str, args: &[&str], cwd: &Path| {
+            recorded.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|arg| arg.to_string()).collect(),
+                cwd.to_path_buf(),
+            ));
+            answer(program)
+        }),
+        glab_hosts: || vec!["git.int.example.com".to_string()],
+        debug: false,
+    };
+    (cli, calls)
+}
+
+/// `glab mr list --output json` with one merge request from the worktree's
+/// branch, one from a branch the ledger's archive names, and two of
+/// someone else's.
+const GLAB_LIST: &str = r#"[
+  {"iid":1715,"title":"Fix the weather","draft":false,"source_branch":"worktree/fix",
+   "state":"opened","web_url":"https://git.int.example.com/team/weather/-/merge_requests/1715"},
+  {"iid":1714,"title":"Someone's work","draft":false,"source_branch":"their-branch",
+   "state":"opened","web_url":"https://git.int.example.com/team/weather/-/merge_requests/1714"},
+  {"iid":1705,"title":"Draft: Whole percents","draft":true,"source_branch":"alarm-percent-whole",
+   "state":"opened","web_url":"https://git.int.example.com/team/weather/-/merge_requests/1705"},
+  {"iid":1600,"title":"On main","draft":false,"source_branch":"main",
+   "state":"opened","web_url":"https://git.int.example.com/team/weather/-/merge_requests/1600"}
+]"#;
+
+#[test]
+fn a_projects_open_merge_requests_from_its_branches_arrive_after_the_snapshot() {
+    let scratch = ScratchDir::new("serve-forge");
+    let (repo, worktree) = repository(&scratch);
+    ledger(&scratch);
+    fs::write(
+        scratch.join("state/weather/ledger-archive.jsonl"),
+        r#"{"id":"20261020-w-pct","agent":"w-pct","status":"reported","branch":"alarm-percent-whole"}
+"#,
+    )
+    .unwrap();
+    git(
+        &repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "ssh://git@git.int.example.com:7999/team/weather.git",
+        ],
+    );
+    let (cli, calls) = canned_forge(|_| Ok(GLAB_LIST.to_string()));
+    let herdr = FakeHerdr::start("serve-forge", herd(&repo, &worktree, "working"));
+    let session = Session::start_with_forge(&herdr, &scratch, Some(cli));
+    let state = opening(&session);
+    assert!(state.projects[0].merge_requests.is_empty());
+
+    let changes = session.delta_with(|changes| {
+        changes
+            .iter()
+            .any(|change| matches!(change, Change::Project(project) if !project.merge_requests.is_empty()))
+    });
+    let Some(Change::Project(project)) = changes.into_iter().find(
+        |change| matches!(change, Change::Project(project) if !project.merge_requests.is_empty()),
+    ) else {
+        panic!("no project change")
+    };
+    assert_eq!(project.root, repo.to_str().unwrap());
+    assert_eq!(
+        serde_json::to_value(&project.merge_requests).unwrap(),
+        json!([
+            {"id": "!1715", "title": "Fix the weather", "branch": "worktree/fix",
+             "draft": false,
+             "url": "https://git.int.example.com/team/weather/-/merge_requests/1715"},
+            {"id": "!1705", "title": "Draft: Whole percents",
+             "branch": "alarm-percent-whole", "draft": true,
+             "url": "https://git.int.example.com/team/weather/-/merge_requests/1705"}
+        ])
+    );
+    let calls = calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].0, "glab");
+    assert_eq!(
+        calls[0].1,
+        ["mr", "list", "--output", "json", "--per-page", "100"]
+    );
+    assert_eq!(calls[0].2, repo);
+    session.close();
+}
+
+#[test]
+fn a_forge_that_hangs_or_fails_never_holds_up_the_server() {
+    let scratch = ScratchDir::new("serve-forge-slow");
+    let (repo, worktree) = repository(&scratch);
+    git(
+        &repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@gitlab.example.com:team/weather.git",
+        ],
+    );
+    let (release, hold) = mpsc::channel::<()>();
+    let hold = Mutex::new(hold);
+    let (cli, calls) = canned_forge(move |_| {
+        // Hangs until the test lets go, then fails as a logged-out glab does.
+        let _ = hold.lock().unwrap().recv_timeout(Duration::from_secs(20));
+        Err("glab mr list failed (exit status: 1): not logged in".to_string())
+    });
+    let herdr = FakeHerdr::start("serve-forge-slow", herd(&repo, &worktree, "working"));
+    let mut session = Session::start_with_forge(&herdr, &scratch, Some(cli));
+    let state = opening(&session);
+    assert!(state.projects.iter().all(|p| p.merge_requests.is_empty()));
+    // The forge is asked, and hangs, while the server answers.
+    for _ in 0..200 {
+        if !calls.lock().unwrap().is_empty() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    session.ok(json!({"command": "refresh"}));
+    release.send(()).unwrap();
+    let (_, before) = session.ok(json!({"command": "resync"}));
+    let Some(ServerMessage::Snapshot(snapshot)) = before
+        .into_iter()
+        .find(|message| matches!(message, ServerMessage::Snapshot(_)))
+    else {
+        panic!("no snapshot after resync")
+    };
+    let projects = serde_json::to_value(&snapshot.state.projects).unwrap();
+    assert!(projects[0].get("merge_requests").is_none(), "{projects}");
+    session.close();
+}
+
+#[test]
+fn a_forge_is_asked_only_for_a_forge_remote_with_branches_to_match() {
+    let scratch = ScratchDir::new("serve-forge-match");
+    let (repo, _worktree) = repository(&scratch);
+    let inboxes = SupervisorWaker::in_dir(&scratch.join("state")).inboxes();
+    let (cli, calls) = canned_forge(|program| match program {
+        "gh" => Ok(
+            r#"[{"headRefName":"worktree/fix","isDraft":false,"number":12,
+                        "title":"Fix","url":"https://github.com/o/weather/pull/12"}]"#
+                .to_string(),
+        ),
+        _ => Err("unexpected".to_string()),
+    });
+    let root = repo.to_str().unwrap();
+
+    // The origin is a local path: no forge.
+    let refused = forge::open_merge_requests(&cli, &inboxes, root).unwrap_err();
+    assert!(refused.contains("has no host"), "{refused}");
+    git(
+        &repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://bitbucket.org/o/weather.git",
+        ],
+    );
+    let refused = forge::open_merge_requests(&cli, &inboxes, root).unwrap_err();
+    assert!(refused.contains("neither GitLab nor GitHub"), "{refused}");
+    assert!(calls.lock().unwrap().is_empty());
+
+    git(
+        &repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:o/weather.git",
+        ],
+    );
+    let found = forge::open_merge_requests(&cli, &inboxes, root).unwrap();
+    assert_eq!(
+        found.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+        ["#12"]
+    );
+    assert_eq!(calls.lock().unwrap()[0].0, "gh");
+
+    // No linked worktree and no ledger: nothing to match, nothing asked.
+    let lone = scratch.join("lone");
+    fs::create_dir_all(&lone).unwrap();
+    git(&lone, &["init", "-q", "-b", "main"]);
+    git(
+        &lone,
+        &["remote", "add", "origin", "git@github.com:o/lone.git"],
+    );
+    let found = forge::open_merge_requests(&cli, &inboxes, lone.to_str().unwrap()).unwrap();
+    assert!(found.is_empty());
+    assert_eq!(calls.lock().unwrap().len(), 1);
 }

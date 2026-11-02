@@ -1838,15 +1838,20 @@ mod tests {
             "- When Corgi says the user closed a question without answering, append a\n  \
              ledger line without it for each unfinished id whose newest line lists it\n  \
              (`\"questions\":[]` once none remain, with the status that now fits:\n  \
-             `reported` if the work still needs your review, else as it was), and\n  \
-             delete its `questions/` file. Never ask it again or list it in\n  \
-             `Still open:`; reply in at most one line."
+             `reported` if the work still needs your review, `done` for a question's\n  \
+             own line, else as it was), and delete its `questions/` file. Never ask\n  \
+             it again or list it in `Still open:`; reply in at most one line."
         ));
         assert!(ROLE.contains(
             "  also write it to `{{state}}/questions/Q<n>.md`, the whole block exactly\n  \
              as shown, from its `###` line through `Until answered`. Delete that file\n  \
              as soon as the question is answered, closed, dropped or replaced, so only\n  \
-             open questions have one."
+             open questions have one. Also list it on a ledger line (see *Your\n  \
+             state*)."
+        ));
+        assert!(ROLE.contains(
+            "`{\"id\":\"YYYYMMDD-q<n>\",\"agent\":\"\",\"status\":\"needs-answer\",\
+             \"questions\":[\"Q<n>: <title>\"],\"summary\":\"<what it blocks>\"}`"
         ));
     }
 

@@ -296,6 +296,26 @@ pub struct Project {
     /// read (`corgi inbox <root> --take`).
     #[serde(default)]
     pub held: usize,
+    /// The open merge requests (GitLab) or pull requests (GitHub) whose
+    /// source branch is one of the project's worktrees' or one its
+    /// supervisor's ledger names, as the forge last listed them; empty when
+    /// the forge cannot be asked.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub merge_requests: Vec<MergeRequest>,
+}
+
+/// An open merge request or pull request from one of a project's branches.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeRequest {
+    /// The handle the forge shows: `!1677` on GitLab, `#12` on GitHub.
+    pub id: String,
+    pub title: String,
+    /// The source branch it was matched by.
+    pub branch: String,
+    #[serde(default)]
+    pub draft: bool,
+    /// Its page on the forge.
+    pub url: String,
 }
 
 /// A card's workers by state; those tagged ready to merge count only as
@@ -326,7 +346,8 @@ pub struct Question {
     /// number.
     pub id: String,
     pub title: String,
-    /// The worker it is about.
+    /// The worker it is about; empty for a question no worker waits on,
+    /// such as one about a plan.
     pub agent: String,
     /// The question whole, as the supervisor asked it (its
     /// `questions/Q<n>.md`); empty without that file.
@@ -784,6 +805,29 @@ mod tests {
         };
         let line = serde_json::to_string(&full).unwrap();
         assert_eq!(serde_json::from_str::<Question>(&line).unwrap(), full);
+    }
+
+    #[test]
+    fn a_project_without_merge_requests_still_parses_and_sends_none() {
+        let old = r#"{"group":"weather","root":"/r","card":true,"scratch":false,
+            "supervisor":null,"agents":[],"workers":{"total":0,"blocked":0,"merge":0,
+            "working":0,"done":0,"idle":0,"unknown":0},"blocked":[],"questions":[],"held":0}"#;
+        let project: Project = serde_json::from_str(old).expect("an older server's project");
+        assert!(project.merge_requests.is_empty());
+        let line = serde_json::to_value(&project).unwrap();
+        assert!(line.get("merge_requests").is_none(), "{line}");
+        let with = Project {
+            merge_requests: vec![MergeRequest {
+                id: "!1677".into(),
+                title: "Fix it".into(),
+                branch: "worktree/green-forest-025b".into(),
+                draft: true,
+                url: "https://gitlab.example.com/g/r/-/merge_requests/1677".into(),
+            }],
+            ..project
+        };
+        let line = serde_json::to_string(&with).unwrap();
+        assert_eq!(serde_json::from_str::<Project>(&line).unwrap(), with);
     }
 
     #[test]

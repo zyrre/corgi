@@ -636,23 +636,29 @@ fn open_work(open: &[&LedgerEntry], fleet: &[LiveAgent], now: u64) -> String {
 }
 
 /// One entry of "Open work", joined with its running agent `live`, if any.
+/// An entry without an agent, such as a question about a plan no worker has
+/// yet, says so rather than that its agent is not running.
 fn open_entry(entry: &LedgerEntry, live: Option<&LiveAgent>) -> String {
-    let live = live.map_or_else(
-        || "**NOT RUNNING**".to_string(),
-        |agent| {
-            let context = agent
-                .context_percent
-                .map_or_else(|| "-".to_string(), |percent| format!("{percent}%"));
-            format!("{}, ctx {context}", agent.state)
-        },
-    );
-    let mut out = format!(
-        "- {} [{}] agent {}: {live}; branch {}\n",
-        entry.id,
-        or_dash(&entry.status),
-        or_dash(&entry.agent),
-        or_dash(&entry.branch)
-    );
+    let mut out = if entry.agent.is_empty() {
+        format!("- {} [{}] no worker\n", entry.id, or_dash(&entry.status))
+    } else {
+        let live = live.map_or_else(
+            || "**NOT RUNNING**".to_string(),
+            |agent| {
+                let context = agent
+                    .context_percent
+                    .map_or_else(|| "-".to_string(), |percent| format!("{percent}%"));
+                format!("{}, ctx {context}", agent.state)
+            },
+        );
+        format!(
+            "- {} [{}] agent {}: {live}; branch {}\n",
+            entry.id,
+            or_dash(&entry.status),
+            entry.agent,
+            or_dash(&entry.branch)
+        )
+    };
     if !entry.summary.is_empty() {
         let _ = writeln!(out, "  summary: {}", clip(&entry.summary));
     }
@@ -826,6 +832,29 @@ not json
         assert!(rendered.contains("# Open work (2)\n- b [dispatched] agent w-b: **NOT RUNNING**"));
         assert!(rendered.contains("- c [reported] agent w-c: idle, ctx 41%; branch worktree/c"));
         assert!(rendered.contains("# Recently finished\n- 2026-10-01  merged  w-a  done well\n"));
+    }
+
+    #[test]
+    fn a_question_without_a_worker_is_open_work_and_not_a_lost_agent() {
+        let ledger = concat!(
+            r#"{"id":"20261102-plan-open-mrs","agent":"","status":"needs-answer","#,
+            r#""questions":["Q52: Which MRs?"],"summary":"Plan: open MRs panel"}"#,
+            "\n",
+            r#"{"id":"20261102-q53","status":"needs-answer","questions":["Q53: Rename?"]}"#,
+        );
+        assert_eq!(
+            all_open_questions(ledger),
+            [
+                (String::new(), "Q52: Which MRs?".to_string()),
+                (String::new(), "Q53: Rename?".to_string()),
+            ]
+        );
+        let rendered = render(&input("", ledger, &[]));
+        assert!(rendered.contains(
+            "# Open work (2)\n- 20261102-plan-open-mrs [needs-answer] no worker\n  \
+             summary: Plan: open MRs panel\n- 20261102-q53 [needs-answer] no worker\n"
+        ));
+        assert!(!rendered.contains("NOT RUNNING"));
     }
 
     #[test]

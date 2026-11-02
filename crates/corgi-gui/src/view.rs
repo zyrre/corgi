@@ -22,7 +22,7 @@ use crate::{
     },
     rows::Pick,
     store::Connection,
-    terminal::keys,
+    terminal::{keys, open_url},
     theme,
     window::{CorgiWindow, Drag},
 };
@@ -1403,6 +1403,48 @@ impl CorgiWindow {
                         }))
                     }),
             );
+        }
+
+        // Open merge requests from the project's branches, each opened in
+        // the browser.
+        if let Some(title) = format::merge_requests_title(&project.merge_requests) {
+            panel = panel.child(section_title(title, colors.roles.accent));
+            for (index, request) in project.merge_requests.iter().enumerate() {
+                let url = request.url.clone();
+                panel = panel.child(
+                    div()
+                        .id(SharedString::from(format!("merge-request-{index}")))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|style| style.bg(colors.roles.focus_bar))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(colors.roles.accent)
+                                .font_weight(FontWeight::BOLD)
+                                .child(request.id.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(format::merge_request_title(request)),
+                        )
+                        .when(request.draft, |row| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .text_color(colors.roles.muted)
+                                    .child("draft"),
+                            )
+                        })
+                        .on_click(move |_: &ClickEvent, _, cx| open_url(&url, cx)),
+                );
+            }
         }
 
         if !project.blocked.is_empty() {

@@ -73,7 +73,9 @@ The supervisor's role and the `[Corgi]` lines Corgi types into its box
 `crates/corgi-core/src/supervisor.rs`, and the merge lines also by the
 exact-inbox-text tests in `src/app/merge.rs`: change the wording, update
 both. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
-matter, since those tests match their text with `contains`.
+matter, since those tests match their text with `contains`. Another test
+there caps `ROLE.md` at three quarters of 34,516 bytes, and it is nearly
+full: a role addition must trim something else.
 
 On macOS, copying a rebuilt binary over an existing file (say, a copy of
 `target/release/corgi` kept to compare before and after) gets it killed with
@@ -96,6 +98,15 @@ mkdir -p "$scratch/corgi/supervisors"
 cp -R ~/.local/state/corgi/supervisors/<project> "$scratch/corgi/supervisors/"
 XDG_STATE_HOME="$scratch" ./target/release/corgi digest <project dir> --search "<words>"
 ```
+
+`corgi serve`'s forge listing (`src/serve/forge.rs`) is tested with a
+canned `ForgeCli` runner; serve's other tests set `forge: None`, so no test
+calls a real `glab` or `gh`. To check it against a real repository, read
+only, run `CORGI_LIVE_FORGE_ROOT=<repo> TMPDIR=/tmp cargo test -p corgi --lib
+-- --ignored live_forge --nocapture`. It lists and changes nothing on the forge.
+Do not run a real `corgi serve` on the user's Herdr for this, since it wakes
+supervisors. `glab` prints some notices (such as a deprecated setting) on
+stdout ahead of its JSON.
 
 `rust-version` in the root `Cargo.toml`'s `[workspace.package]`, which both
 crates take, is the oldest Rust that builds Corgi: 1.89, set by std's
