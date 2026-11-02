@@ -134,7 +134,9 @@ fn a_new_connection_on_the_park_tab_or_its_own_tab_goes_straight_on() {
     let mut viewer = Viewer::new(true);
     viewer.show(Some("w2:t1".into()));
     viewer.snapshot(&snapshot("w2:t1", TABS));
-    assert_eq!(run(&mut viewer), Vec::<Step>::new());
+    // Moving to the tab it is on takes the tab's size, even from Herdr's
+    // own window.
+    assert_eq!(run(&mut viewer), vec![Step::Focus("w2:t1".into())]);
     assert_eq!(viewer.status(), Status::Showing("w2:t1".into()));
 }
 

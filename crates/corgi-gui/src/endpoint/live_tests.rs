@@ -27,7 +27,7 @@ use super::{
     protocol::{
         ClientKeyCode, ClientKeyKind, ClientPaneInputEvent, ClientSurfaceSize, PaneSurfaceFrame,
     },
-    viewer::{PARK_LABEL, Status, Viewer},
+    viewer::{PARK_LABEL, Status, Step, Viewer},
 };
 
 /// A Herdr server of its own, stopped and deleted on drop.
@@ -133,6 +133,8 @@ struct Driver {
     surface: Option<std::sync::Arc<PaneSurfaceFrame>>,
     /// What programs put on the clipboard, in order.
     clipboard: Vec<String>,
+    /// The viewer's steps, in the order sent.
+    sent: Vec<Step>,
 }
 
 impl Driver {
@@ -157,12 +159,16 @@ impl Driver {
             viewer: Viewer::new(true),
             surface: None,
             clipboard: Vec::new(),
+            sent: Vec::new(),
         }
     }
 
     /// Handles events, sending what the viewer asks, until `done` holds.
+    /// What it asks is sent before waiting, since an idle connection may
+    /// bring no event to wake it.
     fn until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
+        self.drive();
         while !done(self) {
             let left = deadline.saturating_duration_since(Instant::now());
             assert!(!left.is_zero(), "timed out waiting for {what}");
@@ -181,11 +187,17 @@ impl Driver {
                 Ok(_) => {}
                 Err(_) => {}
             }
-            for step in self.viewer.next() {
-                let (method, params) = step.request();
-                let id = self.connection.request(method, params);
-                self.viewer.sent(id, step);
-            }
+            self.drive();
+        }
+    }
+
+    /// Sends what the viewer asks now, as the window's `drive` does.
+    fn drive(&mut self) {
+        for step in self.viewer.next() {
+            let (method, params) = step.request();
+            let id = self.connection.request(method, params);
+            self.sent.push(step.clone());
+            self.viewer.sent(id, step);
         }
     }
 
@@ -299,6 +311,33 @@ fn live_herdr() {
     driver.connection.focus(true);
     assert_eq!(pty_size(&mut driver, "back"), own);
     assert_eq!(driver.viewer.status(), Status::Showing(tab.clone()));
+
+    // Herdr's window takes it once more, and the focus view is left and
+    // opened again: moving to the tab takes its size, whoever had it.
+    other.connection.focus(false);
+    other.connection.focus(true);
+    assert!(pty_size(&mut driver, "taken-again").starts_with("30x"));
+    driver.viewer.show(None);
+    driver.until("the park", |d| d.viewer.at_rest());
+    driver.viewer.show(Some(agent.tab_id.clone()));
+    driver.until("the agent's terminal again", |d| {
+        d.viewer.status() == Status::Showing(tab.clone())
+    });
+    assert_eq!(pty_size(&mut driver, "reopened"), own);
+
+    // A new connection starts on Herdr's focused tab, here the one it is
+    // to show, which Herdr's window owns: it moves there all the same.
+    other.connection.focus(false);
+    other.connection.focus(true);
+    assert!(pty_size(&mut driver, "taken-third").starts_with("30x"));
+    drop(driver);
+    let mut driver = Driver::open(super::client_socket(&herdr.json_socket()));
+    driver.viewer.show(Some(agent.tab_id.clone()));
+    driver.until("a new connection's terminal", |d| {
+        d.viewer.status() == Status::Showing(tab.clone())
+    });
+    assert_eq!(driver.sent, [Step::Focus(tab.clone())], "it started there");
+    assert_eq!(pty_size(&mut driver, "new"), own);
     drop(other);
 
     // Leaving parks the connection, then deactivates it.

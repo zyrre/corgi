@@ -168,7 +168,10 @@ for the window's first frame and no more, so `shot` and the click steps
 draw a frame themselves (a click would otherwise hit-test that first
 frame); other steps still see it, and AeroSpace does not list the window. Move the window to AeroSpace workspace 4 the moment it
 appears (see the user's instructions); `render_to_image` still captures it
-there.
+there. Moved there, the window counts as occluded: it may be told it is
+hidden, and it draws no frames until a `shot` step draws one, so the focus
+view's terminal neither measures its grid nor connects. Repeat `show` after
+the move and take a throwaway shot before the ones that count.
 AeroSpace tiles the window to fill that workspace whatever size
 `gui-layout.json` kept, so for a shot at a given width, float it
 (`aerospace layout --window-id <id> floating`) and size it with a
