@@ -97,6 +97,15 @@ cp -R ~/.local/state/corgi/supervisors/<project> "$scratch/corgi/supervisors/"
 XDG_STATE_HOME="$scratch" ./target/release/corgi digest <project dir> --search "<words>"
 ```
 
+`corgi serve`'s forge listing (`src/serve/forge.rs`) is tested with a
+canned `ForgeCli` runner; serve's other tests set `forge: None`, so no test
+calls a real `glab` or `gh`. To check it against a real repository, read
+only, run `CORGI_LIVE_FORGE_ROOT=<repo> TMPDIR=/tmp cargo test -p corgi --lib
+-- --ignored live_forge --nocapture`. It lists and changes nothing on the forge.
+Do not run a real `corgi serve` on the user's Herdr for this, since it wakes
+supervisors. `glab` prints some notices (such as a deprecated setting) on
+stdout ahead of its JSON.
+
 `rust-version` in the root `Cargo.toml`'s `[workspace.package]`, which both
 crates take, is the oldest Rust that builds Corgi: 1.89, set by std's
 `File::lock` (ratatui 0.30 alone needs 1.88). With it set, clippy's

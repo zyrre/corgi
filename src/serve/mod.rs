@@ -12,12 +12,13 @@
 //! protocol lines go to stdout; anything else goes to stderr.
 
 mod commands;
+mod forge;
 mod state;
 #[cfg(test)]
 mod tests;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::{self, BufRead, Write},
     panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
@@ -40,8 +41,8 @@ use corgi_core::{
     paths::home,
     projects::ProjectMemory,
     protocol::{
-        Hello, HerdrStatus, PROTOCOL_VERSION, PaletteSet, Reply, ServerMessage, Snapshot, State,
-        Transcript, UsageCard,
+        Hello, HerdrStatus, MergeRequest, PROTOCOL_VERSION, PaletteSet, Reply, ServerMessage,
+        Snapshot, State, Transcript, UsageCard,
     },
     refresh::{self, Inputs, RefreshLog, RefreshState, Refreshed},
     rows::codex_thread_id,
@@ -50,6 +51,7 @@ use corgi_core::{
     usage_cache::{CachedUsage, shared_plan_usage},
     waker::{Inboxes, SupervisorWaker},
 };
+use forge::ForgeCli;
 
 pub const SERVE_USAGE: &str = "\
 Usage: corgi serve [--socket PATH | --session NAME]
@@ -135,6 +137,9 @@ pub(crate) struct Options {
     pub(crate) palette: fn() -> PaletteSet,
     pub(crate) log: Option<RefreshLog>,
     pub(crate) refresh_interval: Duration,
+    /// Asks each project's forge for its open merge requests; `None` never
+    /// does.
+    pub(crate) forge: Option<ForgeCli>,
 }
 
 impl Options {
@@ -154,6 +159,7 @@ impl Options {
             palette: state::palette_set,
             log: RefreshLog::from_env(),
             refresh_interval: refresh::REFRESH_INTERVAL,
+            forge: Some(ForgeCli::live()),
             client,
         }
     }
@@ -197,6 +203,9 @@ pub(crate) enum Event {
     RefreshPanicked,
     Usage(Vec<(Provider, Option<CachedUsage>)>),
     CodexTitles(HashMap<String, String>),
+    /// Each project root's open merge requests, or why its forge was not
+    /// asked.
+    MergeRequests(Vec<(String, Result<Vec<MergeRequest>, String>)>),
     /// A command changed Herdr or Git: refresh now.
     Changed,
 }
@@ -250,6 +259,14 @@ pub(crate) struct Server {
     codex_titles: HashMap<String, String>,
     last_codex_check: Option<Instant>,
     codex_running: bool,
+    /// The open merge requests each project's forge last listed, by root.
+    merge_requests: HashMap<String, Vec<MergeRequest>>,
+    /// The roots the forges were last asked about.
+    forge_roots: Vec<String>,
+    last_forge_check: Option<Instant>,
+    forge_running: bool,
+    /// Why a project's forge was not asked, each logged once.
+    forge_logged: HashSet<String>,
     watch: Option<String>,
     transcript: Option<Transcript>,
     selection: Option<String>,
@@ -309,6 +326,11 @@ impl Server {
             codex_titles: HashMap::new(),
             last_codex_check: None,
             codex_running: false,
+            merge_requests: HashMap::new(),
+            forge_roots: Vec::new(),
+            last_forge_check: None,
+            forge_running: false,
+            forge_logged: HashSet::new(),
             watch: None,
             transcript: None,
             selection: None,
@@ -393,6 +415,26 @@ impl Server {
                     self.refresh_requested = true;
                 }
             }
+            Event::MergeRequests(found) => {
+                self.forge_running = false;
+                let debug = self.options.forge.as_ref().is_some_and(|cli| cli.debug);
+                for (root, requests) in found {
+                    match requests {
+                        Ok(requests) => {
+                            self.merge_requests.insert(root, requests);
+                        }
+                        Err(reason) => {
+                            self.merge_requests.remove(&root);
+                            let line = format!("{root}: {reason}");
+                            if debug && self.forge_logged.insert(line.clone()) {
+                                eprintln!("corgi serve: no merge requests for {line}");
+                            }
+                        }
+                    }
+                }
+                self.merge_requests
+                    .retain(|root, _| self.forge_roots.contains(root));
+            }
             Event::Changed => self.refresh_requested = true,
         }
     }
@@ -468,6 +510,7 @@ impl Server {
                 });
             }
         }
+        self.start_forge_check();
         if self
             .status
             .as_ref()
@@ -475,6 +518,52 @@ impl Server {
         {
             self.status = None;
         }
+    }
+
+    /// Asks each project's forge for its open merge requests, on a thread of
+    /// its own, every [`forge::FORGE_INTERVAL`] and whenever the projects
+    /// change: never on the way to a snapshot.
+    fn start_forge_check(&mut self) {
+        let Some(cli) = &self.options.forge else {
+            return;
+        };
+        if self.forge_running {
+            return;
+        }
+        let mut roots: Vec<String> = self
+            .projects
+            .iter()
+            .filter(|project| !project.root.is_empty())
+            .map(|project| project.root.clone())
+            .collect();
+        roots.sort();
+        roots.dedup();
+        let due = self
+            .last_forge_check
+            .is_none_or(|at| at.elapsed() >= forge::FORGE_INTERVAL)
+            || roots != self.forge_roots;
+        if !due || roots.is_empty() {
+            return;
+        }
+        self.last_forge_check = Some(Instant::now());
+        self.forge_roots = roots.clone();
+        self.forge_running = true;
+        let cli = cli.clone();
+        let inboxes = self.shared.inboxes.clone();
+        let events = self.shared.events.clone();
+        thread::spawn(move || {
+            let found = catch_unwind(AssertUnwindSafe(|| {
+                roots
+                    .into_iter()
+                    .map(|root| {
+                        let requests = forge::open_merge_requests(&cli, &inboxes, &root);
+                        (root, requests)
+                    })
+                    .collect()
+            }))
+            .unwrap_or_default();
+            let _ = events.send(Event::MergeRequests(found));
+        });
     }
 
     fn refresh_inputs(&self) -> Inputs {
@@ -575,7 +664,18 @@ impl Server {
             herdr: self.herdr.clone(),
             status: self.status.as_ref().map(|(status, _)| status.clone()),
             usage: self.usage.clone(),
-            projects: self.projects.clone(),
+            projects: self
+                .projects
+                .iter()
+                .map(|project| corgi_core::protocol::Project {
+                    merge_requests: self
+                        .merge_requests
+                        .get(&project.root)
+                        .cloned()
+                        .unwrap_or_default(),
+                    ..project.clone()
+                })
+                .collect(),
             agents: self.agents.iter().map(state::agent_row).collect(),
             transcript: self.transcript.clone(),
             selection: self.selection.clone(),
