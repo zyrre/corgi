@@ -8,6 +8,7 @@ mod fonts;
 mod form;
 mod format;
 mod herdr_ui;
+mod hotkeys;
 mod layout;
 mod link;
 mod options;
@@ -101,7 +102,15 @@ fn main() -> ExitCode {
                 },
             )
             .expect("the window opens");
-        cx.on_window_closed(|cx, _| cx.quit()).detach();
+        // The app ends with its main window, not with the hotkeys window
+        // (look B of the mockup).
+        let main = window.window_id();
+        cx.on_window_closed(move |cx, closed| {
+            if closed == main {
+                cx.quit();
+            }
+        })
+        .detach();
         if !background {
             cx.activate(true);
         }

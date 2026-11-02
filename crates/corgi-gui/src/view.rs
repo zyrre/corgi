@@ -117,7 +117,9 @@ impl Render for CorgiWindow {
             .text_size(self.scaled(TEXT_SIZE))
             .line_height(self.scaled(TEXT_SIZE * LINE_HEIGHT))
             .on_key_down(cx.listener(|this, event, window, cx| {
-                if this.dialogs.open.is_some() {
+                if this.hotkeys.is_some() {
+                    this.hotkeys_key(event, cx);
+                } else if this.dialogs.open.is_some() {
                     this.dialog_key(event, window, cx);
                 } else if this.focus_view.is_some() {
                     this.focus_key(event, window, cx);
@@ -156,6 +158,7 @@ impl Render for CorgiWindow {
             .child(body)
             .child(self.status_bar(cx))
             .when(dialog, |root| root.child(self.dialog_layer(window, cx)))
+            .children(self.hotkeys_layer(window, cx))
     }
 }
 
@@ -319,6 +322,8 @@ impl CorgiWindow {
                     .flex()
                     .flex_row()
                     .flex_none()
+                    .items_center()
+                    .child(self.hotkeys_button(cx))
                     .child(self.font_button(false, cx))
                     .child(self.font_button(true, cx))
                     .child(self.appearance_toggle(cx)),
@@ -355,6 +360,38 @@ impl CorgiWindow {
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_appearance(cx);
+                cx.stop_propagation();
+            }))
+    }
+
+    /// MOCKUP: "Hotkeys" left of A−, the size of the pixel-art buttons:
+    /// opens the window where each action's key can be changed.
+    fn hotkeys_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = &self.colors;
+        // The art's eleven rows and its padding, so all four line up.
+        let height = ICON_PIXEL * 12.0;
+        div()
+            .id("hotkeys-button")
+            .flex_none()
+            .mr(px(ICON_PIXEL * 2.0))
+            .h(px(height))
+            .flex()
+            .items_center()
+            .px(px(ICON_PIXEL * 4.0))
+            .rounded_md()
+            .border_1()
+            .border_color(colors.roles.rule)
+            .text_color(colors.roles.text)
+            .font_weight(FontWeight::BOLD)
+            .cursor(CursorStyle::PointingHand)
+            .hover(|style| {
+                style
+                    .bg(colors.roles.keycap)
+                    .border_color(colors.roles.accent)
+            })
+            .child("Hotkeys")
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.open_hotkeys(window, cx);
                 cx.stop_propagation();
             }))
     }

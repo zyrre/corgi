@@ -8,12 +8,13 @@ use corgi_core::protocol::{Agent, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent, Pixels,
-    ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility, px,
+    ScrollHandle, SharedString, Subscription, Task, Window, WindowHandle, WindowVisibility, px,
 };
 
 use crate::{
     dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage},
     form::{self, Key},
+    hotkeys::{Hotkeys, HotkeysWindow},
     layout::{Layout, Split},
     link::{Backoff, Link, LinkEvent},
     options::Options,
@@ -96,6 +97,10 @@ pub struct CorgiWindow {
     pub focus_view: Option<String>,
     /// The keyboard should move to where the open dialog wants it.
     refocus: bool,
+    /// MOCKUP: the hotkeys dialog (looks A and C) while it is open.
+    pub hotkeys: Option<Entity<Hotkeys>>,
+    /// MOCKUP: look B's window while it is open.
+    pub hotkeys_window: Option<WindowHandle<HotkeysWindow>>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -236,6 +241,8 @@ impl CorgiWindow {
             terminal,
             focus_view: None,
             refocus: false,
+            hotkeys: None,
+            hotkeys_window: None,
             _tasks: vec![pump, tick],
             _subscriptions: subscriptions,
         };

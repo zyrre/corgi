@@ -26,6 +26,8 @@
 //!   picked;
 //! - `scroll` draws a frame and logs the overview's scroll offset, the
 //!   selected row and the focus view's agent;
+//! - `window:other` points the steps after it at the app's other window
+//!   (the hotkeys mockup's look B), `window:main` back at the main one;
 //! - `shot:NAME` writes `NAME.png`, the window as last drawn;
 //! - `quit` ends the app.
 //!
@@ -61,8 +63,9 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
         return;
     };
     let dir = PathBuf::from(std::env::var("CORGI_GUI_CAPTURE_DIR").unwrap_or_else(|_| ".".into()));
-    let any: AnyWindowHandle = window.into();
+    let main: AnyWindowHandle = window.into();
     cx.spawn(async move |cx| {
+        let mut any = main;
         for step in script
             .split(';')
             .map(str::trim)
@@ -320,6 +323,17 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                         },
                         Err(error) => eprintln!("capture: render failed: {error}"),
                     });
+                }
+                "window" => {
+                    let other = cx.update(|cx| cx.windows().into_iter().find(|w| *w != main));
+                    any = match (argument, other) {
+                        ("other", Some(other)) => other,
+                        ("other", None) => {
+                            eprintln!("capture: no other window");
+                            main
+                        }
+                        _ => main,
+                    };
                 }
                 "quit" => {
                     cx.update(|cx| cx.quit());
