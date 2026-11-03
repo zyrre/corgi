@@ -1583,8 +1583,9 @@ that is not done or idle, or whose checkout (its linked worktree, else its
 cwd) has no commits ahead of the branch checked out in the primary checkout,
 the branch `m` merges into. It also refuses while the supervisor still has
 questions open about the agent: when the newest line of the supervisor's
-`ledger.jsonl` (newest per `id`, as the digest reads it) whose `agent` is
-NAME has status `needs-answer` or a non-empty `questions` array
+`ledger.jsonl` (newest per `id`, as the digest reads it) about the agent
+(its `agent` is NAME, or, for a worker renamed since its spawn, the name
+the entry of its `corgi_request` id gives) has status `needs-answer` or a non-empty `questions` array
 (`digest::open_questions`), it names those questions. No ledger, no entry
 for NAME (an agent the user started), or a ledger it cannot read lets the
 tag through; `--clear` is never refused. It sets the pane token `corgi_merge` to
@@ -1840,7 +1841,10 @@ branch and short HEAD; `handover.md` whole if it exists, else the "Open
 threads" section of the newest note in `handovers/`, labelled with its date
 as the previous session's; every ledger id whose
 newest line is not `merged`, `abandoned` or `done` (finished work with
-nothing to merge), joined by agent name with the running agents (a missing
+nothing to merge), joined with the running agents by agent name, else by
+the worker's `corgi_request` id, which is its brief's and first entry's id
+and survives a rename, so a renamed worker matches its entries under the
+name it was spawned with and reads `agent w-x (now <name>)` (a missing
 one shows `**NOT RUNNING**`, an id without an agent, such as a question
 about a plan, `no worker`); the last 10 finished ids; the newest
 decisions in full, whole entries up to 8 KB but at least 3; the titles of

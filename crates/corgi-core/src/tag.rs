@@ -9,6 +9,7 @@ use crate::{
     digest,
     git::{git_current_branch, git_output},
     herdr::HerdrClient,
+    launch::CORGI_REQUEST_TOKEN,
     markers,
     model::{AgentState, DashboardAgent},
     supervisor,
@@ -51,7 +52,8 @@ pub fn tag_agent(
             format!("{agent_name} had no merge tag")
         });
     }
-    if let Some(questions) = open_questions(root, agent_name) {
+    let request = info.tokens.get(CORGI_REQUEST_TOKEN).map(String::as_str);
+    if let Some(questions) = open_questions(root, agent_name, request) {
         if questions.is_empty() {
             bail!(
                 "{agent_name} has open questions (its ledger status is needs-answer); answer them first"
@@ -88,12 +90,13 @@ pub fn tag_agent(
 }
 
 /// The questions the project supervisor's ledger still has open about the agent
-/// `agent` (see [`digest::open_questions`]). A project without a ledger, or
-/// one that cannot be read, has none.
-fn open_questions(root: &str, agent: &str) -> Option<Vec<String>> {
+/// `agent`, spawned with the request id `request` (see
+/// [`digest::open_questions`]). A project without a ledger, or one that
+/// cannot be read, has none.
+fn open_questions(root: &str, agent: &str, request: Option<&str>) -> Option<Vec<String>> {
     let state_dir = supervisor::state_dir(root).ok()?;
     let ledger = fs::read_to_string(state_dir.join("ledger.jsonl")).ok()?;
-    digest::open_questions(&ledger, agent)
+    digest::open_questions(&ledger, agent, request)
 }
 
 /// How many commits `checkout`'s HEAD has that the branch `base` has not.

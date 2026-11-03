@@ -628,6 +628,7 @@ pub(crate) fn digest_summary(
         .filter(|agent| agent.project_root == root)
         .map(|agent| digest::LiveAgent {
             name: agent.info.display_name().to_string(),
+            request: agent.info.tokens.get(CORGI_REQUEST_TOKEN).cloned(),
             state: agent.info.state.label().to_lowercase(),
             context_percent: agent.context_percent,
         })
