@@ -344,6 +344,38 @@ fn next_boot_hold_precedes_any_waker_and_save_does_not_pause_current_boot() {
 }
 
 #[test]
+fn a_boot_written_in_another_time_zone_is_the_same_boot() {
+    let here = "{ sec = 1790503566, usec = 319413 } Sun Sep 27 12:06:06 2026";
+    let utc = "{ sec = 1790503566, usec = 319413 } Sun Sep 27 10:06:06 2026";
+    assert!(store::same_boot(here, utc));
+    assert!(store::same_boot(
+        here,
+        "{ sec = 1790503566, usec = 319413 }"
+    ));
+    assert!(!store::same_boot(
+        here,
+        "{ sec = 1790600000, usec = 1 } Mon Sep 28 15:00:00 2026"
+    ));
+    let linux = "0f7e59dc-7c06-4b4e-9b20-047ad5cb7160";
+    assert!(store::same_boot(linux, linux));
+    assert!(!store::same_boot(
+        linux,
+        "2a1c0d35-0000-4000-8000-000000000000"
+    ));
+
+    // A save from this boot whose date another time zone wrote holds nothing.
+    let mut f = Fixture::new();
+    let store = f.store();
+    f.snapshot.boot = format!("{} Thu Jan  1 00:00:00 1970", store::boot().unwrap());
+    store.save(&f.snapshot).unwrap();
+    assert!(
+        held_projects(&f.client, &dashboard_agents(&f.snapshot))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn setup_preserves_unrelated_toml_and_comments_without_touching_installed_config() {
     for original in [
         "# hello\n[theme]\nname='light'\n",

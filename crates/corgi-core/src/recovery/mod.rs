@@ -665,7 +665,7 @@ fn plan_entry(
     ensure!(matches.len() < 2, "duplicate live conversation identities");
     if let Some(agent) = matches.first() {
         if journal.attempts.get(&entry.key()).is_some_and(|a| {
-            a.boot == runtime.boot
+            store::same_boot(&a.boot, &runtime.boot)
                 && a.pane == agent.pane_id
                 && matches!(a.phase.as_str(), "start_pending" | "metadata_pending")
         }) && agent.interactive_ready
@@ -698,7 +698,7 @@ fn plan_entry(
     );
     if let Some(attempt) = journal.attempts.get(&entry.key()) {
         ensure!(
-            attempt.boot != runtime.boot || attempt.phase == "placement_ready",
+            !store::same_boot(&attempt.boot, &runtime.boot) || attempt.phase == "placement_ready",
             "previous launch outcome unresolved in {}; inspect it, do not retry",
             attempt.pane
         );
@@ -775,7 +775,7 @@ fn plan_entry(
     let retry = journal
         .attempts
         .get(&entry.key())
-        .filter(|a| a.boot == runtime.boot && a.phase == "placement_ready");
+        .filter(|a| store::same_boot(&a.boot, &runtime.boot) && a.phase == "placement_ready");
     let (expected_ws, expected_tab, expected_pane) = retry
         .map(|a| (&a.workspace, &a.tab, &a.pane))
         .unwrap_or((&entry.workspace, &entry.tab, &entry.pane));
@@ -884,7 +884,7 @@ pub fn held_projects(client: &HerdrClient, agents: &[DashboardAgent]) -> Result<
             s.scope == scope
                 && s.host == host
                 && s.uid == unsafe { libc::geteuid() }
-                && s.boot != boot
+                && !store::same_boot(&s.boot, &boot)
                 && s.entries.iter().any(|e| {
                     e.role == "supervisor"
                         && e.kind == agent.info.kind()
@@ -913,7 +913,10 @@ pub fn continue_coordination(client: &HerdrClient, projects: &BTreeSet<String>) 
     let host = store::host()?;
     let boot = store::boot()?;
     for saved in store.snapshots()?.into_iter().filter(|s| {
-        s.scope == scope && s.host == host && s.uid == unsafe { libc::geteuid() } && s.boot != boot
+        s.scope == scope
+            && s.host == host
+            && s.uid == unsafe { libc::geteuid() }
+            && !store::same_boot(&s.boot, &boot)
     }) {
         journal.released.entry(saved.id).or_default().extend(
             saved
@@ -1251,7 +1254,7 @@ pub fn begin_delivery(store: &Store, scope: &str, project: &str, ids: &[String])
             s.scope == scope
                 && s.host == host
                 && s.uid == unsafe { libc::geteuid() }
-                && s.boot != boot
+                && !store::same_boot(&s.boot, &boot)
         })
         .collect();
     ensure!(

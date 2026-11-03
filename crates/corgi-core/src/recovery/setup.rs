@@ -68,7 +68,7 @@ pub fn prepared(client: &HerdrClient) -> bool {
 /// A later server start excludes an old, already-queued automatic resume.
 pub fn manual(client: &HerdrClient) -> bool {
     verified(client).is_ok_and(|proof| {
-        store::boot().is_ok_and(|boot| proof.boot != boot)
+        store::boot().is_ok_and(|boot| !store::same_boot(&proof.boot, &boot))
             || socket_stamp(client.socket_path()).is_ok_and(|stamp| proof.socket != stamp)
     })
 }
