@@ -19,6 +19,8 @@ Herdr session
        ├─ agent.prompt ────── prompt an existing agent, and wake a project's supervisor
        ├─ agent.focus ─────── focus an existing agent pane
        ├─ workspace.close ─── close a plain or unused Corgi project workspace
+       ├─ pane.close ──────── close an agent's pane alone in a workspace Corgi did not create
+       ├─ pane.process_info ─ admit a Codex without a session; find orphaned sessions
        ├─ tab.create/close ── open or close a shared-checkout agent's tab
        ├─ pane.current, pane.send_input ── open an agent's checkout in the editor
        ├─ worktree.remove ─── delete a worktree checkout and close its workspace
@@ -70,6 +72,9 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   │                        when it was fetched, and the last fetch's error;
   │                        replaced whole through a temporary file and a rename
   ├─ usage/<provider>.lock ─ held by the one process fetching a new reading
+  ├─ orphans-left.json ─ the orphaned sessions the user chose to leave, by
+  │                        their evidence, so they are not offered again until
+  │                        it changes; the newest 200
   ├─ refresh.log ──────── the interactive dashboard's slow refreshes, errors and
   │                        changes in the number of agents (every refresh with
   │                        CORGI_REFRESH_LOG=all); refresh.log.old past 256 KB
@@ -115,6 +120,7 @@ Headless launch and the supervisor
   ├─ corgi spawn ──── the new-agent form's launch sequence, task on stdin, result as JSON
   ├─ corgi supervisor the same launch into the project's root tab, as its supervisor
   ├─ corgi fleet ──── a project's agents as tab-separated rows
+  ├─ corgi orphans ── the sessions Corgi gets wrong, with their evidence; reads only
   ├─ corgi digest ─── the supervisor's memory, bounded, joined with the fleet
   ├─ corgi report ─── an agent's report: kept in an inbox, else its newest message
   ├─ corgi notify ─── add an item to a supervisor's inbox, text on stdin
@@ -332,7 +338,7 @@ dashboard, the command line and other frontends run the same code.
 - `refresh.rs` is the periodic refresh: Herdr's snapshot, the marks put back
   and the stale merge tags cleared, the project workspaces relabelled, each
   agent's row from its session file, its screen and, for an unidentified
-  scratch Codex, its pane's processes, the expanded transcript, the
+  Codex in a workspace Corgi created, its pane's processes, the expanded transcript, the
   state-directory warnings, and the supervisors' wakes: `refresh::run`, from
   its `Inputs` and the `RefreshState` the last one handed back. The
   interactive dashboard runs all of it as a background `Job`
@@ -369,6 +375,42 @@ dashboard, the command line and other frontends run the same code.
 - `rows.rs` derives what a row shows from Herdr's metadata and the session
   facts: the project and its heading (`repo/checkout` for a linked worktree),
   the task summary, and the status-line bridge fallbacks.
+- `repo.rs` says which repository an agent works in: the one
+  `git rev-parse --git-common-dir` names for its cwd, whether Herdr opened
+  its workspace as a linked worktree or not (decision 2026-11-03). Herdr's
+  workspace provenance answers without Git where it settles it (a Herdr
+  linked worktree the agent runs in, or the top of the primary checkout);
+  anything else is one `git rev-parse` per directory, kept for a minute in
+  the `RefreshState`. So a plain `git worktree add` checkout (such as Claude
+  Code's `.claude/worktrees/*`), or an agent whose cwd left its workspace's
+  checkout, is grouped under its repository in the dashboard, `corgi fleet`
+  and the digest, and merged and closed as a worktree. A repository whose
+  primary checkout is the home directory (dotfiles) is not one for an agent
+  in a subdirectory.
+- `orphans.rs` is "Find orphaned sessions" (docs/orphaned-sessions.md):
+  `detect` reads the snapshot, the rows, the panes' foreground processes
+  (`pane.process_info`), Git and the supervisors' files, and lists the
+  agents Corgi gets wrong (hidden: Herdr lists it, Corgi has no row; not
+  detected: an agent CLI Herdr does not list; a supervisor without its
+  mark; a worker its ledger names by checkout and branch but that lost its
+  request id; an agent in no repository) and empty duplicate project
+  workspaces, each with its evidence, how sure it is, and the choices it
+  allows, the suggested one first to show. It writes nothing; it runs only
+  when asked (the dashboard's `o`, the window's Orphans button,
+  `corgi orphans`, `serve`'s `orphans`). `apply` detects again and refuses
+  a candidate whose fingerprint changed (another session or process in the
+  pane), then marks the supervisor (`markers::mark_pane` with its
+  session), gives back the request id, closes (`close::close`, or the
+  duplicate workspace), or records a "leave" in `orphans-left.json`.
+  `retag_proven` is the part that needs no asking: the leading refresh
+  (a hook's or a dashboard's) runs it right after `restore_markers`, and it
+  puts back a supervisor's mark when the agent's process names its own
+  project's `ROLE.md` or state directory, the project has no running
+  supervisor and no other process names the same files; and a worker's
+  request id when exactly one unfinished ledger entry no live agent carries
+  has its cwd and branch and no other agent works there. The status line
+  names what it put back. `Choices` is the dialog's state both frontends
+  share.
 - `catalog.rs` holds the per-harness model catalogs behind the Model row, and
   the harness, model, and effort rows' choices; `src/app/catalog.rs` hands a
   catalog that arrives to an open model list. Codex uses its App Server;
@@ -444,9 +486,15 @@ dashboard, the command line and other frontends run the same code.
   supervisor runs in, in any tab, and otherwise takes the first in snapshot
   order; every lookup (launch, close, merge, cleanup) goes through it.
 - `close.rs` closes an agent: its worktree and checkout, its tab in a project
-  workspace, or its whole workspace (`close_form` says which, `close` does it,
-  and `src/app/close.rs` is the dialog), then retires the project workspace
-  when nothing is left in it. Before that, any other Corgi project workspace
+  workspace, its whole workspace when Corgi created it, or, in a workspace
+  Corgi did not create (no `corgi_workspace_role`), its pane alone with
+  `pane.close`, leaving the user's other tabs and shells (decision
+  2026-11-03); `close_form` says which, `close` does it, and
+  `src/app/close.rs` is the dialog. Then it retires the project workspace
+  when nothing is left in it. Herdr's own linked worktree goes with Herdr's
+  `worktree.remove`; a plain `git worktree add` checkout first has its
+  pane, tab or workspace closed as above, then `git worktree remove` in the
+  primary checkout, a dirty one refused once as Herdr refuses its own. Before that, any other Corgi project workspace
   of the same project that holds nothing — no agent in any pane, no dashboard,
   and only its recorded root tab with at most one pane — is closed as a
   duplicate, the way adopting Herdr's root workspace closes an idle older one.
@@ -455,7 +503,8 @@ dashboard, the command line and other frontends run the same code.
   described under "Herdr restarts" below. Every Corgi token write goes
   through its `mark_pane` and `mark_workspace`; nothing else calls
   `pane.report_metadata` or `workspace.report_metadata`.
-- `merge.rs` is the only Git command Corgi runs that writes: a confirmed
+- `merge.rs` is one of the two places Corgi runs a Git command that writes
+  (the other is close's `git worktree remove` of a plain linked checkout): a confirmed
   merge of an agent's clean worktree branch into the branch already checked
   out in the repository's primary checkout, then a push through that branch's
   configured upstream, or, when the user hands a conflicted merge to the
@@ -551,6 +600,11 @@ Its submodules are split by flow, each adding methods to the one `App`.
   side of the core's flows of the same names: fetching catalogs as the form
   asks, the launch job and its panel, the merge dialog and its job, and the
   close dialog.
+- `orphans.rs` is the `o` key's "Orphaned sessions" dialog and
+  `corgi orphans`: the core's `detect` and `apply` as one background job,
+  so keys never wait on Herdr's process lookups; the list keeps one choice
+  per candidate (preset to its suggestion), Enter applies the selected
+  one's, and the row goes once it is done. `src/ui/orphans.rs` draws it.
 - `cli.rs` is `corgi spawn`, `corgi supervisor`, `corgi fleet`,
   `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox`,
   `corgi tag` and `corgi role`. The
@@ -635,7 +689,8 @@ when stdin closes and no command is still running.
   `launch_agent`, `dashboard_supervisor_plan`, `merge_form`/`run_merge`
   with the dashboard's follow-ups (clear the tag, tell the supervisor, hand
   a conflict or failed push over), `close_form`/`close`, `tag_agent`,
-  `go_to_agent`, `open_checkout` and the digest lookups. `close_question`
+  `go_to_agent`, `open_checkout` and the digest lookups, and `orphans` and
+  `orphan_apply`, the core's `orphans::detect` and `apply`. `close_question`
   has no dashboard key: it adds `supervisor::question_closed_message` to the
   supervisor's inbox, delivered like a wake, and the role says how to drop
   the question from the ledger and delete its file, which only the
@@ -736,6 +791,16 @@ must not be bound.
   Esc does to each, and a left click outside the dialog does the same: the
   form's open list closes before the form, a form creating its agent stays,
   and a merge stopped for the user is dismissed through `serve`.
+- `orphans.rs` is the header's Orphans button (under Hotkeys) and the
+  "Orphaned sessions" dialog it and the rebindable `o` open: a card per
+  candidate with its evidence, chips for its cause and certainty, and its
+  choices as buttons, the chosen one marked; Enter or the Apply button
+  sends `orphan_apply` for the selected card. Its state is
+  `dialogs::Orphans` around the core's `orphans::Choices`, so the reply
+  handling is tested without a window. A key that moves the selection
+  scrolls the list just far enough to show that card whole
+  (`rows::revealed`), since GPUI's `scroll_to_item` leaves a tall card's
+  foot under the list's edge.
 - `question.rs` draws a question's full text in the answer dialog: it splits
   the supervisor's form (`supervisor/ROLE.md`) into the heading and its
   `[blocks: …]` tag, the labelled parts and the lettered options, and
@@ -972,6 +1037,14 @@ role. So Corgi keeps its own record and puts the tokens back.
   confirm the pane still holds it. The hook Herdr runs when it detects the
   new agent (`pane.agent_detected`) records the session at once, and a
   dashboard's next refresh would too.
+- Two lost marks are put back from evidence Corgi wrote itself even when
+  the record cannot help (a `/clear` changed the supervisor's session, so
+  the record's mark was rightly dropped, or no pass saw the session before
+  a restart): `orphans::retag_proven` re-marks a supervisor whose process
+  was started with its own project's `ROLE.md` or state directory, and
+  gives a worker back the request id of the one ledger entry with its cwd
+  and branch, each only when nothing else could claim it. Anything less
+  certain waits in "Find orphaned sessions".
 - Herdr's plugin-pane records are Herdr's own and not part of this; the
   `open` action copes with losing them (`scripts/herdr-corgi-dashboard`).
 - The startup hook puts the marks back: Herdr runs it as its server starts
@@ -1585,7 +1658,8 @@ Every project with an agent session gets a heading, its supervisor first. Within
 a state, agents Herdr reports no order between are alphabetical. Scratch
 sessions are ordered the same way under Scratch. A row moves only when its own
 agent changes state, and the selection stays on the same row. Agents in
-linked worktrees are named `repo/checkout` (`webshop/order-pages-2d5a`);
+linked worktrees, Herdr's or plain `git worktree add` ones, are named
+`repo/checkout` (`webshop/order-pages-2d5a`) under their repository's heading;
 other agents in the project's workspace, such as shared-checkout tabs, are
 named after the repository.
 
@@ -1764,7 +1838,9 @@ workspace, never a worktree or a supervisor.
 closes the workspace, and deletes the checkout. A checkout with uncommitted
 changes is refused once, then removed by force if asked again. The branch is
 never deleted, so committed work survives; prune stale `worktree/*` branches
-with `git branch -D`.
+with `git branch -D`. A plain `git worktree add` checkout closes the same
+way, but Git removes it after its pane (or tab, or Corgi's workspace) is
+closed. An agent in a workspace Corgi did not create closes its pane alone.
 
 ### Merging
 

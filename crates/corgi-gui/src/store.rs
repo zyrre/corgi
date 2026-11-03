@@ -186,6 +186,12 @@ pub enum Purpose {
     CloseCheck,
     Close,
     Tag,
+    /// Finds orphaned sessions for the dialog.
+    Orphans,
+    /// Applies the choice made for the orphan `key`.
+    OrphanApply {
+        key: String,
+    },
 }
 
 /// The requests sent and not yet answered.

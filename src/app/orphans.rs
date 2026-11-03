@@ -10,7 +10,7 @@ use anyhow::Result;
 use corgi_core::{
     herdr::HerdrClient,
     job::{Job, Update},
-    orphans::{Action, Candidate, Options, apply, detect, report},
+    orphans::{Candidate, Choices, Options, apply, detect, report},
 };
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -66,89 +66,28 @@ pub(crate) enum Stage {
     Applying(String),
 }
 
-/// The "Orphaned sessions" dialog: the candidates, the choice made for each
-/// (preset to its suggestion), and what the choices applied so far did.
+/// The "Orphaned sessions" dialog: where it is, and the candidates with
+/// the choice made for each.
 #[derive(Debug, Clone)]
 pub(crate) struct OrphansDialog {
     pub(crate) stage: Stage,
-    pub(crate) candidates: Vec<Candidate>,
-    /// The chosen action's index in each candidate's `actions`.
-    pub(crate) chosen: Vec<usize>,
-    pub(crate) selected: usize,
-    /// What applying did, newest last.
-    pub(crate) done: Vec<String>,
-    pub(crate) error: Option<String>,
+    pub(crate) choices: Choices,
 }
 
 impl OrphansDialog {
     pub(crate) fn looking() -> Self {
         Self {
             stage: Stage::Looking,
-            candidates: Vec::new(),
-            chosen: Vec::new(),
-            selected: 0,
-            done: Vec::new(),
-            error: None,
+            choices: Choices::default(),
         }
     }
 
     /// The dialog showing `candidates`, each on its suggestion.
     #[cfg(test)]
     pub(crate) fn with(candidates: Vec<Candidate>) -> Self {
-        let mut dialog = Self::looking();
-        dialog.show(candidates);
-        dialog
-    }
-
-    fn show(&mut self, candidates: Vec<Candidate>) {
-        self.chosen = candidates.iter().map(|c| c.suggested).collect();
-        self.selected = self.selected.min(candidates.len().saturating_sub(1));
-        self.candidates = candidates;
-        self.stage = Stage::List;
-    }
-
-    /// The selected candidate and the action chosen for it.
-    pub(crate) fn choice(&self) -> Option<(&Candidate, &Action)> {
-        let candidate = self.candidates.get(self.selected)?;
-        let action = candidate.actions.get(self.chosen[self.selected])?;
-        Some((candidate, action))
-    }
-
-    fn move_selection(&mut self, by: isize) {
-        if self.candidates.is_empty() {
-            return;
-        }
-        let last = self.candidates.len() as isize - 1;
-        self.selected = (self.selected as isize + by).clamp(0, last) as usize;
-    }
-
-    /// Moves the selected candidate's choice along its actions, wrapping.
-    fn cycle(&mut self, by: isize) {
-        let Some(candidate) = self.candidates.get(self.selected) else {
-            return;
-        };
-        let count = candidate.actions.len() as isize;
-        let chosen = &mut self.chosen[self.selected];
-        *chosen = (*chosen as isize + by).rem_euclid(count) as usize;
-    }
-
-    /// Chooses the selected candidate's action with `key`, as its keycap
-    /// shows; repeated, the next one with that key (two workers).
-    fn choose(&mut self, key: char) -> bool {
-        let Some(candidate) = self.candidates.get(self.selected) else {
-            return false;
-        };
-        let current = self.chosen[self.selected];
-        let count = candidate.actions.len();
-        let next = (1..=count)
-            .map(|step| (current + step) % count)
-            .find(|index| candidate.actions[*index].key() == key);
-        match next {
-            Some(index) => {
-                self.chosen[self.selected] = index;
-                true
-            }
-            None => false,
+        Self {
+            stage: Stage::List,
+            choices: Choices::new(candidates),
         }
     }
 }
@@ -185,26 +124,18 @@ impl App {
             };
             match result {
                 Ok(Found::Candidates(candidates)) => {
-                    dialog.error = None;
-                    dialog.show(candidates);
+                    dialog.choices.show(candidates);
+                    dialog.stage = Stage::List;
                 }
                 Ok(Found::Applied(key, status)) => {
-                    dialog.error = None;
-                    if let Some(index) = dialog.candidates.iter().position(|c| c.key == key) {
-                        dialog.candidates.remove(index);
-                        dialog.chosen.remove(index);
-                        dialog.selected = dialog
-                            .selected
-                            .min(dialog.candidates.len().saturating_sub(1));
-                    }
-                    dialog.done.push(status.clone());
+                    dialog.choices.applied(&key, status.clone());
                     dialog.stage = Stage::List;
                     self.motion.succeeded();
                     self.set_status(status, Some(Duration::from_secs(6)));
                     self.request_refresh();
                 }
                 Err(error) => {
-                    dialog.error = Some(format!("{error:#}"));
+                    dialog.choices.error = Some(format!("{error:#}"));
                     dialog.stage = Stage::List;
                 }
             }
@@ -222,15 +153,15 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => self.overlay = Overlay::None,
             _ if dialog.stage == Stage::Looking => {}
-            KeyCode::Char('j') | KeyCode::Down => dialog.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => dialog.move_selection(-1),
-            KeyCode::Right | KeyCode::Tab => dialog.cycle(1),
-            KeyCode::Left | KeyCode::BackTab => dialog.cycle(-1),
+            KeyCode::Char('j') | KeyCode::Down => dialog.choices.select_by(1),
+            KeyCode::Char('k') | KeyCode::Up => dialog.choices.select_by(-1),
+            KeyCode::Right | KeyCode::Tab => dialog.choices.cycle(1),
+            KeyCode::Left | KeyCode::BackTab => dialog.choices.cycle(-1),
             KeyCode::Char(letter @ ('s' | 'w' | 'x' | 'l')) => {
-                dialog.choose(letter);
+                dialog.choices.choose_key(letter);
             }
             KeyCode::Enter => {
-                let Some((candidate, action)) = dialog.choice() else {
+                let Some((candidate, action)) = dialog.choices.choice() else {
                     return false;
                 };
                 let (key, fingerprint, action) = (
@@ -253,7 +184,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use corgi_core::orphans::{Cause, Confidence};
+    use corgi_core::orphans::{Action, Cause, Confidence};
     use crossterm::event::KeyModifiers;
 
     use super::*;
@@ -303,7 +234,10 @@ mod tests {
             candidate("pane:b", vec![Action::Leave, close.clone()], 0),
         ]));
         let chosen = |app: &App| match &app.overlay {
-            Overlay::Orphans(dialog) => (dialog.selected, dialog.choice().map(|(_, a)| a.clone())),
+            Overlay::Orphans(dialog) => (
+                dialog.choices.selected,
+                dialog.choices.choice().map(|(_, a)| a.clone()),
+            ),
             _ => panic!("the dialog closed"),
         };
         assert_eq!(chosen(&app), (0, Some(worker())));
@@ -347,9 +281,12 @@ mod tests {
             panic!("the dialog closed");
         };
         assert_eq!(dialog.stage, Stage::List);
-        assert_eq!(dialog.candidates.len(), 1);
-        assert_eq!(dialog.candidates[0].key, "pane:b");
-        assert_eq!(dialog.done, ["restored-w1 is webshop's worker r-pay again"]);
+        assert_eq!(dialog.choices.candidates.len(), 1);
+        assert_eq!(dialog.choices.candidates[0].key, "pane:b");
+        assert_eq!(
+            dialog.choices.done,
+            ["restored-w1 is webshop's worker r-pay again"]
+        );
         assert_eq!(app.status, "restored-w1 is webshop's worker r-pay again");
     }
 }

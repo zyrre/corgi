@@ -590,6 +590,78 @@ fn an_unproven_worker_match_is_listed_but_never_tagged_without_asking() {
 }
 
 #[test]
+fn a_worker_sent_to_the_primary_checkout_is_only_likely_there() {
+    let world = World::new("orphans-worker-root", Value::Null);
+    let root = git_repo(&world.scratch.join("webshop"));
+    let root_text = root.to_string_lossy().into_owned();
+    let dir = world.state_dir("webshop");
+    fs::write(
+        dir.join("ledger.jsonl"),
+        format!(
+            r#"{{"id":"r-docs","agent":"w-docs","status":"dispatched","branch":"main","cwd":"{root_text}"}}"#
+        ) + "\n",
+    )
+    .unwrap();
+    world.herdr.set_snapshot(snapshot(
+        vec![workspace("w1", "webshop")],
+        vec![agent("w1:p2", "claude", "mine", &root_text, Some("s-1"))],
+        vec![],
+    ));
+    let found = world.detect();
+    let worker = found.iter().find(|c| c.cause == Cause::Worker).unwrap();
+    assert_eq!(worker.confidence, Confidence::Likely);
+    assert_eq!(worker.actions[worker.suggested], Action::Leave);
+    let mut snapshot = world.snapshot();
+    assert_eq!(world.retag(&mut snapshot), None);
+}
+
+#[test]
+fn the_dialogs_choices_follow_keys_clicks_and_what_was_applied() {
+    let two = |key: &str| Candidate {
+        actions: vec![
+            Action::Worker {
+                project: "p".into(),
+                project_root: "/p".into(),
+                request_id: "a".into(),
+                agent: "w-a".into(),
+            },
+            Action::Worker {
+                project: "p".into(),
+                project_root: "/p".into(),
+                request_id: "b".into(),
+                agent: "w-b".into(),
+            },
+            Action::Leave,
+        ],
+        suggested: 2,
+        key: key.into(),
+        ..pane_candidate(&AgentInfo::default(), "claude")
+    };
+    let mut choices = Choices::new(vec![two("x"), two("y")]);
+    assert_eq!(choices.choice().unwrap().1, &Action::Leave);
+    // The worker key takes the first worker, then the next.
+    assert!(choices.choose_key('w'));
+    assert!(
+        matches!(choices.choice().unwrap().1, Action::Worker { request_id, .. } if request_id == "a")
+    );
+    assert!(choices.choose_key('w'));
+    assert!(
+        matches!(choices.choice().unwrap().1, Action::Worker { request_id, .. } if request_id == "b")
+    );
+    assert!(!choices.choose_key('s'));
+    choices.cycle(1);
+    assert_eq!(choices.choice().unwrap().1, &Action::Leave);
+    // A click picks another card and its action.
+    choices.pick(1, 0);
+    assert_eq!(choices.selected, 1);
+    let first = choices.candidates[0].key.clone();
+    choices.applied(&first, "done".into());
+    assert_eq!(choices.candidates.len(), 1);
+    assert_eq!(choices.selected, 0);
+    assert_eq!(choices.done, ["done"]);
+}
+
+#[test]
 fn an_agent_in_no_repository_is_a_guess_outside_corgis_workspaces() {
     let world = World::new("orphans-no-project", Value::Null);
     let downloads = world.dir("Downloads");

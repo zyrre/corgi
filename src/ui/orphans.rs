@@ -30,11 +30,15 @@ pub(super) fn draw(
 ) -> Drawn {
     let role = roles();
     let color = role.accent;
-    let width = area.width.saturating_sub(4).clamp(20, WIDTH).min(area.width);
+    let width = area
+        .width
+        .saturating_sub(4)
+        .clamp(20, WIDTH)
+        .min(area.width);
     let text_width = usize::from(width.saturating_sub(4));
     let (lines, selected_at) = body(dialog, text_width, spinner);
     let keys: Vec<super::LegendKey> = match &dialog.stage {
-        Stage::List if !dialog.candidates.is_empty() => vec![
+        Stage::List if !dialog.choices.candidates.is_empty() => vec![
             ("↵", "apply", role.success),
             ("←→", "choose", role.accent),
             ("j/k", "select", role.accent),
@@ -46,7 +50,10 @@ pub(super) fn draw(
     let legend = legend_lines(&keys, DIALOG_LEGEND_SEPARATOR, width.saturating_sub(4));
     let legend_rows = legend.len() as u16;
     let wanted = lines.len() as u16 + 2 + if legend_rows > 0 { legend_rows + 1 } else { 0 };
-    let height = wanted.min(area.height.saturating_sub(2)).max(5).min(area.height);
+    let height = wanted
+        .min(area.height.saturating_sub(2))
+        .max(5)
+        .min(area.height);
     let rect = Rect::new(
         area.x + (area.width.saturating_sub(width)) / 2,
         area.y + (area.height.saturating_sub(height)) / 2,
@@ -100,6 +107,7 @@ pub(super) fn draw(
 /// candidate starts on.
 fn body(dialog: &OrphansDialog, width: usize, spinner: &str) -> (Vec<Line<'static>>, usize) {
     let role = roles();
+    let choices = &dialog.choices;
     let muted = Style::default().fg(role.muted);
     let mut lines = Vec::new();
     let mut selected_at = 0;
@@ -112,17 +120,17 @@ fn body(dialog: &OrphansDialog, width: usize, spinner: &str) -> (Vec<Line<'stati
         ));
         return (lines, 0);
     }
-    if dialog.candidates.is_empty() {
+    if choices.candidates.is_empty() {
         lines.push(Line::styled(
             "No orphaned sessions: every agent Herdr lists has its row, role and project.",
             Style::default().fg(role.text),
         ));
     }
-    for (index, candidate) in dialog.candidates.iter().enumerate() {
+    for (index, candidate) in choices.candidates.iter().enumerate() {
         if index > 0 {
             lines.push(Line::raw(""));
         }
-        let selected = index == dialog.selected;
+        let selected = index == choices.selected;
         if selected {
             selected_at = lines.len();
         }
@@ -165,20 +173,20 @@ fn body(dialog: &OrphansDialog, width: usize, spinner: &str) -> (Vec<Line<'stati
             Confidence::Likely => role.accent,
             Confidence::Guess => role.muted,
         };
-        let mut choices = vec![
+        let mut row = vec![
             Span::raw("    "),
             Span::styled(
                 format!("({})", candidate.confidence.label()),
                 Style::default().fg(confidence),
             ),
         ];
-        let chosen = dialog
+        let chosen = choices
             .chosen
             .get(index)
             .copied()
             .unwrap_or(candidate.suggested);
         for (action_index, action) in candidate.actions.iter().enumerate() {
-            choices.push(Span::raw("  "));
+            row.push(Span::raw("  "));
             let label = format!("[{}] {}", action.key(), action.label());
             if action_index == chosen {
                 let style = if selected {
@@ -186,29 +194,29 @@ fn body(dialog: &OrphansDialog, width: usize, spinner: &str) -> (Vec<Line<'stati
                 } else {
                     bold(role.text)
                 };
-                choices.push(Span::styled(format!("{label} ✓"), style));
+                row.push(Span::styled(format!("{label} ✓"), style));
             } else {
-                choices.push(Span::styled(label, muted));
+                row.push(Span::styled(label, muted));
             }
         }
         if matches!(&dialog.stage, Stage::Applying(key) if *key == candidate.key) {
-            choices.push(Span::styled(
+            row.push(Span::styled(
                 format!("  {spinner} applying…"),
                 bold(role.accent),
             ));
         }
-        lines.push(Line::from(choices));
+        lines.push(Line::from(row));
     }
-    if !dialog.done.is_empty() || dialog.error.is_some() {
+    if !choices.done.is_empty() || choices.error.is_some() {
         lines.push(Line::raw(""));
     }
-    for done in &dialog.done {
+    for done in &choices.done {
         lines.push(Line::styled(
             format!("{SUCCESS_MARK} {done}"),
             Style::default().fg(role.success),
         ));
     }
-    if let Some(error) = &dialog.error {
+    if let Some(error) = &choices.error {
         lines.push(Line::styled(format!("✗ {error}"), bold(role.danger)));
     }
     (lines, selected_at)

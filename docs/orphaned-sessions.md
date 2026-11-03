@@ -1,8 +1,8 @@
 # Find orphaned sessions
 
-Design chosen by the user, 3 November 2026 (the supervisor's Q57–Q63).
-Nothing here is built yet beyond the two plain fixes named under "Found on
-the way". "Decisions" at the end records each choice and the options it
+Design chosen by the user, 3 November 2026 (the supervisor's Q57–Q63), and
+built the same day; "What was built" at the end says how, and where it
+departs from the design. "Decisions" records each choice and the options it
 was chosen over.
 
 An orphaned session is an agent in Herdr that Corgi gets wrong in one of
@@ -263,3 +263,75 @@ Everything else waits in the dialog.
   are rows in every workspace Corgi created. Rejected: the hint alone
   (they would stay hidden), and admission in any workspace (whatever runs
   in the user's own shells).
+
+## What was built
+
+Branch `worktree/lucky-cloud-f80c`, on top of this investigation's
+`worktree/calm-cloud-b7c9`.
+
+- **The detector**, `crates/corgi-core/src/orphans.rs`: `detect` runs the
+  rules above on one snapshot and the dashboard's rows of it, asking
+  `pane.process_info` once per pane it needs. Causes 1 (hidden), 2 (not
+  detected; `node`/`bun`/`deno` running a `claude-code` or `codex` script
+  is a guess), 3 and 4 (a supervisor's process naming its own state
+  directory's `ROLE.md` or the directory itself), 5 and 6 (an unfinished
+  ledger entry with the agent's cwd and branch, which no live agent
+  carries; ledger lines now keep their `cwd`), 9 (no repository, not home,
+  no supervisor files, not a workspace Corgi made) and 11 (empty duplicate
+  project workspaces, by `project_main::duplicate_project_mains`, the rule
+  close's cleanup uses). Each candidate carries its evidence, a confidence,
+  a fix outside Corgi where there is one, the actions it allows and the one
+  suggested, and a fingerprint.
+- **`corgi orphans [--json]`** prints them; it only reads.
+- **The dialog**: the dashboard's `o` (`src/app/orphans.rs`,
+  `src/ui/orphans.rs`) and corgi-gui's header button "Orphans" under
+  "Hotkeys" and its rebindable `o` (`crates/corgi-gui/src/orphans.rs`),
+  over `corgi serve`'s `orphans` and `orphan_apply`
+  (docs/serve-protocol.md). One card per candidate, its choice preset to
+  the suggestion, `←`/`→` or the action's letter (`s` supervisor, `w`
+  worker, `x` close, `l` leave) to change it, Enter to apply the selected
+  card's. Apply detects again and refuses a candidate whose fingerprint
+  changed. Leave is kept in `orphans-left.json` in Corgi's state directory.
+  Nothing runs until the dialog opens: no header count, no dialog by
+  itself.
+- **Tagged without asking**: `retag_proven`, run by the leading refresh
+  (a hook's or a dashboard's) right after `restore_markers`, puts back the
+  two proven cases and names them in the status line ("Marked
+  corgi-supervisor as corgi's supervisor again", "Gave restored-w1 back its
+  request id …"). Nothing likely is ever applied by it: a running
+  supervisor, a second process naming the same files, no session, two
+  matching entries or a second agent in the checkout each stop it. A worker
+  sent to the primary checkout (`--checkout root`) is only likely there,
+  since the user's own sessions share its cwd and branch: the dialog
+  offers it, the hooks leave it.
+- **Projects from Git**: `crates/corgi-core/src/repo.rs`. Plain linked
+  checkouts group under their repository, are `repo/checkout` rows, merge
+  like Herdr's worktrees, and close with `git worktree remove` after their
+  pane (or Corgi's tab or workspace) closes; a dirty one is refused once.
+- **Close only the pane** in a workspace Corgi did not create
+  (`CloseTarget::Pane`, Herdr's `pane.close`); Corgi's workspaces keep
+  their close.
+- **Codex without a session** is a row in every workspace Corgi created
+  while `codex` runs in its pane's foreground at its cwd
+  (`rows::is_corgi_workspace_codex`), and the hidden row elsewhere names
+  `herdr integration install codex`.
+
+Not built, or built differently:
+
+- The supervisor and worker choices are offered only with the evidence
+  above; there is no project choice, since Git settles the project, and no
+  "worker of P" for an agent no ledger entry matches (it is the user's own).
+- The first-prompt-against-`briefs/<id>.md` match of cause 6 is not built;
+  cwd and branch carry it.
+- A close Herdr or Git refuses because the checkout is dirty is not forced
+  from the dialog; it says to close the agent from the dashboard, where the
+  usual second confirmation discards the changes.
+- A Herdr linked worktree in a workspace Corgi did not create (one opened
+  with `herdr worktree open` by hand) still closes with Herdr's
+  `worktree.remove`, workspace and all, as before: decision 3 makes it a
+  worktree, and Herdr removes the checkout only with its workspace.
+
+The read-only run on the user's Herdr on 3 November 2026, after the build,
+found one candidate: `w9X`, the empty duplicate `instat-backend supervisor`
+workspace beside the supervisor's own `w45` (cause 11). Nothing was hidden,
+undetected, unmarked or untracked.

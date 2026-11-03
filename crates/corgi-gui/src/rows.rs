@@ -121,7 +121,7 @@ impl Rows {
 /// spanning `row` into a `view`, both at `offset`: unchanged while the row
 /// shows in full, else moved just far enough to show its far edge, or its
 /// top if it is taller than the view.
-fn revealed(offset: Pixels, view: (Pixels, Pixels), row: (Pixels, Pixels)) -> Pixels {
+pub(crate) fn revealed(offset: Pixels, view: (Pixels, Pixels), row: (Pixels, Pixels)) -> Pixels {
     let (view_top, view_bottom) = view;
     let (top, bottom) = row;
     if top < view_top || bottom - top > view_bottom - view_top {

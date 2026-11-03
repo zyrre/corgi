@@ -93,6 +93,7 @@ pub enum Action {
     Tag,
     Close,
     Refresh,
+    Orphans,
     AnswerFirst,
     Collapse,
     ScrollUp,
@@ -105,7 +106,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 25] = [
+    pub const ALL: [Action; 26] = [
         Action::Next,
         Action::Previous,
         Action::First,
@@ -122,6 +123,7 @@ impl Action {
         Action::Tag,
         Action::Close,
         Action::Refresh,
+        Action::Orphans,
         Action::AnswerFirst,
         Action::Collapse,
         Action::ScrollUp,
@@ -152,6 +154,7 @@ impl Action {
             Action::Tag => "tag",
             Action::Close => "close",
             Action::Refresh => "refresh",
+            Action::Orphans => "orphans",
             Action::AnswerFirst => "answer_first",
             Action::Collapse => "collapse",
             Action::ScrollUp => "scroll_up",
@@ -182,6 +185,7 @@ impl Action {
             Action::Tag => "Tag / untag ready to merge",
             Action::Close => "Close agent",
             Action::Refresh => "Refresh",
+            Action::Orphans => "Find orphaned sessions",
             Action::AnswerFirst => "Answer first question",
             Action::Collapse => "Collapse session",
             Action::ScrollUp => "Scroll up a view",
@@ -226,6 +230,8 @@ impl Action {
             Action::Tag => "t",
             Action::Close => "x",
             Action::Refresh => "r",
+            // The dashboard's key too.
+            Action::Orphans => "o",
             Action::AnswerFirst => "a",
             Action::Collapse => "escape",
             Action::ScrollUp => "u",
@@ -821,6 +827,7 @@ mod tests {
         assert_eq!(hit("escape", false), None);
         assert_eq!(hit("escape", true), Some(Hit::Action(Action::Collapse)));
         assert_eq!(hit("shift-g", false), Some(Hit::Action(Action::Last)));
+        assert_eq!(hit("o", false), Some(Hit::Action(Action::Orphans)));
         assert_eq!(keymap.focus_hit(&press("cmd-escape")), Some(Action::Leave));
         assert_eq!(keymap.focus_hit(&press("cmd-\\")), Some(Action::FocusSide));
         let linux = Keymap::defaults(false);

@@ -1009,7 +1009,10 @@ fn worker_match(
         .iter()
         .enumerate()
         .any(|(other, seat)| other != index && same_dir(seat.info.cwd(), cwd));
-    let confidence = if entries.len() == 1 && !shared {
+    // In the primary checkout, the user's own sessions share the worker's
+    // cwd and branch, so only a worktree's are proof.
+    let primary = same_dir(cwd, &seat.root);
+    let confidence = if entries.len() == 1 && !shared && !primary {
         Confidence::Certain
     } else {
         Confidence::Likely
@@ -1086,7 +1089,9 @@ const UNBOUND_RECHECK: Duration = Duration::from_secs(30);
 ///   mark to;
 /// - a worker's request id, on an agent without one whose cwd and branch are
 ///   those of exactly one unfinished ledger entry of its project that no
-///   live agent carries, when no other agent works in that checkout.
+///   live agent carries, when no other agent works in that checkout and it
+///   is a worktree (in the primary checkout the user's own sessions share
+///   the cwd and branch, so they prove nothing).
 ///
 /// Everything else waits for the user in the dialog. Only the pass holding
 /// the wake lock calls this, after [`markers::restore_markers`]. Returns the
@@ -1270,6 +1275,107 @@ pub fn retag_proven(
         }
         line
     })
+}
+
+/// What a frontend's "Orphaned sessions" dialog holds, apart from how it
+/// draws: the candidates, the choice made for each (preset to its
+/// suggestion), the selected one, and what applying did. Keys and clicks
+/// change it through these methods in the dashboard and the window alike.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Choices {
+    pub candidates: Vec<Candidate>,
+    /// The chosen action's index in each candidate's `actions`.
+    pub chosen: Vec<usize>,
+    pub selected: usize,
+    /// What applying did, oldest first.
+    pub done: Vec<String>,
+    pub error: Option<String>,
+}
+
+impl Choices {
+    /// `candidates`, each on its suggestion, the first selected.
+    pub fn new(candidates: Vec<Candidate>) -> Self {
+        let mut choices = Self::default();
+        choices.show(candidates);
+        choices
+    }
+
+    /// A fresh list in place of the old, keeping what was done.
+    pub fn show(&mut self, candidates: Vec<Candidate>) {
+        self.chosen = candidates.iter().map(|c| c.suggested).collect();
+        self.selected = self.selected.min(candidates.len().saturating_sub(1));
+        self.candidates = candidates;
+        self.error = None;
+    }
+
+    /// The selected candidate and the action chosen for it.
+    pub fn choice(&self) -> Option<(&Candidate, &Action)> {
+        let candidate = self.candidates.get(self.selected)?;
+        Some((
+            candidate,
+            candidate.actions.get(self.chosen[self.selected])?,
+        ))
+    }
+
+    /// Selects the candidate `by` rows on, within the list.
+    pub fn select_by(&mut self, by: isize) {
+        if self.candidates.is_empty() {
+            return;
+        }
+        let last = self.candidates.len() as isize - 1;
+        self.selected = (self.selected as isize + by).clamp(0, last) as usize;
+    }
+
+    /// Moves the selected candidate's choice `by` along its actions,
+    /// wrapping round.
+    pub fn cycle(&mut self, by: isize) {
+        let Some(candidate) = self.candidates.get(self.selected) else {
+            return;
+        };
+        let count = candidate.actions.len() as isize;
+        let chosen = &mut self.chosen[self.selected];
+        *chosen = (*chosen as isize + by).rem_euclid(count) as usize;
+    }
+
+    /// Chooses the selected candidate's action with `key`, as its keycap
+    /// shows; again, the next with that key (a worker of two entries).
+    /// Whether the candidate offers one.
+    pub fn choose_key(&mut self, key: char) -> bool {
+        let Some(candidate) = self.candidates.get(self.selected) else {
+            return false;
+        };
+        let count = candidate.actions.len();
+        let current = self.chosen[self.selected];
+        let next = (1..=count)
+            .map(|step| (current + step) % count)
+            .find(|index| candidate.actions[*index].key() == key);
+        if let Some(index) = next {
+            self.chosen[self.selected] = index;
+        }
+        next.is_some()
+    }
+
+    /// Selects candidate `index` and its action `action`, as a click does.
+    pub fn pick(&mut self, index: usize, action: usize) {
+        if let Some(candidate) = self.candidates.get(index)
+            && action < candidate.actions.len()
+        {
+            self.selected = index;
+            self.chosen[index] = action;
+        }
+    }
+
+    /// The choice for the candidate `key` was applied, as `status` says:
+    /// its row goes.
+    pub fn applied(&mut self, key: &str, status: String) {
+        if let Some(index) = self.candidates.iter().position(|c| c.key == key) {
+            self.candidates.remove(index);
+            self.chosen.remove(index);
+            self.selected = self.selected.min(self.candidates.len().saturating_sub(1));
+        }
+        self.done.push(status);
+        self.error = None;
+    }
 }
 
 /// The candidates as `corgi orphans` prints them: one block each, its
