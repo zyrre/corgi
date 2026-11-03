@@ -22,6 +22,7 @@ use crate::{
         CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, FONT_SIZE, HEADER_HEIGHT,
         HEADER_PADDING, PIXEL, Split, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
+    row_look::RowLook,
     rows::Pick,
     store::Connection,
     terminal::open_url,
@@ -910,20 +911,60 @@ impl CorgiWindow {
 
     fn agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
-        self.row_frame(agent, cx)
+        let row = self
+            .row_frame(agent, cx)
             .child(self.activity_line(&agent.message, 2, selected))
-            .child(self.activity_line(&agent.tool, 1, selected))
-            .into_any_element()
+            .child(self.activity_line(&agent.tool, 1, selected));
+        self.row_outline(agent, row, false)
     }
 
     /// The selected row, grown into its session's latest turns in place of
     /// its activity lines, down to the overview's bottom. A press in the
     /// turns selects their text and never reaches the row.
     fn expanded_agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
-        self.row_frame(agent, cx)
+        let row = self
+            .row_frame(agent, cx)
             .flex_1()
-            .child(self.session(agent))
+            .child(self.session(agent));
+        self.row_outline(agent, row, true)
+    }
+
+    /// TEMPORARY (`row_look`): the row in a frame that every row has,
+    /// outlined when selected; today's look draws the row bare.
+    fn row_outline(&self, agent: &Agent, row: gpui::Stateful<Div>, grows: bool) -> AnyElement {
+        let look = RowLook::get();
+        if look == RowLook::Baseline {
+            return row.into_any_element();
+        }
+        let colors = &self.colors;
+        let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
+        div()
+            .flex()
+            .flex_col()
+            .when(grows, |frame| frame.flex_1())
+            .rounded_md()
+            .map(|frame| {
+                if look.thick() {
+                    frame.border_2()
+                } else {
+                    frame.border_1()
+                }
+            })
+            .border_color(if selected {
+                look.outline(colors, agent.supervisor)
+            } else {
+                gpui::transparent_black()
+            })
+            .when(selected && look == RowLook::Tinted, |frame| {
+                frame.bg(look.fill(colors))
+            })
+            .child(row)
             .into_any_element()
+    }
+
+    /// The fill under a selected row's text.
+    fn selected_fill(&self) -> Hsla {
+        RowLook::get().fill(&self.colors)
     }
 
     /// A row's bar, its click and its status line, for its body to follow.
@@ -934,7 +975,7 @@ impl CorgiWindow {
         let (badge, badge_tone) = format::badge(agent);
         let badge_color = self.tone(badge_tone, None);
         let secondary = colors.secondary(if selected {
-            colors.roles.focus_bar
+            self.selected_fill()
         } else {
             colors.background
         });
@@ -1011,12 +1052,14 @@ impl CorgiWindow {
             .border_l_4()
             .border_color(if agent.supervisor {
                 colors.supervisor()
-            } else if selected {
+            } else if selected && RowLook::get().worker_bar() {
                 colors.roles.accent
             } else {
                 gpui::transparent_black()
             })
-            .when(selected, |row| row.bg(colors.roles.focus_bar))
+            .when(selected && RowLook::get() == RowLook::Baseline, |row| {
+                row.bg(colors.roles.focus_bar)
+            })
             .cursor(CursorStyle::PointingHand)
             .child(identity)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -1033,7 +1076,7 @@ impl CorgiWindow {
     fn activity_line(&self, activity: &Activity, lines: usize, selected: bool) -> impl IntoElement {
         let colors = &self.colors;
         let secondary = colors.secondary(if selected {
-            colors.roles.focus_bar
+            self.selected_fill()
         } else {
             colors.background
         });
@@ -1106,7 +1149,7 @@ impl CorgiWindow {
                 .child(self.activity_line(&agent.tool, 1, true))
                 .child(
                     div()
-                        .text_color(colors.secondary(colors.roles.focus_bar))
+                        .text_color(colors.secondary(self.selected_fill()))
                         .child(why),
                 )
                 .into_any_element();
