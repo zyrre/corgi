@@ -43,6 +43,7 @@ pub(crate) fn close_dialog_lines(form: &CloseWorkspaceForm) -> DialogContent<'_>
         CloseTarget::Worktree {
             checkout,
             force: false,
+            ..
         } => (
             "Remove worktree",
             format!("Remove worktree {}?", form.label),
@@ -60,6 +61,12 @@ pub(crate) fn close_dialog_lines(form: &CloseWorkspaceForm) -> DialogContent<'_>
             format!("Close workspace {}?", form.label),
             "All of its tabs and panes will be stopped.",
             "close",
+        ),
+        CloseTarget::Pane => (
+            "Close pane",
+            format!("Close the pane of {}?", form.label),
+            "Corgi did not create its workspace, so only this pane stops; your other tabs and shells stay.",
+            "close pane",
         ),
     };
     let mut lines = vec![

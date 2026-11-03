@@ -440,6 +440,7 @@ fn a_setup_notice_is_shown_once_in_a_popup_after_any_other_closes() {
 
     // Taken while another popup is open, it waits for the prompt to close.
     app.overlay = Overlay::Close(crate::app::CloseWorkspaceForm {
+        pane_id: String::new(),
         workspace_id: "w1".into(),
         tab_id: "t1".into(),
         label: "corgi".into(),

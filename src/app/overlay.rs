@@ -36,6 +36,8 @@ pub(crate) enum Overlay {
     /// `corgi setup`'s outcome, until Enter or Esc.
     Notice(String),
     Sessions(super::recovery::Sessions),
+    /// Find orphaned sessions: the candidates and the choice for each.
+    Orphans(super::orphans::OrphansDialog),
 }
 
 impl Overlay {
@@ -74,6 +76,7 @@ impl Overlay {
             Self::Launch(launch) => matches!(launch.state, LaunchState::Running { .. }),
             Self::Merge(form) => matches!(form.phase, MergePhase::Running(_)),
             Self::Sessions(form) => form.stage == super::recovery::Stage::Working,
+            Self::Orphans(dialog) => dialog.stage != super::orphans::Stage::List,
             _ => false,
         }
     }

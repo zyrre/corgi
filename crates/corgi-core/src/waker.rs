@@ -151,6 +151,15 @@ pub struct Inboxes {
 }
 
 impl Inboxes {
+    /// The file `name` of Corgi's state directory, or of the directory a
+    /// test keeps the state in instead.
+    pub fn state_file(&self, name: &str) -> Option<PathBuf> {
+        match &self.base {
+            Some(base) => Some(base.join(name)),
+            None => crate::paths::corgi_state_dir().map(|dir| dir.join(name)),
+        }
+    }
+
     /// The state directory holding the inbox of `root`'s supervisor.
     pub fn dir(&self, root: &str) -> Option<PathBuf> {
         match &self.base {

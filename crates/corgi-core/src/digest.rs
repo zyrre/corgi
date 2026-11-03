@@ -213,6 +213,8 @@ pub struct LedgerEntry {
     pub agent: String,
     pub status: String,
     pub branch: String,
+    /// The checkout the worker was sent to, when the supervisor wrote it.
+    pub cwd: String,
     pub summary: String,
     pub outcome: String,
     /// The supervisor's questions to the user about this work, still unanswered,
@@ -225,7 +227,7 @@ pub struct LedgerEntry {
 impl LedgerEntry {
     /// Statuses whose work needs nothing more: `done` is finished work with
     /// nothing to merge (a check, a review, an investigation).
-    fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         matches!(self.status.as_str(), "merged" | "abandoned" | "done")
     }
 }
@@ -287,6 +289,7 @@ fn read_ledger_line(line: &str, number: usize) -> LedgerLine {
         agent: field("agent"),
         status: field("status"),
         branch: field("branch"),
+        cwd: field("cwd"),
         summary: field("summary"),
         outcome: field("outcome"),
         questions: match object.get("questions") {

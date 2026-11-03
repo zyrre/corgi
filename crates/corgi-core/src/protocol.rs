@@ -470,7 +470,18 @@ pub enum ReplyResult {
     Digest {
         text: String,
     },
+    /// `orphans`: the candidates, each with its evidence and choices.
+    Orphans {
+        candidates: Vec<Orphan>,
+    },
 }
+
+/// An orphaned session or leftover workspace, as `corgi orphans --json`
+/// prints it (docs/orphaned-sessions.md).
+pub use crate::orphans::{
+    Action as OrphanAction, Candidate as Orphan, Cause as OrphanCause,
+    Confidence as OrphanConfidence,
+};
 
 /// The new-agent form, preset as the dashboard's `n` presets it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -703,6 +714,15 @@ pub enum Command {
         #[serde(default)]
         lookup: DigestQuery,
     },
+    /// Finds orphaned sessions: reads only, and only when asked.
+    Orphans,
+    /// Does what the user chose for one orphan, refused when its pane's
+    /// occupant changed since `orphans` listed it.
+    OrphanApply {
+        key: String,
+        fingerprint: String,
+        action: OrphanAction,
+    },
 }
 
 /// The new agent, as the form's rows hold it.
@@ -782,6 +802,8 @@ impl Command {
             ("focus", true),
             ("edit", true),
             ("digest", false),
+            ("orphans", false),
+            ("orphan_apply", false),
         ];
         COMMANDS
             .iter()
@@ -945,6 +967,9 @@ mod tests {
             json!({"command": "focus", "pane_id": "p"}),
             json!({"command": "edit", "pane_id": "p"}),
             json!({"command": "digest", "project_root": "/r"}),
+            json!({"command": "orphans"}),
+            json!({"command": "orphan_apply", "key": "pane:p", "fingerprint": "f",
+                   "action": {"kind": "leave"}}),
         ];
         assert_eq!(commands.len(), catalog.len());
         for (command, info) in commands.into_iter().zip(&catalog) {

@@ -306,6 +306,7 @@ fn bar_action_with(
                     CloseTarget::Worktree { force: false, .. } => "Remove worktree",
                     CloseTarget::Tab { .. } => "Close tab",
                     CloseTarget::Workspace => "Close workspace",
+                    CloseTarget::Pane => "Close pane",
                 });
             }
             Overlay::Merge(form) => {

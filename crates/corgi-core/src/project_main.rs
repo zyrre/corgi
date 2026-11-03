@@ -527,6 +527,28 @@ pub fn dashboard_pane_ids<'a>(
         .collect()
 }
 
+/// Every Corgi project workspace that duplicates its project's own and holds
+/// nothing, with its project root, as [`retire_duplicate_project_mains`]
+/// would close it: what a launch left behind while Herdr had lost Corgi's
+/// marks (cause 11 of docs/orphaned-sessions.md). Reads only.
+pub fn duplicate_project_mains<'a>(
+    snapshot: &'a SessionSnapshot,
+    dashboard_pane_id: Option<&str>,
+) -> Vec<(&'a WorkspaceInfo, &'a str)> {
+    let supervisors = supervisor_workspaces(&snapshot.agents);
+    let dashboard_pane_ids = dashboard_pane_ids(dashboard_pane_id, &snapshot.panes);
+    snapshot
+        .workspaces
+        .iter()
+        .filter_map(|workspace| Some((workspace, project_main_root(workspace)?)))
+        .filter(|(workspace, root)| {
+            project_main_workspace(&snapshot.workspaces, &supervisors, root)
+                .is_some_and(|main| main.workspace_id != workspace.workspace_id)
+                && holds_nothing(snapshot, workspace, &dashboard_pane_ids)
+        })
+        .collect()
+}
+
 /// Closes every Corgi project workspace of `project_root` other than the
 /// one [`project_main_workspace`] settles on, as long as it holds nothing:
 /// no agent, no dashboard (the one in `dashboard_pane_id`, or any labelled
@@ -968,6 +990,7 @@ mod tests {
 
         let client = HerdrClient::from_socket_path(&socket_path);
         let form = CloseWorkspaceForm {
+            pane_id: String::new(),
             workspace_id: "w9".into(),
             tab_id: "w9:t1".into(),
             label: "corgi-new-project".into(),

@@ -58,6 +58,12 @@ pub fn ensure_git_clean(cwd: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether a checkout has no uncommitted or untracked changes.
+pub fn git_status_clean(cwd: &Path) -> Result<bool> {
+    let changes = git_output(cwd, &["status", "--porcelain", "--untracked-files=normal"])?;
+    Ok(changes.trim().is_empty())
+}
+
 pub fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .arg("-C")
