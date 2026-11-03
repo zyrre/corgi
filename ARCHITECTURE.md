@@ -666,6 +666,11 @@ a missing, unreadable or other-version file gives the defaults). The
 overview's keys and an expanded session's are one key space; a key another
 action has is swapped only when confirmed, and fixed keys (the digits,
 copy and paste, the window's own) are refused. Dialogs keep ↵ and Esc.
+The window's own keys are app-level GPUI bindings (`window::bind_app_keys`,
+from `keymap.rs`'s constants). In GPUI 0.3.6 a bound key's action runs
+before any `on_key_down` listener, so a binding beats the terminal's key
+handler, in the focus view too: a key a terminal program should receive
+must not be bound.
 
 - `link.rs` starts the child and reads its stdout on a thread of its own,
   each line a `ServerMessage`; a line it cannot read (a newer server's) is
