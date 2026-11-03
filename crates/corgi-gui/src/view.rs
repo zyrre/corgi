@@ -976,16 +976,21 @@ impl CorgiWindow {
         } else {
             colors.roles.text
         };
-        // A narrow window wraps the fields after the task onto the next
-        // line rather than cutting them off.
+        // The line stays one line: every piece keeps its natural width and
+        // whatever passes the pane's right edge is clipped, never wrapped.
         let mut identity = div()
             .flex()
             .flex_row()
-            .flex_wrap()
+            .flex_nowrap()
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .w_full()
+            .min_w_0()
             .items_center()
             .gap_x_2()
             .child(
                 div()
+                    .flex_none()
                     .px_1()
                     .min_w(self.scaled(68.))
                     .flex()
@@ -1003,17 +1008,16 @@ impl CorgiWindow {
                     .child(piece.text)
             }))
             .children(
-                format::last_activity(agent).map(|time| div().text_color(secondary).child(time)),
+                format::last_activity(agent)
+                    .map(|time| div().flex_none().text_color(secondary).child(time)),
             )
             .child(
                 div()
+                    .flex_none()
                     .text_color(task_color)
                     .when(selected || agent.supervisor, |d| {
                         d.font_weight(FontWeight::BOLD)
                     })
-                    .min_w_0()
-                    .max_w_full()
-                    .truncate()
                     .child(if agent.task.is_empty() {
                         agent.name.clone()
                     } else {
