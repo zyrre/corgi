@@ -1,8 +1,9 @@
 # Find orphaned sessions
 
-Proposal, 3 November 2026. Nothing here is built yet beyond the two plain
-fixes named under "Found on the way". The open questions at the end need
-the user's choice before the dialog and its write actions are built.
+Design chosen by the user, 3 November 2026 (the supervisor's Q57–Q63).
+Nothing here is built yet beyond the two plain fixes named under "Found on
+the way". "Decisions" at the end records each choice and the options it
+was chosen over.
 
 An orphaned session is an agent in Herdr that Corgi gets wrong in one of
 four ways:
@@ -161,21 +162,20 @@ dialog lists).
 
 ## The user flow
 
-The action is **Find orphaned sessions** in corgi-gui and the dashboard,
-asked for over `corgi serve` like the other actions. It opens a list, one
-row per candidate (made-up rows):
+The action is **Find orphaned sessions**: a button in corgi-gui's header
+and the key `o` in the dashboard, asked for over `corgi serve` like the
+other actions. It runs only when asked: no count in the header and no
+dialog that opens by itself. It opens a list, one row per candidate
+(made-up rows):
 
 ```text
 ┌ ◆ Orphaned sessions ─────────────────────────────────────────────┐
-│ ▲ corgi-supervisor   ~/repos/corgi            shown as a worker   │
-│     Supervisor of corgi: its process was launched with corgi's    │
-│     role (certain)                          [s] supervisor  ✓     │
-│ ● claude  wQ:p1      ~/repos/webshop-wt-pay   heading webshop-wt… │
-│     Worktree of ~/repos/webshop; ledger w-pay (cwd, branch)       │
-│     (likely)                    [w] worker of webshop  [p] other  │
-│ ○ codex   wR:p2      ~/repos/corgi            not shown           │
-│     codex in the foreground; Herdr has no session for it          │
-│                                             [l] leave  [x] close  │
+│ ● claude  wQ:p1      ~/repos/webshop-pay      worker, no ledger   │
+│     Worktree of ~/repos/webshop; ledger w-pay by name only        │
+│     (guess)                         [w] worker of webshop  ✓      │
+│ ○ codex   wR:p2      ~/repos/scratchpad       not shown           │
+│     codex in the foreground; Herdr has no session for it.         │
+│     Run `herdr integration install codex`.  [l] leave  [x] close  │
 │ ○ (empty) w9X        instat-backend supervisor  duplicate          │
 │                                                        [x] close  │
 │                        Enter apply · x close · l leave · Esc done │
@@ -192,87 +192,74 @@ Each row offers what its evidence allows, the suggested choice preselected:
   the entry's id, so the digest and `corgi tag` find it. Without one there
   is nothing to write: an untracked worker is the user's own, which the
   row says.
-- **Project P** (another project): see Q3.
 - **Close**: through `close::close`, which needs a `DashboardAgent`; a
-  hidden or undetected pane gets one built from the snapshot. See Q4 for
-  what it may take down.
+  hidden or undetected pane gets one built from the snapshot. In a
+  workspace Corgi created (marked `project-main` or `agent-workspace`) it
+  is today's flow; in any other workspace it closes only the pane, with
+  Herdr's `pane close`, leaving the user's other tabs and shells alone.
 - **Leave**: nothing; the row is not offered again until its evidence
   changes (kept in the state directory by pane and session).
+
+There is no project choice: the project follows from Git (below). A Codex
+agent with no session gets a row only where it cannot be admitted (a
+workspace Corgi did not create), and the row names `herdr integration
+install codex`.
 
 Nothing is ever prompted, renamed or restarted. A pane whose occupant
 changed since the list was read (another session, another process) is
 refused at apply time, as the markers' restore does.
 
-## Open questions
+### Tagged without asking
 
-**Q1. Where and when does the action run?** The detector costs one
-snapshot plus a `pane.process_info` per non-agent pane, and Git calls for
-agents outside linked worktrees.
+Two cases are proven by evidence Corgi wrote itself, and the hooks' pass
+applies them as it puts back lost markers, naming what it did in its
+status line (a hook's log line, a dashboard's status):
 
-- A. On demand only: a header button in corgi-gui and a key (`o`) in the
-  dashboard. Cheapest; a hidden session stays unknown until asked.
-- B. A, plus a count in the header ("2 unlisted") from the same pass run
-  by the refresh every few seconds, not every 850 ms. Some Herdr calls
-  per refresh; the user learns of orphans without looking.
-- C. B, and the dialog opens by itself after a Herdr restart when there is
-  anything to decide. Most help after the restarts that cause most of
-  this; a popup the user did not ask for.
+- **A supervisor**: an agent that is not the supervisor, whose foreground
+  process's argv names its project's `<state>/supervisors/<name>/ROLE.md`
+  or state directory, when no other live process names the same state
+  directory (a handover under way) and the project has no running
+  supervisor. It gets the `session:` marker of its native session.
+- **A worker's request id**: an agent without `corgi_request` whose cwd
+  and branch equal those of an unfinished ledger entry of its project, and
+  no other live agent's do. It gets the entry's id as `corgi_request`.
 
-Recommendation: A first, B once the detector has run for a while and its
-false positives are known.
+Everything else waits in the dialog.
 
-**Q2. What may be tagged without asking?**
+### What changes outside the dialog
 
-- A. Only what is *certain*: a supervisor proved by its process's argv,
-  and a request id proved by a ledger entry with the same id, cwd and
-  branch, applied by the hook's pass like the marker restore, and named
-  in its status line. Everything else waits in the dialog.
-- B. Nothing: every change through the dialog, preselected. Safest; the
-  user has to open it after every restart that loses a supervisor.
-- C. A, plus *likely* matches. Fewest clicks; a wrong project or role
-  silently changes who wakes whom.
+- **Projects from Git.** An agent in any Git checkout belongs to the
+  repository `git rev-parse --git-common-dir` names, whether Herdr opened
+  it as a linked worktree or not. A plain workspace on a
+  `git worktree add` checkout, or an agent whose cwd left its workspace's
+  checkout, is then grouped under its repository, in `corgi fleet` and the
+  digest, and is merged and closed as a worktree (causes 7 and 8). AGENTS.md's
+  line that such workspaces are not linked worktrees to Corgi changes
+  with it. There is no `corgi_project` token.
+- **Codex without a session.** The process-verified admission that today
+  holds only for scratch Codex extends to every workspace Corgi created:
+  a Codex pane there, with `codex` in the foreground at the pane's cwd on
+  this refresh, is a row without transcript facts (cause 1).
 
-Recommendation: A. The certain cases are the ones a restart or a `/clear`
-causes, and they are what makes a project's wakes stop.
+## Decisions
 
-**Q3. How is an agent moved to another project?** Corgi has no token for
-a project; the project follows from the workspace and cwd.
-
-- A. Derive it better: an agent in any Git checkout belongs to the
-  repository `git rev-parse --git-common-dir` names, linked worktree or
-  not. Fixes causes 7 and 8 for everyone with no dialog choice, and changes
-  how a plain workspace on a `git worktree add` checkout is grouped (today
-  it is its own project; AGENTS.md says so). Merging and closing such a
-  checkout then also need it treated as a worktree.
-- B. A `corgi_project` pane token the dialog sets, recorded and put back
-  like the other marks, read by `rows` before the workspace. Covers any
-  case, including non-repository directories; one more token to keep
-  right.
-- C. No move: the dialog only says where the agent works and offers close.
-
-Recommendation: A, without the dialog choice; add B only if a case
-remains that A does not cover.
-
-**Q4. What does Close take down for a pane in a workspace Corgi does not
-own?** Today `close::close_form` closes "any other workspace" whole,
-which for the user's own workspace takes its other tabs and shells with it.
-
-- A. Only the pane (Herdr's `pane close`, which Corgi does not call
-  yet), for any workspace Corgi did not create; today's flow for Corgi's
-  own.
-- B. The pane's tab.
-- C. Today's flow everywhere, with the confirmation naming what else is
-  in the workspace.
-
-Recommendation: A.
-
-**Q5. Hidden agents without an identity (cause 1).**
-
-- A. The dialog says so and names the fix: `herdr integration install
-  codex`. No code beyond the row; Corgi still cannot read its transcript.
-- B. A, and extend the process-verified admission from scratch Codex to
-  every workspace Corgi created (agent and project workspaces), as a
-  row without transcript facts.
-- C. B for any workspace.
-
-Recommendation: B; C admits whatever runs in the user's own shells.
+- **Where and when**: on demand only, a corgi-gui header button and
+  the dashboard's `o`. Rejected for now: a header count of unlisted
+  sessions (Herdr calls on every refresh), and a dialog that opens by
+  itself after a restart (a popup nobody asked for).
+- **Tagging without asking**: only the two proven cases above,
+  applied by the hooks. Rejected: nothing without asking (the user would
+  have to open the dialog after every restart that loses a supervisor),
+  and likely matches too (a wrong role silently changes who wakes whom).
+- **An agent's project**: the repository Git names, linked worktree
+  or not; plain linked checkouts are worktrees for merge and close.
+  Rejected: a `corgi_project` pane token set in the dialog (one more token
+  to keep right), and no move at all.
+- **Close in a workspace Corgi did not create**: the pane only.
+  Rejected: the pane's tab, and today's whole-workspace close with a
+  warning.
+- **Agents without an identity**: the dialog names
+  `herdr integration install codex`, and process-verified Codex agents
+  are rows in every workspace Corgi created. Rejected: the hint alone
+  (they would stay hidden), and admission in any workspace (whatever runs
+  in the user's own shells).
