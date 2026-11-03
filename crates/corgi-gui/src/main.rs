@@ -14,6 +14,7 @@ mod layout;
 mod link;
 mod options;
 mod orphans;
+mod pause;
 mod question;
 mod rows;
 mod store;

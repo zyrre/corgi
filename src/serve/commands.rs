@@ -31,7 +31,7 @@ use corgi_core::{
         tell_supervisor_about_merge,
     },
     model::DashboardAgent,
-    orphans, progress,
+    orphans, pause, progress,
     projects::{ProjectMemory, known_projects, new_project_parent, project_choices},
     protocol::{
         Choice, CloseForm, Command, DigestQuery, MergeForm, MergeOutcome, NewAgentForm,
@@ -152,6 +152,9 @@ impl Server {
             Command::Close { pane_id, force } => self.close(id, &pane_id, force),
             Command::Tag { pane_id, merge } => self.tag(id, &pane_id, merge),
             Command::Resume { pane_id } => self.resume(id, &pane_id),
+            Command::PauseCheck => self.pause_check(id),
+            Command::PauseAll => self.pause_all(id),
+            Command::ResumeAll => self.resume_all(id),
             Command::Focus { pane_id } => self.focus(id, &pane_id),
             Command::Edit { pane_id } => self.edit(id, &pane_id),
             Command::Digest {
@@ -274,6 +277,40 @@ impl Server {
                     "Resumed {} in its pane with its session and options",
                     agent.info.display_name()
                 ),
+            })
+        });
+    }
+
+    /// What Pause all would stop now, for the confirmation.
+    fn pause_check(&mut self, id: u64) {
+        let plan = pause::plan(&self.agents);
+        if plan.targets.is_empty() {
+            return self.refuse(id, "No agent to pause");
+        }
+        self.shared
+            .output
+            .reply(answered(id, Ok(ReplyResult::PauseForm(plan.form()))));
+    }
+
+    /// Stops every agent Pause all takes to its shell, with its wakes held
+    /// until Resume all.
+    fn pause_all(&mut self, id: u64) {
+        let agents = self.agents.clone();
+        self.work(id, true, move |shared| {
+            let outcome =
+                pause::pause_all(&shared.client, &agents, &mut Sink::new(shared, id, false))?;
+            Ok(ReplyResult::Done {
+                message: outcome.message("Paused"),
+            })
+        });
+    }
+
+    /// Starts every agent Pause all stopped again, each in its own pane.
+    fn resume_all(&mut self, id: u64) {
+        self.work(id, true, move |shared| {
+            let outcome = pause::resume_all(&shared.client, &mut Sink::new(shared, id, false))?;
+            Ok(ReplyResult::Done {
+                message: outcome.message("Resumed"),
             })
         });
     }

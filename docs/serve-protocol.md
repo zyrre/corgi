@@ -162,6 +162,7 @@ Exactly one per request, with its `id`.
 | `merge_outcome` | a `MergeOutcome` | `merge` |
 | `close_form` | a `CloseForm` | `close_check` |
 | `close_dirty` | `message` | `close` on a worktree with uncommitted changes |
+| `pause_form` | a `PauseForm` | `pause_check` |
 | `digest` | `text` | `digest` |
 | `orphans` | `candidates` | `orphans` |
 
@@ -215,6 +216,11 @@ Exactly one per request, with its `id`.
   session; `resume` starts it again. It takes `close_check`, `close`,
   `merge_check` and `edit`; `prompt`, `tag` and `focus` refuse it. Only a
   pane where Corgi saw an agent session has one.
+- `paused: true` (left out when false) marks an exited row that
+  `pause_all` stopped: `resume_all` starts it again, as `resume` does for
+  it alone. While any row has it, a frontend offers Resume all in place of
+  Pause all. It is Corgi's state, not the frontend's, so a window opened
+  later sees it, and it survives a Herdr restart.
 - `warning`, with `missing_options`, says that the agent runs without some
   of the options Corgi launched it with (`role`, `memory`, `model`,
   `effort` or a flag), as after a resume by a Herdr older than 0.9.2:
@@ -363,6 +369,9 @@ finish.
 | `close` | `pane_id`, `force` | | Closes the agent's worktree, tab or workspace. |
 | `tag` | `pane_id`, `merge` | | Tags the agent ready to merge, or clears the tag. |
 | `resume` | `pane_id` | | Starts an exited row's agent again in its pane. |
+| `pause_check` | | | What `pause_all` would stop, for the confirmation. |
+| `pause_all` | | | Stops every Claude and Codex agent in every project to its shell. |
+| `resume_all` | | | Starts every agent `pause_all` stopped again. |
 | `focus` | `pane_id` | **yes** | Brings the agent's pane into view in Herdr. |
 | `edit` | `pane_id` | **yes** | Opens the agent's checkout in the editor, in a new Herdr tab it goes to. |
 | `digest` | `project_root`, `lookup` | | Reads the supervisor's memory. |
@@ -550,6 +559,39 @@ launched it with and, for a supervisor, its role and memory, the same
 command Corgi gives Herdr for a restart. It refuses a running agent, a
 pane whose shell is busy or has left the agent's directory, and a pane
 where Corgi saw no session. Corgi never resumes an agent by itself.
+
+### `pause_check`, `pause_all` and `resume_all`
+
+`{"command":"pause_check"}` replies with what Pause all would stop now, and
+changes nothing; it refuses when there is no agent to stop:
+
+```json
+{"kind":"pause_form","agents":3,"working":1,
+ "projects":[{"project":"weather","supervisors":1,"workers":2,
+              "working":["supervisor-weather"]}],
+ "left":["w-old: Herdr does not know its state"]}
+```
+
+It counts every running Claude and Codex row with a session, in every
+project and the scratch sessions (`Scratch`), supervisors and workers.
+`working` names those working or waiting on a question: their current turn
+is lost. `left` names what is left running and why (a state Herdr does not
+know, no session Corgi could resume, another harness); left out when empty.
+`corgi_core::pause::confirmation` words it as both dashboards do.
+
+`{"command":"pause_all"}` marks every one paused in Corgi's launch record,
+presses Esc in each working one and waits for it to stop, then types its
+harness's own exit (`/exit`, `/quit`) and waits for it to leave. Its
+progress says which step runs; it replies `done` with `Paused N agents`,
+naming any it could not stop and why (it kept working, its input box held
+the user's text, it did not exit). Nothing is killed. While agents are
+paused their stops wake no supervisor and no supervisor is handed over,
+and after a Herdr restart they stay at their shell.
+
+`{"command":"resume_all"}` starts each paused row's agent again in its own
+pane, as `resume` does, and replies `done` with `Resumed N agents`, naming
+any that failed. Rows that exited some other way are left alone. It
+refuses when nothing is paused.
 
 ### `focus` and `edit` (touch focus)
 

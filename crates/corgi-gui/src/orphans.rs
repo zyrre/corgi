@@ -22,8 +22,8 @@ use crate::{
 };
 
 impl CorgiWindow {
-    /// The header's button under "Hotkeys": finds orphaned sessions, as its
-    /// key does. Nothing is looked for until it is pressed.
+    /// The header's button under "Hotkeys", "Sessions": finds orphaned
+    /// sessions, as its key does. Nothing is looked for until it is pressed.
     pub fn orphans_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         div()
@@ -42,7 +42,7 @@ impl CorgiWindow {
                     .bg(colors.roles.keycap)
                     .border_color(colors.roles.accent)
             })
-            .child("Orphans")
+            .child("Sessions")
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.find_orphans(cx);
                 cx.stop_propagation();

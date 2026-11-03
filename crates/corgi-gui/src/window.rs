@@ -1277,6 +1277,7 @@ impl CorgiWindow {
             Action::Resume => self.resume(cx),
             Action::Refresh => self.refresh(cx),
             Action::Orphans => self.find_orphans(cx),
+            Action::PauseAll => self.pause_or_resume_all(cx),
             Action::AnswerFirst => self.answer_nth(0, window, cx),
             // The focus view's and the merge dialog's own.
             Action::Leave | Action::FocusSide | Action::AskSupervisor => return,
@@ -1358,6 +1359,13 @@ impl CorgiWindow {
             Some(Dialog::Close(_)) => match key {
                 "enter" => {
                     self.confirm_close(cx);
+                    true
+                }
+                _ => false,
+            },
+            Some(Dialog::Pause(_)) => match key {
+                "enter" => {
+                    self.confirm_pause(cx);
                     true
                 }
                 _ => false,

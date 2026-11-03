@@ -250,6 +250,10 @@ pub struct Agent {
     /// `close`, `merge_check` and `edit` takes it. Left out when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub exited: bool,
+    /// An exited row that Pause all stopped: `resume_all` starts it again.
+    /// Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
     /// The agent runs without some of the options Corgi launched it with
     /// (as after a resume by a Herdr older than 0.9.2), and what to do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -485,6 +489,8 @@ pub enum ReplyResult {
     MergeForm(Box<MergeForm>),
     MergeOutcome(MergeOutcome),
     CloseForm(CloseForm),
+    /// `pause_check`: what Pause all would stop.
+    PauseForm(PauseForm),
     /// `close` found a dirty worktree; `close` with `force` discards it.
     CloseDirty {
         message: String,
@@ -619,6 +625,34 @@ pub struct CloseForm {
     pub confirm: String,
 }
 
+/// What `pause_all` stops, for the confirmation
+/// (`corgi_core::pause::confirmation` words it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseForm {
+    /// How many agents it stops.
+    pub agents: usize,
+    /// How many of them are working or waiting on a question now: their
+    /// current turn is lost.
+    pub working: usize,
+    /// The agents by project, in the dashboard's order.
+    pub projects: Vec<PauseProject>,
+    /// The agents it leaves running, each as `name: why`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<String>,
+}
+
+/// One project's share of a [`PauseForm`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseProject {
+    /// The project's heading (`Scratch` for the scratch sessions).
+    pub project: String,
+    pub supervisors: usize,
+    pub workers: usize,
+    /// The names of those working now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub working: Vec<String>,
+}
+
 /// One line a frontend writes: an `id` it chooses, echoed in the reply and
 /// any progress, and the command.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -727,6 +761,13 @@ pub enum Command {
     Resume {
         pane_id: String,
     },
+    /// What `pause_all` would stop, for the confirmation.
+    PauseCheck,
+    /// Stops every Claude and Codex agent in every project to its shell,
+    /// working ones interrupted first, with their wakes held until Resume.
+    PauseAll,
+    /// Starts every agent `pause_all` stopped again, each in its own pane.
+    ResumeAll,
     /// Brings the agent's pane into view in Herdr: touches focus.
     Focus {
         pane_id: String,
@@ -827,6 +868,9 @@ impl Command {
             ("close", false),
             ("tag", false),
             ("resume", false),
+            ("pause_check", false),
+            ("pause_all", false),
+            ("resume_all", false),
             ("focus", true),
             ("edit", true),
             ("digest", false),
@@ -993,6 +1037,9 @@ mod tests {
             json!({"command": "close", "pane_id": "p"}),
             json!({"command": "tag", "pane_id": "p", "merge": true}),
             json!({"command": "resume", "pane_id": "p"}),
+            json!({"command": "pause_check"}),
+            json!({"command": "pause_all"}),
+            json!({"command": "resume_all"}),
             json!({"command": "focus", "pane_id": "p"}),
             json!({"command": "edit", "pane_id": "p"}),
             json!({"command": "digest", "project_root": "/r"}),

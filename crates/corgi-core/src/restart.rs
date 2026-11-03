@@ -94,6 +94,26 @@ pub struct Launched {
     /// The command last reported to Herdr, and that Herdr's version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported: Option<Reported>,
+    /// Stopped by Pause all ([`crate::pause`]): its stops wake no
+    /// supervisor and it is not handed over until it is back, and Resume
+    /// all starts it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<Paused>,
+}
+
+/// An agent's mark from Pause all.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Paused {
+    /// When it was set, Unix seconds.
+    pub at: u64,
+    /// The agent's project, whose supervisor keeps its handover while it is
+    /// away.
+    pub project_root: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supervisor: bool,
+    /// Resume started it again: the mark goes once a pass has seen it back.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resuming: bool,
 }
 
 /// A supervisor's durable files.
@@ -280,7 +300,7 @@ pub fn read(client: &HerdrClient) -> Record {
         .unwrap_or_default()
 }
 
-fn read_at(path: &Path) -> Record {
+pub(crate) fn read_at(path: &Path) -> Record {
     fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -289,7 +309,7 @@ fn read_at(path: &Path) -> Record {
 
 /// Reads the record at `path`, lets `change` edit it and writes it back if
 /// it changed, under a lock beside it, as the marker record is kept.
-fn update<T>(path: &Path, change: impl FnOnce(&mut Record) -> T) -> Result<T> {
+pub(crate) fn update<T>(path: &Path, change: impl FnOnce(&mut Record) -> T) -> Result<T> {
     let dir = path
         .parent()
         .context("the launch record has no directory")?;
@@ -591,7 +611,7 @@ fn plural(count: usize) -> &'static str {
 
 /// Whether Herdr has an agent in the pane. An agent that just exited stays
 /// in the snapshot for a moment without a harness, which is no other agent.
-fn is_agent(agent: &AgentInfo) -> bool {
+pub(crate) fn is_agent(agent: &AgentInfo) -> bool {
     agent.agent.as_deref().is_some_and(|kind| !kind.is_empty())
 }
 
@@ -676,6 +696,19 @@ pub fn resume(client: &HerdrClient, pane_id: &str) -> Result<AgentInfo> {
         entry.cwd.display()
     );
     let argv = entry.argv(&session)?;
+    // Back from Pause all: marked before it starts, so the pass that sees
+    // it come back already knows to drop the mark rather than wake anyone.
+    if entry.paused.is_some() {
+        update(&path, |record| {
+            if let Some(paused) = record
+                .panes
+                .get_mut(pane_id)
+                .and_then(|entry| entry.paused.as_mut())
+            {
+                paused.resuming = true;
+            }
+        })?;
+    }
     let started = client
         .start_agent(
             &entry.name,

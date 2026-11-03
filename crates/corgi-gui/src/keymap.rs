@@ -104,10 +104,11 @@ pub enum Action {
     FocusSide,
     AskSupervisor,
     Resume,
+    PauseAll,
 }
 
 impl Action {
-    pub const ALL: [Action; 27] = [
+    pub const ALL: [Action; 28] = [
         Action::Next,
         Action::Previous,
         Action::First,
@@ -126,6 +127,7 @@ impl Action {
         Action::Resume,
         Action::Refresh,
         Action::Orphans,
+        Action::PauseAll,
         Action::AnswerFirst,
         Action::Collapse,
         Action::ScrollUp,
@@ -167,6 +169,7 @@ impl Action {
             Action::FocusSide => "focus_side",
             Action::AskSupervisor => "ask_supervisor",
             Action::Resume => "resume",
+            Action::PauseAll => "pause_all",
         }
     }
 
@@ -188,7 +191,7 @@ impl Action {
             Action::Tag => "Tag / untag ready to merge",
             Action::Close => "Close agent",
             Action::Refresh => "Refresh",
-            Action::Orphans => "Find orphaned sessions",
+            Action::Orphans => "Sessions: find orphaned sessions",
             Action::AnswerFirst => "Answer first question",
             Action::Collapse => "Collapse session",
             Action::ScrollUp => "Scroll up a view",
@@ -199,6 +202,7 @@ impl Action {
             Action::FocusSide => "Show / hide side panel",
             Action::AskSupervisor => "Ask supervisor to fix",
             Action::Resume => "Resume exited agent",
+            Action::PauseAll => "Pause all / Resume all agents",
         }
     }
 
@@ -238,6 +242,8 @@ impl Action {
             Action::Refresh => "r",
             // The dashboard's key too.
             Action::Orphans => "o",
+            // The dashboard's key too.
+            Action::PauseAll => "shift-p",
             Action::AnswerFirst => "a",
             Action::Collapse => "escape",
             Action::ScrollUp => "u",
@@ -885,6 +891,17 @@ mod tests {
         assert_eq!(Action::Resume.area(), Area::Overview);
         assert!(keymap.assign(Action::Resume, key("y"), false));
         assert_eq!(keymap.key(Action::Resume), &key("y"));
+    }
+
+    #[test]
+    fn pause_all_is_shift_p_as_in_the_dashboard_and_can_be_rebound() {
+        let mut keymap = Keymap::defaults(true);
+        assert_eq!(keymap.key(Action::PauseAll), &key("shift-p"));
+        assert_eq!(Action::PauseAll.area(), Area::Overview);
+        assert_eq!(Action::PauseAll.name(), "Pause all / Resume all agents");
+        assert_eq!(Action::Orphans.name(), "Sessions: find orphaned sessions");
+        assert!(keymap.assign(Action::PauseAll, key("ctrl-p"), false));
+        assert_eq!(keymap.key(Action::PauseAll), &key("ctrl-p"));
     }
 
     #[test]

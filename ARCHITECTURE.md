@@ -387,6 +387,12 @@ dashboard, the command line and other frontends run the same code.
   and the digest, and merged and closed as a worktree. A repository whose
   primary checkout is the home directory (dotfiles) is not one for an agent
   in a subdirectory.
+- `pause.rs` is Pause all and Resume all (see "Pause all" under "Herdr
+  restarts"): `plan` picks the agents from a refresh's rows and `Plan::form`
+  and `confirmation` say what will stop; `pause_all` marks them, presses
+  Esc in the working ones and types each harness's exit; `resume_all`
+  resumes the marked ones through `restart::resume`; `Holds` and `settle`
+  are what the pass holding the wake lock honours and clears.
 - `orphans.rs` is "Find orphaned sessions" (docs/orphaned-sessions.md):
   `detect` reads the snapshot, the rows, the panes' foreground processes
   (`pane.process_info`, which lists the pane's whole foreground group, an
@@ -399,7 +405,7 @@ dashboard, the command line and other frontends run the same code.
   request id; an agent in no repository) and empty duplicate project
   workspaces, each with its evidence, how sure it is, and the choices it
   allows, the suggested one first to show. It writes nothing; it runs only
-  when asked (the dashboard's `o`, the window's Orphans button,
+  when asked (the dashboard's `o`, the window's Sessions button,
   `corgi orphans`, `serve`'s `orphans`). `apply` detects again and refuses
   a candidate whose fingerprint changed (another session or process in the
   pane), then marks the supervisor (`markers::mark_pane` with its
@@ -610,6 +616,9 @@ Its submodules are split by flow, each adding methods to the one `App`.
   side of the core's flows of the same names: fetching catalogs as the form
   asks, the launch job and its panel, the merge dialog and its job, and the
   close dialog.
+- `pause.rs` is `P`: the Pause all confirmation (`src/ui/dialogs.rs`
+  draws it with the core's words) and its job, or Resume all's while a row
+  is paused. The footer names `P pause all` or `P resume all`.
 - `orphans.rs` is the `o` key's "Orphaned sessions" dialog and
   `corgi orphans`: the core's `detect` and `apply` as one background job,
   so keys never wait on Herdr's process lookups; the list keeps one choice
@@ -699,8 +708,9 @@ when stdin closes and no command is still running.
   `launch_agent`, `dashboard_supervisor_plan`, `merge_form`/`run_merge`
   with the dashboard's follow-ups (clear the tag, tell the supervisor, hand
   a conflict or failed push over), `close_form`/`close`, `tag_agent`,
-  `go_to_agent`, `open_checkout` and the digest lookups, and `orphans` and
-  `orphan_apply`, the core's `orphans::detect` and `apply`. `close_question`
+  `go_to_agent`, `open_checkout` and the digest lookups, `orphans` and
+  `orphan_apply`, the core's `orphans::detect` and `apply`, and
+  `pause_check`, `pause_all` and `resume_all`, the core's `pause` flows. `close_question`
   has no dashboard key: it adds `supervisor::question_closed_message` to the
   supervisor's inbox, delivered like a wake, and the role says how to drop
   the question from the ledger and delete its file, which only the
@@ -801,7 +811,13 @@ must not be bound.
   Esc does to each, and a left click outside the dialog does the same: the
   form's open list closes before the form, a form creating its agent stays,
   and a merge stopped for the user is dismissed through `serve`.
-- `orphans.rs` is the header's Orphans button (under Hotkeys) and the
+- `pause.rs` is the header's Pause all button, under Sessions, and the
+  confirmation it and the rebindable `⇧P` open (`pause_check`, then
+  `pause_all`). While any row is `paused` it reads Resume all and sends
+  `resume_all`, and while either runs it reads Pausing… or Resuming… and
+  takes no click (`Dialogs::all_running`). A paused row's badge reads
+  PAUSED.
+- `orphans.rs` is the header's Sessions button (under Hotkeys) and the
   "Orphaned sessions" dialog it and the rebindable `o` open: a card per
   candidate with its evidence, chips for its cause and certainty, and its
   choices as buttons, the chosen one marked; Enter or the Apply button
@@ -1146,6 +1162,51 @@ agents' full command (`crates/corgi-core/src/restart.rs`):
 What each kind of agent keeps through a handoff, a server restart and a
 reboot, and how Corgi brings the rest back, are in
 [docs/restart-survival.md](docs/restart-survival.md).
+
+#### Pause all
+
+One action stops every agent, for when the user leaves the network, and
+one brings them back (`crates/corgi-core/src/pause.rs`; the dashboard's
+`P`, the window's Pause all button and `⇧P`, serve's `pause_check`,
+`pause_all` and `resume_all`):
+
+- **Which agents.** Every running Claude and Codex row with a native
+  session, in every project and the scratch sessions, supervisors and
+  workers. A row whose state Herdr does not know, one without a session
+  Resume could use, another harness's and an exited row are left, and the
+  confirmation names them. Those working or blocked on a question are
+  named as working: they lose their current turn.
+- **The mark.** The pause lives on each pane's entry in the launch record
+  (`restart::Paused`: when, the project, whether it is the supervisor, and
+  `resuming`), so it outlasts the frontend and a Herdr restart. An agent
+  Corgi did not launch gets an entry with its session and directory and
+  no options, so it resumes as Herdr would. Every pane is marked before
+  any key goes out.
+- **Stopping.** Esc in each busy agent, then a wait (10 s at most) for it
+  to rest; then, unless its input box holds the user's text
+  (`draft::holds_draft`), its harness's exit (`Harness::exit_command`,
+  `/exit` or `/quit`) typed in, and a wait (20 s) for it to leave. Its
+  resume command is released (Herdr forgets it with the agent anyway).
+  One that kept working, held a draft or did not exit loses its mark and
+  is named in the outcome. Nothing is killed.
+- **No wake storm.** The pass holding the wake lock reads the marks
+  (`pause::Holds`) with the recovery holds: a marked pane's stops are
+  followed (the baselines move on) but go in no inbox, a marked supervisor
+  is left out of handovers and deliveries, and its project keeps its
+  handover record while the supervisor is away. So the Esc, the exit and
+  the return wake nobody and start no handover.
+- **Restarts.** An agent that exited leaves a shell, which Herdr does not
+  resume after a restart (seen on 0.9.5: a stop and start of a private
+  server while paused started nothing), and its reported command is gone;
+  the startup pass keeps the entries of panes at their shell, marks and
+  all.
+- **Resume all** runs `restart::resume` for each marked pane at its shell,
+  which sets `resuming` before it starts the agent; rows that exited some
+  other way are not touched. A pass that sees the agent back in a marked
+  pane, after `observe` has recorded it, drops the mark (`pause::settle`),
+  so its return is no news and the next stop wakes as before. A mark on a
+  pane whose agent still runs is dropped too once it is older than
+  `STALE_SECS` (a pause that never got to stop it).
 
 ### Herdr's hooks
 

@@ -436,6 +436,7 @@ impl RefreshState {
             supervisor,
             scratch,
             exited: false,
+            paused: false,
             missing_options: Vec::new(),
         }
     }
@@ -572,7 +573,12 @@ fn exited_agent(
         effort,
         message: Activity {
             kind: ActivityKind::Ready,
-            text: EXITED_MESSAGE.into(),
+            text: if launched.paused.is_some() {
+                PAUSED_MESSAGE
+            } else {
+                EXITED_MESSAGE
+            }
+            .into(),
         },
         tool: Activity {
             kind: ActivityKind::Ready,
@@ -583,6 +589,7 @@ fn exited_agent(
         },
         scratch,
         exited: true,
+        paused: launched.paused.is_some(),
         info,
         ..DashboardAgent::default()
     }
@@ -591,6 +598,10 @@ fn exited_agent(
 /// What an exited agent's row says.
 pub const EXITED_MESSAGE: &str =
     "Exited to its shell. Resume starts it again with its session and launch options.";
+
+/// What the row of an agent Pause all stopped says.
+pub const PAUSED_MESSAGE: &str =
+    "Paused to its shell. Resume all starts it again with its session and launch options.";
 
 fn read_screen(client: &HerdrClient, info: &AgentInfo) -> Option<String> {
     client

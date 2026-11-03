@@ -38,6 +38,8 @@ pub(crate) enum Overlay {
     Sessions(super::recovery::Sessions),
     /// Find orphaned sessions: the candidates and the choice for each.
     Orphans(super::orphans::OrphansDialog),
+    /// The confirmation before Pause all stops every agent.
+    Pause(corgi_core::protocol::PauseForm),
 }
 
 impl Overlay {
