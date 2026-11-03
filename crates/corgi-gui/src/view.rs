@@ -22,7 +22,6 @@ use crate::{
         CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, FONT_SIZE, HEADER_HEIGHT,
         HEADER_PADDING, PIXEL, Split, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
-    row_look::RowLook,
     rows::Pick,
     store::Connection,
     terminal::open_url,
@@ -929,13 +928,11 @@ impl CorgiWindow {
         self.row_outline(agent, row, true)
     }
 
-    /// TEMPORARY (`row_look`): the row in a frame that every row has,
-    /// outlined when selected; today's look draws the row bare.
+    /// The row in a frame that every row has: a 2 px outline, transparent
+    /// until the row is selected, so selecting it moves no text. Selected,
+    /// the frame is outlined in the accent over the accent's faint tint
+    /// (`Colors::selected_row`), the expanded row whole.
     fn row_outline(&self, agent: &Agent, row: gpui::Stateful<Div>, grows: bool) -> AnyElement {
-        let look = RowLook::get();
-        if look == RowLook::Baseline {
-            return row.into_any_element();
-        }
         let colors = &self.colors;
         let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
         div()
@@ -943,28 +940,15 @@ impl CorgiWindow {
             .flex_col()
             .when(grows, |frame| frame.flex_1())
             .rounded_md()
-            .map(|frame| {
-                if look.thick() {
-                    frame.border_2()
-                } else {
-                    frame.border_1()
-                }
-            })
+            .border_2()
             .border_color(if selected {
-                look.outline(colors, agent.supervisor)
+                colors.roles.accent
             } else {
                 gpui::transparent_black()
             })
-            .when(selected && look == RowLook::Tinted, |frame| {
-                frame.bg(look.fill(colors))
-            })
+            .when(selected, |frame| frame.bg(colors.selected_row()))
             .child(row)
             .into_any_element()
-    }
-
-    /// The fill under a selected row's text.
-    fn selected_fill(&self) -> Hsla {
-        RowLook::get().fill(&self.colors)
     }
 
     /// A row's bar, its click and its status line, for its body to follow.
@@ -975,7 +959,7 @@ impl CorgiWindow {
         let (badge, badge_tone) = format::badge(agent);
         let badge_color = self.tone(badge_tone, None);
         let secondary = colors.secondary(if selected {
-            self.selected_fill()
+            colors.selected_row()
         } else {
             colors.background
         });
@@ -1052,13 +1036,8 @@ impl CorgiWindow {
             .border_l_4()
             .border_color(if agent.supervisor {
                 colors.supervisor()
-            } else if selected && RowLook::get().worker_bar() {
-                colors.roles.accent
             } else {
                 gpui::transparent_black()
-            })
-            .when(selected && RowLook::get() == RowLook::Baseline, |row| {
-                row.bg(colors.roles.focus_bar)
             })
             .cursor(CursorStyle::PointingHand)
             .child(identity)
@@ -1072,11 +1051,11 @@ impl CorgiWindow {
     }
 
     /// An activity line; on the `selected` row, muted parts take the
-    /// colors' secondary so they read on the selection bar.
+    /// colors' secondary so they read on its tint.
     fn activity_line(&self, activity: &Activity, lines: usize, selected: bool) -> impl IntoElement {
         let colors = &self.colors;
         let secondary = colors.secondary(if selected {
-            self.selected_fill()
+            colors.selected_row()
         } else {
             colors.background
         });
@@ -1149,7 +1128,7 @@ impl CorgiWindow {
                 .child(self.activity_line(&agent.tool, 1, true))
                 .child(
                     div()
-                        .text_color(colors.secondary(self.selected_fill()))
+                        .text_color(colors.secondary(colors.selected_row()))
                         .child(why),
                 )
                 .into_any_element();

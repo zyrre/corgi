@@ -651,7 +651,11 @@ way to its supervisor); one the user expanded stays so across refreshes. The sid
 and closes and its edge drags; its size, and the window's, are kept in
 `$STATE/gui-layout.json` (fields an older build kept, such as the removed
 session pane's, are skipped). Space expands the selected row in place into
-its session's turns, as the dashboard's expanded session does (below). Enter or a double click
+its session's turns, as the dashboard's expanded session does (below).
+The selected row is drawn as a 2 px accent outline around a faint accent
+tint (`Colors::selected_row`); every row carries that outline's frame,
+transparent until selected, so moving the selection shifts no text, and
+the expanded row is outlined whole. Enter or a double click
 on a row opens the **focus view**: that agent's live Herdr terminal in place
 of the overview, beside a side panel of its own (open or closed and its
 width kept apart from the overview's). Cmd+Esc (Ctrl+Shift+Esc on Linux), or

@@ -272,7 +272,7 @@ of their own open:
 `aerospace list-windows --all --json --format '%{window-id} %{app-name} %{app-pid}'`
 lists `app-pid` only when `--format` asks for it.
 
-Text on a fill other than the background (a badge, the selected row's bar,
+Text on a fill other than the background (a badge, the selected row's tint,
 a dialog) takes its color through `Colors::badge_text` or
 `Colors::secondary`, which keep the role unless it all but vanishes on
 that fill (Mocha's muted and black on its greys), so a theme keeps its
