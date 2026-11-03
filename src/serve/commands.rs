@@ -37,7 +37,7 @@ use corgi_core::{
         Choice, CloseForm, Command, DigestQuery, MergeForm, MergeOutcome, NewAgentForm, Progress,
         Reply, ReplyResult, Request, ServerMessage, SpawnRequest, UpstreamChoice,
     },
-    supervisor,
+    restart, supervisor,
     tag::{TagOptions, tag_agent},
 };
 use serde_json::Value;
@@ -150,6 +150,7 @@ impl Server {
             Command::CloseCheck { pane_id } => self.close_check(id, &pane_id),
             Command::Close { pane_id, force } => self.close(id, &pane_id, force),
             Command::Tag { pane_id, merge } => self.tag(id, &pane_id, merge),
+            Command::Resume { pane_id } => self.resume(id, &pane_id),
             Command::Focus { pane_id } => self.focus(id, &pane_id),
             Command::Edit { pane_id } => self.edit(id, &pane_id),
             Command::Digest {
@@ -207,11 +208,55 @@ impl Server {
         }
     }
 
+    /// `pane_id`'s agent while it runs, or a refusal already sent: a row
+    /// for an agent that exited takes no prompt, tag or focus.
+    fn running_or_refuse(&self, id: u64, pane_id: &str) -> Option<DashboardAgent> {
+        let agent = self.agent_or_refuse(id, pane_id)?;
+        if agent.exited {
+            self.refuse(
+                id,
+                format!(
+                    "{} has exited to its shell; resume starts it again",
+                    agent.info.display_name()
+                ),
+            );
+            return None;
+        }
+        Some(agent)
+    }
+
+    /// Starts the agent of an exited row again in its pane, with its
+    /// session and the options Corgi launched it with.
+    fn resume(&mut self, id: u64, pane_id: &str) {
+        let Some(agent) = self.agent_or_refuse(id, pane_id) else {
+            return;
+        };
+        if !agent.exited {
+            return self.refuse(
+                id,
+                format!(
+                    "{} is running; nothing to resume",
+                    agent.info.display_name()
+                ),
+            );
+        }
+        let pane_id = pane_id.to_string();
+        self.work(id, true, move |shared| {
+            restart::resume(&shared.client, &pane_id)?;
+            Ok(ReplyResult::Done {
+                message: format!(
+                    "Resumed {} in its pane with its session and options",
+                    agent.info.display_name()
+                ),
+            })
+        });
+    }
+
     fn prompt(&mut self, id: u64, pane_id: String, text: String) {
         if text.trim().is_empty() {
             return self.refuse(id, "Prompt cannot be empty");
         }
-        let Some(agent) = self.agent_or_refuse(id, &pane_id) else {
+        let Some(agent) = self.running_or_refuse(id, &pane_id) else {
             return;
         };
         let label = agent.info.display_name().to_string();
@@ -785,7 +830,7 @@ impl Server {
     }
 
     fn tag(&mut self, id: u64, pane_id: &str, merge: bool) {
-        let Some(agent) = self.agent_or_refuse(id, pane_id) else {
+        let Some(agent) = self.running_or_refuse(id, pane_id) else {
             return;
         };
         let agents = self.agents.clone();
@@ -803,7 +848,7 @@ impl Server {
     /// Brings the agent's pane into view in Herdr, which moves every
     /// attached client: never from a GUI.
     fn focus(&mut self, id: u64, pane_id: &str) {
-        let Some(agent) = self.agent_or_refuse(id, pane_id) else {
+        let Some(agent) = self.running_or_refuse(id, pane_id) else {
             return;
         };
         self.work(id, false, move |shared| {

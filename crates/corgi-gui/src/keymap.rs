@@ -102,10 +102,11 @@ pub enum Action {
     Leave,
     FocusSide,
     AskSupervisor,
+    Resume,
 }
 
 impl Action {
-    pub const ALL: [Action; 25] = [
+    pub const ALL: [Action; 26] = [
         Action::Next,
         Action::Previous,
         Action::First,
@@ -121,6 +122,7 @@ impl Action {
         Action::Merge,
         Action::Tag,
         Action::Close,
+        Action::Resume,
         Action::Refresh,
         Action::AnswerFirst,
         Action::Collapse,
@@ -161,6 +163,7 @@ impl Action {
             Action::Leave => "leave",
             Action::FocusSide => "focus_side",
             Action::AskSupervisor => "ask_supervisor",
+            Action::Resume => "resume",
         }
     }
 
@@ -191,6 +194,7 @@ impl Action {
             Action::Leave => "Back to the overview",
             Action::FocusSide => "Show / hide side panel",
             Action::AskSupervisor => "Ask supervisor to fix",
+            Action::Resume => "Resume exited agent",
         }
     }
 
@@ -225,6 +229,8 @@ impl Action {
             Action::Merge => "m",
             Action::Tag => "t",
             Action::Close => "x",
+            // The dashboard's key too.
+            Action::Resume => "shift-r",
             Action::Refresh => "r",
             Action::AnswerFirst => "a",
             Action::Collapse => "escape",
@@ -863,6 +869,15 @@ mod tests {
             Some(Action::AskSupervisor)
         );
         assert_eq!(keymap.merge_dialog_hit(&press("s")), None);
+    }
+
+    #[test]
+    fn resume_is_shift_r_as_in_the_dashboard_and_can_be_rebound() {
+        let mut keymap = Keymap::defaults(true);
+        assert_eq!(keymap.key(Action::Resume), &key("shift-r"));
+        assert_eq!(Action::Resume.area(), Area::Overview);
+        assert!(keymap.assign(Action::Resume, key("y"), false));
+        assert_eq!(keymap.key(Action::Resume), &key("y"));
     }
 
     #[test]

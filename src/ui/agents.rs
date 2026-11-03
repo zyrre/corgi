@@ -537,10 +537,15 @@ fn worker_summary(workers: &[DashboardAgent], width: usize) -> Vec<Line<'static>
             ));
         }
     };
+    // An exited worker waits for R, so it leads, and counts under no state.
+    let exited = workers.iter().filter(|worker| worker.exited).count();
+    count_of(EXITED_MARK, roles().danger, exited, "exited");
     for state in SUMMARY_STATES {
         let count = workers
             .iter()
-            .filter(|worker| worker.info.state == state && !worker.ready_to_merge())
+            .filter(|worker| {
+                worker.info.state == state && !worker.ready_to_merge() && !worker.exited
+            })
             .count();
         count_of(
             state_mark(state),
@@ -805,7 +810,9 @@ pub(super) fn agent_status_line(
 ) -> Line<'static> {
     let marker = gutter(selected);
     // A worker a supervisor tagged ready to merge reads MERGE while it rests.
-    let (status, status_color) = if agent.ready_to_merge() {
+    let (status, status_color) = if agent.exited {
+        (format!(" {EXITED_LABEL} "), roles().danger)
+    } else if agent.ready_to_merge() {
         (" MERGE ".to_string(), roles().merge)
     } else {
         (
@@ -818,11 +825,15 @@ pub(super) fn agent_status_line(
         .last_activity
         .map(|at| format!(" {}", at.clock_and_date()))
         .unwrap_or_default();
+    // An agent running without the options Corgi launched it with says so
+    // right after its state, where the eye lands first.
+    let warning = missing_badge(agent);
     let mut trailing = status_fields(agent, now);
     // The block borders take one column on either side, and one more column
     // keeps the longest row off the right border.
     let inner_width = usize::from(area_width.saturating_sub(3));
-    let leading_width = GUTTER_WIDTH + status.width() + last_activity.width() + SEPARATOR_WIDTH;
+    let leading_width =
+        GUTTER_WIDTH + status.width() + warning.width() + last_activity.width() + SEPARATOR_WIDTH;
     let mut trailing_width: usize = trailing.iter().map(StatusField::width).sum();
     // Narrow terminals lose the trailing fields, least important one first,
     // rather than clipping the summary down to a few letters.
@@ -852,6 +863,7 @@ pub(super) fn agent_status_line(
                 .bg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(warning, bold(roles().warning)),
         Span::styled(last_activity, Style::default().fg(roles().muted)),
         Span::styled(FIELD_SEPARATOR, Style::default().fg(roles().muted)),
         // The selected summary is bold as well, so the row still stands out
@@ -873,6 +885,24 @@ pub(super) fn agent_status_line(
         spans.extend(field.spans);
     }
     Line::from(spans)
+}
+
+/// The state badge of an agent that exited to its shell, and its mark in
+/// a collapsed card's counts.
+pub(super) const EXITED_LABEL: &str = "EXITED";
+const EXITED_MARK: &str = "⏻";
+
+/// The short warning after the state of an agent running without some of
+/// its launch options: what it lacks most.
+fn missing_badge(agent: &DashboardAgent) -> String {
+    let missing = &agent.missing_options;
+    if missing.is_empty() {
+        String::new()
+    } else if missing.iter().any(|item| item == "role") {
+        " ⚠ no role".into()
+    } else {
+        " ⚠ no launch options".into()
+    }
 }
 
 fn state_color(state: AgentState) -> Color {

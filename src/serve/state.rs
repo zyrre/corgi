@@ -23,6 +23,7 @@ use corgi_core::{
         Activity, ActivityKind, Agent, Blocked, Cache, Change, PaletteSet, Project, Question,
         State, ThemeColors, WorkerCounts,
     },
+    restart,
     waker::Inboxes,
 };
 
@@ -66,8 +67,12 @@ pub(super) fn agent_row(agent: &DashboardAgent) -> Agent {
         last_activity: agent.last_activity.map(|time| time.secs),
         message: activity(&agent.message),
         tool: activity(&agent.tool),
-        can_prompt: info.state.can_prompt(),
+        can_prompt: info.state.can_prompt() && !agent.exited,
         can_merge: agent.worktree_checkout.is_some(),
+        exited: agent.exited,
+        warning: (!agent.missing_options.is_empty())
+            .then(|| restart::warning_text(&agent.missing_options)),
+        missing_options: agent.missing_options.clone(),
     }
 }
 
@@ -161,7 +166,9 @@ fn worker_counts(workers: &[&DashboardAgent]) -> WorkerCounts {
         ..WorkerCounts::default()
     };
     for worker in workers {
-        let count = if worker.ready_to_merge() {
+        let count = if worker.exited {
+            &mut counts.exited
+        } else if worker.ready_to_merge() {
             &mut counts.merge
         } else {
             match worker.info.state {

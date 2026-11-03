@@ -117,12 +117,11 @@ impl Fixture {
             uid: unsafe { libc::geteuid() },
             host: store::host().unwrap(),
             boot: "prior-boot".into(),
-            manual_prepared: true,
+            manual_prepared: false,
             entries,
         };
         let runtime = Runtime {
             boot: store::boot().unwrap(),
-            manual: true,
             stores,
             clis: BTreeSet::from(["codex".into(), "claude".into()]),
         };

@@ -11,6 +11,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     app::{App, Overlay},
     motion::Outcome,
+    restart,
     theme::roles,
 };
 
@@ -95,11 +96,24 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "j/k select · →/← expand/collapse project · space session · p prompt · n new agent · t scratch · s supervisor · e edit · m merge · enter/f focus · x close agent · r refresh · q close"
         }
     };
-    let lines = vec![
-        Line::styled(
-            format!(" {} ", app.status),
-            Style::default().fg(roles().accent),
+    let selected = app.agents.get(app.selected);
+    // A row for an agent that exited answers fewer keys, R first.
+    let keys = if selected.is_some_and(|agent| agent.exited) {
+        "R resume · j/k select · space session · e edit · m merge · x close agent · q close"
+    } else {
+        keys
+    };
+    // Without a status of its own, the line warns about a selected agent
+    // running without the options Corgi launched it with.
+    let status = match selected.filter(|_| app.status.is_empty()) {
+        Some(agent) if !agent.missing_options.is_empty() => (
+            restart::warning_text(&agent.missing_options),
+            roles().warning,
         ),
+        _ => (app.status.clone(), roles().accent),
+    };
+    let lines = vec![
+        Line::styled(format!(" {} ", status.0), Style::default().fg(status.1)),
         Line::styled(
             format!(" S sessions · {keys}"),
             Style::default().fg(roles().muted),

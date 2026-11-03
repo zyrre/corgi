@@ -270,7 +270,8 @@ ids, a missing Codex integration). The GUI gets Sessions through
 
 ## Chosen design
 
-Decided by the user on 3 November 2026. Not built yet.
+Decided by the user on 3 November 2026 and built the same day; see "What
+was built" below.
 
 ### Automatic restarts: option 1
 
@@ -358,6 +359,69 @@ orphaned sessions.
   and needs auto-resume off.
 - **Reporting under Herdr's `herdr:claude` or `herdr:codex` source**:
   Herdr ignores the command there (tested).
+
+## What was built
+
+`crates/corgi-core/src/restart.rs`, its tests in `restart/tests.rs`, the
+argv builder `recovery::native::restart_argv`, and "Resume commands" in
+ARCHITECTURE.md, which describes the design as code:
+
+- Every launch is recorded by pane in `markers/<socket>.launches.json`, and
+  the pass holding the wake lock reports each agent's command, keeps it on
+  the live session, and releases it when the pane holds another agent.
+  Supervisors and recovery-profiled workers launched before the record are
+  taken in.
+- Codex supervisors resume with their flags and a short instruction to read
+  `ROLE.md`; a normal launch keeps the inline role.
+- Resume: a row with `EXITED` for an agent that dropped to its shell, `R`
+  in the dashboard, a Resume button and `⇧R` (rebindable) in the window,
+  `resume` in `corgi serve`.
+- `S` lost Manual recovery setup; Restore no longer requires it.
+- The warning: `⚠ no role` or `⚠ no launch options` on the row, and the
+  status line, for an agent whose command line lacks what Corgi launched it
+  with.
+
+**Verified on a private Herdr 0.9.5** (release binary, SHA-256 matching
+GitHub's digest), with fake `claude` and `codex` first on the panes' `PATH`,
+started with `corgi supervisor` and `corgi spawn` **[observed]**:
+
+| Agent | Launched with | After `herdr session stop` and a start |
+| --- | --- | --- |
+| Claude supervisor | `--model opus --effort high` | `claude --resume <id> --model opus --effort high --append-system-prompt-file …/ROLE.md --add-dir …/supervisors/proj` |
+| Claude worker, after `/clear` | `--model sonnet --effort low --verbose` | `claude --resume <new id> --model sonnet --effort low --verbose`: the session after the clear |
+| Codex supervisor | `--model gpt-6-luna` | `codex resume <id> --cd …/cdx --model gpt-6-luna --sandbox workspace-write --ask-for-approval on-request -c sandbox_workspace_write.network_access=true --add-dir …/supervisors/cdx -c developer_instructions="You are the Corgi supervisor of this project, resumed after a restart. Before anything else, read your role instructions in …/ROLE.md …"` |
+| Codex worker, exited and resumed with Resume | `--model gpt-6-sol --effort high -- --search` | `codex resume <id> --cd <worktree> --model gpt-6-sol -c model_reasoning_effort=high --search` |
+
+- A Codex worker that ran `/quit` showed as an `EXITED` row (two other
+  shells, where Corgi saw no session, did not); `resume` over `corgi serve`
+  started `codex resume <id> --cd … --model gpt-6-sol -c
+  model_reasoning_effort=high --search` in its pane, and the window's `⇧R`
+  did the same for an exited Claude worker.
+- A Claude supervisor that exited and was started again by hand as `claude
+  --resume <id>` showed `⚠ no role` and "Running without its supervisor role
+  and memory access: exit it, then Resume".
+- The startup hook put the supervisors' marks back after each start, and
+  the dashboard rows listed them as supervisors again.
+
+Found on the way **[observed]**, each now handled:
+
+- `agent.start`'s reply names no harness (`agent` is absent), so the
+  launch's own harness is recorded.
+- Herdr forgets a reported command with the agent it was for: an agent
+  resumed after an exit came back from the next restart as Herdr's own
+  `codex resume <id>` until each new process had its command reported again.
+- For about 300 ms after an agent exits, the snapshot still lists it with
+  `agent: null` and no session; that is no other agent.
+- A fake reporting a new session for `/clear` must pass
+  `--session-start-source` (Herdr's integration does); without it Herdr
+  keeps the old session.
+
+**Herdr 0.9.0** (the installed build, run only as a private server):
+`pane.report_agent_session` from Corgi's source with `resume_argv` is
+accepted; the session ref stays `herdr:claude`'s, the pane's state still
+follows the screen, and a restart runs Herdr's own `claude --resume <id>`
+**[observed]**. So the report is harmless before the upgrade, and the
+warning then shows on every resumed supervisor.
 
 ### Setup steps, no code
 

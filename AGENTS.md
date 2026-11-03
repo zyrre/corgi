@@ -413,6 +413,15 @@ build; delete the session afterwards and check `herdr session list`. Then:
   the fakes must win on that shell's `PATH` (above) before any restart.
 - `herdr plugin log list --plugin io.github.zyrre.corgi` shows each hook's
   line, its exit code and its time.
+- A fake that reports a new native session (as Claude does after `/clear`)
+  must pass `--session-start-source` (`startup`, `resume` or `clear`), as
+  Herdr's integration does: without it Herdr keeps the old session. Herdr
+  0.9.2 and later run the resume command Corgi reported for each pane after
+  a restart, so fakes that log their argv show what every agent came back
+  with; `markers/<socket>.launches.json` under the private state shows what
+  Corgi reported. The Herdr 0.9.5 release binary may be downloaded into the
+  worktree's `target/` (check its SHA-256 against GitHub's) and run only as
+  a private server.
 
 ## Session recovery checks
 

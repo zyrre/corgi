@@ -186,6 +186,7 @@ pub enum Purpose {
     CloseCheck,
     Close,
     Tag,
+    Resume,
 }
 
 /// The requests sent and not yet answered.

@@ -35,6 +35,7 @@ pub mod projects;
 pub mod protocol;
 pub mod recovery;
 pub mod refresh;
+pub mod restart;
 pub mod rows;
 pub mod session;
 pub mod setup;

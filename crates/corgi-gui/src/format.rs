@@ -58,10 +58,44 @@ impl Piece {
 /// The badge an agent's row starts with: its state, or MERGE when its
 /// supervisor tagged it ready.
 pub fn badge(agent: &Agent) -> (&'static str, Tone) {
-    if agent.ready_to_merge {
+    if agent.exited {
+        ("EXITED", Tone::Danger)
+    } else if agent.ready_to_merge {
         ("MERGE", Tone::Merge)
     } else {
         (agent.state.label(), Tone::State(agent.state))
+    }
+}
+
+/// The short warning after the badge of an agent running without some of
+/// the options Corgi launched it with: what it lacks most.
+pub fn missing_badge(agent: &Agent) -> Option<Piece> {
+    if agent.missing_options.is_empty() {
+        None
+    } else if agent.missing_options.iter().any(|item| item == "role") {
+        Some(Piece::new("⚠ no role", Tone::Warning).bold())
+    } else {
+        Some(Piece::new("⚠ no launch options", Tone::Warning).bold())
+    }
+}
+
+/// What the status bar says about the selected agent, when there is
+/// something to do about it: an agent that exited and can be resumed with
+/// `resume_key`, or one running without its launch options.
+pub fn selected_hint(agent: &Agent, resume_key: &str) -> Option<(String, Tone)> {
+    if agent.exited {
+        Some((
+            format!(
+                "{} exited to its shell · {resume_key} resumes it with its session and options",
+                agent.name
+            ),
+            Tone::Danger,
+        ))
+    } else {
+        agent
+            .warning
+            .clone()
+            .map(|warning| (warning, Tone::Warning))
     }
 }
 
@@ -155,6 +189,7 @@ pub fn worker_summary(counts: &WorkerCounts) -> Vec<Piece> {
     };
     let mut pieces = vec![Piece::new(format!("{} {workers}", counts.total), Tone::Text).bold()];
     let states = [
+        (counts.exited, "⏻", "exited", Tone::Danger),
         (counts.blocked, "▲", "blocked", Tone::Warning),
         (counts.merge, "⇡", "merge", Tone::Merge),
         (counts.working, "●", "working", Tone::Accent),
@@ -540,6 +575,66 @@ mod tests {
         assert_eq!(herd_tone(&agents[1..]), Tone::Merge);
         assert_eq!(herd_tone(&[]), Tone::Muted);
         assert_eq!(marker(Activity::default().kind), "○");
+    }
+
+    #[test]
+    fn an_exited_agent_reads_exited_and_says_how_to_resume_it() {
+        let exited = Agent {
+            name: "cw".into(),
+            state: AgentState::Unknown,
+            exited: true,
+            ..Agent::default()
+        };
+        assert_eq!(badge(&exited), ("EXITED", Tone::Danger));
+        assert_eq!(
+            selected_hint(&exited, "R"),
+            Some((
+                "cw exited to its shell · R resumes it with its session and options".into(),
+                Tone::Danger
+            ))
+        );
+        let running = Agent {
+            state: AgentState::Idle,
+            ..Agent::default()
+        };
+        assert_eq!(badge(&running).0, "IDLE");
+        assert_eq!(selected_hint(&running, "R"), None);
+        assert_eq!(missing_badge(&running), None);
+    }
+
+    #[test]
+    fn an_agent_without_its_options_has_a_warning_badge_and_line() {
+        let roleless = Agent {
+            missing_options: vec!["role".into(), "memory".into()],
+            warning: Some("Running without its supervisor role: exit it, then Resume".into()),
+            ..Agent::default()
+        };
+        assert_eq!(texts(&[missing_badge(&roleless).unwrap()]), ["⚠ no role"]);
+        assert_eq!(
+            selected_hint(&roleless, "R"),
+            Some((
+                "Running without its supervisor role: exit it, then Resume".into(),
+                Tone::Warning
+            ))
+        );
+        let optionless = Agent {
+            missing_options: vec!["model".into()],
+            ..Agent::default()
+        };
+        assert_eq!(
+            texts(&[missing_badge(&optionless).unwrap()]),
+            ["⚠ no launch options"]
+        );
+        let counts = WorkerCounts {
+            total: 2,
+            idle: 1,
+            exited: 1,
+            ..WorkerCounts::default()
+        };
+        assert_eq!(
+            texts(&worker_summary(&counts)),
+            ["2 workers", "⏻ 1 exited", "○ 1 idle"]
+        );
     }
 
     #[test]

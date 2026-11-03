@@ -226,23 +226,14 @@ fn accepted_but_unknown_start_is_not_repeated_even_in_another_snapshot() {
 }
 
 #[test]
-fn occupied_original_has_only_an_explicit_alternative_and_auto_resume_blocks_missing() {
-    let mut f = Fixture::new();
+fn occupied_original_has_only_an_explicit_alternative() {
+    let f = Fixture::new();
     let server = Server::new(&f);
     server.state.lock().unwrap().occupied = true;
     let rows = plan_in(&f.client, &f.snapshot, &f.runtime).unwrap();
     assert!(
         rows.iter()
             .all(|r| r.target.is_none() && matches!(r.alternative, Some(Target::NewTab { .. })))
-    );
-    f.runtime.manual = false;
-    assert!(
-        plan_in(&f.client, &f.snapshot, &f.runtime)
-            .unwrap()
-            .iter()
-            .all(|r| r.target.is_none()
-                && r.alternative.is_none()
-                && r.reason.contains("automatic resume"))
     );
 }
 
@@ -373,28 +364,6 @@ fn a_boot_written_in_another_time_zone_is_the_same_boot() {
             .unwrap()
             .is_empty()
     );
-}
-
-#[test]
-fn setup_preserves_unrelated_toml_and_comments_without_touching_installed_config() {
-    for original in [
-        "# hello\n[theme]\nname='light'\n",
-        "# keep\n[session]\n# existing\nresume_agents_on_restore = true # explanation\n[other]\nvalue = 5\n",
-        "session.resume_agents_on_restore = true\n# rest\n[other]\ntext='keep'\n",
-        "[session]\nother=123\n[remote]\nmanage_ssh_config=false\n",
-    ] {
-        let changed = setup::edit(original).unwrap();
-        assert!(changed.contains("false"));
-        for line in original.lines().filter(|s| {
-            s.starts_with('#')
-                || s.contains("keep")
-                || s.contains("other=123")
-                || s.contains("manage_ssh")
-        }) {
-            assert!(changed.contains(line));
-        }
-        assert_eq!(setup::edit(&changed).unwrap(), changed);
-    }
 }
 
 #[test]
@@ -604,47 +573,6 @@ fn actual_io_failure_and_wrong_machine_cannot_replace_or_execute_a_snapshot() {
     other = f.snapshot.clone();
     other.version = 999;
     assert!(plan_in(&f.client, &other, &f.runtime).is_err());
-}
-
-#[test]
-fn setup_checks_and_reloads_only_the_explicit_isolated_config() {
-    let f = Fixture::new();
-    let _server = Server::new(&f);
-    let path = f.dir.join("isolated-herdr.toml");
-    fs::write(&path, "# retained\n[theme]\nname='test'\n").unwrap();
-    let change = setup::prepare(path.clone()).unwrap();
-    assert!(
-        setup::apply_with(&f.client, &change, |staged| {
-            assert_ne!(staged, path);
-            assert!(
-                fs::read_to_string(staged)
-                    .unwrap()
-                    .contains("resume_agents_on_restore = false")
-            );
-            Ok(false)
-        })
-        .is_err()
-    );
-    assert!(!fs::read_to_string(&path).unwrap().contains("resume_agents"));
-    setup::apply_with(&f.client, &change, |_| Ok(true)).unwrap();
-    assert!(!setup::configured(&path).unwrap());
-    let text = fs::read_to_string(&path).unwrap();
-    assert!(text.contains("# retained"));
-    assert!(text.contains("name='test'"));
-    let backups = fs::read_dir(&f.dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|v| v == "bak"))
-        .count();
-    assert_eq!(backups, 1);
-    let proof = f.store().0.join("manual-setup.json");
-    let before = fs::read(&proof).unwrap();
-    setup::apply_with(&f.client, &setup::prepare(path).unwrap(), |_| Ok(true)).unwrap();
-    assert_eq!(
-        fs::read(proof).unwrap(),
-        before,
-        "reconfirmation must retain the original start boundary"
-    );
 }
 
 #[test]

@@ -1352,6 +1352,9 @@ fn replace_supervisor(client: &HerdrClient, action: &HandoverAction) -> Result<S
         harness,
         ..
     } = action;
+    // Its pane is about to be at its shell on purpose: it offers no Resume
+    // of the old session meanwhile, and its successor's launch is recorded.
+    crate::restart::forget(client, pane_id);
     client
         .prompt_agent(name, harness.exit_command())
         .with_context(|| format!("ask {name} to exit"))?;

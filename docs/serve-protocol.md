@@ -206,7 +206,19 @@ Exactly one per request, with its `id`.
 - `cache.expires_at` is when the prompt cache lapses (`estimated`: when its
   documented minimum retention ends). Count down from the snapshot's `now`.
 - `can_prompt` is false while the agent is blocked on its own question,
-  which is answered in its pane. `can_merge`: it works in a linked worktree.
+  which is answered in its pane, and for an exited row. `can_merge`: it
+  works in a linked worktree.
+- `exited: true` marks a row for an agent Corgi launched that has dropped to
+  its shell while Herdr kept running (it exited, or was killed). Its
+  `state` is `unknown`, its `message` says so and its `tool` names the
+  session; `resume` starts it again. It takes `close_check`, `close`,
+  `merge_check` and `edit`; `prompt`, `tag` and `focus` refuse it. Only a
+  pane where Corgi saw an agent session has one.
+- `warning`, with `missing_options`, says that the agent runs without some
+  of the options Corgi launched it with (`role`, `memory`, `model`,
+  `effort` or a flag), as after a resume by a Herdr older than 0.9.2:
+  `Running without its supervisor role: exit it, then Resume`. Both are
+  left out when there is nothing to say.
 - The rows are in the dashboard's order: by project, each led by its
   supervisor, the scratch sessions last, and within a project blocked,
   working, done, idle, unknown, the most recent first.
@@ -228,7 +240,8 @@ Exactly one per request, with its `id`.
 - `card` is true for a project led by its running supervisor, which the
   dashboard draws as a card; other projects and the scratch sessions
   (`scratch`, `root` empty) are a heading over their rows.
-- `workers` is what a collapsed card's footer sums up, the supervisor not
+- `workers` is what a collapsed card's footer sums up (`exited`, left out
+  when 0, counts workers that exited, under no state), the supervisor not
   counted; a worker tagged ready to merge counts only under `merge`.
 - `blocked` is each blocked worker and what it waits on: the question on its
   screen, else `waiting for your input`.
@@ -348,6 +361,7 @@ finish.
 | `close_check` | `pane_id` | | The close confirmation. |
 | `close` | `pane_id`, `force` | | Closes the agent's worktree, tab or workspace. |
 | `tag` | `pane_id`, `merge` | | Tags the agent ready to merge, or clears the tag. |
+| `resume` | `pane_id` | | Starts an exited row's agent again in its pane. |
 | `focus` | `pane_id` | **yes** | Brings the agent's pane into view in Herdr. |
 | `edit` | `pane_id` | **yes** | Opens the agent's checkout in the editor, in a new Herdr tab it goes to. |
 | `digest` | `project_root`, `lookup` | | Reads the supervisor's memory. |
@@ -522,6 +536,15 @@ with `force: true` to discard them.
 merge as `corgi tag` does, with the same refusals (it works, has no commits
 ahead of the base, or its supervisor has questions open about it);
 `merge: false` clears the tag.
+
+### `resume`
+
+`{"command":"resume","pane_id":"w2:p2"}` starts the agent of an `exited`
+row again in the same pane: its last session, with the options Corgi
+launched it with and, for a supervisor, its role and memory, the same
+command Corgi gives Herdr for a restart. It refuses a running agent, a
+pane whose shell is busy or has left the agent's directory, and a pane
+where Corgi saw no session. Corgi never resumes an agent by itself.
 
 ### `focus` and `edit` (touch focus)
 

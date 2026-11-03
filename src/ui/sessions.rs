@@ -30,7 +30,7 @@ pub(super) fn draw(frame: &mut Frame<'_>, area: Rect, form: &mut Sessions) -> Dr
         height,
     );
     let role = roles();
-    let color = if form.stage == Stage::Confirm || form.stage == Stage::Setup {
+    let color = if form.stage == Stage::Confirm {
         role.warning
     } else {
         role.accent

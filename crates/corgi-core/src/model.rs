@@ -78,6 +78,9 @@ pub struct AgentInfo {
     pub tokens: BTreeMap<String, String>,
     #[serde(default)]
     pub agent_session: Option<AgentSession>,
+    /// Herdr's id for the pane's terminal, which a Herdr restart replaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_id: Option<String>,
 }
 
 impl AgentInfo {
@@ -192,6 +195,14 @@ pub struct DashboardAgent {
     /// project: a scratch session, grouped under Scratch, that no supervisor
     /// hears about.
     pub scratch: bool,
+    /// The agent Corgi launched in this pane has dropped to its shell: the
+    /// row stands for it, offers Resume (`restart::resume`) and nothing
+    /// else acts on it. Its `info` describes the pane, with no session.
+    pub exited: bool,
+    /// What the running agent lacks of the options Corgi launched it with
+    /// (`role`, `memory`, `model`, a flag), as after a resume by a Herdr
+    /// older than 0.9.2: a warning on its row.
+    pub missing_options: Vec<String>,
 }
 
 impl DashboardAgent {

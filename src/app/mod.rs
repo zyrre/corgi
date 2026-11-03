@@ -83,6 +83,7 @@ pub use setup::{SETUP_USAGE, setup};
 mod launch;
 pub(crate) mod recovery;
 mod refresh;
+mod resume;
 use corgi_core::{markers, notice, progress, project_main, rows, setup, sweep, waker};
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
 use progress::JobReport;
@@ -187,6 +188,8 @@ pub(crate) struct App {
     codex_task_job: Job<Result<HashMap<String, String>, String>>,
     merge_job: Job<Result<String, merge::MergeError>, JobReport>,
     recovery_job: Job<Result<recovery::Event>, String>,
+    /// Starts an exited agent again (`R`).
+    resume_job: Job<Result<String, String>>,
     /// The model catalogs and harness configurations behind the new-agent
     /// form's selectors.
     model_catalogs: ModelCatalogs,
@@ -273,6 +276,7 @@ impl App {
             codex_task_job: Job::default(),
             merge_job: Job::default(),
             recovery_job: Job::default(),
+            resume_job: Job::default(),
             model_catalogs: ModelCatalogs::default(),
             inboxes: None,
             status_hold_until: None,
@@ -558,16 +562,17 @@ impl App {
             KeyCode::Char('d') if self.expanded => self.scroll_transcript(1),
             KeyCode::Home if self.expanded => self.transcript_scroll = 0,
             KeyCode::End if self.expanded => self.transcript_scroll = u16::MAX,
-            KeyCode::Char('p') => self.begin_prompt(),
+            KeyCode::Char('p') if !self.exited_refusal() => self.begin_prompt(),
             KeyCode::Char('n') => self.begin_new_agent(),
             KeyCode::Char('t') => self.begin_scratch_agent(),
             KeyCode::Char('s') => self.begin_supervisor(),
-            KeyCode::Char('f') | KeyCode::Enter => self.focus_selected(),
+            KeyCode::Char('f') | KeyCode::Enter if !self.exited_refusal() => self.focus_selected(),
             KeyCode::Char('e') => self.edit_selected(),
             KeyCode::Char('m') => self.begin_merge_worktree(),
             KeyCode::Char('x') => self.begin_close_workspace(),
             KeyCode::Char('r') => self.request_refresh(),
             KeyCode::Char('S') => self.begin_sessions(),
+            KeyCode::Char('R') => self.resume_selected(),
             _ => {}
         }
         false
@@ -641,6 +646,7 @@ impl App {
         self.poll_codex_task_titles();
         self.poll_model_catalogs();
         self.poll_merge();
+        self.poll_resume();
         self.close_started_launch();
         self.share_selection();
         self.refresh_plan_usage();

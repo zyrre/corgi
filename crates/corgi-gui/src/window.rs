@@ -963,6 +963,27 @@ impl CorgiWindow {
         cx.notify();
     }
 
+    /// Starts the selected agent again when it has exited to its shell:
+    /// the same session, in its pane, with the options Corgi launched it
+    /// with.
+    pub fn resume(&mut self, cx: &mut Context<Self>) {
+        let Some(agent) = self.selected_agent() else {
+            return;
+        };
+        if !agent.exited {
+            self.dialogs.say(
+                "Resume starts an agent that has exited to its shell; this one runs",
+                true,
+            );
+            cx.notify();
+            return;
+        }
+        let pane_id = agent.pane_id.clone();
+        self.dialogs.say(format!("Resuming {}…", agent.name), false);
+        self.send(Command::Resume { pane_id }, Purpose::Resume);
+        cx.notify();
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.send(Command::Refresh, Purpose::Quiet);
         cx.notify();
@@ -1192,6 +1213,7 @@ impl CorgiWindow {
             Action::Close => self.close_check(None, cx),
             Action::Supervisor => self.start_supervisor(cx),
             Action::Tag => self.toggle_tag(cx),
+            Action::Resume => self.resume(cx),
             Action::Refresh => self.refresh(cx),
             Action::AnswerFirst => self.answer_nth(0, window, cx),
             // The focus view's and the merge dialog's own.

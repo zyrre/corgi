@@ -128,6 +128,10 @@ impl State {
     }
 }
 
+fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
 /// Replaces the item of `items` with `item`'s key, or appends it.
 fn replace_keyed<T>(items: &mut Vec<T>, item: T, key: impl Fn(&T) -> &String) {
     match items.iter_mut().find(|old| key(old) == key(&item)) {
@@ -240,6 +244,20 @@ pub struct Agent {
     pub can_prompt: bool,
     /// It works in a linked worktree, which `merge_check` can merge.
     pub can_merge: bool,
+    /// The agent Corgi launched in this pane has dropped to its shell: the
+    /// row stands for it, and `resume` starts it again in the pane with its
+    /// session and launch options. No other command but `close_check`,
+    /// `close`, `merge_check` and `edit` takes it. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exited: bool,
+    /// The agent runs without some of the options Corgi launched it with
+    /// (as after a resume by a Herdr older than 0.9.2), and what to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// What it lacks, by name: `role`, `memory`, `model`, `effort` or a
+    /// flag, for a short badge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_options: Vec<String>,
 }
 
 /// The prompt cache of a session.
@@ -343,6 +361,10 @@ pub struct WorkerCounts {
     pub done: usize,
     pub idle: usize,
     pub unknown: usize,
+    /// Workers that exited to their shell, which Resume starts again; not
+    /// counted under a state. Left out when there are none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub exited: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -689,6 +711,11 @@ pub enum Command {
         pane_id: String,
         merge: bool,
     },
+    /// Starts an exited agent's row again: the same session, in the same
+    /// pane, with the options Corgi launched it with.
+    Resume {
+        pane_id: String,
+    },
     /// Brings the agent's pane into view in Herdr: touches focus.
     Focus {
         pane_id: String,
@@ -779,6 +806,7 @@ impl Command {
             ("close_check", false),
             ("close", false),
             ("tag", false),
+            ("resume", false),
             ("focus", true),
             ("edit", true),
             ("digest", false),
@@ -942,6 +970,7 @@ mod tests {
             json!({"command": "close_check", "pane_id": "p"}),
             json!({"command": "close", "pane_id": "p"}),
             json!({"command": "tag", "pane_id": "p", "merge": true}),
+            json!({"command": "resume", "pane_id": "p"}),
             json!({"command": "focus", "pane_id": "p"}),
             json!({"command": "edit", "pane_id": "p"}),
             json!({"command": "digest", "project_root": "/r"}),

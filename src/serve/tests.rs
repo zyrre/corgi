@@ -1514,3 +1514,73 @@ fn a_forge_is_asked_only_for_a_forge_remote_with_branches_to_match() {
     assert!(found.is_empty());
     assert_eq!(calls.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn an_exited_agent_has_a_row_that_takes_resume_and_refuses_prompts() {
+    let scratch = ScratchDir::new("serve-resume");
+    let (repo, worktree) = repository(&scratch);
+    let mut snapshot = herd(&repo, &worktree, "idle");
+    snapshot["panes"] = json!([
+        {"pane_id": "w2:p2", "workspace_id": "w2", "tab_id": "w2:t2", "cwd": worktree},
+    ]);
+    let session_id = "11111111-2222-4333-8444-555555555555";
+    let record = corgi_core::restart::Record {
+        panes: std::collections::BTreeMap::from([(
+            "w2:p2".to_string(),
+            corgi_core::restart::Launched {
+                kind: "codex".into(),
+                name: "w-old".into(),
+                cwd: worktree.clone(),
+                options: vec!["--model".into(), "gpt-6-sol".into()],
+                session: Some(session_id.into()),
+                ..Default::default()
+            },
+        )]),
+    };
+    fs::write(
+        scratch.join("markers.launches.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let herdr = FakeHerdr::start("serve-resume", snapshot);
+    let mut session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    let exited = state
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == "w2:p2")
+        .expect("a row for the exited agent");
+    assert!(exited.exited);
+    assert!(!exited.can_prompt);
+    assert_eq!(exited.name, "w-old");
+    assert_eq!(exited.model.as_deref(), Some("gpt-6-sol"));
+    assert_eq!(exited.project_group, state.agents[0].project_group);
+    let running = state.agents.iter().find(|a| a.pane_id == "w2:p1").unwrap();
+    assert!(!running.exited && running.warning.is_none());
+
+    let reply = session.refused(json!({"command": "prompt", "pane_id": "w2:p2", "text": "hi"}));
+    assert!(
+        reply
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("exited to its shell"),
+        "{reply:?}"
+    );
+    session.refused(json!({"command": "focus", "pane_id": "w2:p2"}));
+    let reply = session.refused(json!({"command": "resume", "pane_id": "w2:p1"}));
+    assert!(
+        reply
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("nothing to resume"),
+        "{reply:?}"
+    );
+    // The fake Herdr knows no `pane.process_info`, so the shell cannot be
+    // checked and nothing starts.
+    session.refused(json!({"command": "resume", "pane_id": "w2:p2"}));
+    assert!(herdr.calls("agent.start").is_empty());
+    assert_eq!(herdr.calls("pane.process_info").len(), 1);
+    session.close();
+}

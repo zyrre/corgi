@@ -450,6 +450,8 @@ impl CorgiWindow {
         let can_merge = selected.is_some_and(|agent| agent.can_merge);
         let tagged = selected.is_some_and(|agent| agent.ready_to_merge);
         let has_agent = selected.is_some();
+        let exited = selected.is_some_and(|agent| agent.exited);
+        let running = has_agent && !exited;
         let mut bar = div()
             .flex()
             .flex_row()
@@ -460,7 +462,7 @@ impl CorgiWindow {
             .py_1()
             .border_b_1()
             .border_color(self.colors.roles.rule);
-        let buttons: [(Hotkey, &str, bool, Action); 7] = [
+        let buttons: [(Hotkey, &str, bool, Action); 8] = [
             (Hotkey::NewAgent, "New agent", true, |this, _, cx| {
                 this.new_agent(cx)
             }),
@@ -481,9 +483,12 @@ impl CorgiWindow {
                 // As wide as each other, so selecting a tagged row cannot
                 // rewrap the toolbar and move the overview under the mouse.
                 if tagged { "Untag    " } else { "Tag merge" },
-                has_agent,
+                running,
                 |this, _, cx| this.toggle_tag(cx),
             ),
+            (Hotkey::Resume, "Resume", exited, |this, _, cx| {
+                this.resume(cx)
+            }),
             (Hotkey::Close, "Close", has_agent, |this, _, cx| {
                 this.close_check(None, cx)
             }),
@@ -988,6 +993,13 @@ impl CorgiWindow {
                     .font_weight(FontWeight::BOLD)
                     .child(badge),
             )
+            .children(format::missing_badge(agent).map(|piece| {
+                div()
+                    .flex_none()
+                    .text_color(self.tone(piece.tone, None))
+                    .font_weight(FontWeight::BOLD)
+                    .child(piece.text)
+            }))
             .children(
                 format::last_activity(agent).map(|time| div().text_color(secondary).child(time)),
             )
@@ -1454,11 +1466,25 @@ impl CorgiWindow {
                     .truncate()
                     .child(flash.text.clone())
             });
-        let status = state.status.clone().map(|status| {
-            div()
-                .text_color(colors.roles.muted)
-                .truncate()
-                .child(status)
+        // The selected agent's own trouble, an exit or missing options,
+        // comes before the refresh's status line.
+        let hint = self
+            .selected_agent()
+            .and_then(|agent| format::selected_hint(agent, &self.keymap.label(Hotkey::Resume)))
+            .map(|(text, tone)| {
+                div()
+                    .flex_none()
+                    .text_color(self.tone(tone, None))
+                    .font_weight(FontWeight::BOLD)
+                    .child(text)
+            });
+        let status = hint.or_else(|| {
+            state.status.clone().map(|status| {
+                div()
+                    .text_color(colors.roles.muted)
+                    .truncate()
+                    .child(status)
+            })
         });
         let count = state.agents.len();
         div()
@@ -1480,7 +1506,10 @@ impl CorgiWindow {
             .children(flash.or(status))
             .child(div().flex_1())
             .child(
+                // The keys give way to what the status says.
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_color(colors.roles.muted)
                     .child(self.status_hints()),
             )
