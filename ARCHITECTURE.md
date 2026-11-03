@@ -656,6 +656,16 @@ on a row opens the **focus view**: that agent's live Herdr terminal in place
 of the overview, beside a side panel of its own (open or closed and its
 width kept apart from the overview's). Cmd+Esc (Ctrl+Shift+Esc on Linux), or
 the bar's "← Overview", goes back; plain Esc stays the terminal program's.
+These are the default keys: the header's Hotkeys button opens a dialog
+(`hotkeys.rs`) that rebinds them, and `keymap.rs` is the one place every
+key is read from, by the key handling (the overview's, the focus view's,
+the terminal's two chords) and by everything that shows one (toolbar, focus
+bar, status bar, card frames, side panel), so a key shown is a key that
+works. It keeps the user's changes in `$STATE/hotkeys.json` (only those;
+a missing, unreadable or other-version file gives the defaults). The
+overview's keys and an expanded session's are one key space; a key another
+action has is swapped only when confirmed, and fixed keys (the digits,
+copy and paste, the window's own) are refused. Dialogs keep ↵ and Esc.
 
 - `link.rs` starts the child and reads its stdout on a thread of its own,
   each line a `ServerMessage`; a line it cannot read (a newer server's) is
@@ -812,7 +822,8 @@ says so.
   lifted with only its imports changed: cells, box drawing and powerline
   symbols as shapes, colour emoji, pane images, the IME composition.
 - `terminal/` is the interactive layer around it, Corgi's own: the GPUI view
-  and its connection, the keys the view keeps (`keys.rs`), the platform's
+  and its connection, the fixed keys the view keeps (`keys.rs`; its two
+  movable chords come from `keymap.rs`), the platform's
   input handler for text, dead keys and IMEs (`input.rs`), selection and
   copy (`selection.rs`, in Herdr's scrollback rows; the copied text is read
   back with `pane.selection.read`), links (`links.rs`: OSC 8 hyperlinks and

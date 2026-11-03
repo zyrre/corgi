@@ -52,6 +52,7 @@ use crate::herdr_ui::{
     terminal::{InputTarget, WheelAccumulator, key_input, viewport, wheel_target},
     terminal_painter::{Ground, Highlight, ImageTarget, PlacedImages, TerminalPainter, Tint},
 };
+use crate::keymap::{Action, Keymap};
 use keys::Chord;
 use links::Link;
 use selection::{Region, Selection};
@@ -89,6 +90,9 @@ pub struct Target {
 
 pub struct TerminalView {
     pub focus: FocusHandle,
+    /// The window's keys, for the focus view's two: back to the overview,
+    /// and the side panel.
+    pub keymap: Keymap,
     /// The session's `herdr.sock`, from `corgi serve`'s hello; `None`
     /// before it, and over ssh, where terminals are not offered yet.
     json_socket: Option<PathBuf>,
@@ -207,6 +211,7 @@ impl TerminalView {
             });
         });
         Self {
+            keymap: Keymap::defaults(cfg!(target_os = "macos")),
             focus: cx.focus_handle(),
             json_socket: None,
             remote: false,
@@ -794,10 +799,18 @@ impl TerminalView {
 
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let mac = cfg!(target_os = "macos");
+        if let Some(action) = self.keymap.focus_hit(&event.keystroke) {
+            cx.emit(if action == Action::Leave {
+                TerminalEvent::Leave
+            } else {
+                TerminalEvent::ToggleSide
+            });
+            cx.stop_propagation();
+            window.prevent_default();
+            return;
+        }
         if let Some(chord) = keys::chord(&event.keystroke, mac) {
             match chord {
-                Chord::Leave => cx.emit(TerminalEvent::Leave),
-                Chord::ToggleSide => cx.emit(TerminalEvent::ToggleSide),
                 Chord::Copy => {
                     // With nothing selected, Ctrl+Shift+C is the pane's.
                     if !self.copy(cx) && !mac {

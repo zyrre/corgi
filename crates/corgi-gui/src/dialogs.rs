@@ -11,6 +11,7 @@ use corgi_core::protocol::{
 
 use crate::{
     form::{self, NewAgent},
+    keymap::{ENTER, ESCAPE},
     store::Purpose,
 };
 
@@ -67,9 +68,9 @@ impl Dialog {
     pub fn text_hints(&self) -> &'static [(&'static str, &'static str)] {
         match self {
             Dialog::Prompt { error: Some(_), .. } | Dialog::Answer { error: Some(_), .. } => {
-                &[("Esc", "close"), ("↵", "retry")]
+                &[(ESCAPE, "close"), (ENTER, "retry")]
             }
-            _ => &[("↵", "send"), ("Esc", "cancel")],
+            _ => &[(ENTER, "send"), (ESCAPE, "cancel")],
         }
     }
 
