@@ -910,19 +910,44 @@ impl CorgiWindow {
 
     fn agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
-        self.row_frame(agent, cx)
+        let row = self
+            .row_frame(agent, cx)
             .child(self.activity_line(&agent.message, 2, selected))
-            .child(self.activity_line(&agent.tool, 1, selected))
-            .into_any_element()
+            .child(self.activity_line(&agent.tool, 1, selected));
+        self.row_outline(agent, row, false)
     }
 
     /// The selected row, grown into its session's latest turns in place of
     /// its activity lines, down to the overview's bottom. A press in the
     /// turns selects their text and never reaches the row.
     fn expanded_agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
-        self.row_frame(agent, cx)
+        let row = self
+            .row_frame(agent, cx)
             .flex_1()
-            .child(self.session(agent))
+            .child(self.session(agent));
+        self.row_outline(agent, row, true)
+    }
+
+    /// The row in a frame that every row has: a 2 px outline, transparent
+    /// until the row is selected, so selecting it moves no text. Selected,
+    /// the frame is outlined in the accent over the accent's faint tint
+    /// (`Colors::selected_row`), the expanded row whole.
+    fn row_outline(&self, agent: &Agent, row: gpui::Stateful<Div>, grows: bool) -> AnyElement {
+        let colors = &self.colors;
+        let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
+        div()
+            .flex()
+            .flex_col()
+            .when(grows, |frame| frame.flex_1())
+            .rounded_md()
+            .border_2()
+            .border_color(if selected {
+                colors.roles.accent
+            } else {
+                gpui::transparent_black()
+            })
+            .when(selected, |frame| frame.bg(colors.selected_row()))
+            .child(row)
             .into_any_element()
     }
 
@@ -934,7 +959,7 @@ impl CorgiWindow {
         let (badge, badge_tone) = format::badge(agent);
         let badge_color = self.tone(badge_tone, None);
         let secondary = colors.secondary(if selected {
-            colors.roles.focus_bar
+            colors.selected_row()
         } else {
             colors.background
         });
@@ -1011,12 +1036,9 @@ impl CorgiWindow {
             .border_l_4()
             .border_color(if agent.supervisor {
                 colors.supervisor()
-            } else if selected {
-                colors.roles.accent
             } else {
                 gpui::transparent_black()
             })
-            .when(selected, |row| row.bg(colors.roles.focus_bar))
             .cursor(CursorStyle::PointingHand)
             .child(identity)
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -1029,11 +1051,11 @@ impl CorgiWindow {
     }
 
     /// An activity line; on the `selected` row, muted parts take the
-    /// colors' secondary so they read on the selection bar.
+    /// colors' secondary so they read on its tint.
     fn activity_line(&self, activity: &Activity, lines: usize, selected: bool) -> impl IntoElement {
         let colors = &self.colors;
         let secondary = colors.secondary(if selected {
-            colors.roles.focus_bar
+            colors.selected_row()
         } else {
             colors.background
         });
@@ -1106,7 +1128,7 @@ impl CorgiWindow {
                 .child(self.activity_line(&agent.tool, 1, true))
                 .child(
                     div()
-                        .text_color(colors.secondary(colors.roles.focus_bar))
+                        .text_color(colors.secondary(colors.selected_row()))
                         .child(why),
                 )
                 .into_any_element();
