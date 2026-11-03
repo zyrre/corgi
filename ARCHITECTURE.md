@@ -1463,6 +1463,16 @@ status lines of its passes.
   `src/readme_shots.rs` draws the README images in a fixed Catppuccin Mocha,
   and its `theme_preview` test writes the dashboard and popups in several
   themes as ANSI text for `less -R`.
+- `assets/icon/` holds the macOS app icon, `AppIcon.png` (1024 px) and
+  `AppIcon.icns`, drawn by `src/app_icon.rs` from `corgi_core::art`'s corgi
+  on a Catppuccin Mocha plate; `cargo app-icon` draws them again (on macOS,
+  for `iconutil`), and a test fails while the PNG lags the corgi. They are
+  encoded as straight RGBA with `png`, since tiny-skia's `encode_png` works
+  from premultiplied pixels and shifts the plate's semi-transparent edge.
+  `iconutil` re-encodes the PNGs it stores, and `iconutil -c iconset`
+  lightens the edge of the 16 and 32 px slots (an artefact of extracting
+  them, not of the `.icns`), so check the icon by its decoded pixels, not
+  by bytes or by the small slots it extracts.
 - `crates/corgi-core/src/choices.rs` is the pure model behind every selector
   list in the new-agent form: the rows, the word filter typed over them, and
   how typed text that names no row is offered (as a value of its own for

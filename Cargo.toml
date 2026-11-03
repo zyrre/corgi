@@ -60,4 +60,5 @@ strip = true
 color_quant = "1.1"
 corgi-core = { workspace = true, features = ["test-support"] }
 gif = "0.14.2"
+png = "0.18.1"
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }

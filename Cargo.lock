@@ -1201,6 +1201,7 @@ dependencies = [
  "crossterm",
  "gif",
  "libc",
+ "png 0.18.1",
  "ratatui",
  "resvg 0.48.1",
  "serde",
