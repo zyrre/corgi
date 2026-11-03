@@ -441,29 +441,9 @@ limits and the user-waived live-Claude check; do not retry authentication errors
 
 ## README screenshots and animation
 
-The images in `docs/images/` are drawn by Corgi's own UI code from made-up
-agents in `src/readme_shots.rs`; nothing of the machine they are drawn on
-may appear in them (no real home paths, work names or e-mails). After a UI
-change, draw them again with:
-
-```bash
-cargo readme-shots
-```
-
-It writes the SVG screenshots and `merge-outcomes.gif`, a merge in the
-merge popup that ends and rests on its success stamp.
-The GIF plays the real effects of `src/motion.rs` on a manual clock at 25
-frames a second, and
-rasterizes each frame with resvg (a dev-dependency) and the system's
-monospace fonts, so it needs no tool beyond Cargo. It takes about half a
-minute; keep the GIF well under 2 MB. Delete an image the README stops
-using.
-
-Since the GIF's text comes from the system's fonts, `merge-outcomes.gif`
-differs from machine to machine. To check that a change left it alone,
-compare it with one drawn from a build of the base commit on the same
-machine, not with the committed file (`git archive <base>` into a scratch
-directory gives that build without touching a checkout).
+Do not run `cargo readme-shots` or update anything in `docs/images/` for now;
+the README and its images will be redone after the GUI work. Leave
+`docs/images/` untouched, and discard any change a tool makes there.
 
 ## Releasing
 
