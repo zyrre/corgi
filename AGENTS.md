@@ -387,8 +387,15 @@ build; delete the session afterwards and check `herdr session list`. Then:
   `PATH` the same. Before typing into a pane, check with
   `herdr pane process-info --pane <id>` that each foreground process's
   executable (`lsof -a -p <pid> -d txt`, not `ps -o comm`, which gives only
-  the name it was started by) is a fake, and run a loop that kills any
-  other `claude`, `codex` or `node` of the private home.
+  the name it was started by) is a fake. If a real `claude`, `codex` or
+  `node` shows up under the private server, stop that server
+  (`herdr session stop <name>` with the private environment).
+- **Never kill processes by name, pattern, process group or user**: no
+  `pkill`, `killall`, pgrep-and-kill, kill loops or watchdogs. One such
+  loop (`pgrep -g ""` selects unrelated processes on macOS) killed every
+  agent on the machine. Kill a process only by PID, once, after walking its
+  ppid chain to your own private server's PID and checking with `lsof` that
+  its executable is one of your fakes.
 - Report fake agents' states with a test `--source`. Only
   `--source herdr:claude` keeps an `--agent-session-id`, and Herdr then
   ignores the test source's states for that pane. **A pane with a
