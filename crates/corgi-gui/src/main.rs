@@ -8,6 +8,8 @@ mod fonts;
 mod form;
 mod format;
 mod herdr_ui;
+mod hotkeys;
+mod keymap;
 mod layout;
 mod link;
 mod options;
