@@ -393,6 +393,12 @@ build; delete the session afterwards and check `herdr session list`. Then:
   Herdr sees a turn, writes the handover note when a line asks for one, and
   exits on `/exit`. A copied system binary must be signed with
   `codesign -s - -f`, or macOS kills it.
+  It must clear its screen when a turn ends, or Herdr keeps reading the
+  leftover "esc to interrupt" line as working. Herdr 0.9.5's
+  `pane report-agent` CLI has no `--session-start-source`, so the note
+  on it below cannot be followed through the CLI. Herdr judges a Codex pane's state from its
+  screen, not from `herdr:codex` reports, so a fake `codex` that does not
+  draw Codex's own working line always reads idle.
 - Keep the real agent CLIs unreachable. A login bash runs macOS's
   `path_helper`, which puts `/etc/paths.d/homebrew` (`/opt/homebrew/bin`,
   where `claude` lives) ahead of anything prepended to `PATH`, so set the
