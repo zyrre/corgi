@@ -15,7 +15,7 @@ use crate::{
     dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage},
     form::{self, Key},
     hotkeys::HotkeysDialog,
-    keymap::{Action, Hit, Key as KeymapKey, Keymap},
+    keymap::{self, Action, Hit, Key as KeymapKey, Keymap},
     layout::{Layout, Split},
     link::{Backoff, Link, LinkEvent},
     options::Options,
@@ -1342,12 +1342,13 @@ pub fn field_colors(colors: &Colors) -> FieldColors {
     }
 }
 
-/// Keeps the app's keys: quitting.
+/// Binds the window's fixed keys (`keymap::fixed`): quitting, and on macOS
+/// closing, minimizing and full screen.
 pub fn bind_app_keys(cx: &mut App) {
     let quit = if cfg!(target_os = "macos") {
-        "cmd-q"
+        keymap::QUIT_MAC
     } else {
-        "ctrl-q"
+        keymap::QUIT
     };
     cx.bind_keys([gpui::KeyBinding::new(quit, Quit, None)]);
     cx.on_action(|_: &Quit, cx| cx.quit());
@@ -1355,9 +1356,9 @@ pub fn bind_app_keys(cx: &mut App) {
     // what they did.
     if cfg!(target_os = "macos") {
         cx.bind_keys([
-            gpui::KeyBinding::new("cmd-w", CloseWindow, None),
-            gpui::KeyBinding::new("cmd-m", Minimize, None),
-            gpui::KeyBinding::new("ctrl-cmd-f", ToggleFullScreen, None),
+            gpui::KeyBinding::new(keymap::CLOSE_WINDOW, CloseWindow, None),
+            gpui::KeyBinding::new(keymap::MINIMIZE, Minimize, None),
+            gpui::KeyBinding::new(keymap::FULL_SCREEN, ToggleFullScreen, None),
         ]);
         cx.on_action(|_: &CloseWindow, cx| {
             on_active_window(cx, |view, window| {
