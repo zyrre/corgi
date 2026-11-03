@@ -190,10 +190,24 @@ pub fn boot() -> Result<String> {
             .args(["-n", "kern.boottime"])
             .output()?;
         ensure!(out.status.success(), "cannot identify this host boot");
-        Ok(String::from_utf8(out.stdout)?.trim().to_string())
+        Ok(boot_key(&String::from_utf8(out.stdout)?).to_string())
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     anyhow::bail!("host boot identity is unsupported")
+}
+
+/// Whether a recorded boot identity names the current boot. macOS's
+/// `kern.boottime` is `{ sec = …, usec = … }` followed by the boot time as a
+/// local-time date, which another time zone writes differently, so a moved
+/// clock or a process with another `TZ` would take the same boot for a new
+/// one. Only the braces name the boot; records written before `boot` dropped
+/// the date still carry it.
+pub fn same_boot(recorded: &str, current: &str) -> bool {
+    boot_key(recorded) == boot_key(current)
+}
+
+fn boot_key(boot: &str) -> &str {
+    boot.find('}').map_or(boot, |end| &boot[..=end]).trim()
 }
 
 pub fn host() -> Result<String> {

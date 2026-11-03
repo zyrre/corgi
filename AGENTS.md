@@ -389,8 +389,22 @@ build; delete the session afterwards and check `herdr session list`. Then:
   `PATH` the same. Before typing into a pane, check with
   `herdr pane process-info --pane <id>` that each foreground process's
   executable (`lsof -a -p <pid> -d txt`, not `ps -o comm`, which gives only
-  the name it was started by) is a fake, and run a loop that kills any
-  other `claude`, `codex` or `node` of the private home.
+  the name it was started by) is a fake. If a real `claude`, `codex` or
+  `node` shows up under the private server, stop that server
+  (`herdr session stop <name>` with the private environment).
+- **Never kill processes by name, pattern, process group or user**: no
+  `pkill`, `killall`, pgrep-and-kill, kill loops or watchdogs. One such
+  loop (`pgrep -g ""` selects unrelated processes on macOS) killed every
+  agent on the machine. Kill a process only by PID, once, after walking its
+  ppid chain to your own private server's PID and checking with `lsof` that
+  its executable is one of your fakes. After a live handoff the panes'
+  processes no longer descend from the new server, so that walk fails:
+  tell a fake by the pane's `herdr pane process-info` and its executable's
+  `lsof` line instead, and still kill nothing by name, pattern or group.
+- `herdr update --handoff` is disabled for Homebrew installs. To hand off a
+  private server anyway, send it `server.live_handoff` on its socket, with
+  `import_exe` the Herdr binary to take over (the same one will do):
+  `{"id":"h","method":"server.live_handoff","params":{"import_exe":"<herdr>"}}`.
 - Report fake agents' states with a test `--source`. Only
   `--source herdr:claude` keeps an `--agent-session-id`, and Herdr then
   ignores the test source's states for that pane. **A pane with a

@@ -979,6 +979,10 @@ role. So Corgi keeps its own record and puts the tokens back.
   open. Panes whose agent Herdr detects only later are put back by the
   `pane.agent_detected` hook that follows.
 
+What each kind of agent keeps through a handoff, a server restart and a
+reboot, and the options for bringing the rest back, are in
+[docs/restart-survival.md](docs/restart-survival.md).
+
 ### Herdr's hooks
 
 `herdr-plugin.toml` declares a `[[startup]]` hook and `[[events]]` hooks on
