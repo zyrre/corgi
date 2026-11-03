@@ -16,13 +16,14 @@ use crate::{
     dialogs::{Dialog, Merge, MergeStage, Steps, outcome_line},
     form::Row,
     format::{self, Piece, Tone},
+    keymap::{self, Action as Hotkey},
     layout::{
         CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, FONT_SIZE, HEADER_HEIGHT,
         HEADER_PADDING, PIXEL, Split, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
     rows::Pick,
     store::Connection,
-    terminal::{keys, open_url},
+    terminal::open_url,
     theme,
     transcript::{FOLDED_LINES, TranscriptElement, Turn},
     window::{CorgiWindow, Drag},
@@ -116,7 +117,7 @@ impl Render for CorgiWindow {
             .line_height(self.scaled(TEXT_SIZE * LINE_HEIGHT))
             .on_key_down(cx.listener(|this, event, window, cx| {
                 if this.hotkeys.is_some() {
-                    this.hotkeys_key(event, cx);
+                    this.hotkeys_key(event, window, cx);
                 } else if this.dialogs.open.is_some() {
                     this.dialog_key(event, window, cx);
                 } else if this.focus_view.is_some() {
@@ -328,13 +329,19 @@ impl CorgiWindow {
             .child(
                 div()
                     .flex()
-                    .flex_row()
+                    .flex_col()
                     .flex_none()
-                    .items_center()
-                    .child(self.hotkeys_button(cx))
-                    .child(self.font_button(false, cx))
-                    .child(self.font_button(true, cx))
-                    .child(self.appearance_toggle(cx)),
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .child(self.font_button(false, cx))
+                            .child(self.font_button(true, cx))
+                            .child(self.appearance_toggle(cx)),
+                    )
+                    // The keys' dialog, under the buttons above.
+                    .child(self.hotkeys_button(cx)),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -368,38 +375,6 @@ impl CorgiWindow {
             ))
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                 this.toggle_appearance(cx);
-                cx.stop_propagation();
-            }))
-    }
-
-    /// MOCKUP: "Hotkeys" left of A−, the size of the pixel-art buttons:
-    /// opens the window where each action's key can be changed.
-    fn hotkeys_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let colors = &self.colors;
-        // The art's eleven rows and its padding, so all four line up.
-        let height = ICON_PIXEL * 12.0;
-        div()
-            .id("hotkeys-button")
-            .flex_none()
-            .mr(px(ICON_PIXEL * 2.0))
-            .h(px(height))
-            .flex()
-            .items_center()
-            .px(px(ICON_PIXEL * 4.0))
-            .rounded_md()
-            .border_1()
-            .border_color(colors.roles.rule)
-            .text_color(colors.roles.text)
-            .font_weight(FontWeight::BOLD)
-            .cursor(CursorStyle::PointingHand)
-            .hover(|style| {
-                style
-                    .bg(colors.roles.keycap)
-                    .border_color(colors.roles.accent)
-            })
-            .child("Hotkeys")
-            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                this.open_hotkeys(window, cx);
                 cx.stop_propagation();
             }))
     }
@@ -459,38 +434,48 @@ impl CorgiWindow {
             .py_1()
             .border_b_1()
             .border_color(self.colors.roles.rule);
-        let buttons: [(&str, &str, bool, Action); 7] = [
-            ("n", "New agent", true, |this, _, cx| this.new_agent(cx)),
-            ("p", "Prompt", can_prompt, |this, window, cx| {
+        let buttons: [(Hotkey, &str, bool, Action); 7] = [
+            (Hotkey::NewAgent, "New agent", true, |this, _, cx| {
+                this.new_agent(cx)
+            }),
+            (Hotkey::Prompt, "Prompt", can_prompt, |this, window, cx| {
                 this.open_prompt(None, window, cx)
             }),
-            ("s", "Supervisor", has_agent, |this, _, cx| {
-                this.start_supervisor(cx)
-            }),
-            ("m", "Merge", can_merge, |this, _, cx| this.merge_check(cx)),
             (
-                "t",
+                Hotkey::Supervisor,
+                "Supervisor",
+                has_agent,
+                |this, _, cx| this.start_supervisor(cx),
+            ),
+            (Hotkey::Merge, "Merge", can_merge, |this, _, cx| {
+                this.merge_check(cx)
+            }),
+            (
+                Hotkey::Tag,
                 // As wide as each other, so selecting a tagged row cannot
                 // rewrap the toolbar and move the overview under the mouse.
                 if tagged { "Untag    " } else { "Tag merge" },
                 has_agent,
                 |this, _, cx| this.toggle_tag(cx),
             ),
-            ("x", "Close", has_agent, |this, _, cx| {
+            (Hotkey::Close, "Close", has_agent, |this, _, cx| {
                 this.close_check(None, cx)
             }),
-            ("r", "Refresh", true, |this, _, cx| this.refresh(cx)),
+            (Hotkey::Refresh, "Refresh", true, |this, _, cx| {
+                this.refresh(cx)
+            }),
         ];
         for (key, label, enabled, action) in buttons {
+            let key = self.keymap.label(key);
             bar =
                 bar.child(
-                    self.button(key, label, enabled, false, cx, move |this, window, cx| {
+                    self.button(&key, label, enabled, false, cx, move |this, window, cx| {
                         action(this, window, cx)
                     }),
                 );
         }
         bar.child(self.button(
-            "↵",
+            &self.keymap.label(Hotkey::Open),
             "Terminal",
             has_agent,
             false,
@@ -503,7 +488,7 @@ impl CorgiWindow {
         ))
         .child(div().flex_1())
         .child(self.button(
-            "\\",
+            &self.keymap.label(Hotkey::SidePanel),
             "Side panel",
             true,
             self.layout.side_open,
@@ -516,7 +501,6 @@ impl CorgiWindow {
     /// and how its terminal is, and the side panel's switch.
     fn focus_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
-        let mac = cfg!(target_os = "macos");
         let terminal = self.terminal.read(cx);
         let status = terminal.status_text();
         let (live, gone) = (terminal.live(), terminal.gone());
@@ -560,7 +544,7 @@ impl CorgiWindow {
             .border_b_1()
             .border_color(colors.roles.rule)
             .child(self.button(
-                keys::leave_label(mac),
+                &self.keymap.label(Hotkey::Leave),
                 "← Overview",
                 true,
                 false,
@@ -590,7 +574,7 @@ impl CorgiWindow {
             })
             .child(div().flex_1())
             .child(self.button(
-                keys::side_label(mac),
+                &self.keymap.label(Hotkey::FocusSide),
                 "Side panel",
                 true,
                 self.layout.focus_side_open,
@@ -677,7 +661,7 @@ impl CorgiWindow {
             .child(div().flex_1().truncate().child(text))
             .when(retry, |banner| {
                 banner.child(
-                    self.button("⏎", "Retry now", true, false, cx, |this, _, cx| {
+                    self.button("", "Retry now", true, false, cx, |this, _, cx| {
                         this.retry_now(cx)
                     }),
                 )
@@ -815,9 +799,9 @@ impl CorgiWindow {
             div()
                 .text_color(colors.roles.muted)
                 .child(if collapsed {
-                    "→ expand"
+                    format!("{} expand", self.keymap.label(Hotkey::ExpandCard))
                 } else {
-                    "← collapse"
+                    format!("{} collapse", self.keymap.label(Hotkey::CollapseCard))
                 })
                 .into_any_element()
         });
@@ -1244,7 +1228,7 @@ impl CorgiWindow {
                             .flex_row()
                             .gap_2()
                             .child(self.button(
-                                "p",
+                                &self.keymap.label(Hotkey::Prompt),
                                 "Prompt it",
                                 supervisor.can_prompt,
                                 false,
@@ -1289,7 +1273,7 @@ impl CorgiWindow {
                             .child("No supervisor runs for this project."),
                     )
                     .child(self.button(
-                        "s",
+                        &self.keymap.label(Hotkey::Supervisor),
                         "Start its supervisor",
                         true,
                         false,
@@ -1560,27 +1544,13 @@ impl CorgiWindow {
 
     /// The keys the status bar reminds of.
     fn status_hints(&self) -> String {
-        let mac = cfg!(target_os = "macos");
-        if self.focus_view.is_none() {
-            if self.expanded_row().is_some() {
-                let copy = if mac { "⌘C" } else { "Ctrl+Shift+C" };
-                return format!(
-                    "space/esc collapse · u/d scroll · drag, {copy} copy · j/k next session"
-                );
-            }
-            return "j/k select · space expand · ↵ terminal · ←/→ or right-click card · 1–9 answer"
-                .into();
-        }
-        let (modifier, copy) = if mac {
-            ("⌘", "⌘C/⌘V")
+        if self.focus_view.is_some() {
+            self.keymap.focus_hints()
+        } else if self.expanded_row().is_some() {
+            self.keymap.expanded_hints()
         } else {
-            ("Ctrl", "Ctrl+Shift+C/V")
-        };
-        format!(
-            "{} overview · {} side panel · {copy} copy/paste · {modifier}-click a link",
-            keys::leave_label(mac),
-            keys::side_label(mac),
-        )
+            self.keymap.overview_hints()
+        }
     }
 
     fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1882,7 +1852,7 @@ impl CorgiWindow {
                     .text_color(self.colors.secondary(self.colors.roles.popup_fill))
                     .child("Loading the form and the harnesses' models…"),
             )
-            .child(self.hints(&[("Esc", "cancel")]))
+            .child(self.hints(&[(keymap::ESCAPE, "cancel")]))
             .into_any_element()
     }
 
@@ -2008,11 +1978,11 @@ impl CorgiWindow {
             )
             .children(running)
             .child(self.hints(&[
-                ("↵", "create agent"),
+                (keymap::ENTER, "create agent"),
                 ("↑↓ ⇥", "rows"),
                 ("←→", "change"),
                 ("Space", "list"),
-                ("Esc", "cancel"),
+                (keymap::ESCAPE, "cancel"),
             ]))
             .into_any_element()
     }
@@ -2207,7 +2177,7 @@ impl CorgiWindow {
         let actions = merge.actions();
         let mut buttons = div().flex().flex_row().gap_2().pt_1();
         for (index, (label, action)) in actions.into_iter().enumerate() {
-            let key = if index == 0 { "↵" } else { "" };
+            let key = if index == 0 { keymap::ENTER } else { "" };
             buttons =
                 buttons.child(
                     self.button(key, label, true, index == 0, cx, move |this, _, cx| {
@@ -2261,17 +2231,25 @@ impl CorgiWindow {
                     .flex_row()
                     .gap_2()
                     .pt_1()
-                    .child(
-                        self.button("↵", &confirm, !close.running, true, cx, |this, _, cx| {
-                            this.confirm_close(cx)
-                        }),
-                    )
-                    .child(
-                        self.button("Esc", "Cancel", true, false, cx, |this, _, cx| {
+                    .child(self.button(
+                        keymap::ENTER,
+                        &confirm,
+                        !close.running,
+                        true,
+                        cx,
+                        |this, _, cx| this.confirm_close(cx),
+                    ))
+                    .child(self.button(
+                        keymap::ESCAPE,
+                        "Cancel",
+                        true,
+                        false,
+                        cx,
+                        |this, _, cx| {
                             this.dialogs.open = None;
                             cx.notify();
-                        }),
-                    ),
+                        },
+                    )),
             )
             .into_any_element()
     }

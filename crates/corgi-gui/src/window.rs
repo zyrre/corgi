@@ -8,14 +8,14 @@ use corgi_core::protocol::{Agent, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent,
-    Pixels, ScrollHandle, SharedString, Subscription, Task, Window, WindowHandle, WindowVisibility,
-    px,
+    Pixels, ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility, px,
 };
 
 use crate::{
     dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage},
     form::{self, Key},
-    hotkeys::{Hotkeys, HotkeysWindow},
+    hotkeys::HotkeysDialog,
+    keymap::{Action, Hit, Key as KeymapKey, Keymap},
     layout::{Layout, Split},
     link::{Backoff, Link, LinkEvent},
     options::Options,
@@ -102,10 +102,11 @@ pub struct CorgiWindow {
     pub focus_view: Option<String>,
     /// The keyboard should move to where the open dialog wants it.
     refocus: bool,
-    /// MOCKUP: the hotkeys dialog (looks A and C) while it is open.
-    pub hotkeys: Option<Entity<Hotkeys>>,
-    /// MOCKUP: look B's window while it is open.
-    pub hotkeys_window: Option<WindowHandle<HotkeysWindow>>,
+    /// Which key does what (`keymap.rs`), and where it is kept.
+    pub keymap: Keymap,
+    keymap_path: Option<PathBuf>,
+    /// The hotkeys dialog, while it is open (`hotkeys.rs`).
+    pub hotkeys: Option<HotkeysDialog>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -122,6 +123,8 @@ impl CorgiWindow {
         let system_light = is_light(window.appearance());
         let layout_path = Layout::path();
         let layout = Layout::load(layout_path.as_deref());
+        let keymap_path = Keymap::path();
+        let keymap = Keymap::load(keymap_path.as_deref(), cfg!(target_os = "macos"));
         let store = Store::default();
         let (light, chosen) = theme::appearance(forced_light, None, system_light);
         let colors = Colors::new(&store.state.palette, light, chosen);
@@ -246,13 +249,15 @@ impl CorgiWindow {
             terminal,
             focus_view: None,
             refocus: false,
+            keymap,
+            keymap_path,
             hotkeys: None,
-            hotkeys_window: None,
             _tasks: vec![pump, tick],
             _subscriptions: subscriptions,
         };
         this.sync_terminal_socket(cx);
         this.color_terminal(cx);
+        this.share_keymap(cx);
         let scale = this.layout.text_scale();
         this.terminal
             .update(cx, |terminal, cx| terminal.set_text_scale(scale, cx));
@@ -573,7 +578,11 @@ impl CorgiWindow {
         if colors != self.colors {
             self.colors = colors;
             let field = field_colors(&self.colors);
-            for input in [&self.prompt_input, &self.task_input] {
+            let filter = self.hotkeys.as_ref().map(|dialog| &dialog.filter);
+            for input in [&self.prompt_input, &self.task_input]
+                .into_iter()
+                .chain(filter)
+            {
                 input.update(cx, |input, cx| {
                     input.colors = field;
                     cx.notify();
@@ -592,6 +601,22 @@ impl CorgiWindow {
         self.chosen_light = Some(!self.colors.light);
         self.recolor(cx);
         cx.notify();
+    }
+
+    // ---- Keys ----
+
+    /// Keeps the keys the hotkeys dialog changed, and gives the focus
+    /// view's terminal its own two.
+    pub fn keymap_changed(&mut self, cx: &mut Context<Self>) {
+        self.keymap.save(self.keymap_path.as_deref());
+        self.share_keymap(cx);
+        cx.notify();
+    }
+
+    fn share_keymap(&mut self, cx: &mut Context<Self>) {
+        let keymap = self.keymap.clone();
+        self.terminal
+            .update(cx, |terminal, _| terminal.keymap = keymap);
     }
 
     // ---- Layout ----
@@ -1065,59 +1090,61 @@ impl CorgiWindow {
             }
             return;
         }
-        let modifiers = keystroke.modifiers;
-        if modifiers.platform || modifiers.control || modifiers.alt {
-            return;
-        }
         let selected_group = self
             .selected_agent()
             .map(|agent| agent.project_group.clone());
-        if let Some(key) = session_key(&keystroke.key, self.expanded) {
-            match key {
-                SessionKey::Toggle => self.toggle_expanded(cx),
-                SessionKey::Page(pages) => {
-                    self.transcript.scroll_pages(pages);
-                    cx.notify();
-                }
-                SessionKey::End(end) => {
-                    self.transcript.scroll_to_end(end);
-                    cx.notify();
-                }
-            }
-            cx.stop_propagation();
+        let Some(hit) = self.keymap.overview_hit(keystroke, self.expanded) else {
             return;
-        }
-        match keystroke.key.as_str() {
-            "j" | "down" => self.step(1, cx),
-            "k" | "up" => self.step(-1, cx),
-            "home" | "g" => self.step(-10_000, cx),
-            "end" => self.step(10_000, cx),
-            "enter" => {
+        };
+        let action = match hit {
+            Hit::Answer(index) => {
+                self.answer_nth(index, window, cx);
+                cx.stop_propagation();
+                return;
+            }
+            Hit::Action(action) => action,
+        };
+        match action {
+            Action::Next => self.step(1, cx),
+            Action::Previous => self.step(-1, cx),
+            Action::First => self.step(-10_000, cx),
+            Action::Last => self.step(10_000, cx),
+            Action::Open => {
                 if let Some(pane_id) = self.selected.clone() {
                     self.open_agent(pane_id, window, cx);
                 }
             }
-            "\\" => self.toggle_side(cx),
-            "left" | "right" => {
+            Action::Expand | Action::Collapse => self.toggle_expanded(cx),
+            Action::ScrollUp | Action::ScrollDown => {
+                let pages = if action == Action::ScrollUp {
+                    -1.0
+                } else {
+                    1.0
+                };
+                self.transcript.scroll_pages(pages);
+                cx.notify();
+            }
+            Action::Newest | Action::Oldest => {
+                self.transcript.scroll_to_end(action == Action::Oldest);
+                cx.notify();
+            }
+            Action::SidePanel => self.toggle_side(cx),
+            Action::CollapseCard | Action::ExpandCard => {
                 let Some(group) = selected_group else { return };
-                let collapse = keystroke.key == "left";
+                let collapse = action == Action::CollapseCard;
                 if collapse != self.collapsed.contains(&group) {
                     self.toggle_card(&group, cx);
                 }
             }
-            "p" => self.open_prompt(None, window, cx),
-            "n" => self.new_agent(cx),
-            "m" => self.merge_check(cx),
-            "x" => self.close_check(None, cx),
-            "s" => self.start_supervisor(cx),
-            "t" => self.toggle_tag(cx),
-            "r" => self.refresh(cx),
-            "a" => self.answer_nth(0, window, cx),
-            key if key.len() == 1 && ('1'..='9').contains(&key.chars().next().unwrap_or('0')) => {
-                let index = key.parse::<usize>().unwrap_or(1) - 1;
-                self.answer_nth(index, window, cx);
-            }
-            _ => return,
+            Action::Prompt => self.open_prompt(None, window, cx),
+            Action::NewAgent => self.new_agent(cx),
+            Action::Merge => self.merge_check(cx),
+            Action::Close => self.close_check(None, cx),
+            Action::Supervisor => self.start_supervisor(cx),
+            Action::Tag => self.toggle_tag(cx),
+            Action::Refresh => self.refresh(cx),
+            Action::AnswerFirst => self.answer_nth(0, window, cx),
+            Action::Leave | Action::FocusSide => return,
         }
         cx.stop_propagation();
     }
@@ -1132,13 +1159,14 @@ impl CorgiWindow {
         }
         let keystroke = &event.keystroke;
         let plain = !keystroke.modifiers.modified();
-        match keys::chord(keystroke, cfg!(target_os = "macos")) {
-            Some(Chord::Leave) => self.leave_focus(cx),
-            Some(Chord::ToggleSide) => self.toggle_side(cx),
-            _ if plain && keystroke.key == "escape" => self.leave_focus(cx),
-            _ if plain && keystroke.key == "\\" => self.toggle_side(cx),
-            _ if plain && keystroke.key == "enter" => window.focus(&terminal_focus, cx),
-            _ => return,
+        let side = KeymapKey::from_keystroke(keystroke) == *self.keymap.key(Action::SidePanel);
+        match self.keymap.focus_hit(keystroke) {
+            Some(Action::Leave) => self.leave_focus(cx),
+            Some(_) => self.toggle_side(cx),
+            None if plain && keystroke.key == "escape" => self.leave_focus(cx),
+            None if side => self.toggle_side(cx),
+            None if plain && keystroke.key == "enter" => window.focus(&terminal_focus, cx),
+            None => return,
         }
         cx.stop_propagation();
     }
@@ -1247,6 +1275,10 @@ impl CorgiWindow {
 
     pub fn focus_dialog_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = match &self.dialogs.open {
+            _ if self.hotkeys.is_some() => match self.hotkeys_focus(cx) {
+                Some(target) => target,
+                None => return,
+            },
             None if self.focus_view.is_some() => self.terminal.read(cx).focus.clone(),
             None => self.focus.clone(),
             Some(Dialog::Prompt { .. } | Dialog::Answer { .. }) => {
@@ -1265,35 +1297,6 @@ impl CorgiWindow {
     pub fn connection(&self) -> &Connection {
         &self.store.connection
     }
-}
-
-/// What a plain key in the overview does to the expanded session.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum SessionKey {
-    /// Expand the selected row, or collapse it.
-    Toggle,
-    /// Scroll its turns by views, down for positive.
-    Page(f32),
-    /// Its newest turn (`false`) or the end of its oldest.
-    End(bool),
-}
-
-/// The session's keys, as the dashboard's expanded session has them: Space
-/// expands and collapses; while expanded, Esc collapses, `u`/`d` and the
-/// page keys scroll a view and Home/End jump. Other keys, and these while
-/// nothing is expanded (Home and End select the first and last rows), are
-/// the overview's.
-fn session_key(key: &str, expanded: bool) -> Option<SessionKey> {
-    Some(match key {
-        "space" => SessionKey::Toggle,
-        _ if !expanded => return None,
-        "escape" => SessionKey::Toggle,
-        "u" | "pageup" => SessionKey::Page(-1.0),
-        "d" | "pagedown" => SessionKey::Page(1.0),
-        "home" => SessionKey::End(false),
-        "end" => SessionKey::End(true),
-        _ => return None,
-    })
 }
 
 /// A key as the new-agent form reads it.
@@ -1521,27 +1524,37 @@ mod tests {
 
     #[test]
     fn space_expands_and_the_sessions_keys_work_only_while_expanded() {
-        assert_eq!(session_key("space", false), Some(SessionKey::Toggle));
-        assert_eq!(session_key("space", true), Some(SessionKey::Toggle));
-        assert_eq!(session_key("escape", true), Some(SessionKey::Toggle));
-        for (key, page) in [("u", -1.0), ("pageup", -1.0), ("d", 1.0), ("pagedown", 1.0)] {
-            assert_eq!(
-                session_key(key, true),
-                Some(SessionKey::Page(page)),
-                "{key}"
-            );
+        let keymap = Keymap::defaults(true);
+        let hit = |key: &str, expanded| {
+            keymap.overview_hit(&gpui::Keystroke::parse(key).unwrap(), expanded)
+        };
+        let action = |action| Some(Hit::Action(action));
+        assert_eq!(hit("space", false), action(Action::Expand));
+        assert_eq!(hit("space", true), action(Action::Expand));
+        assert_eq!(hit("escape", true), action(Action::Collapse));
+        for (key, scroll) in [
+            ("u", Action::ScrollUp),
+            ("pageup", Action::ScrollUp),
+            ("d", Action::ScrollDown),
+            ("pagedown", Action::ScrollDown),
+        ] {
+            assert_eq!(hit(key, true), action(scroll), "{key}");
         }
-        assert_eq!(session_key("home", true), Some(SessionKey::End(false)));
-        assert_eq!(session_key("end", true), Some(SessionKey::End(true)));
+        assert_eq!(hit("home", true), action(Action::Newest));
+        assert_eq!(hit("end", true), action(Action::Oldest));
         // Collapsed, they are the overview's: Home and End select rows, and
         // Esc, u and d do nothing there.
-        for key in ["escape", "u", "d", "pageup", "pagedown", "home", "end"] {
-            assert_eq!(session_key(key, false), None, "{key}");
+        assert_eq!(hit("home", false), action(Action::First));
+        assert_eq!(hit("end", false), action(Action::Last));
+        for key in ["escape", "u", "d", "pageup", "pagedown"] {
+            assert_eq!(hit(key, false), None, "{key}");
         }
         // j and k move the selection, and the expansion with it, either way.
-        for key in ["j", "k", "down", "up", "enter", "p"] {
-            assert_eq!(session_key(key, true), None, "{key}");
-        }
+        assert_eq!(hit("j", true), action(Action::Next));
+        assert_eq!(hit("down", true), action(Action::Next));
+        assert_eq!(hit("enter", true), action(Action::Open));
+        // The view's modifiers reach no overview key.
+        assert_eq!(hit("cmd-j", false), None);
     }
 
     #[test]
