@@ -77,7 +77,8 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
                           and by the supervisor: ROLE.md, launch.json,
                           decisions.md, ledger.jsonl, briefs/, handover.md
                           while one is under way, handovers/, notes/,
-                          questions/Q<n>.md while Q<n> is open; at
+                          questions/Q<n>.md while Q<n> is open,
+                          backlog.md (things to build later); at
                           launch Corgi moves superseded ledger lines to
                           ledger-archive.jsonl;
                           and by Corgi only (`inbox.rs`, under inbox.lock):
@@ -467,6 +468,12 @@ dashboard, the command line and other frontends run the same code.
   puts the merge and merge-conflict lines in them, and hands them over, as
   described below; `draft.rs` tells it whether a supervisor's input box holds
   the user's draft.
+- `backlog.rs` reads a supervisor's `backlog.md`, its things to build
+  later, which only the supervisor writes (the role gives the form): an
+  optional `# ` title and intro, then one entry per `## ` heading, its text
+  running to the next one (a `## ` inside a code fence starts none). It
+  reads a plain file only, at most 256 KB; missing, or with no `## `, it
+  is no backlog. `corgi serve` sends it with each project.
 - `setup.rs` is `corgi setup`. Herdr plugins cannot declare key bindings,
   so it appends one for the plugin's `open` action to the end of Herdr's
   `config.toml`, never rewriting what is there. It leaves a config that
@@ -585,7 +592,8 @@ when stdin closes and no command is still running.
   dashboard's `project_runs` and `is_card`), each supervisor's open
   numbered questions from its ledger (`digest::all_open_questions`), each
   with its `questions/Q<n>.md` (a plain file, at most 64 KB; a file for a
-  question the ledger does not list open is never read), the usage cards, the watched transcript and the palette, whose roles it sends
+  question the ledger does not list open is never read), its backlog
+  (`backlog::read`, below), the usage cards, the watched transcript and the palette, whose roles it sends
   in RGB for light and dark (the Omarchy theme, else Catppuccin). It never
   calls `palette::resolve`, which queries the terminal over stdin and stdout,
   where the protocol runs. It also computes
@@ -616,7 +624,10 @@ when stdin closes and no command is still running.
   has no dashboard key: it adds `supervisor::question_closed_message` to the
   supervisor's inbox, delivered like a wake, and the role says how to drop
   the question from the ledger and delete its file, which only the
-  supervisor writes. Quick
+  supervisor writes. `backlog_message` has no dashboard key either: it
+  queues `supervisor::backlog_message`, `[Corgi] The user wrote about
+  backlog entry "<heading>": <text>`, the same way, with no key, so two
+  messages about one entry both go out. Quick
   commands run on the loop's thread; those that wait on Herdr, Git or a
   harness run on one of their own and reply from there, a panic becoming an
   error reply.
@@ -640,9 +651,13 @@ into `corgi_core::protocol`'s types and keeps its copy of the state with
 `State::apply`. Its layout is fixed, plain GPUI with no dock: the header
 (the brand's pixel corgi, the HERD counts, a card per plan), a toolbar, the
 overview of project cards and rows, the selected row expandable into its
-session, the side panel with the selected project's supervisor, its workers ready
-to merge, its numbered questions, its open merge requests (a click opens
-one in the browser) and its blocked workers, and a status bar. It opens with every
+session, the side panel with the selected project's held inbox items (when
+any), its numbered questions, its open merge requests (a click opens one in
+the browser) and its supervisor's backlog, and a status bar. The panel has
+no supervisor block: the supervisor is the card's first row, and the
+toolbar prompts or starts it. A backlog entry's card opens a dialog with
+the entry whole (rendered as a question is, below) and a field whose text
+`backlog_message` sends the supervisor. It opens with every
 project card collapsed and no row selected, until a key or a click picks a
 row; from then on, a selected row that goes gives
 way to the first. A card the window has not shown before, or any card after

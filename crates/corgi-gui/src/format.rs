@@ -4,7 +4,7 @@
 
 use corgi_core::{
     model::{AgentState, cache_countdown, compact_tokens},
-    protocol::{ActivityKind, Agent, Cache, MergeRequest, UsageCard, WorkerCounts},
+    protocol::{ActivityKind, Agent, BacklogEntry, Cache, MergeRequest, UsageCard, WorkerCounts},
     time::LocalTime,
     usage::UsageWindow,
 };
@@ -184,6 +184,12 @@ pub fn held(count: usize) -> Option<Piece> {
 /// when it has none, which hides the section.
 pub fn merge_requests_title(requests: &[MergeRequest]) -> Option<String> {
     (!requests.is_empty()).then(|| format!("OPEN MRS ({})", requests.len()))
+}
+
+/// The side panel's heading over the supervisor's backlog, `None` when it
+/// has no entry, which hides the section.
+pub fn backlog_title(entries: &[BacklogEntry]) -> Option<String> {
+    (!entries.is_empty()).then(|| format!("BACKLOG ({})", entries.len()))
 }
 
 /// The title of an open merge request as its row shows it: a draft's
@@ -541,6 +547,19 @@ mod tests {
         assert_eq!(held(0), None);
         assert_eq!(held(1).unwrap().text, "⏸ 1 inbox item held");
         assert_eq!(held(3).unwrap().tone, Tone::Warning);
+    }
+
+    #[test]
+    fn the_backlog_shows_only_when_it_has_entries() {
+        let entry = |heading: &str| BacklogEntry {
+            heading: heading.into(),
+            text: String::new(),
+        };
+        assert_eq!(backlog_title(&[]), None);
+        assert_eq!(
+            backlog_title(&[entry("A"), entry("B"), entry("C")]).as_deref(),
+            Some("BACKLOG (3)")
+        );
     }
 
     #[test]
