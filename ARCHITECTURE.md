@@ -1020,8 +1020,13 @@ agents' full command (`crates/corgi-core/src/restart.rs`):
   command is reported (`pane.report_agent_session` with the session id and
   `resume_argv`) whenever it differs from the one Herdr last took or Herdr's
   version changed. A pane that is gone is forgotten; one back at its shell
-  keeps its entry, for Resume. For a moment after an exit Herdr still lists
-  the pane's agent with no harness; that counts as no agent.
+  keeps its entry, for Resume.
+- **Two things Herdr does that the record must allow for** (seen on 0.9.5).
+  The `agent.start` reply names no harness (its `agent` field is absent), so
+  the launch's own harness is recorded, not the reply's. For about 300 ms
+  after an agent exits, the snapshot still lists it with `agent: null` and
+  no session; that is the agent leaving, not another agent, so it neither
+  releases the command nor drops the entry.
 - **The command.** `recovery::native::restart_argv` builds it, CLI name
   first as a plain word (`claude`, `codex`, never `CORGI_CLAUDE_BIN`'s path,
   since Herdr runs it through the pane's shell): `--resume <id>` (`resume
