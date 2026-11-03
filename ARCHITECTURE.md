@@ -1463,6 +1463,10 @@ status lines of its passes.
   `src/readme_shots.rs` draws the README images in a fixed Catppuccin Mocha,
   and its `theme_preview` test writes the dashboard and popups in several
   themes as ANSI text for `less -R`.
+- `assets/icon/` holds the macOS app icon, `AppIcon.png` (1024 px) and
+  `AppIcon.icns`, drawn by `src/app_icon.rs` from `corgi_core::art`'s corgi
+  on a Catppuccin Mocha plate; `cargo app-icon` draws them again (on macOS,
+  for `iconutil`), and a test fails while the PNG lags the corgi.
 - `crates/corgi-core/src/choices.rs` is the pure model behind every selector
   list in the new-agent form: the rows, the word filter typed over them, and
   how typed text that names no row is offered (as a value of its own for
