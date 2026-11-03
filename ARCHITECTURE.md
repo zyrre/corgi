@@ -389,7 +389,10 @@ dashboard, the command line and other frontends run the same code.
   in a subdirectory.
 - `orphans.rs` is "Find orphaned sessions" (docs/orphaned-sessions.md):
   `detect` reads the snapshot, the rows, the panes' foreground processes
-  (`pane.process_info`), Git and the supervisors' files, and lists the
+  (`pane.process_info`, which lists the pane's whole foreground group, an
+  MCP server beside the agent's CLI included, and leaves `argv` out of some
+  entries, so a process is matched by its program's file name,
+  `ForegroundProcess::program`), Git and the supervisors' files, and lists the
   agents Corgi gets wrong (hidden: Herdr lists it, Corgi has no row; not
   detected: an agent CLI Herdr does not list; a supervisor without its
   mark; a worker its ledger names by checkout and branch but that lost its
