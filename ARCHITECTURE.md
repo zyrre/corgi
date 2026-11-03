@@ -506,6 +506,11 @@ dashboard, the command line and other frontends run the same code.
   described under "Herdr restarts" below. Every Corgi token write goes
   through its `mark_pane` and `mark_workspace`; nothing else calls
   `pane.report_metadata` or `workspace.report_metadata`.
+- `restart.rs` is Corgi's record of how it launched each agent, the resume
+  command it reports to Herdr from it, the Resume action and the warning
+  for an agent running without its options, described under "Resume
+  commands" below. Nothing else calls `pane.report_agent_session` or
+  `pane.release_agent`.
 - `merge.rs` is one of the two places Corgi runs a Git command that writes
   (the other is close's `git worktree remove` of a plain linked checkout): a confirmed
   merge of an agent's clean worktree branch into the branch already checked
@@ -591,6 +596,8 @@ Its submodules are split by flow, each adding methods to the one `App`.
   over its check stamp, then closes it by itself or at any key;
   without effects it closes at once, as the headless paths expect.
 - `prompt.rs` is the prompt typed for an existing agent.
+- `resume.rs` is the `R` key: Resume on a row for an agent that exited to
+  its shell, as a background job (`restart::resume`).
 - `form.rs` is the new-agent form: one task row over a short list of
   selector rows, each with an inline filterable list. The default agent kind
   is `CORGI_DEFAULT_AGENT`, else the first installed CLI; the default project
@@ -1055,8 +1062,89 @@ role. So Corgi keeps its own record and puts the tokens back.
   open. Panes whose agent Herdr detects only later are put back by the
   `pane.agent_detected` hook that follows.
 
+#### Resume commands
+
+Herdr restores a pane's native session ref, and with its default
+`resume_agents_on_restore = true` runs the agent again after a restart. Its
+built-in command is only `claude --resume <id>` (`codex resume <id>`): a
+supervisor would lose its role and memory access, a worker its model,
+effort and extra arguments. Herdr 0.9.2 and later run the command a client
+reported for the pane instead (`resume_argv`), so Corgi reports each of its
+agents' full command (`crates/corgi-core/src/restart.rs`):
+
+- **The launch record.** `launch::launch_agent` writes, right after
+  `agent.start`, how it launched the agent, by pane, to
+  `markers/<socket>.launches.json` beside the marker record (same lock and
+  rename): the harness (from the launch, since `agent.start`'s reply names
+  none), Herdr name, directory, launch options after the CLI's name (model,
+  effort, extra arguments), the folder-trust answer, and a supervisor's
+  role file and state directory. It also keeps the native session last seen
+  in the pane, the terminal id and foreground PIDs of the last check, what
+  the running process lacks, and the command last reported with Herdr's
+  version. A supervisor's replacement forgets the leaving one's entry before
+  it exits (`restart::forget`), and its successor's launch writes a new one.
+- **The pass.** The pass holding the wake lock, after putting the marks back,
+  runs `restart::reconcile`. A pane whose agent has a new session, a new
+  terminal (a Herdr restart) or no check yet is checked with
+  `pane.process_info`: the same foreground process with a new session (as
+  after `/clear`) is still Corgi's agent; a new process with another session,
+  or another harness in the pane, is not, and its command is released
+  (`pane.release_agent`) and its entry dropped. A new process has its
+  command reported again even when unchanged, since Herdr forgets a command
+  with the agent it was for (seen on 0.9.5: an agent resumed after an exit
+  otherwise came back from the next restart as `codex resume <id>`). The
+  command is reported (`pane.report_agent_session` with the session id and
+  `resume_argv`) whenever it differs from the one Herdr last took or Herdr's
+  version changed. A pane that is gone is forgotten; one back at its shell
+  keeps its entry, for Resume.
+- **Two things Herdr does that the record must allow for** (seen on 0.9.5).
+  The `agent.start` reply names no harness (its `agent` field is absent), so
+  the launch's own harness is recorded, not the reply's. For about 300 ms
+  after an agent exits, the snapshot still lists it with `agent: null` and
+  no session; that is the agent leaving, not another agent, so it neither
+  releases the command nor drops the entry.
+- **The command.** `recovery::native::restart_argv` builds it, CLI name
+  first as a plain word (`claude`, `codex`, never `CORGI_CLAUDE_BIN`'s path,
+  since Herdr runs it through the pane's shell): `--resume <id>` (`resume
+  <id> --cd <dir>`), the launch options, the trust answer, and for a Claude
+  supervisor `--append-system-prompt-file ROLE.md --add-dir <state>`. A Codex
+  supervisor's role is passed inline at launch and is far over Herdr's
+  limit, and `codex resume` keeps a launch's developer instructions only
+  until the first compaction (docs/restart-survival.md), so its command
+  carries its permission flags and a short developer instruction to read
+  `ROLE.md` first. Herdr refuses a command over 8 KiB, with an apostrophe or
+  a control character, or whose first word is a path; such a command is not
+  reported, and one reported before is released, so Herdr's own resume of the
+  live session is used rather than Corgi's of an old one.
+- **Source.** Reports and releases go out under Corgi's plugin source
+  `plugin:io.github.zyrre.corgi`. Under `herdr:claude` or `herdr:codex`
+  Herdr ignores the command, and `pane.report_agent` would take over the
+  pane's state; a session report from Corgi's source leaves the session ref
+  and the state to Herdr's integration. Herdr 0.9.0 and 0.9.1 take the
+  report and ignore the command (checked on a private 0.9.0), so no version
+  check is made.
+- **Agents launched before the record.** A pass takes in a running
+  supervisor without an entry from its saved launch (`launch.json`) and
+  `ROLE.md`, and a worker from its recovery profile
+  (`recovery/profiles/<harness>-<id>.json`, whose settings drop unknown
+  extra arguments).
+- **Resume.** An agent that exits or is killed while Herdr runs leaves a
+  shell, and Herdr resumes nothing there. A pane whose entry has a session
+  Corgi saw, and that holds no agent, is listed as a row with `exited`
+  (`restart::resumable`; `refresh.rs` adds the rows, which the waker never
+  sees). Resume (`R` in the dashboard, a button and `⇧R` in the window,
+  `resume` in `corgi serve`) checks that the pane is a plain shell in the
+  agent's directory (`recovery`'s shell check) and starts the same command
+  there with `agent.start`. Corgi never resumes by itself. Such a row takes
+  no prompt, tag or focus.
+- **The warning.** Each check compares the new process's command line with
+  the launch's options, role and memory access, order aside
+  (`Launched::lacks`); what it lacks shows on the row (`⚠ no role`, `⚠ no
+  launch options`) and in the status line, as for a supervisor an older
+  Herdr resumed without its role: exit it, then Resume.
+
 What each kind of agent keeps through a handoff, a server restart and a
-reboot, and the options for bringing the rest back, are in
+reboot, and how Corgi brings the rest back, are in
 [docs/restart-survival.md](docs/restart-survival.md).
 
 ### Herdr's hooks
@@ -1082,7 +1170,7 @@ status lines of its passes.
   event decides nothing: every hook makes the same pass, `refresh::run`
   with a `SupervisorWaker`, which reconciles from Herdr's snapshot and
   Corgi's records (the agents followed, the handovers, the marks, the
-  inboxes). A dropped event is caught by the next hook, whatever it is for,
+  launches and their resume commands, the inboxes). A dropped event is caught by the next hook, whatever it is for,
   or by the startup hook. Exits and closes need no work of their own: the
   pass drops what it followed of agents, panes and workspaces that are gone.
 - **One pass at a time.** A pass holds `wake/<socket>.lock` from before
@@ -2159,16 +2247,15 @@ different identity path. Record manual hook/API identity reports as a fixture
 boundary: a hook browser's trusted/active status does not prove idle resume
 emitted an identity report. Check native argv, history and task counts as well.
 
-Recovery acknowledgment hints accept either letter case. Manual setup also
-accepts Space to toggle its single acknowledgment; Confirm explains a missing
-acknowledgment in the fixed footer so scrolling cannot hide the feedback.
-Toggling, navigation and repeat events never substitute for explicit confirmation.
+Recovery acknowledgment hints accept either letter case. Toggling,
+navigation and repeat events never substitute for explicit confirmation.
 
-Manual setup has its own explicit confirmation and config check/backup/reload;
-startup, Save and browsing never edit Herdr configuration. Herdr 0.9.1 cannot
-report its loaded config path or an auto-resume barrier. Setup therefore needs
-user acknowledgment of the displayed path and a subsequent normal server start
-before new recovery launches; Corgi never restarts it. Layout restore remains on.
+Corgi never edits Herdr's configuration. The Manual recovery setup step,
+which turned Herdr's auto-resume off, was retired when automatic restarts
+shipped ("Resume commands" above): with auto-resume off Herdr would resume
+nothing, Corgi's commands included. Restore no longer requires it; an agent
+Herdr already resumed is listed as running (reuse), and the restore's own
+shell check keeps it from starting into a pane Herdr is starting.
 
 A committed Save arms next-boot supervisor holds; the waker checks them before
 its first observation/delivery/handover. Same-boot Save does not pause normal

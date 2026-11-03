@@ -112,18 +112,19 @@ In an expanded card, a project without a supervisor, and the scratch sessions, e
 
 `n` opens the new-agent form with everything but the task preset: the selected agent's project, the default harness with its own model and effort, and a fresh worktree. Type the task and press `Enter`; `←` / `→` change a setting in place, and `Space` or typing opens its list. In a project with no agents yet, the first one is its supervisor. Each worker gets its own Git worktree on a fresh `worktree/<name>` branch; switch the Checkout row to work in the project directory as it is instead.
 
+### Restarts and Resume
+
+After a Herdr restart, a live handoff or a reboot, Corgi's agents come back by themselves with the options they were launched with: a supervisor with its role and access to its memory, a worker with its model, effort and extra arguments. Corgi gives Herdr each agent's resume command and keeps it on the agent's current session (after `/clear` too); Herdr 0.9.2 or later runs it, and older versions ignore it. An agent that exits or is killed while Herdr keeps running drops to its shell; its row then reads `EXITED`, and `R` (the window's Resume button, `⇧R`) starts it again in the same pane with its session and options. Corgi never restarts one on its own. An agent running without the options Corgi launched it with, as one an older Herdr resumed, shows `⚠ no role` or `⚠ no launch options`: exit it, then press `R`.
+
 ### Save and restore sessions
 
-Press `S` before reboot to save supervisors, workers and scratch sessions. Save
-records private recovery references while agents keep running; it lists missing
-IDs, unsupported harnesses and interrupted work. Prepare **Manual recovery
-setup** once before reboot: its explicit confirmation disables Herdr's automatic
-agent resume while retaining layout restoration. Save reports when this setup
-is still needed.
+Press `S` to save supervisors, workers and scratch sessions, to restore them by
+hand later. Save records private recovery references while agents keep running;
+it lists missing IDs, unsupported harnesses and interrupted work.
 
-![Sessions menu with Save, Restore, manual setup and held coordination actions](docs/images/session-recovery.svg)
+![Sessions menu with Save, Restore and held coordination actions](docs/images/session-recovery.svg)
 
-After reboot, choose **Restore sessions**, browse a dated snapshot and select
+To restore, choose **Restore sessions**, browse a dated snapshot and select
 Codex or Claude Code conversations individually. Nothing is selected initially;
 launching requires a separate confirmation with Cancel focused. Corgi resumes
 inside the original Herdr-restored terminals, reuses matching running agents,

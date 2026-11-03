@@ -501,140 +501,10 @@ pub fn resume_args(entry: &Entry) -> Result<Vec<String>> {
         .native_id
         .as_deref()
         .context("native ID unavailable")?;
-    ensure!(valid_id(id), "invalid native conversation ID");
     let harness = Harness::from_kind(&entry.kind);
     let settings = &entry.settings;
-    if let Some(error) = &settings.permission_error {
-        bail!("Saved permissions cannot be restored: {error}");
-    }
-    ensure!(
-        entry.kind != "codex"
-            || settings.sandbox.as_deref() != Some("read-only")
-            || settings.writable.is_empty(),
-        "read-only Codex cannot request writable roots"
-    );
-    ensure!(
-        entry.kind != "codex"
-            || settings.sandbox.as_deref() != Some("read-only")
-            || settings.network != Some(true),
-        "read-only Codex with enabled network cannot be represented by recovery"
-    );
-    ensure!(
-        !settings.model.chars().any(char::is_control),
-        "invalid saved model"
-    );
-    ensure!(
-        [
-            "", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"
-        ]
-        .contains(&settings.effort.as_str()),
-        "unsupported saved effort"
-    );
-    if let Some(policy) = &settings.sandbox {
-        ensure!(
-            entry.kind == "codex"
-                && ["read-only", "workspace-write", "danger-full-access"]
-                    .contains(&policy.as_str()),
-            "unsupported saved sandbox policy"
-        );
-    }
-    if let Some(policy) = &settings.approval {
-        ensure!(
-            entry.kind == "codex" && ["on-request", "never"].contains(&policy.as_str()),
-            "unsupported saved approval policy"
-        );
-    }
-    if let Some(reviewer) = &settings.approvals_reviewer {
-        ensure!(
-            entry.kind == "codex" && ["user", "auto_review"].contains(&reviewer.as_str()),
-            "unsupported saved approvals reviewer"
-        );
-    }
-    if let Some(policy) = &settings.permission {
-        ensure!(
-            entry.kind == "claude"
-                && [
-                    "default",
-                    "plan",
-                    "acceptEdits",
-                    "auto",
-                    "bypassPermissions",
-                    "dontAsk"
-                ]
-                .contains(&policy.as_str()),
-            "unsupported saved Claude permission mode"
-        );
-    }
-    if settings.profile.is_some() {
-        ensure!(entry.kind == "codex", "saved profile requires Codex");
-    }
-    for root in &settings.writable {
-        ensure!(
-            root.is_absolute() && root.is_dir(),
-            "saved writable directory is unavailable"
-        );
-    }
-    let mut args = match harness {
-        Harness::Codex => vec![
-            "resume".into(),
-            id.into(),
-            "--cd".into(),
-            entry.cwd.to_string_lossy().into_owned(),
-        ],
-        Harness::Claude => vec!["--resume".into(), id.into()],
-        _ => bail!("unsupported harness"),
-    };
-    args.extend(harness.launch_args(&entry.settings.model, &entry.settings.effort));
-    if settings.sandbox.as_deref() == Some("workspace-write") {
-        // Clear inherited extra roots; only the saved roots go through --add-dir.
-        args.extend([
-            "-c".into(),
-            "sandbox_workspace_write.writable_roots=[]".into(),
-        ]);
-        for (key, value) in [
-            ("exclude_tmpdir_env_var", settings.exclude_tmpdir_env_var),
-            ("exclude_slash_tmp", settings.exclude_slash_tmp),
-        ] {
-            if let Some(value) = value {
-                args.extend([
-                    "-c".into(),
-                    format!("sandbox_workspace_write.{key}={value}"),
-                ]);
-            }
-        }
-    }
-    if let Some(network) = entry.settings.network {
-        ensure!(
-            entry.kind == "codex",
-            "network sandbox override belongs to Codex"
-        );
-        args.extend([
-            "-c".into(),
-            format!("sandbox_workspace_write.network_access={network}"),
-        ]);
-    }
-    if let Some(reviewer) = &settings.approvals_reviewer {
-        args.extend([
-            "-c".into(),
-            format!(
-                "approvals_reviewer={}",
-                crate::harness::toml_string(reviewer)
-            ),
-        ]);
-    }
-    for (key, value) in [
-        ("--sandbox", &entry.settings.sandbox),
-        ("--ask-for-approval", &entry.settings.approval),
-        ("--permission-mode", &entry.settings.permission),
-        ("--profile", &entry.settings.profile),
-    ] {
-        if let Some(value) = value {
-            args.extend([key.into(), value.clone()]);
-        }
-    }
-    for path in &entry.settings.writable {
-        args.extend(["--add-dir".into(), path.to_string_lossy().into_owned()]);
-    }
+    let mut args = resume_head(&harness, id, &entry.cwd)?;
+    args.extend(settings_args(&entry.kind, settings)?);
     if let Some(supervisor) = &entry.supervisor {
         ensure!(
             fingerprint(&supervisor.role_file)? == supervisor.role_fingerprint,
@@ -686,4 +556,230 @@ pub fn resume_args(entry: &Entry) -> Result<Vec<String>> {
         }
     }
     Ok(args)
+}
+
+/// The words that resume the native conversation `id`, prompt-free, after
+/// the CLI's name: Codex's `resume <id> --cd <cwd>`, Claude's `--resume <id>`.
+fn resume_head(harness: &Harness, id: &str, cwd: &Path) -> Result<Vec<String>> {
+    ensure!(valid_id(id), "invalid native conversation ID");
+    Ok(match harness {
+        Harness::Codex => vec![
+            "resume".into(),
+            id.into(),
+            "--cd".into(),
+            cwd.to_string_lossy().into_owned(),
+        ],
+        Harness::Claude => vec!["--resume".into(), id.into()],
+        _ => bail!("unsupported harness"),
+    })
+}
+
+/// The arguments that reapply known launch `settings` to a `kind` session:
+/// model and effort, Codex's sandbox, approvals and writable roots, Claude's
+/// permission mode. Settings a CLI cannot take are refused, not dropped.
+pub fn settings_args(kind: &str, settings: &Settings) -> Result<Vec<String>> {
+    let harness = Harness::from_kind(kind);
+    if let Some(error) = &settings.permission_error {
+        bail!("Saved permissions cannot be restored: {error}");
+    }
+    ensure!(
+        kind != "codex"
+            || settings.sandbox.as_deref() != Some("read-only")
+            || settings.writable.is_empty(),
+        "read-only Codex cannot request writable roots"
+    );
+    ensure!(
+        kind != "codex"
+            || settings.sandbox.as_deref() != Some("read-only")
+            || settings.network != Some(true),
+        "read-only Codex with enabled network cannot be represented by recovery"
+    );
+    ensure!(
+        !settings.model.chars().any(char::is_control),
+        "invalid saved model"
+    );
+    ensure!(
+        [
+            "", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"
+        ]
+        .contains(&settings.effort.as_str()),
+        "unsupported saved effort"
+    );
+    if let Some(policy) = &settings.sandbox {
+        ensure!(
+            kind == "codex"
+                && ["read-only", "workspace-write", "danger-full-access"]
+                    .contains(&policy.as_str()),
+            "unsupported saved sandbox policy"
+        );
+    }
+    if let Some(policy) = &settings.approval {
+        ensure!(
+            kind == "codex" && ["on-request", "never"].contains(&policy.as_str()),
+            "unsupported saved approval policy"
+        );
+    }
+    if let Some(reviewer) = &settings.approvals_reviewer {
+        ensure!(
+            kind == "codex" && ["user", "auto_review"].contains(&reviewer.as_str()),
+            "unsupported saved approvals reviewer"
+        );
+    }
+    if let Some(policy) = &settings.permission {
+        ensure!(
+            kind == "claude"
+                && [
+                    "default",
+                    "plan",
+                    "acceptEdits",
+                    "auto",
+                    "bypassPermissions",
+                    "dontAsk"
+                ]
+                .contains(&policy.as_str()),
+            "unsupported saved Claude permission mode"
+        );
+    }
+    if settings.profile.is_some() {
+        ensure!(kind == "codex", "saved profile requires Codex");
+    }
+    for root in &settings.writable {
+        ensure!(
+            root.is_absolute() && root.is_dir(),
+            "saved writable directory is unavailable"
+        );
+    }
+    let mut args = harness.launch_args(&settings.model, &settings.effort);
+    if settings.sandbox.as_deref() == Some("workspace-write") {
+        // Clear inherited extra roots; only the saved roots go through --add-dir.
+        args.extend([
+            "-c".into(),
+            "sandbox_workspace_write.writable_roots=[]".into(),
+        ]);
+        for (key, value) in [
+            ("exclude_tmpdir_env_var", settings.exclude_tmpdir_env_var),
+            ("exclude_slash_tmp", settings.exclude_slash_tmp),
+        ] {
+            if let Some(value) = value {
+                args.extend([
+                    "-c".into(),
+                    format!("sandbox_workspace_write.{key}={value}"),
+                ]);
+            }
+        }
+    }
+    if let Some(network) = settings.network {
+        ensure!(kind == "codex", "network sandbox override belongs to Codex");
+        args.extend([
+            "-c".into(),
+            format!("sandbox_workspace_write.network_access={network}"),
+        ]);
+    }
+    if let Some(reviewer) = &settings.approvals_reviewer {
+        args.extend([
+            "-c".into(),
+            format!(
+                "approvals_reviewer={}",
+                crate::harness::toml_string(reviewer)
+            ),
+        ]);
+    }
+    for (key, value) in [
+        ("--sandbox", &settings.sandbox),
+        ("--ask-for-approval", &settings.approval),
+        ("--permission-mode", &settings.permission),
+        ("--profile", &settings.profile),
+    ] {
+        if let Some(value) = value {
+            args.extend([key.into(), value.clone()]);
+        }
+    }
+    for path in &settings.writable {
+        args.extend(["--add-dir".into(), path.to_string_lossy().into_owned()]);
+    }
+    Ok(args)
+}
+
+/// The longest resume command Herdr takes, in bytes, its words joined by
+/// spaces.
+pub const RESUME_ARGV_LIMIT: usize = 8 * 1024;
+
+/// A supervisor's durable files, as a resume command names them.
+#[derive(Clone, Copy, Debug)]
+pub struct SupervisorFiles<'a> {
+    pub role_file: &'a Path,
+    pub state_dir: &'a Path,
+}
+
+/// The whole command, CLI name first, that resumes the `kind` conversation
+/// `id` in `cwd` with the `options` it was launched with (model, effort and
+/// extra arguments, then the folder-trust answer `trust`), and, for a
+/// supervisor, its role and its state directory. This is what Corgi reports
+/// to Herdr for a restart and what Resume runs.
+///
+/// Claude gets its role file again (`--append-system-prompt-file`) with
+/// `--add-dir`. A Codex supervisor's role, passed inline at launch, is far
+/// over Herdr's limit, and `codex resume` keeps a launch's developer
+/// instructions only until the first compaction, so it gets its permission
+/// flags and a short instruction to read its role file first.
+pub fn restart_argv(
+    kind: &str,
+    id: &str,
+    cwd: &Path,
+    options: &[String],
+    trust: &[String],
+    supervisor: Option<SupervisorFiles>,
+) -> Result<Vec<String>> {
+    let harness = Harness::from_kind(kind);
+    let mut argv = vec![harness.kind().to_string()];
+    argv.extend(resume_head(&harness, id, cwd)?);
+    argv.extend(options.iter().cloned());
+    argv.extend(trust.iter().cloned());
+    if let Some(files) = supervisor {
+        match harness {
+            Harness::Codex => {
+                argv.extend(crate::harness::codex_supervisor_flags(files.state_dir));
+                argv.extend(crate::harness::codex_developer_instructions(
+                    &codex_resume_instruction(files.role_file),
+                ));
+            }
+            _ => argv.extend(harness.supervisor_args(files.role_file, "", files.state_dir)),
+        }
+    }
+    check_resume_argv(&argv)?;
+    Ok(argv)
+}
+
+/// What a Codex supervisor resumed after a restart is told in place of its
+/// whole role: to read the role file first. It needs no apostrophe and no
+/// line break, which Herdr refuses in a resume command.
+pub fn codex_resume_instruction(role_file: &Path) -> String {
+    format!(
+        "You are the Corgi supervisor of this project, resumed after a restart. Before \
+         anything else, read your role instructions in {} and follow them for the rest of \
+         this session, also after a compaction.",
+        role_file.display()
+    )
+}
+
+/// Whether Herdr takes `argv` as a resume command: a plain command name
+/// first, no apostrophe or control character in any word, and under
+/// [`RESUME_ARGV_LIMIT`] in all.
+pub fn check_resume_argv(argv: &[String]) -> Result<()> {
+    let first = argv.first().context("empty resume command")?;
+    ensure!(
+        !first.is_empty() && !first.contains('/'),
+        "a resume command starts with a plain command name"
+    );
+    ensure!(
+        argv.iter()
+            .all(|word| !word.contains('\'') && !word.chars().any(char::is_control)),
+        "a resume command cannot hold an apostrophe or a control character"
+    );
+    let length = argv.iter().map(String::len).sum::<usize>() + argv.len().saturating_sub(1);
+    ensure!(
+        length < RESUME_ARGV_LIMIT,
+        "the resume command is {length} bytes, over Herdr's limit"
+    );
+    Ok(())
 }

@@ -343,6 +343,7 @@ pub fn launch_agent(
         effort_suffix(harness, effort)
     ));
     let mut args = launch_args(plan);
+    let mut supervisor_role = None;
     let prompt = if let Role::Supervisor { handover_pane } = role {
         let root = supervisor_root
             .as_deref()
@@ -358,6 +359,10 @@ pub fn launch_agent(
             &prepared.role,
             &prepared.state_dir,
         ));
+        supervisor_role = Some(crate::restart::SupervisorRole {
+            role_file: prepared.role_file.clone(),
+            state_dir: prepared.state_dir.clone(),
+        });
         supervisor::save_launch(
             &prepared.state_dir,
             &supervisor::Launch {
@@ -377,6 +382,22 @@ pub fn launch_agent(
         prompt.clone()
     };
     let started = start_agent_when_shell_ready(client, name, harness, &args, &pane_id, progress)?;
+    // How it was launched, so that Herdr can resume it the same way after a
+    // restart and Resume can start it again once it has exited.
+    let mut options = harness.launch_args(model, effort);
+    options.extend(extra_args.iter().cloned());
+    if let Err(error) = crate::restart::record_launch(
+        client,
+        harness,
+        &started.agent,
+        options,
+        trusted_project_args(harness, project),
+        supervisor_role,
+    ) {
+        progress.report(format!(
+            "How {name} was launched could not be recorded for restarts: {error:#}"
+        ));
+    }
     if let Err(error) = crate::recovery::record_launch(
         client,
         &started.agent,
@@ -807,7 +828,7 @@ fn start_agent_when_shell_ready(
 /// in `project` on its command line, when Corgi created that project, so the
 /// CLI never asks. Nothing is written to the harness's configuration. Codex,
 /// like Claude Code, keys trust on a worktree's main checkout.
-fn trusted_project_args(harness: &Harness, project: &Path) -> Vec<String> {
+pub(crate) fn trusted_project_args(harness: &Harness, project: &Path) -> Vec<String> {
     let root = trust_root(project);
     match fs::canonicalize(&root) {
         Ok(root) if is_created_project(&root) => harness.trusted_project_args(&root),

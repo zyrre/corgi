@@ -186,6 +186,7 @@ pub enum Purpose {
     CloseCheck,
     Close,
     Tag,
+    Resume,
     /// Finds orphaned sessions for the dialog.
     Orphans,
     /// Applies the choice made for the orphan `key`.

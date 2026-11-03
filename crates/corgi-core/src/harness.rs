@@ -262,32 +262,20 @@ impl Harness {
     /// (also written to `role_file`) on top of the harness's own
     /// instructions, and its `state_dir` writable next to the project.
     pub fn supervisor_args(&self, role_file: &Path, role: &str, state_dir: &Path) -> Vec<String> {
-        let state_dir = state_dir.to_string_lossy().into_owned();
         match self {
             // Codex has no flag that appends to its system prompt. Developer
             // instructions add to Codex's own, where `model_instructions_file`
-            // would replace them. Commands run in the workspace-write sandbox,
-            // which keeps the supervisor's writes to the project and its state
-            // directory; network access is what lets them reach Herdr's socket,
-            // which `herdr` and `corgi` need. Anything else the sandbox refuses,
-            // such as the bootstrap's `git init`, Codex asks the user to approve.
-            Self::Codex => vec![
-                "--sandbox".into(),
-                "workspace-write".into(),
-                "--ask-for-approval".into(),
-                "on-request".into(),
-                CODEX_CONFIG_FLAG.into(),
-                "sandbox_workspace_write.network_access=true".into(),
-                "--add-dir".into(),
-                state_dir,
-                CODEX_CONFIG_FLAG.into(),
-                format!("developer_instructions={}", toml_string(role)),
-            ],
+            // would replace them.
+            Self::Codex => {
+                let mut args = codex_supervisor_flags(state_dir);
+                args.extend(codex_developer_instructions(role));
+                args
+            }
             _ => vec![
                 "--append-system-prompt-file".into(),
                 role_file.to_string_lossy().into_owned(),
                 "--add-dir".into(),
-                state_dir,
+                state_dir.to_string_lossy().into_owned(),
             ],
         }
     }
@@ -325,6 +313,36 @@ impl fmt::Display for Harness {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.kind())
     }
+}
+
+/// A Codex supervisor's permissions, without its role. Commands run in the
+/// workspace-write sandbox, which keeps the supervisor's writes to the
+/// project and its `state_dir`; network access is what lets them reach
+/// Herdr's socket, which `herdr` and `corgi` need. Anything else the sandbox
+/// refuses, such as the bootstrap's `git init`, Codex asks the user to
+/// approve.
+pub fn codex_supervisor_flags(state_dir: &Path) -> Vec<String> {
+    vec![
+        "--sandbox".into(),
+        "workspace-write".into(),
+        "--ask-for-approval".into(),
+        "on-request".into(),
+        CODEX_CONFIG_FLAG.into(),
+        "sandbox_workspace_write.network_access=true".into(),
+        "--add-dir".into(),
+        state_dir.to_string_lossy().into_owned(),
+    ]
+}
+
+/// The key of Codex's developer instructions, as a `-c` override.
+pub const CODEX_DEVELOPER_INSTRUCTIONS: &str = "developer_instructions=";
+
+/// `text` as Codex's developer instructions.
+pub fn codex_developer_instructions(text: &str) -> [String; 2] {
+    [
+        CODEX_CONFIG_FLAG.into(),
+        format!("{CODEX_DEVELOPER_INSTRUCTIONS}{}", toml_string(text)),
+    ]
 }
 
 /// `text` as a TOML string, the form Codex parses a `-c` value in. A JSON

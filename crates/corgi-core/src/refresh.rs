@@ -26,7 +26,7 @@ use std::{
 
 use crate::{
     activity::{command_from_screen, message_from_screen, message_from_state},
-    herdr::{HerdrClient, ReadSource, SessionSnapshot},
+    herdr::{HerdrClient, PaneInfo, ReadSource, SessionSnapshot},
     model::{Activity, ActivityKind, AgentInfo, AgentState, DashboardAgent, WorkspaceInfo},
     paths::{corgi_state_dir, is_home},
     session::SessionReader,
@@ -40,6 +40,7 @@ use crate::{
     orphans::{RetagCache, retag_proven},
     project_main::{dashboard_pane_ids, relabel_project_mains},
     repo::{RepoCache, agent_repo},
+    restart,
     rows::{
         NO_TOOL_YET, SCRATCH_GROUP, SUPERVISOR_NAME, agent_project, checkout_label,
         codex_thread_id, has_herdr_agent_session, has_real_agent_session, is_corgi_workspace_codex,
@@ -260,6 +261,11 @@ impl RefreshState {
                 status = Some((line, MARKS_HOLD));
             }
             clear_stale_merge_tags(client, &mut snapshot);
+            // Then the resume commands Herdr holds for Corgi's agents, which
+            // the marks just put back identify as supervisors.
+            if let Some(reported) = restart::reconcile(client, &snapshot) {
+                status.get_or_insert((reported, MARKS_HOLD));
+            }
         }
         relabel_project_mains(client, &mut snapshot.workspaces);
         timings.marks = step.elapsed();
@@ -272,8 +278,21 @@ impl RefreshState {
         if let Some(warning) = self.warn_about_old_state_dirs(&view.agents) {
             status = Some((warning, STATE_DIR_HOLD));
         }
+        // A row for an agent that has exited is no agent to wake or report on.
+        let running: Vec<DashboardAgent>;
+        let agents = if view.agents.iter().any(|agent| agent.exited) {
+            running = view
+                .agents
+                .iter()
+                .filter(|agent| !agent.exited)
+                .cloned()
+                .collect();
+            &running
+        } else {
+            &view.agents
+        };
         if let Some(waker) = self.waker.as_mut().filter(|_| leading)
-            && let Some(woke) = wake_supervisors(waker, client, &mut self.sessions, &view.agents)
+            && let Some(woke) = wake_supervisors(waker, client, &mut self.sessions, agents)
         {
             status = Some((woke, WAKE_HOLD));
         }
@@ -293,6 +312,16 @@ impl RefreshState {
         let dashboard_pane_ids =
             dashboard_pane_ids(inputs.dashboard_pane_id.as_deref(), &snapshot.panes);
         let client = &inputs.client;
+        let launches = restart::read(client);
+        let exited: Vec<DashboardAgent> = restart::resumable(&launches, &snapshot)
+            .into_iter()
+            .filter(|(pane, _)| !dashboard_pane_ids.contains(pane))
+            .filter_map(|(pane, launched)| {
+                let pane = snapshot.panes.iter().find(|p| p.pane_id == pane)?;
+                let workspace = workspaces.get(pane.workspace_id.as_str()).copied();
+                Some(exited_agent(pane, launched, workspace, &mut self.repos))
+            })
+            .collect();
 
         let mut agents: Vec<_> = snapshot
             .agents
@@ -311,9 +340,14 @@ impl RefreshState {
             })
             .map(|info| {
                 let workspace = workspaces.get(info.workspace_id.as_str()).copied();
-                self.dashboard_agent(inputs, info, workspace)
+                let mut agent = self.dashboard_agent(inputs, info, workspace);
+                if let Some(missing) = restart::missing(&launches, &agent.info) {
+                    agent.missing_options = missing.to_vec();
+                }
+                agent
             })
             .collect();
+        agents.extend(exited);
         sort_agents(&mut agents);
         // Drops what is remembered about sessions no longer on the dashboard.
         self.sessions.retain(agents.iter().map(|agent| &agent.info));
@@ -401,6 +435,8 @@ impl RefreshState {
             tool,
             supervisor,
             scratch,
+            exited: false,
+            missing_options: Vec::new(),
         }
     }
 
@@ -476,6 +512,85 @@ impl RefreshState {
         (!warnings.is_empty()).then(|| warnings.join("  "))
     }
 }
+
+/// The row of an agent Corgi launched in `pane` that has dropped to its
+/// shell, as `launched` records it: in its project, offering Resume.
+fn exited_agent(
+    pane: &PaneInfo,
+    launched: &restart::Launched,
+    workspace: Option<&WorkspaceInfo>,
+    repos: &mut RepoCache,
+) -> DashboardAgent {
+    let info = AgentInfo {
+        agent: Some(launched.kind.clone()),
+        name: Some(launched.name.clone()),
+        state: AgentState::Unknown,
+        pane_id: pane.pane_id.clone(),
+        workspace_id: pane.workspace_id.clone(),
+        tab_id: pane.tab_id.clone(),
+        cwd: Some(launched.cwd.to_string_lossy().into_owned()),
+        foreground_cwd: pane.foreground_cwd.clone(),
+        tokens: pane.tokens.clone(),
+        ..AgentInfo::default()
+    };
+    // In its project, as `dashboard_agent` places a running one.
+    let repo = agent_repo(&info, workspace, repos);
+    let in_project = agent_project(&info, workspace, repo.as_ref());
+    let project_root = repo
+        .as_ref()
+        .map(|repo| repo.root.clone())
+        .unwrap_or_else(|| info.cwd().to_string());
+    let scratch = is_home(&project_root);
+    let project_group = if scratch {
+        SCRATCH_GROUP.to_string()
+    } else {
+        project_group(repo.as_ref(), &in_project)
+    };
+    let project = if launched.supervisor.is_some() {
+        SUPERVISOR_NAME.to_string()
+    } else {
+        in_project
+    };
+    let worktree_checkout = repo.filter(|repo| repo.linked).map(|repo| repo.checkout);
+    let worktree_label = worktree_checkout
+        .as_deref()
+        .and_then(checkout_label)
+        .map(str::to_string);
+    let (model, effort) = launched.model_and_effort();
+    DashboardAgent {
+        project_group,
+        task: if launched.supervisor.is_some() {
+            SUPERVISOR_NAME.to_string()
+        } else {
+            launched.name.clone()
+        },
+        project,
+        project_root,
+        worktree_checkout,
+        worktree_label,
+        model,
+        effort,
+        message: Activity {
+            kind: ActivityKind::Ready,
+            text: EXITED_MESSAGE.into(),
+        },
+        tool: Activity {
+            kind: ActivityKind::Ready,
+            text: format!(
+                "Session {}",
+                launched.session.as_deref().unwrap_or_default()
+            ),
+        },
+        scratch,
+        exited: true,
+        info,
+        ..DashboardAgent::default()
+    }
+}
+
+/// What an exited agent's row says.
+pub const EXITED_MESSAGE: &str =
+    "Exited to its shell. Resume starts it again with its session and launch options.";
 
 fn read_screen(client: &HerdrClient, info: &AgentInfo) -> Option<String> {
     client

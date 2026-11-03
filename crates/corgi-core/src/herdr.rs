@@ -162,6 +162,51 @@ impl HerdrClient {
         expect_result_type(&result, "pane_closed")
     }
 
+    /// What runs in a pane: its shell's process ID, the foreground process
+    /// group, and the processes in it with their command lines.
+    pub fn process_info(&self, pane_id: &str) -> Result<PaneProcesses> {
+        let mut result = self.request("pane.process_info", json!({ "pane_id": pane_id }))?;
+        expect_result_type(&result, "pane_process_info")?;
+        serde_json::from_value(result["process_info"].take())
+            .context("Herdr returned invalid pane process information")
+    }
+
+    /// Reports, from `source`, the command that resumes the `agent`
+    /// session `session_id` in a pane after a Herdr restart (Herdr 0.9.2
+    /// and later; older versions take the report and ignore the command).
+    /// A report from a source other than Herdr's own integration's does not
+    /// take over the pane's state or its session reference.
+    pub fn report_agent_session(
+        &self,
+        pane_id: &str,
+        source: &str,
+        agent: &str,
+        session_id: &str,
+        resume_argv: &[String],
+    ) -> Result<()> {
+        self.request(
+            "pane.report_agent_session",
+            json!({
+                "pane_id": pane_id,
+                "source": source,
+                "agent": agent,
+                "agent_session_id": session_id,
+                "resume_argv": resume_argv,
+            }),
+        )
+        .map(|_| ())
+    }
+
+    /// Withdraws what `source` reported for the `agent` in a pane, such as
+    /// a resume command, leaving other sources' reports alone.
+    pub fn release_agent(&self, pane_id: &str, source: &str, agent: &str) -> Result<()> {
+        self.request(
+            "pane.release_agent",
+            json!({ "pane_id": pane_id, "source": source, "agent": agent }),
+        )
+        .map(|_| ())
+    }
+
     /// The pane the user has focused in Herdr's UI, which is not
     /// necessarily the caller's own.
     pub fn focused_pane(&self) -> Result<PaneInfo> {
@@ -792,6 +837,40 @@ pub struct SessionSnapshot {
     pub focused_tab_id: Option<String>,
     #[serde(default)]
     pub focused_pane_id: Option<String>,
+}
+
+/// What runs in one pane, as `pane.process_info` reports it.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PaneProcesses {
+    #[serde(default)]
+    pub shell_pid: Option<u32>,
+    #[serde(default)]
+    pub foreground_process_group_id: Option<u32>,
+    #[serde(default)]
+    pub foreground_processes: Vec<PaneProcess>,
+}
+
+/// One process in a pane's foreground group.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PaneProcess {
+    pub pid: u32,
+    #[serde(default)]
+    pub name: String,
+    /// Absent where Herdr cannot read it.
+    #[serde(default)]
+    pub argv: Option<Vec<String>>,
+}
+
+impl PaneProcesses {
+    /// The foreground processes other than the pane's shell: the agent and
+    /// whatever it runs in the foreground.
+    pub fn agent_pids(&self) -> Vec<u32> {
+        self.foreground_processes
+            .iter()
+            .map(|process| process.pid)
+            .filter(|pid| Some(*pid) != self.shell_pid)
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]

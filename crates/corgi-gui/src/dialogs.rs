@@ -493,7 +493,7 @@ impl Dialogs {
                 };
                 None
             }
-            Purpose::MergeEnd | Purpose::Tag => {
+            Purpose::MergeEnd | Purpose::Tag | Purpose::Resume => {
                 if matches!(self.open, Some(Dialog::Merge(_))) && purpose == Purpose::MergeEnd {
                     self.open = None;
                 }
