@@ -15,7 +15,7 @@ use crate::{
     dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage},
     form::{self, Key},
     hotkeys::HotkeysDialog,
-    keymap::{Action, Hit, Key as KeymapKey, Keymap},
+    keymap::{self, Action, Hit, Key as KeymapKey, Keymap},
     layout::{Layout, Split},
     link::{Backoff, Link, LinkEvent},
     options::Options,
@@ -623,6 +623,13 @@ impl CorgiWindow {
 
     pub fn save_layout(&self) {
         self.layout.save(self.layout_path.as_deref());
+    }
+
+    /// Keeps `window`'s size for the next run, as it closes.
+    pub fn keep_window_size(&mut self, window: &Window) {
+        let size = window.bounds().size;
+        self.layout.window = Some((f32::from(size.width), f32::from(size.height)));
+        self.save_layout();
     }
 
     /// The window's text a point `larger` or smaller, the terminal's with
@@ -1335,18 +1342,52 @@ pub fn field_colors(colors: &Colors) -> FieldColors {
     }
 }
 
-/// Keeps the app's keys: quitting.
+/// Binds the window's fixed keys (`keymap::fixed`): quitting, and on macOS
+/// closing, minimizing and full screen.
 pub fn bind_app_keys(cx: &mut App) {
     let quit = if cfg!(target_os = "macos") {
-        "cmd-q"
+        keymap::QUIT_MAC
     } else {
-        "ctrl-q"
+        keymap::QUIT
     };
     cx.bind_keys([gpui::KeyBinding::new(quit, Quit, None)]);
     cx.on_action(|_: &Quit, cx| cx.quit());
+    // macOS draws no title bar buttons (`main.rs`), so their usual keys do
+    // what they did.
+    if cfg!(target_os = "macos") {
+        cx.bind_keys([
+            gpui::KeyBinding::new(keymap::CLOSE_WINDOW, CloseWindow, None),
+            gpui::KeyBinding::new(keymap::MINIMIZE, Minimize, None),
+            gpui::KeyBinding::new(keymap::FULL_SCREEN, ToggleFullScreen, None),
+        ]);
+        cx.on_action(|_: &CloseWindow, cx| {
+            on_active_window(cx, |view, window| {
+                view.keep_window_size(window);
+                window.remove_window();
+            });
+        });
+        cx.on_action(|_: &Minimize, cx| on_active_window(cx, |_, window| window.minimize_window()));
+        cx.on_action(|_: &ToggleFullScreen, cx| {
+            on_active_window(cx, |_, window| window.toggle_fullscreen());
+        });
+    }
 }
 
-gpui::actions!(corgi, [Quit]);
+gpui::actions!(corgi, [Quit, CloseWindow, Minimize, ToggleFullScreen]);
+
+/// Runs `act` on the window in front, once the key that asked for it is
+/// handled: the window cannot be updated while its key is dispatched.
+fn on_active_window(cx: &mut App, act: impl FnOnce(&mut CorgiWindow, &mut Window) + 'static) {
+    let Some(handle) = cx
+        .active_window()
+        .and_then(|handle| handle.downcast::<CorgiWindow>())
+    else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |view, window, _| act(view, window));
+    });
+}
 
 /// Collapses each card of `projects` not yet `seen`, so the window opens,
 /// and a project new to it appears, on its supervisor; a card already seen

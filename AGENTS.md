@@ -181,7 +181,12 @@ and works without a redraw. While the Mac's screen is locked
 (`ioreg -n Root -d1 | grep CGSSessionScreenIsLocked`), the platform asks
 for the window's first frame and no more, so `shot` and the click steps
 draw a frame themselves (a click would otherwise hit-test that first
-frame); other steps still see it, and AeroSpace does not list the window. Move the window to AeroSpace workspace 4 the moment it
+frame); other steps still see it, and AeroSpace does not list the window.
+`screencapture -l` fails then too (and at any time without Screen
+Recording permission; `CGPreflightScreenCaptureAccess()` says), but
+`CGWindowListCopyWindowInfo` (filtered by owner pid) still gives the
+window's id and frame, so a frame taller than its content shows a native
+title bar. Move the window to AeroSpace workspace 4 the moment it
 appears (see the user's instructions); `render_to_image` still captures it
 there. Moved there, the window counts as occluded: it may be told it is
 hidden, and it draws no frames until a `shot` step draws one, so the focus

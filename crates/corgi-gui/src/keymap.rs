@@ -376,6 +376,14 @@ pub struct Fixed {
     keys: &'static [&'static str],
 }
 
+/// The window's fixed keys, which `window::bind_app_keys` binds: quitting
+/// (`QUIT_MAC` on macOS), and on macOS what the title bar's buttons did.
+pub const QUIT: &str = "ctrl-q";
+pub const QUIT_MAC: &str = "cmd-q";
+pub const CLOSE_WINDOW: &str = "cmd-w";
+pub const MINIMIZE: &str = "cmd-m";
+pub const FULL_SCREEN: &str = "ctrl-cmd-f";
+
 /// The fixed keys, on macOS (`mac`) or elsewhere: shown in the dialog, and
 /// refused for an action.
 pub fn fixed(mac: bool) -> Vec<Fixed> {
@@ -403,25 +411,25 @@ pub fn fixed(mac: bool) -> Vec<Fixed> {
                 area: Area::Window,
                 name: "Quit",
                 label: "⌘Q",
-                keys: &["cmd-q"],
+                keys: &[QUIT_MAC],
             },
             Fixed {
                 area: Area::Window,
                 name: "Close window",
                 label: "⌘W",
-                keys: &["cmd-w"],
+                keys: &[CLOSE_WINDOW],
             },
             Fixed {
                 area: Area::Window,
                 name: "Minimize",
                 label: "⌘M",
-                keys: &["cmd-m"],
+                keys: &[MINIMIZE],
             },
             Fixed {
                 area: Area::Window,
                 name: "Full screen",
                 label: "⌃⌘F",
-                keys: &["ctrl-cmd-f"],
+                keys: &[FULL_SCREEN],
             },
         ]);
     } else {
@@ -442,7 +450,7 @@ pub fn fixed(mac: bool) -> Vec<Fixed> {
                 area: Area::Window,
                 name: "Quit",
                 label: "Ctrl+Q",
-                keys: &["ctrl-q"],
+                keys: &[QUIT],
             },
         ]);
     }

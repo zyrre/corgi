@@ -159,7 +159,7 @@ cargo build --release && cargo build --release -p corgi-gui
 ./target/release/corgi-gui
 ```
 
-On Linux the window's Wayland app id, which compositor rules match, is `corgi-gui`. It uses CaskaydiaMono Nerd Font where installed, else the first of a few common monospace fonts, and Menlo on macOS; `CORGI_GUI_FONT` names another. `CORGI_GUI_APPEARANCE=light` or `dark` overrides the system's scheme.
+On macOS the window has no title bar: the header is its top edge, and dragging the header moves it. Cmd+W closes it, Cmd+M minimizes it and Ctrl+Cmd+F switches full screen, which its title bar's buttons did; Cmd+Q quits. On Linux the window's Wayland app id, which compositor rules match, is `corgi-gui`. It uses CaskaydiaMono Nerd Font where installed, else the first of a few common monospace fonts, and Menlo on macOS; `CORGI_GUI_FONT` names another. `CORGI_GUI_APPEARANCE=light` or `dark` overrides the system's scheme.
 
 ## Install
 

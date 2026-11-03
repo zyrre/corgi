@@ -666,6 +666,11 @@ a missing, unreadable or other-version file gives the defaults). The
 overview's keys and an expanded session's are one key space; a key another
 action has is swapped only when confirmed, and fixed keys (the digits,
 copy and paste, the window's own) are refused. Dialogs keep ↵ and Esc.
+The window's own keys are app-level GPUI bindings (`window::bind_app_keys`,
+from `keymap.rs`'s constants). In GPUI 0.3.6 a bound key's action runs
+before any `on_key_down` listener, so a binding beats the terminal's key
+handler, in the focus view too: a key a terminal program should receive
+must not be bound.
 
 - `link.rs` starts the child and reads its stdout on a thread of its own,
   each line a `ServerMessage`; a line it cannot read (a newer server's) is
@@ -770,6 +775,19 @@ copy and paste, the window's own) are refused. Dialogs keep ↵ and Esc.
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the expanded row's transcript; messages are still
   applied, so it is current when shown again.
+- On macOS the window draws no title bar strip (`main.rs`): a transparent
+  title bar lets the content, the header first, start at the top edge, and
+  GPUI keeps the close, minimize and zoom buttons 200 px left of the window,
+  out of sight, rather than hidden: AeroSpace floats a window whose full
+  screen button Accessibility does not report enabled, so hidden buttons
+  would untile it. In full screen GPUI puts them back where AppKit shows
+  them. The app owns the drag (`app_owns_titlebar_drag`): a press on the
+  header that moves 4 px calls `start_window_move`, so a click on its
+  buttons stays a click. Cmd+W (keeping the size, as the close button did),
+  Cmd+M and Ctrl+Cmd+F stand in for the buttons; they act on the active
+  window after the key's dispatch, which holds the window. The title is
+  still set, hidden, so the window keeps its name for window managers.
+  Linux ignores all of it.
 - On Linux it enables `gpui-pre-platform`'s `wayland` feature and sets the
   Wayland app id `corgi-gui`, and picks a monospace font that exists there
   (Menlo does not), and a proportional one for running text: GPUI's
