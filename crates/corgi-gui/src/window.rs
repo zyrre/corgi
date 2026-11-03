@@ -7,8 +7,8 @@ use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 use corgi_core::protocol::{Agent, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent, Pixels,
-    ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility, px,
+    App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent,
+    Pixels, ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility, px,
 };
 
 use crate::{
@@ -25,6 +25,7 @@ use crate::{
     },
     text_input::{FieldColors, TextInput},
     theme::{self, Colors, forced_light, is_light},
+    transcript::Transcript,
 };
 
 /// A split being dragged, and where the pointer was last.
@@ -51,6 +52,13 @@ pub struct CorgiWindow {
     /// A row has been picked since the window opened: from then on, when
     /// the selected row goes, another is selected in its place.
     picked: bool,
+    /// The selected row is expanded into its session's latest turns
+    /// (Space), down to the window's bottom; the expansion follows the
+    /// selection.
+    pub expanded: bool,
+    /// The expanded session's scroll, its text selection and its lines as
+    /// last drawn.
+    pub transcript: Transcript,
     /// The session `corgi serve` was asked to read the transcript of.
     watching: Option<String>,
     /// The project groups whose cards show only their supervisor.
@@ -61,7 +69,7 @@ pub struct CorgiWindow {
     /// The questions closed with ×, until the ledger drops them.
     pub closing: Closing,
     /// The window is on screen; while it is not, nothing is drawn and the
-    /// transcript is not read.
+    /// expanded session is not read.
     pub visible: bool,
     /// The system's appearance, and `CORGI_GUI_APPEARANCE`'s, which wins
     /// over it and the header's toggle (`theme::appearance`).
@@ -79,12 +87,8 @@ pub struct CorgiWindow {
     pub prompt_input: Entity<TextInput>,
     pub task_input: Entity<TextInput>,
     pub overview_scroll: ScrollHandle,
-    /// The overview's column as last laid out, the transcript's split
-    /// included; 0 before the first layout.
-    pub main_column_height: f32,
     /// Where the overview's rows were drawn, to scroll one into view.
     pub rows: Rows,
-    pub transcript_scroll: ScrollHandle,
     /// The answer box's question text, back at its top for each question.
     pub question_scroll: ScrollHandle,
     pub drag: Option<Drag>,
@@ -212,6 +216,8 @@ impl CorgiWindow {
             events,
             selected: None,
             picked: false,
+            expanded: false,
+            transcript: Transcript::default(),
             watching: None,
             collapsed: HashSet::new(),
             seen: HashSet::new(),
@@ -228,9 +234,7 @@ impl CorgiWindow {
             prompt_input,
             task_input,
             overview_scroll: ScrollHandle::new(),
-            main_column_height: 0.0,
             rows: Rows::default(),
-            transcript_scroll: ScrollHandle::new(),
             question_scroll: ScrollHandle::new(),
             drag: None,
             terminal,
@@ -437,7 +441,13 @@ impl CorgiWindow {
             .iter()
             .map(|agent| agent.pane_id.clone())
             .collect();
+        let before = self.selected.clone();
         self.selected = reconciled(self.selected.take(), self.picked, &visible);
+        if self.selected != before {
+            // Another session's turns start at its newest.
+            self.transcript.reset();
+        }
+        self.expanded &= self.selected.is_some();
         self.closing.prune(&self.store.state);
         self.recolor(cx);
         self.sync_watch();
@@ -448,6 +458,9 @@ impl CorgiWindow {
     /// enough to show the row in full.
     pub fn select(&mut self, pane_id: String, pick: Pick, cx: &mut Context<Self>) {
         self.rows.pick(&pane_id, pick);
+        if self.selected.as_deref() != Some(pane_id.as_str()) {
+            self.transcript.reset();
+        }
         self.selected = Some(pane_id);
         self.picked = true;
         self.sync_watch();
@@ -472,8 +485,8 @@ impl CorgiWindow {
         self.select(pane_id, Pick::Reveal, cx);
     }
 
-    /// Asks `corgi serve` to read the selected agent's transcript while the
-    /// transcript shows and the window is on screen, and to stop otherwise.
+    /// Asks `corgi serve` to read the selected agent's transcript while its
+    /// row is expanded and the window is on screen, and to stop otherwise.
     fn sync_watch(&mut self) {
         if !self.store.connected() {
             return;
@@ -481,7 +494,7 @@ impl CorgiWindow {
         let wanted = self
             .selected
             .clone()
-            .filter(|_| self.visible && self.layout.transcript_open && self.focus_view.is_none());
+            .filter(|_| self.visible && self.expanded && self.focus_view.is_none());
         if wanted != self.watching {
             self.watching = wanted.clone();
             self.send(Command::Watch { pane_id: wanted }, Purpose::Quiet);
@@ -609,11 +622,28 @@ impl CorgiWindow {
         cx.notify();
     }
 
-    pub fn toggle_transcript(&mut self, cx: &mut Context<Self>) {
-        self.layout.transcript_open = !self.layout.transcript_open;
-        self.save_layout();
+    /// Space: grows the selected row into its session's latest turns, down
+    /// to the window's bottom, or back. With no row selected there is
+    /// nothing to grow.
+    pub fn toggle_expanded(&mut self, cx: &mut Context<Self>) {
+        let Some(pane_id) = self.selected.clone() else {
+            return;
+        };
+        self.expanded = !self.expanded;
+        self.transcript.reset();
+        self.rows.pick(&pane_id, Pick::Reveal);
         self.sync_watch();
         cx.notify();
+    }
+
+    /// Puts the expanded session's selected text on the clipboard; false
+    /// when nothing is selected.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(text) = self.transcript.copied().filter(|_| self.expanded) else {
+            return false;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        true
     }
 
     /// Collapses `group`'s card, or expands it if collapsed: ← and →, a
@@ -635,12 +665,8 @@ impl CorgiWindow {
         let Some(drag) = self.drag.as_mut() else {
             return;
         };
-        let now = match drag.split {
-            Split::Side | Split::FocusSide => position.x,
-            Split::Transcript => position.y,
-        };
-        let delta = f32::from(now - drag.last);
-        drag.last = now;
+        let delta = f32::from(position.x - drag.last);
+        drag.last = position.x;
         let split = drag.split;
         self.layout.drag(split, delta);
         cx.notify();
@@ -1024,6 +1050,13 @@ impl CorgiWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
+        // The focus view's copy keys copy the expanded session's selection.
+        if keys::chord(keystroke, cfg!(target_os = "macos")) == Some(Chord::Copy) {
+            if self.copy_selection(cx) {
+                cx.stop_propagation();
+            }
+            return;
+        }
         let modifiers = keystroke.modifiers;
         if modifiers.platform || modifiers.control || modifiers.alt {
             return;
@@ -1031,6 +1064,21 @@ impl CorgiWindow {
         let selected_group = self
             .selected_agent()
             .map(|agent| agent.project_group.clone());
+        if let Some(key) = session_key(&keystroke.key, self.expanded) {
+            match key {
+                SessionKey::Toggle => self.toggle_expanded(cx),
+                SessionKey::Page(pages) => {
+                    self.transcript.scroll_pages(pages);
+                    cx.notify();
+                }
+                SessionKey::End(end) => {
+                    self.transcript.scroll_to_end(end);
+                    cx.notify();
+                }
+            }
+            cx.stop_propagation();
+            return;
+        }
         match keystroke.key.as_str() {
             "j" | "down" => self.step(1, cx),
             "k" | "up" => self.step(-1, cx),
@@ -1041,7 +1089,6 @@ impl CorgiWindow {
                     self.open_agent(pane_id, window, cx);
                 }
             }
-            "space" => self.toggle_transcript(cx),
             "\\" => self.toggle_side(cx),
             "left" | "right" => {
                 let Some(group) = selected_group else { return };
@@ -1210,6 +1257,35 @@ impl CorgiWindow {
     pub fn connection(&self) -> &Connection {
         &self.store.connection
     }
+}
+
+/// What a plain key in the overview does to the expanded session.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SessionKey {
+    /// Expand the selected row, or collapse it.
+    Toggle,
+    /// Scroll its turns by views, down for positive.
+    Page(f32),
+    /// Its newest turn (`false`) or the end of its oldest.
+    End(bool),
+}
+
+/// The session's keys, as the dashboard's expanded session has them: Space
+/// expands and collapses; while expanded, Esc collapses, `u`/`d` and the
+/// page keys scroll a view and Home/End jump. Other keys, and these while
+/// nothing is expanded (Home and End select the first and last rows), are
+/// the overview's.
+fn session_key(key: &str, expanded: bool) -> Option<SessionKey> {
+    Some(match key {
+        "space" => SessionKey::Toggle,
+        _ if !expanded => return None,
+        "escape" => SessionKey::Toggle,
+        "u" | "pageup" => SessionKey::Page(-1.0),
+        "d" | "pagedown" => SessionKey::Page(1.0),
+        "home" => SessionKey::End(false),
+        "end" => SessionKey::End(true),
+        _ => return None,
+    })
 }
 
 /// A key as the new-agent form reads it.
@@ -1433,6 +1509,41 @@ mod tests {
         );
         assert_eq!(reconciled(b, true, &[]), None);
         assert_eq!(reconciled(None, true, &rows(&["c"])), Some("c".to_string()));
+    }
+
+    #[test]
+    fn space_expands_and_the_sessions_keys_work_only_while_expanded() {
+        assert_eq!(session_key("space", false), Some(SessionKey::Toggle));
+        assert_eq!(session_key("space", true), Some(SessionKey::Toggle));
+        assert_eq!(session_key("escape", true), Some(SessionKey::Toggle));
+        for (key, page) in [("u", -1.0), ("pageup", -1.0), ("d", 1.0), ("pagedown", 1.0)] {
+            assert_eq!(
+                session_key(key, true),
+                Some(SessionKey::Page(page)),
+                "{key}"
+            );
+        }
+        assert_eq!(session_key("home", true), Some(SessionKey::End(false)));
+        assert_eq!(session_key("end", true), Some(SessionKey::End(true)));
+        // Collapsed, they are the overview's: Home and End select rows, and
+        // Esc, u and d do nothing there.
+        for key in ["escape", "u", "d", "pageup", "pagedown", "home", "end"] {
+            assert_eq!(session_key(key, false), None, "{key}");
+        }
+        // j and k move the selection, and the expansion with it, either way.
+        for key in ["j", "k", "down", "up", "enter", "p"] {
+            assert_eq!(session_key(key, true), None, "{key}");
+        }
+    }
+
+    #[test]
+    fn the_overviews_copy_keys_are_the_focus_views() {
+        let key = |text: &str| gpui::Keystroke::parse(text).unwrap();
+        assert_eq!(keys::chord(&key("cmd-c"), true), Some(Chord::Copy));
+        assert_eq!(keys::chord(&key("ctrl-shift-c"), false), Some(Chord::Copy));
+        // Plain c, and Ctrl+C on Linux, are not copy.
+        assert_eq!(keys::chord(&key("c"), true), None);
+        assert_eq!(keys::chord(&key("ctrl-c"), false), None);
     }
 
     #[test]
