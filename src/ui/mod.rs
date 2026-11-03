@@ -863,8 +863,10 @@ mod tests {
         };
         let left_edge =
             |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| top_left(terminal).0;
-        app.overlay.merge_worktree_form_mut().unwrap().phase =
-            MergePhase::Failed("git push failed".into());
+        app.overlay.merge_worktree_form_mut().unwrap().phase = MergePhase::Failed {
+            error: "git push failed".into(),
+            help: crate::app::ConflictHelp::Unavailable,
+        };
         draw_at(&mut terminal, &mut app, 1_000);
         let corner = |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| {
             terminal.backend().buffer()[top_left(terminal)].fg

@@ -12,7 +12,7 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use corgi_core::{
     catalog::{MODEL_CATALOG_TTL, default_harness, effort_choices, harness_choices, model_choices},
     choices,
@@ -27,7 +27,7 @@ use corgi_core::{
     },
     merge::{
         ConflictHelp, MergeError, MergePhase, abort_merge, clear_merged_tag, conflict_help,
-        conflict_item, merge_form, project_supervisor, push_failed_item, run_merge,
+        handoff, merge_form, project_supervisor, refused_form, run_merge,
         tell_supervisor_about_merge,
     },
     model::DashboardAgent,
@@ -49,6 +49,10 @@ use super::{
 
 /// Why a merge cannot go on with the form it has.
 const NO_MERGE: &str = "no merge is open for this agent; send merge_check first";
+
+/// Why a merge's failure cannot be handed over.
+const NO_SUPERVISOR: &str =
+    "No supervisor is running for this project, so there is no one to ask; start one with s";
 
 impl Server {
     /// Answers one line from the frontend.
@@ -126,6 +130,11 @@ impl Server {
                 project_root,
                 question,
             } => self.close_question(id, &project_root, &question),
+            Command::BacklogMessage {
+                project_root,
+                heading,
+                text,
+            } => self.backlog_message(id, &project_root, &heading, &text),
             Command::NewAgentForm {
                 pane_id,
                 project,
@@ -136,7 +145,7 @@ impl Server {
             Command::StartSupervisor { project_root } => self.start_supervisor(id, project_root),
             Command::MergeCheck { pane_id } => self.merge_check(id, pane_id),
             Command::Merge { pane_id, upstream } => self.merge(id, pane_id, upstream),
-            Command::MergeHandoff { pane_id } => self.merge_handoff(id, pane_id),
+            Command::MergeHandoff { pane_id, error } => self.merge_handoff(id, pane_id, error),
             Command::MergeDismiss { pane_id } => self.merge_dismiss(id, &pane_id),
             Command::CloseCheck { pane_id } => self.close_check(id, &pane_id),
             Command::Close { pane_id, force } => self.close(id, &pane_id, force),
@@ -289,6 +298,45 @@ impl Server {
                 message: match supervisor {
                     Some(name) => format!("Asked {name} to drop {handle}"),
                     None => format!("{handle} is dropped once the supervisor starts"),
+                },
+            })
+        });
+    }
+
+    /// Tells the supervisor what the user wrote about its backlog entry
+    /// `heading`: an inbox line, typed in once it is between turns, or when
+    /// it next runs, as closing a question is.
+    fn backlog_message(&mut self, id: u64, root: &str, heading: &str, text: &str) {
+        if text.trim().is_empty() {
+            return self.refuse(id, "The message cannot be empty");
+        }
+        if heading.trim().is_empty() {
+            return self.refuse(id, "Name the backlog entry the message is about");
+        }
+        let root = root.trim_end_matches('/').to_string();
+        let supervisor = self
+            .agents
+            .iter()
+            .find(|agent| agent.supervisor && agent.project_root.trim_end_matches('/') == root)
+            .map(|agent| agent.info.display_name().to_string());
+        let text = supervisor::backlog_message(heading, text);
+        self.work(id, true, move |shared| {
+            // No key: each message goes out, however alike.
+            let item = Item {
+                project: root,
+                source: "serve".into(),
+                kind: Kind::Note,
+                text,
+                ..Default::default()
+            };
+            shared
+                .inboxes
+                .notify(item)
+                .context("The supervisor could not be told")?;
+            Ok(ReplyResult::Done {
+                message: match supervisor {
+                    Some(name) => format!("Sent to {name}"),
+                    None => "Sent; the supervisor reads it when it starts".into(),
                 },
             })
         });
@@ -468,8 +516,19 @@ impl Server {
         if merge_running(&self.shared, &pane_id) {
             return self.refuse(id, "this agent's merge is running");
         }
+        let supervisor = project_supervisor(&self.agents, Path::new(&agent.project_root));
         self.work(id, false, move |shared| {
-            let form = merge_form(&agent).context("Merge unavailable")?;
+            // Refused by Git before it starts: the dialog says why, and
+            // `merge_handoff` can ask the supervisor to fix it.
+            let (form, refused) = match merge_form(&agent) {
+                Ok(form) => (form, None),
+                Err(error) => {
+                    let error = format!("{error:#}");
+                    let form = refused_form(&agent, error.clone(), ConflictHelp::NoSupervisor)
+                        .ok_or_else(|| anyhow!("Merge unavailable: {error}"))?;
+                    (form, Some(error))
+                }
+            };
             let reply = MergeForm {
                 pane_id: pane_id.clone(),
                 agent: form.agent.clone(),
@@ -481,6 +540,8 @@ impl Server {
                 commits: form.commits.clone(),
                 upstream: form.upstream.name().map(str::to_string),
                 steps: form.steps(),
+                refused,
+                supervisor,
             };
             lock(&shared.merges).insert(pane_id, form);
             Ok(ReplyResult::MergeForm(Box::new(reply)))
@@ -501,6 +562,11 @@ impl Server {
                 drop(merges);
                 return self.refuse(id, "this agent's merge is running");
             }
+            if let MergePhase::Refused { error, .. } = &form.phase {
+                let error = format!("Merge unavailable: {error}");
+                drop(merges);
+                return self.refuse(id, error);
+            }
             form.upstream = match upstream {
                 UpstreamChoice::Check => form.upstream.checked(),
                 UpstreamChoice::Pull => form.upstream.pulled(),
@@ -513,9 +579,10 @@ impl Server {
         self.work(id, true, move |shared| {
             started(shared, id, form.steps());
             let result = run_merge(&form, &mut Sink::new(shared, id, false));
-            // Who can take a conflict or a failed push over.
-            let helper = match conflict_help(&agents, &form, true) {
-                ConflictHelp::Supervisor(name) => Some(name),
+            // Who can take a failure over; `merge_handoff` looks again.
+            let help = conflict_help(&agents, &form, true);
+            let helper = match &help {
+                ConflictHelp::Supervisor(name) => Some(name.clone()),
                 ConflictHelp::NoSupervisor | ConflictHelp::Unavailable => None,
             };
             let (phase, outcome) = match result {
@@ -546,7 +613,7 @@ impl Server {
                     let phase = MergePhase::PushFailed {
                         commit: commit.clone(),
                         error: error.clone(),
-                        help: ConflictHelp::NoSupervisor,
+                        help,
                     };
                     (
                         Some(phase),
@@ -560,7 +627,7 @@ impl Server {
                 Err(MergeError::Conflicts(files)) => {
                     let phase = MergePhase::Conflicted {
                         files: files.clone(),
-                        help: ConflictHelp::NoSupervisor,
+                        help,
                     };
                     (
                         Some(phase),
@@ -575,13 +642,28 @@ impl Server {
                     MergeOutcome::Behind { commits },
                 ),
                 Err(MergeError::FetchFailed(error)) => (
-                    Some(MergePhase::FetchFailed(error.clone())),
-                    MergeOutcome::FetchFailed { error },
+                    Some(MergePhase::FetchFailed {
+                        error: error.clone(),
+                        help,
+                    }),
+                    MergeOutcome::FetchFailed {
+                        error,
+                        supervisor: helper,
+                    },
                 ),
-                Err(MergeError::Failed(error)) => (None, MergeOutcome::Failed { error }),
+                Err(MergeError::Failed(error)) => (
+                    Some(MergePhase::Failed {
+                        error: error.clone(),
+                        help,
+                    }),
+                    MergeOutcome::Failed {
+                        error,
+                        supervisor: helper,
+                    },
+                ),
             };
             // A merge that is over is forgotten; one that waits on the user
-            // (a pull, a skip, a handoff) is kept.
+            // (a pull, a skip, a retry, a handoff) is kept.
             let mut merges = lock(&shared.merges);
             match phase {
                 Some(phase) => {
@@ -597,42 +679,52 @@ impl Server {
         });
     }
 
-    /// Hands the conflicted merge, or the push that failed after it, to the
-    /// project's supervisor, as the dashboard's `s` on the merge dialog does.
-    fn merge_handoff(&mut self, id: u64, pane_id: String) {
-        let Some(form) = lock(&self.shared.merges).get(&pane_id).cloned() else {
-            return self.refuse(id, NO_MERGE);
+    /// Asks the project's supervisor to fix the merge's failure, as the
+    /// dashboard's `s` on the merge dialog does: a conflicted merge is
+    /// aborted and handed over, a failed push explained, and any other
+    /// failure or refusal sent with its error, `error` when the frontend
+    /// gives one. With no merge kept (`corgi serve` restarted, or a command
+    /// of it was refused), the line is made from the agent and `error`.
+    fn merge_handoff(&mut self, id: u64, pane_id: String, error: Option<String>) {
+        if merge_running(&self.shared, &pane_id) {
+            return self.refuse(id, "this agent's merge is running");
+        }
+        let kept = lock(&self.shared.merges).get(&pane_id).cloned();
+        let form = match (kept, &error) {
+            (Some(form), _) => form,
+            (None, Some(error)) => {
+                let Some(agent) = self.agent_or_refuse(id, &pane_id) else {
+                    return;
+                };
+                let Some(form) = refused_form(&agent, error.clone(), ConflictHelp::NoSupervisor)
+                else {
+                    return self.refuse(
+                        id,
+                        "Merge is available only for an agent in a linked worktree",
+                    );
+                };
+                form
+            }
+            (None, None) => return self.refuse(id, NO_MERGE),
         };
         let Some(supervisor) = project_supervisor(&self.agents, &form.project_root) else {
-            return self.refuse(id, "The supervisor is no longer running");
+            return self.refuse(id, NO_SUPERVISOR);
+        };
+        let Some(handoff) = handoff(&form, &supervisor, error.as_deref()) else {
+            return self.refuse(id, "this merge has not failed, so there is nothing to fix");
         };
         self.work(id, true, move |shared| {
-            let (item, message) = match &form.phase {
-                MergePhase::Conflicted { files, .. } => {
-                    abort_merge(&form.project_root).context("Merge abort failed")?;
-                    (
-                        conflict_item(&form, files),
-                        format!(
-                            "Merge aborted; asked {supervisor} to have {} merge {} into its branch",
-                            form.agent, form.target_branch
-                        ),
-                    )
-                }
-                MergePhase::PushFailed { commit, error, .. } => (
-                    push_failed_item(&form, commit, error),
-                    format!(
-                        "Asked {supervisor} about the failed push of {}",
-                        form.target_branch
-                    ),
-                ),
-                _ => bail!("only a conflicted merge or a failed push can be handed over"),
-            };
+            if handoff.abort {
+                abort_merge(&form.project_root).context("Merge abort failed")?;
+            }
             lock(&shared.merges).remove(&pane_id);
             shared
                 .inboxes
-                .notify(item)
+                .notify(handoff.item)
                 .with_context(|| format!("{supervisor} could not be told"))?;
-            Ok(ReplyResult::Done { message })
+            Ok(ReplyResult::Done {
+                message: handoff.status,
+            })
         });
     }
 

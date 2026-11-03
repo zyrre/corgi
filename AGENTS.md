@@ -276,7 +276,9 @@ Text on a fill other than the background (a badge, the selected row's tint,
 a dialog) takes its color through `Colors::badge_text` or
 `Colors::secondary`, which keep the role unless it all but vanishes on
 that fill (Mocha's muted and black on its greys), so a theme keeps its
-look wherever its roles read.
+look wherever its roles read. A dialog's hints and other secondary text
+take `colors.secondary(colors.roles.popup_fill)`: plain `roles.muted` all
+but disappears on Mocha's popup fill.
 
 `HERDR_CONFIG_PATH=<file> herdr config check` validates a Herdr config file
 without a running server (and without touching the real config). Herdr's CLI

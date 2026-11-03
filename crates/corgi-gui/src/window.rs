@@ -4,7 +4,7 @@
 
 use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
-use corgi_core::protocol::{Agent, Command, Project, Question};
+use corgi_core::protocol::{Agent, BacklogEntry, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent,
@@ -763,15 +763,11 @@ impl CorgiWindow {
         }
     }
 
-    pub fn open_prompt(
-        &mut self,
-        pane_id: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(agent) = pane_id
+    /// Opens the prompt box for the selected agent.
+    pub fn open_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(agent) = self
+            .selected
             .as_deref()
-            .or(self.selected.as_deref())
             .and_then(|id| self.store.agent(id))
             .cloned()
         else {
@@ -818,6 +814,30 @@ impl CorgiWindow {
         self.dialogs.open = Some(Dialog::Answer {
             project_root,
             question,
+            sending: false,
+            error: None,
+        });
+        self.focus_dialog_now(window, cx);
+        cx.notify();
+    }
+
+    /// Shows the backlog entry `entry` of `project_root`'s supervisor
+    /// whole, with a field to write the supervisor about it.
+    pub fn open_backlog(
+        &mut self,
+        project_root: String,
+        entry: BacklogEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_input.update(cx, |input, cx| {
+            input.clear(cx);
+            input.set_placeholder("Write the supervisor about this entry");
+        });
+        self.question_scroll = ScrollHandle::new();
+        self.dialogs.open = Some(Dialog::Backlog {
+            project_root,
+            entry,
             sending: false,
             error: None,
         });
@@ -961,7 +981,11 @@ impl CorgiWindow {
                 self.send(Command::Merge { pane_id, upstream }, Purpose::Merge);
             }
             MergeAction::Handoff => {
-                self.send(Command::MergeHandoff { pane_id }, Purpose::MergeEnd);
+                if !merge.offers(MergeAction::Handoff) {
+                    return;
+                }
+                let error = merge.handoff_error();
+                self.send(Command::MergeHandoff { pane_id, error }, Purpose::MergeEnd);
             }
             MergeAction::Dismiss => {
                 self.send(Command::MergeDismiss { pane_id }, Purpose::MergeEnd);
@@ -1036,13 +1060,32 @@ impl CorgiWindow {
                     Purpose::Answer,
                 )
             }
+            Some(Dialog::Backlog {
+                project_root,
+                entry,
+                sending,
+                error,
+            }) if !*sending => {
+                if text.is_empty() {
+                    *error = Some("Type a message first".into());
+                    return;
+                }
+                *sending = true;
+                *error = None;
+                (
+                    Command::BacklogMessage {
+                        project_root: project_root.clone(),
+                        heading: entry.heading.clone(),
+                        text,
+                    },
+                    Purpose::BacklogMessage,
+                )
+            }
             _ => return,
         };
         if !self.send(command.0, command.1) {
             // Not sent: let the user try again.
-            if let Some(Dialog::Prompt { sending, .. } | Dialog::Answer { sending, .. }) =
-                &mut self.dialogs.open
-            {
+            if let Some((sending, _)) = self.dialogs.open.as_mut().and_then(Dialog::text_state) {
                 *sending = false;
             }
         }
@@ -1143,7 +1186,7 @@ impl CorgiWindow {
                     self.toggle_card(&group, cx);
                 }
             }
-            Action::Prompt => self.open_prompt(None, window, cx),
+            Action::Prompt => self.open_prompt(window, cx),
             Action::NewAgent => self.new_agent(cx),
             Action::Merge => self.merge_check(cx),
             Action::Close => self.close_check(None, cx),
@@ -1151,7 +1194,8 @@ impl CorgiWindow {
             Action::Tag => self.toggle_tag(cx),
             Action::Refresh => self.refresh(cx),
             Action::AnswerFirst => self.answer_nth(0, window, cx),
-            Action::Leave | Action::FocusSide => return,
+            // The focus view's and the merge dialog's own.
+            Action::Leave | Action::FocusSide | Action::AskSupervisor => return,
         }
         cx.stop_propagation();
     }
@@ -1186,6 +1230,16 @@ impl CorgiWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
+        // The merge dialog's rebindable key, which may have a modifier.
+        if let Some(Dialog::Merge(merge)) = &self.dialogs.open
+            && self.keymap.merge_dialog_hit(keystroke) == Some(Action::AskSupervisor)
+        {
+            if merge.offers(MergeAction::Handoff) {
+                self.merge_action(MergeAction::Handoff, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         let modifiers = keystroke.modifiers;
         if modifiers.platform || modifiers.control {
             return;
@@ -1198,16 +1252,18 @@ impl CorgiWindow {
         }
         let handled = match &mut self.dialogs.open {
             None => false,
-            Some(Dialog::Prompt { .. } | Dialog::Answer { .. }) => match key {
-                "enter" => {
-                    self.submit_text(cx);
-                    true
+            Some(Dialog::Prompt { .. } | Dialog::Answer { .. } | Dialog::Backlog { .. }) => {
+                match key {
+                    "enter" => {
+                        self.submit_text(cx);
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
-            },
+            }
             Some(Dialog::Merge(merge)) => match key {
                 "enter" => {
-                    if let Some((_, action)) = merge.actions().first().copied() {
+                    if let Some(action) = merge.default_action() {
                         self.merge_action(action, cx);
                     }
                     true
@@ -1288,7 +1344,7 @@ impl CorgiWindow {
             },
             None if self.focus_view.is_some() => self.terminal.read(cx).focus.clone(),
             None => self.focus.clone(),
-            Some(Dialog::Prompt { .. } | Dialog::Answer { .. }) => {
+            Some(Dialog::Prompt { .. } | Dialog::Answer { .. } | Dialog::Backlog { .. }) => {
                 self.prompt_input.read(cx).focus_handle(cx)
             }
             Some(Dialog::NewAgent(new)) if new.row == form::Row::Task && new.picker.is_none() => {

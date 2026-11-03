@@ -465,7 +465,7 @@ impl CorgiWindow {
                 this.new_agent(cx)
             }),
             (Hotkey::Prompt, "Prompt", can_prompt, |this, window, cx| {
-                this.open_prompt(None, window, cx)
+                this.open_prompt(window, cx)
             }),
             (
                 Hotkey::Supervisor,
@@ -1199,26 +1199,10 @@ impl CorgiWindow {
             return panel.child(
                 div()
                     .text_color(colors.roles.muted)
-                    .child("Select an agent to see its project's supervisor."),
+                    .child("Select an agent to see its project's questions and backlog."),
             );
         };
-        panel = panel.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_2()
-                .child(
-                    div()
-                        .text_color(colors.supervisor())
-                        .font_weight(FontWeight::BOLD)
-                        .child("SUPERVISOR"),
-                )
-                .child(
-                    div()
-                        .text_color(colors.roles.muted)
-                        .child(project.group.clone()),
-                ),
-        );
+        // Held deliveries wait on the user, so they come first.
         if let Some(held) = format::held(project.held) {
             panel = panel.child(
                 div()
@@ -1234,147 +1218,6 @@ impl CorgiWindow {
                         corgi_core::paths::tilde(&project.root)
                     ))),
             );
-        }
-        let supervisor = project
-            .supervisor
-            .as_deref()
-            .and_then(|id| self.store.agent(id));
-        match supervisor {
-            Some(supervisor) => {
-                let pane_id = supervisor.pane_id.clone();
-                let prompt_id = pane_id.clone();
-                let now = self.store.now();
-                let model = supervisor.model.as_deref().unwrap_or(&supervisor.harness);
-                let (badge, tone) = format::badge(supervisor);
-                let badge_color = self.tone(tone, None);
-                panel = panel
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .px_1()
-                                    .bg(badge_color)
-                                    .text_color(colors.badge_text(badge_color))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(badge),
-                            )
-                            .children(format::fields(supervisor, now).into_iter().map(|piece| {
-                                div()
-                                    .text_color(self.tone(piece.tone, Some(model)))
-                                    .child(piece.text)
-                            })),
-                    )
-                    .child(self.activity_block(&supervisor.message))
-                    .child(self.activity_line(&supervisor.tool, 2, false))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(self.button(
-                                &self.keymap.label(Hotkey::Prompt),
-                                "Prompt it",
-                                supervisor.can_prompt,
-                                false,
-                                cx,
-                                move |this, window, cx| {
-                                    this.open_prompt(Some(prompt_id.clone()), window, cx)
-                                },
-                            ))
-                            .child(self.button(
-                                "",
-                                // The focus view opens the supervisor's own terminal.
-                                if self.focus_view.is_some() {
-                                    "Open its terminal"
-                                } else {
-                                    "Select it"
-                                },
-                                true,
-                                false,
-                                cx,
-                                move |this, window, cx| {
-                                    if this.focus_view.is_some() {
-                                        this.open_agent(pane_id.clone(), window, cx)
-                                    } else {
-                                        this.select(pane_id.clone(), Pick::Reveal, cx)
-                                    }
-                                },
-                            )),
-                    );
-            }
-            None if project.scratch => {
-                panel = panel.child(
-                    div()
-                        .text_color(colors.roles.muted)
-                        .child("Scratch sessions belong to no project and have no supervisor."),
-                );
-            }
-            None => {
-                panel = panel
-                    .child(
-                        div()
-                            .text_color(colors.roles.muted)
-                            .child("No supervisor runs for this project."),
-                    )
-                    .child(self.button(
-                        &self.keymap.label(Hotkey::Supervisor),
-                        "Start its supervisor",
-                        true,
-                        false,
-                        cx,
-                        |this, _, cx| this.start_supervisor(cx),
-                    ));
-            }
-        }
-
-        let ready = self.store.ready_to_merge(project);
-        if !ready.is_empty() {
-            panel = panel.child(section_title(
-                "READY TO MERGE".into(),
-                self.tone(Tone::Merge, None),
-            ));
-            for agent in ready {
-                let (badge, tone) = format::badge(agent);
-                let badge_color = self.tone(tone, None);
-                let pane_id = agent.pane_id.clone();
-                panel = panel.child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "ready-to-merge-{}",
-                            agent.pane_id
-                        )))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|style| style.bg(colors.roles.focus_bar))
-                        .child(
-                            div()
-                                .px_1()
-                                .bg(badge_color)
-                                .text_color(colors.badge_text(badge_color))
-                                .font_weight(FontWeight::BOLD)
-                                .child(badge),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(agent.task.clone()),
-                        )
-                        // The worker's row is in the overview, not under the
-                        // mouse: it scrolls into view.
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.select(pane_id.clone(), Pick::Reveal, cx);
-                        })),
-                );
-            }
         }
 
         // The numbered questions, each answered in place.
@@ -1515,48 +1358,29 @@ impl CorgiWindow {
             }
         }
 
-        if !project.blocked.is_empty() {
-            panel = panel.child(section_title("BLOCKED".into(), colors.roles.warning));
-            for blocked in &project.blocked {
+        // The supervisor's things to build later, each opened whole with a
+        // field to write the supervisor about it.
+        if let Some(title) = format::backlog_title(&project.backlog) {
+            panel = panel.child(section_title(title, colors.supervisor()));
+            for (index, entry) in project.backlog.iter().enumerate() {
+                let (root, entry) = (root.clone(), entry.clone());
                 panel = panel.child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::BOLD)
-                                .child(format!("▲ {}", blocked.task)),
-                        )
-                        .child(
-                            div()
-                                .text_color(colors.roles.warning)
-                                .child(blocked.waiting_on.clone()),
-                        ),
+                        .id(SharedString::from(format!("backlog-{index}")))
+                        .p_2()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(colors.roles.rule)
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|style| style.bg(colors.roles.focus_bar))
+                        .child(entry.heading.clone())
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_backlog(root.clone(), entry.clone(), window, cx);
+                        })),
                 );
             }
         }
         panel
-    }
-
-    fn activity_block(&self, activity: &Activity) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .child(
-                div()
-                    .flex_none()
-                    .w(self.scaled(12.))
-                    .text_color(self.tone(format::marker_tone(activity.kind), None))
-                    .child(format::marker(activity.kind)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .line_clamp(12)
-                    .child(activity.text.clone()),
-            )
     }
 
     /// The handle between two panes, dragged to resize them.
@@ -1704,6 +1528,18 @@ impl CorgiWindow {
                 } else {
                     self.question_text(&question.text)
                 }),
+                *sending,
+                error.as_deref(),
+                window,
+            ),
+            Some(Dialog::Backlog {
+                entry,
+                sending,
+                error,
+                ..
+            }) => self.text_dialog(
+                "Backlog entry".into(),
+                Some(self.backlog_text(entry)),
                 *sending,
                 error.as_deref(),
                 window,
@@ -2169,7 +2005,7 @@ impl CorgiWindow {
                         )
                     }),
             );
-        if merge.stage != MergeStage::Confirm {
+        if !matches!(merge.stage, MergeStage::Confirm | MergeStage::Refused(_)) {
             // A merge that succeeded went through every step.
             let mut progress = merge.progress.clone();
             if matches!(
@@ -2210,6 +2046,27 @@ impl CorgiWindow {
                     }));
                 }
             }
+            MergeStage::Refused(error) => {
+                dialog = dialog
+                    .child(
+                        div()
+                            .p_2()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(colors.roles.danger)
+                            .text_color(colors.roles.danger)
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("! Merge unavailable: {error}")),
+                    )
+                    .child(
+                        div()
+                            .text_color(colors.secondary(colors.roles.popup_fill))
+                            .child(format!(
+                                "Nothing ran. Fix it, then merge again with {}.",
+                                self.keymap.label(Hotkey::Merge)
+                            )),
+                    );
+            }
             MergeStage::Failed(error) => {
                 dialog = dialog.child(div().text_color(colors.roles.danger).child(error.clone()));
             }
@@ -2222,16 +2079,28 @@ impl CorgiWindow {
             }
             MergeStage::Confirm => {}
         }
-        let actions = merge.actions();
+        // Why the supervisor cannot be asked, beside its greyed button.
+        if let Some(why) = merge.no_supervisor() {
+            dialog = dialog.child(div().text_color(colors.roles.warning).child(why));
+        }
+        let default = merge.default_action();
+        let ask_key = self.keymap.label(Hotkey::AskSupervisor);
         let mut buttons = div().flex().flex_row().gap_2().pt_1();
-        for (index, (label, action)) in actions.into_iter().enumerate() {
-            let key = if index == 0 { keymap::ENTER } else { "" };
-            buttons =
-                buttons.child(
-                    self.button(key, label, true, index == 0, cx, move |this, _, cx| {
-                        this.merge_action(action, cx)
-                    }),
-                );
+        for (label, action, enabled) in merge.actions() {
+            let is_default = Some(action) == default;
+            let key = match action {
+                crate::dialogs::MergeAction::Handoff => ask_key.as_str(),
+                _ if is_default => keymap::ENTER,
+                _ => "",
+            };
+            buttons = buttons.child(self.button(
+                key,
+                label,
+                enabled,
+                is_default,
+                cx,
+                move |this, _, cx| this.merge_action(action, cx),
+            ));
         }
         dialog.child(buttons).into_any_element()
     }

@@ -221,7 +221,8 @@ Exactly one per request, with its `id`.
  "questions":[{"id":"Q4","title":"Keep the old flag?","agent":"w-fix"}],
  "held":0,
  "merge_requests":[{"id":"!1677","title":"Fix the forecast","branch":"worktree/green-forest-025b",
-                    "draft":false,"url":"https://gitlab.example.com/team/weather/-/merge_requests/1677"}]}
+                    "draft":false,"url":"https://gitlab.example.com/team/weather/-/merge_requests/1677"}],
+ "backlog":[{"heading":"Stop all agents button","text":"For when the user leaves the network."}]}
 ```
 
 - `card` is true for a project led by its running supervisor, which the
@@ -254,6 +255,14 @@ Exactly one per request, with its `id`.
   missing, not logged in or fails, or the remote is neither; a merged or
   closed one drops out at the next listing. It arrives in a delta after
   the snapshot, never holding one up.
+- `backlog` is the supervisor's list of things to build later, from
+  `backlog.md` in its state directory, which only the supervisor writes:
+  one entry per `## ` heading, its `text` the Markdown up to the next
+  `## ` without the heading line; a title and intro above the first are
+  left out, and a `## ` inside a code fence starts no entry. At most
+  256 KB of the file is read (an entry cut there ends with `…`). The
+  field is left out when the file is missing or has no entry. Write to the
+  supervisor about one with `backlog_message`.
 
 ### `UsageCard`: the plan-usage header
 
@@ -328,12 +337,13 @@ finish.
 | `prompt` | `pane_id`, `text` | | Types `text` into the agent and submits it. |
 | `answer` | `project_root`, `question`, `text` | | Answers a numbered question. |
 | `close_question` | `project_root`, `question` | | Closes a numbered question without answering it. |
+| `backlog_message` | `project_root`, `heading`, `text` | | Tells the supervisor what the user wrote about a backlog entry. |
 | `new_agent_form` | `pane_id`?, `project`?, `harness`?, `model`? | | The new-agent form, preset. |
 | `spawn` | `project`, `new_project`, `harness`, `model`, `effort`, `task`, `checkout` | | Starts the agent. |
 | `start_supervisor` | `project_root` | | Starts the project's supervisor, or names the running one. |
 | `merge_check` | `pane_id` | | The merge confirmation. |
 | `merge` | `pane_id`, `upstream` | | Runs the confirmed merge. |
-| `merge_handoff` | `pane_id` | | Hands a conflict or failed push to the supervisor. |
+| `merge_handoff` | `pane_id`, `error`? | | Asks the supervisor to fix the merge's failure. |
 | `merge_dismiss` | `pane_id` | | Forgets the merge. |
 | `close_check` | `pane_id` | | The close confirmation. |
 | `close` | `pane_id`, `force` | | Closes the agent's worktree, tab or workspace. |
@@ -377,6 +387,19 @@ supervisor running. Closing it again before the line goes out still sends
 one. Corgi does not write the ledger: the question stays in `questions`
 until the supervisor drops it, so show it as closing until then. Refused
 for a `question` that is not a number or not open in the ledger.
+
+### `backlog_message`
+
+```json
+{"id":4,"command":"backlog_message","project_root":"/repos/weather","heading":"Stop all agents button","text":"Do this one next"}
+```
+
+Puts one `[Corgi]` line in the supervisor's inbox, `The user wrote about
+backlog entry "Stop all agents button": Do this one next`, which goes out
+as `close_question`'s does, so it works with no supervisor running. Each
+message goes out, however alike. The heading is put on one line; the text
+is trimmed and otherwise kept as written. Refused for an empty `text` or
+`heading`; the heading need not still be in the backlog.
 
 ### `new_agent_form` and `spawn`
 
@@ -447,11 +470,16 @@ A merge is the dashboard's `m` dialog as three commands.
     "project_root":"/repos/weather","worktree":"/repos/weather-fix",
     "source_branch":"worktree/fix","target_branch":"main",
     "commits":["1a2b3c4 Fix leap days"],"upstream":"origin/main",
-    "steps":["Check both worktrees","Fetch origin/main","Merge worktree/fix into main","Push main"]}
+    "steps":["Check both worktrees","Fetch origin/main","Merge worktree/fix into main","Push main"],
+    "supervisor":"supervisor-weather"}
    ```
 
-   It is refused for an agent outside a linked worktree, for a dirty
-   checkout, and when both are on the same branch.
+   `supervisor` is the project's running supervisor, absent when none runs.
+   It is refused for an agent outside a linked worktree. A merge Git
+   refuses before it starts (a dirty checkout, both on the same branch) is
+   still a `merge_form`, with `refused` saying why and the branches Git
+   could still tell: show the reason and offer `merge_handoff`; `merge`
+   refuses it.
 
 2. `merge` with `upstream` `check` (the default) runs it, with progress, and
    replies `merge_outcome`, `ok: true` whatever the outcome:
@@ -460,14 +488,19 @@ A merge is the dashboard's `m` dialog as three commands.
    | --- | --- | --- |
    | `succeeded` | `commit`, `message` | Done. The agent's merge tag is cleared and its supervisor is told. Offer `close_check`. |
    | `behind` | `commits` | The upstream has commits the target lacks; nothing merged. `merge` with `pull` brings them in first. |
-   | `fetch_failed` | `error` | Nothing merged. `merge` with `skip` merges without the upstream. |
+   | `fetch_failed` | `error`, `supervisor` | Nothing merged. `merge` with `skip` merges without the upstream; `merge_handoff` asks `supervisor` to fix the fetch. |
    | `conflicted` | `files`, `supervisor` | The primary checkout is mid-merge. `merge_handoff` aborts it and asks `supervisor` (when not `null`) to have the worker merge the base into its branch; `merge_dismiss` leaves it to resolve by hand. |
    | `push_failed` | `commit`, `error`, `supervisor` | Merged locally; the tag is cleared and the supervisor told. `merge_handoff` asks it to explain the error. |
-   | `failed` | `error` | |
+   | `failed` | `error`, `supervisor` | `merge_handoff` asks `supervisor` to fix it. |
 
-3. `merge_handoff` or `merge_dismiss` ends a conflicted or push-failed
-   merge. A succeeded or failed merge is forgotten by itself; `merge_check`
-   starts a new one.
+3. `merge_handoff` or `merge_dismiss` ends a merge that stopped: a refused,
+   fetch-failed, conflicted, push-failed or failed one. `merge_handoff`
+   asks the running supervisor to fix it and report back (a conflict is
+   aborted first, a failed push explained), and is refused while none
+   runs. Give `error` for a failure serve did not report (its own refusal
+   of a command, a lost connection): with no merge kept, the line is made
+   from the agent and that error. A succeeded merge is forgotten by itself;
+   `merge_check` starts a new one.
 
 ### Closing
 

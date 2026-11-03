@@ -11,8 +11,8 @@ use crate::{
 };
 
 use super::{
-    DialogContent, Drawn, FAILURE_MARK, POPUP_MARK, SUCCESS_MARK, bold, clip, draw_message_dialog,
-    indent_left_block, outcome_line, step_lines,
+    DialogContent, Drawn, FAILURE_MARK, LegendKey, POPUP_MARK, SUCCESS_MARK, bold, clip,
+    draw_message_dialog, indent_left_block, outcome_line, step_lines,
 };
 use crate::theme::roles;
 
@@ -212,21 +212,34 @@ pub(crate) fn merge_dialog_lines<'a>(
                 ],
             )
         }
-        MergePhase::Failed(error) => {
+        MergePhase::Failed { error, help } => {
             lines.push(outcome_line(
                 false,
                 "Merge and push did not complete.".into(),
             ));
-            lines.push(Line::styled(error, Style::default().fg(roles().muted)));
-            (
-                FAILURE_MARK,
-                "Merge/push error",
-                roles().danger,
-                vec![
-                    ("Enter", "retry", roles().success),
-                    ("Esc", "close", roles().warning),
-                ],
-            )
+            lines.extend(error_lines(error));
+            let mut legend = Vec::new();
+            ask_supervisor(help, FIXES, ASK_TO_FIX, &mut lines, &mut legend);
+            legend.push(("Enter", "retry", roles().success));
+            legend.push(("Esc", "close", roles().warning));
+            (FAILURE_MARK, "Merge/push error", roles().danger, legend)
+        }
+        MergePhase::Refused { error, help } => {
+            lines.push(outcome_line(
+                false,
+                "Git refuses this merge, so nothing ran.".into(),
+            ));
+            lines.push(Line::raw(""));
+            lines.extend(error_lines(error));
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "Fix it, then merge again with m.",
+                Style::default().fg(roles().muted),
+            ));
+            let mut legend = Vec::new();
+            ask_supervisor(help, FIXES, ASK_TO_FIX, &mut lines, &mut legend);
+            legend.push(("Enter / Esc", "close", roles().warning));
+            (FAILURE_MARK, "Merge unavailable", roles().danger, legend)
         }
         MergePhase::Behind(commits) => {
             let upstream = form.upstream.name().unwrap_or("The upstream");
@@ -264,7 +277,7 @@ pub(crate) fn merge_dialog_lines<'a>(
                 ],
             )
         }
-        MergePhase::FetchFailed(error) => {
+        MergePhase::FetchFailed { error, help } => {
             let upstream = form.upstream.name().unwrap_or("the upstream");
             lines.push(Line::styled(
                 format!("Could not fetch {upstream}."),
@@ -280,15 +293,11 @@ pub(crate) fn merge_dialog_lines<'a>(
                 "Nothing is merged yet.",
                 Style::default().fg(roles().muted),
             ));
-            (
-                POPUP_MARK,
-                "Upstream not checked",
-                roles().warning,
-                vec![
-                    ("Enter", "merge + push anyway", roles().success),
-                    ("Esc", "stop", roles().warning),
-                ],
-            )
+            let mut legend = Vec::new();
+            ask_supervisor(help, FIXES, ASK_TO_FIX, &mut lines, &mut legend);
+            legend.push(("Enter", "merge + push anyway", roles().success));
+            legend.push(("Esc", "stop", roles().warning));
+            (POPUP_MARK, "Upstream not checked", roles().warning, legend)
         }
         MergePhase::PushFailed {
             commit,
@@ -320,20 +329,13 @@ pub(crate) fn merge_dialog_lines<'a>(
                 Style::default().fg(roles().muted),
             ));
             let mut legend = Vec::new();
-            match help {
-                ConflictHelp::Supervisor(_) => {
-                    lines.push(Line::styled(
-                        "Its supervisor can tell you what the error means and what to run.",
-                        Style::default().fg(roles().text),
-                    ));
-                    legend.push(("s", "ask the supervisor", roles().success));
-                }
-                ConflictHelp::NoSupervisor => lines.push(Line::styled(
-                    "No supervisor is running for this project.",
-                    Style::default().fg(roles().warning),
-                )),
-                ConflictHelp::Unavailable => {}
-            }
+            ask_supervisor(
+                help,
+                "Its supervisor can tell you what the error means and what to run.",
+                ASK_TO_FIX,
+                &mut lines,
+                &mut legend,
+            );
             legend.push(("Enter", "retry", roles().success));
             legend.push(("Esc", "close", roles().warning));
             (FAILURE_MARK, "Push failed", roles().danger, legend)
@@ -366,20 +368,15 @@ pub(crate) fn merge_dialog_lines<'a>(
                     ));
                     vec![
                         (
-                            "s",
-                            "abort merge and ask the supervisor to fix",
+                            ASK_KEY,
+                            "abort merge, ask supervisor to fix",
                             roles().success,
                         ),
                         ("Esc", "resolve by hand", roles().warning),
                     ]
                 }
                 ConflictHelp::NoSupervisor | ConflictHelp::Unavailable => {
-                    if *help == ConflictHelp::NoSupervisor {
-                        lines.push(Line::styled(
-                            "No supervisor is running for this project.",
-                            Style::default().fg(roles().warning),
-                        ));
-                    }
+                    ask_supervisor(help, "", "", &mut lines, &mut Vec::new());
                     lines.push(Line::styled(by_hand, Style::default().fg(roles().muted)));
                     vec![
                         ("Enter", "retry", roles().success),
@@ -396,6 +393,43 @@ pub(crate) fn merge_dialog_lines<'a>(
         color,
         lines,
         legend,
+    }
+}
+
+/// The key that asks the supervisor to fix a failed merge, as the legend
+/// shows it: `corgi_core::merge::ASK_SUPERVISOR_KEY`, which the window's dialog takes too.
+const ASK_KEY: &str = "s";
+/// The legend's words for it.
+const ASK_TO_FIX: &str = "ask supervisor to fix";
+/// What the supervisor does when asked, for a failure without a line of its
+/// own.
+const FIXES: &str = "Its supervisor can find the cause, fix it, and report back.";
+
+/// What a failed merge's dialog says about asking the project's supervisor
+/// to fix it: `offer` and the key labelled `action` when one runs, why it
+/// cannot be asked when none does, and nothing from a dashboard that has no
+/// inbox to ask through (the Omarchy popup).
+fn ask_supervisor(
+    help: &ConflictHelp,
+    offer: &'static str,
+    action: &'static str,
+    lines: &mut Vec<Line<'_>>,
+    legend: &mut Vec<LegendKey>,
+) {
+    match help {
+        ConflictHelp::Supervisor(_) => {
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(offer, Style::default().fg(roles().text)));
+            legend.push((ASK_KEY, action, roles().success));
+        }
+        ConflictHelp::NoSupervisor => {
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "No supervisor is running for this project, so none can be asked to fix it.",
+                Style::default().fg(roles().warning),
+            ));
+        }
+        ConflictHelp::Unavailable => {}
     }
 }
 
@@ -573,7 +607,7 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains(" s  abort merge and ask the supervisor to fix"),
+            rendered.contains(" s  abort merge, ask supervisor to fix"),
             "{rendered}"
         );
 
@@ -635,7 +669,10 @@ mod tests {
         assert!(rendered.contains(" Esc  stop"), "{rendered}");
 
         let form = app.overlay.merge_worktree_form_mut().expect("form");
-        form.phase = MergePhase::FetchFailed("git fetch origin: Could not resolve host".into());
+        form.phase = MergePhase::FetchFailed {
+            error: "git fetch origin: Could not resolve host".into(),
+            help: ConflictHelp::NoSupervisor,
+        };
         let rendered = draw(&mut app);
         assert!(
             rendered.contains("Could not fetch origin/main."),
@@ -664,7 +701,7 @@ mod tests {
             rendered.contains("main -> main (fetch first)"),
             "{rendered}"
         );
-        assert!(rendered.contains(" s  ask the supervisor"), "{rendered}");
+        assert!(rendered.contains(" s  ask supervisor to fix"), "{rendered}");
         assert!(rendered.contains(" Enter  retry"), "{rendered}");
 
         let form = app.overlay.merge_worktree_form_mut().expect("form");
@@ -675,7 +712,88 @@ mod tests {
         };
         let rendered = draw(&mut app);
         assert!(rendered.contains("No supervisor is running"), "{rendered}");
-        assert!(!rendered.contains("ask the supervisor"), "{rendered}");
+        assert!(!rendered.contains("ask supervisor"), "{rendered}");
+    }
+
+    #[test]
+    fn every_failed_or_refused_merge_offers_to_ask_the_supervisor_to_fix_it() {
+        assert_eq!(ASK_KEY, corgi_core::merge::ASK_SUPERVISOR_KEY.to_string());
+        let mut app = test_app();
+        app.overlay = Overlay::merge(MergeWorktreeForm {
+            label: "corgi/reviewed-agent".into(),
+            workspace_id: "w7".into(),
+            agent: "w-reviewed-agent".into(),
+            project_root: PathBuf::from("/repos/corgi"),
+            worktree_checkout: PathBuf::from("/worktrees/corgi/worktree-reviewed-agent"),
+            source_branch: "worktree/reviewed-agent".into(),
+            target_branch: "main".into(),
+            task: "Popup windows styling review".into(),
+            commits: Vec::new(),
+            upstream: Upstream::Check("origin/main".into()),
+            phase: MergePhase::Confirm,
+        });
+        let mut terminal = test_terminal(120, 40);
+        let supervisor = || ConflictHelp::Supervisor("supervisor-corgi".into());
+        let phases = [
+            (
+                MergePhase::Refused {
+                    error: "primary checkout has uncommitted or untracked changes: M AGENTS.md"
+                        .into(),
+                    help: supervisor(),
+                },
+                "Merge unavailable",
+                "M AGENTS.md",
+                " Enter / Esc  close",
+            ),
+            (
+                MergePhase::Failed {
+                    error: "git merge worktree/reviewed-agent: fatal: refusing".into(),
+                    help: supervisor(),
+                },
+                "Merge/push error",
+                "fatal: refusing",
+                " Enter  retry",
+            ),
+            (
+                MergePhase::FetchFailed {
+                    error: "git fetch origin: Could not resolve host".into(),
+                    help: supervisor(),
+                },
+                "Upstream not checked",
+                "Could not resolve host",
+                " Enter  merge + push anyway",
+            ),
+        ];
+        for (phase, title, error, other) in phases {
+            let mut alone = phase.clone();
+            app.overlay.merge_worktree_form_mut().expect("form").phase = phase;
+            terminal
+                .draw(|frame| draw_overlay(frame, frame.area(), &mut app))
+                .expect("draw merge dialog");
+            let rendered = buffer_text(terminal.backend().buffer());
+            assert!(rendered.contains(title), "{rendered}");
+            assert!(rendered.contains(error), "{rendered}");
+            assert!(
+                rendered.contains("can find the cause, fix it"),
+                "{rendered}"
+            );
+            assert!(rendered.contains(" s  ask supervisor to fix"), "{rendered}");
+            assert!(rendered.contains(other), "{rendered}");
+
+            // Without a supervisor the dialog says why it cannot ask one.
+            *alone.help_mut().expect("a failure") = ConflictHelp::NoSupervisor;
+            app.overlay.merge_worktree_form_mut().expect("form").phase = alone;
+            terminal
+                .draw(|frame| draw_overlay(frame, frame.area(), &mut app))
+                .expect("draw merge dialog");
+            let rendered = buffer_text(terminal.backend().buffer());
+            assert!(rendered.contains(error), "{rendered}");
+            assert!(
+                rendered.contains("No supervisor is running for this project, so none can"),
+                "{rendered}"
+            );
+            assert!(!rendered.contains("ask supervisor"), "{rendered}");
+        }
     }
 
     #[test]

@@ -31,18 +31,27 @@ pub enum Area {
     Overview,
     Transcript,
     Focus,
+    /// The merge dialog's, while it shows a failure.
+    MergeDialog,
     /// The window's own keys, all fixed.
     Window,
 }
 
 impl Area {
-    pub const ALL: [Area; 4] = [Area::Overview, Area::Transcript, Area::Focus, Area::Window];
+    pub const ALL: [Area; 5] = [
+        Area::Overview,
+        Area::Transcript,
+        Area::Focus,
+        Area::MergeDialog,
+        Area::Window,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Area::Overview => "Overview",
             Area::Transcript => "Expanded session",
             Area::Focus => "Focus view",
+            Area::MergeDialog => "Merge dialog",
             Area::Window => "Window",
         }
     }
@@ -52,13 +61,16 @@ impl Area {
             Area::Overview => "While no dialog is open.",
             Area::Transcript => "While a row is expanded; the overview's keys work too.",
             Area::Focus => "Every other key goes to the agent's terminal.",
+            Area::MergeDialog => "While it shows why a merge failed or cannot start.",
             Area::Window => "Everywhere.",
         }
     }
 
-    /// The overview's keys and an expanded session's are live at once.
+    /// The overview's keys and an expanded session's are live at once; the
+    /// focus view's and the merge dialog's are each live alone.
     fn shares_keys_with(self, other: Area) -> bool {
-        (self == Area::Focus) == (other == Area::Focus)
+        let alone = |area: Area| matches!(area, Area::Focus | Area::MergeDialog);
+        self == other || (!alone(self) && !alone(other))
     }
 }
 
@@ -89,10 +101,11 @@ pub enum Action {
     Oldest,
     Leave,
     FocusSide,
+    AskSupervisor,
 }
 
 impl Action {
-    pub const ALL: [Action; 24] = [
+    pub const ALL: [Action; 25] = [
         Action::Next,
         Action::Previous,
         Action::First,
@@ -117,6 +130,7 @@ impl Action {
         Action::Oldest,
         Action::Leave,
         Action::FocusSide,
+        Action::AskSupervisor,
     ];
 
     /// Its name in `hotkeys.json`, which must not change.
@@ -146,6 +160,7 @@ impl Action {
             Action::Oldest => "oldest",
             Action::Leave => "leave",
             Action::FocusSide => "focus_side",
+            Action::AskSupervisor => "ask_supervisor",
         }
     }
 
@@ -175,6 +190,7 @@ impl Action {
             Action::Oldest => "Jump to oldest turn",
             Action::Leave => "Back to the overview",
             Action::FocusSide => "Show / hide side panel",
+            Action::AskSupervisor => "Ask supervisor to fix",
         }
     }
 
@@ -186,6 +202,7 @@ impl Action {
             | Action::Newest
             | Action::Oldest => Area::Transcript,
             Action::Leave | Action::FocusSide => Area::Focus,
+            Action::AskSupervisor => Area::MergeDialog,
             _ => Area::Overview,
         }
     }
@@ -219,6 +236,8 @@ impl Action {
             Action::Leave => "ctrl-shift-escape",
             Action::FocusSide if mac => "cmd-\\",
             Action::FocusSide => "ctrl-shift-\\",
+            // The dashboard's key too, so it is the same everywhere.
+            Action::AskSupervisor => ASK_SUPERVISOR,
         }
     }
 
@@ -237,6 +256,10 @@ impl Action {
         }
     }
 }
+
+/// [`corgi_core::merge::ASK_SUPERVISOR_KEY`], which the dashboard's merge
+/// dialog takes, as a default key here.
+const ASK_SUPERVISOR: &str = "s";
 
 /// A key and its modifiers, as compared: Shift is dropped from a typed
 /// symbol (`?`, `|`) and kept on a letter (`shift-g`) or a named key.
@@ -387,12 +410,20 @@ pub const FULL_SCREEN: &str = "ctrl-cmd-f";
 /// The fixed keys, on macOS (`mac`) or elsewhere: shown in the dialog, and
 /// refused for an action.
 pub fn fixed(mac: bool) -> Vec<Fixed> {
-    let mut fixed = vec![Fixed {
-        area: Area::Overview,
-        name: "Answer question 1–9",
-        label: "1–9",
-        keys: &["1", "2", "3", "4", "5", "6", "7", "8", "9"],
-    }];
+    let mut fixed = vec![
+        Fixed {
+            area: Area::Overview,
+            name: "Answer question 1–9",
+            label: "1–9",
+            keys: &["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+        },
+        Fixed {
+            area: Area::MergeDialog,
+            name: "The default button / close",
+            label: "↵ Esc",
+            keys: &["enter", "escape"],
+        },
+    ];
     if mac {
         fixed.extend([
             Fixed {
@@ -695,6 +726,14 @@ impl Keymap {
         None
     }
 
+    /// The action the merge dialog takes `keystroke` for.
+    pub fn merge_dialog_hit(&self, keystroke: &Keystroke) -> Option<Action> {
+        let key = Key::from_keystroke(keystroke);
+        Action::ALL
+            .into_iter()
+            .find(|&action| action.area() == Area::MergeDialog && *self.key(action) == key)
+    }
+
     /// The keys the status bar reminds of in the overview.
     pub fn overview_hints(&self) -> String {
         format!(
@@ -794,6 +833,36 @@ mod tests {
             Some(Action::FocusSide)
         );
         assert_eq!(linux.focus_hit(&press("escape")), None);
+    }
+
+    #[test]
+    fn the_merge_dialog_asks_the_supervisor_with_the_dashboards_key() {
+        assert_eq!(
+            ASK_SUPERVISOR,
+            corgi_core::merge::ASK_SUPERVISOR_KEY.to_string()
+        );
+        let mut keymap = Keymap::defaults(true);
+        assert_eq!(
+            keymap.merge_dialog_hit(&press("s")),
+            Some(Action::AskSupervisor)
+        );
+        // The overview's s starts a supervisor; the dialog's is its own.
+        assert_eq!(
+            keymap.overview_hit(&press("s"), true),
+            Some(Hit::Action(Action::Supervisor))
+        );
+        assert_eq!(keymap.merge_dialog_hit(&press("j")), None);
+        assert_eq!(
+            keymap.check(Action::AskSupervisor, &key("enter")),
+            Err(Refusal::Fixed("The default button / close"))
+        );
+        assert!(keymap.assign(Action::AskSupervisor, key("h"), false));
+        assert_eq!(keymap.label(Action::AskSupervisor), "h");
+        assert_eq!(
+            keymap.merge_dialog_hit(&press("h")),
+            Some(Action::AskSupervisor)
+        );
+        assert_eq!(keymap.merge_dialog_hit(&press("s")), None);
     }
 
     #[test]

@@ -26,8 +26,8 @@ use corgi_core::{
     inbox::{Inbox, Kind},
     projects::ProjectMemory,
     protocol::{
-        Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply, ReplyResult,
-        ServerMessage, State, ThemeColors,
+        BacklogEntry, Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply,
+        ReplyResult, ServerMessage, State, ThemeColors,
     },
     test_support::{ScratchDir, fake_herdr},
     waker::SupervisorWaker,
@@ -587,6 +587,110 @@ fn an_open_questions_file_is_its_text_and_others_are_ignored() {
 }
 
 #[test]
+fn the_supervisors_backlog_is_sent_with_its_project_and_follows_the_file() {
+    let scratch = ScratchDir::new("serve-backlog");
+    let (repo, worktree) = repository(&scratch);
+    let dir = scratch.join("state").join("weather");
+    fs::create_dir_all(&dir).unwrap();
+    let herdr = FakeHerdr::start("serve-backlog", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    // No file: no backlog, and none on the wire.
+    assert!(state.projects[0].backlog.is_empty());
+    let project = serde_json::to_value(&state.projects[0]).unwrap();
+    assert!(project.get("backlog").is_none(), "{project}");
+
+    fs::write(
+        dir.join("backlog.md"),
+        "# Backlog: things to build later\nRaised by the user.\n\n\
+         ## 1. \"Stop all agents\" button\nFor when the user *leaves*.\n\n\
+         ## Merge wake after a handover (parked)\nSeen once.\n",
+    )
+    .unwrap();
+    let changes = session.refresh().expect("a delta");
+    let project = changes
+        .iter()
+        .find_map(|change| match change {
+            Change::Project(project) => Some(project),
+            _ => None,
+        })
+        .expect("the project's card");
+    assert_eq!(
+        project.backlog,
+        [
+            BacklogEntry {
+                heading: "1. \"Stop all agents\" button".into(),
+                text: "For when the user *leaves*.".into(),
+            },
+            BacklogEntry {
+                heading: "Merge wake after a handover (parked)".into(),
+                text: "Seen once.".into(),
+            },
+        ]
+    );
+    session.close();
+}
+
+#[test]
+fn a_backlog_message_queues_one_line_per_message_for_the_supervisor() {
+    let scratch = ScratchDir::new("serve-backlog-message");
+    let (repo, worktree) = repository(&scratch);
+    let herdr = FakeHerdr::start("serve-blmsg", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+    let root = repo.to_str().unwrap();
+    let pending = || {
+        let inbox = Inbox::read(&scratch.join("state").join("weather"));
+        let items = inbox.undelivered_for(root);
+        assert!(items.iter().all(|item| item.kind == Kind::Note));
+        corgi_core::inbox::prompt_text(&items)
+    };
+    let send = |text: &str| {
+        json!({"command": "backlog_message", "project_root": root,
+               "heading": "1. Stop all agents", "text": text})
+    };
+
+    let error = session.refused(send("  \n ")).error.unwrap();
+    assert_eq!(error, "The message cannot be empty");
+    assert_eq!(pending(), "");
+
+    // Through the inbox, which the waker types in between turns.
+    let (result, _) = session.ok(send(" Do this one next. "));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Sent to supervisor-weather".into()
+        }
+    );
+    assert!(herdr.calls("agent.prompt").is_empty());
+    let first =
+        "[Corgi] The user wrote about backlog entry \"1. Stop all agents\": Do this one next.";
+    assert_eq!(pending(), first);
+
+    // Without a supervisor it waits for the next one, and a second message
+    // about the same entry does not replace the first.
+    let mut alone = herd(&repo, &worktree, "idle");
+    alone["agents"].as_array_mut().unwrap().remove(0);
+    herdr.set_snapshot(alone);
+    session.refresh();
+    let (result, _) = session.ok(send("And keep it small."));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Sent; the supervisor reads it when it starts".into()
+        }
+    );
+    assert_eq!(
+        pending(),
+        format!(
+            "{first}\n[Corgi] The user wrote about backlog entry \"1. Stop all agents\": And keep it small."
+        )
+    );
+    assert!(herdr.calls("agent.prompt").is_empty());
+    session.close();
+}
+
+#[test]
 fn a_question_file_is_read_up_to_its_cap_and_only_when_plain() {
     use super::state::{QUESTION_TEXT_BYTES, question_text};
     let scratch = ScratchDir::new("serve-question-cap");
@@ -1015,6 +1119,112 @@ fn a_conflicted_merge_is_handed_to_the_supervisor() {
     );
     let inbox = Inbox::read(&scratch.join("state").join("weather"));
     assert_eq!(inbox.undelivered()[0].kind, Kind::Conflict);
+    session.close();
+}
+
+#[test]
+fn a_merge_refused_before_it_starts_names_why_and_is_handed_to_the_supervisor() {
+    let scratch = ScratchDir::new("serve-refused");
+    let (repo, worktree) = repository(&scratch);
+    fs::write(repo.join("AGENTS.md"), "a note\n").unwrap();
+    let herdr = FakeHerdr::start("serve-refused", herd(&repo, &worktree, "done"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+
+    let (result, _) = session.ok(json!({"command": "merge_check", "pane_id": "w2:p1"}));
+    let ReplyResult::MergeForm(form) = result else {
+        panic!("{result:?}")
+    };
+    let error = "primary checkout has uncommitted or untracked changes: ?? AGENTS.md";
+    assert_eq!(form.refused.as_deref(), Some(error));
+    assert_eq!(form.supervisor.as_deref(), Some("supervisor-weather"));
+    assert_eq!(
+        (form.source_branch.as_str(), form.target_branch.as_str()),
+        ("worktree/fix", "main")
+    );
+    // It cannot be run.
+    let refused = session
+        .refused(json!({"command": "merge", "pane_id": "w2:p1"}))
+        .error
+        .unwrap();
+    assert_eq!(refused, format!("Merge unavailable: {error}"));
+
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1"}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Asked supervisor-weather to fix the merge of w-fix".into()
+        }
+    );
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    let items = inbox.undelivered();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, Kind::Conflict);
+    assert!(
+        items[0].text.starts_with("[Corgi] Merging w-fix"),
+        "{}",
+        items[0].text
+    );
+    assert!(
+        items[0].text.contains(&format!(
+            "into main in {} failed: {error}. The user asks you to fix it and report back.",
+            repo.display()
+        )),
+        "{}",
+        items[0].text
+    );
+    session.close();
+}
+
+#[test]
+fn a_failed_fetch_and_an_error_only_the_window_saw_are_handed_to_the_supervisor() {
+    let scratch = ScratchDir::new("serve-fetch-handoff");
+    let (repo, worktree) = repository(&scratch);
+    git(
+        &repo,
+        &["remote", "set-url", "origin", "/nonexistent/corgi-remote"],
+    );
+    let herdr = FakeHerdr::start("serve-fetch-handoff", herd(&repo, &worktree, "done"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+
+    session.ok(json!({"command": "merge_check", "pane_id": "w2:p1"}));
+    let (result, _) = session.ok(json!({"command": "merge", "pane_id": "w2:p1"}));
+    let ReplyResult::MergeOutcome(MergeOutcome::FetchFailed { error, supervisor }) = result else {
+        panic!("{result:?}")
+    };
+    assert!(error.contains("git fetch origin"), "{error}");
+    assert_eq!(supervisor.as_deref(), Some("supervisor-weather"));
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1"}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Asked supervisor-weather to fix the merge of w-fix".into()
+        }
+    );
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    assert!(
+        inbox.undelivered()[0]
+            .text
+            .contains("failed: could not fetch origin/main: git fetch origin"),
+        "{:?}",
+        inbox.undelivered()
+    );
+
+    // No merge is kept now; the window still hands over the error it shows.
+    let lost = "The connection to corgi serve was lost before it replied.";
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1",
+                                        "error": lost}));
+    assert!(matches!(result, ReplyResult::Done { .. }), "{result:?}");
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    let items = inbox.undelivered();
+    // The newer line for the same agent stands in for the older one.
+    assert!(
+        items
+            .iter()
+            .any(|item| item.text.contains(&format!("failed: {lost} The user asks"))),
+        "{items:?}"
+    );
     session.close();
 }
 

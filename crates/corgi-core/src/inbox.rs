@@ -69,7 +69,8 @@ pub enum Kind {
     /// An agent of the project stopped working.
     #[default]
     Wake,
-    /// The user's merge of a worker's branch conflicted.
+    /// The user's merge of a worker's branch conflicted, or failed otherwise
+    /// and the user asks the supervisor to fix it.
     Conflict,
     /// The user merged an agent's branch.
     Merge,
