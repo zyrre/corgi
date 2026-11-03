@@ -1584,3 +1584,62 @@ fn an_exited_agent_has_a_row_that_takes_resume_and_refuses_prompts() {
     assert_eq!(herdr.calls("pane.process_info").len(), 1);
     session.close();
 }
+
+#[test]
+fn orphans_are_found_on_asking_and_a_choice_is_applied_after_a_fresh_look() {
+    let scratch = ScratchDir::new("serve-orphans");
+    let root = scratch.join("webshop");
+    fs::create_dir_all(&root).unwrap();
+    let root = root.to_string_lossy().into_owned();
+    let main = |id: &str| {
+        json!({"workspace_id": id, "label": "webshop supervisor", "tokens": {
+            "corgi_workspace_role": "project-main",
+            "corgi_project_main_tab": format!("{id}:t1"),
+            "corgi_project_root": root,
+        }})
+    };
+    let herdr = FakeHerdr::start(
+        "serve-orphans",
+        json!({
+            "workspaces": [main("w4"), main("w9")],
+            "agents": [{"pane_id": "w4:p1", "workspace_id": "w4", "tab_id": "w4:t1",
+                        "agent": "claude", "name": "webshop-supervisor", "cwd": root,
+                        "agent_status": "idle", "tokens": {"corgi_handler": "session:s1"},
+                        "agent_session": {"value": "s1"}}],
+            "tabs": [{"tab_id": "w4:t1", "workspace_id": "w4"},
+                     {"tab_id": "w9:t1", "workspace_id": "w9"}],
+            "panes": [{"pane_id": "w4:p1", "workspace_id": "w4", "tab_id": "w4:t1"},
+                      {"pane_id": "w9:p1", "workspace_id": "w9", "tab_id": "w9:t1"}],
+        }),
+    );
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+    // Nothing is looked for until asked.
+    assert!(herdr.calls("pane.process_info").is_empty());
+
+    let (result, _) = session.ok(json!({"command": "orphans"}));
+    let ReplyResult::Orphans { candidates } = result else {
+        panic!("{result:?}")
+    };
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    let duplicate = &candidates[0];
+    assert_eq!(duplicate.key, "workspace:w9");
+    let close = duplicate.actions[duplicate.suggested].clone();
+
+    // A stale fingerprint is refused, and nothing closes.
+    let refused = session.refused(json!({"command": "orphan_apply", "key": duplicate.key,
+        "fingerprint": "duplicate w1", "action": close}));
+    assert!(refused.error.unwrap().contains("changed since"));
+    assert!(herdr.calls("workspace.close").is_empty());
+
+    let (result, _) = session.ok(json!({"command": "orphan_apply", "key": duplicate.key,
+        "fingerprint": duplicate.fingerprint, "action": close}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Closed duplicate workspace webshop supervisor".into()
+        }
+    );
+    assert_eq!(herdr.calls("workspace.close")[0]["workspace_id"], "w9");
+    session.close();
+}

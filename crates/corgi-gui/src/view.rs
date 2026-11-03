@@ -350,8 +350,10 @@ impl CorgiWindow {
                             .child(self.font_button(true, cx))
                             .child(self.appearance_toggle(cx)),
                     )
-                    // The keys' dialog, under the buttons above.
-                    .child(self.hotkeys_button(cx)),
+                    // The keys' dialog, under the buttons above, and
+                    // finding orphaned sessions under it.
+                    .child(self.hotkeys_button(cx))
+                    .child(self.orphans_button(cx)),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -615,7 +617,7 @@ impl CorgiWindow {
     }
 
     /// A button with its key drawn on a cap before its label.
-    fn button(
+    pub(crate) fn button(
         &self,
         key: &str,
         label: &str,
@@ -1577,6 +1579,7 @@ impl CorgiWindow {
             Some(Dialog::NewAgentLoading) => self.loading_dialog(),
             Some(Dialog::Merge(merge)) => self.merge_dialog(merge, cx),
             Some(Dialog::Close(close)) => self.close_dialog(close, cx),
+            Some(Dialog::Orphans(orphans)) => self.orphans_dialog(orphans, window, cx),
             None => div().into_any_element(),
         };
         // A refused prompt keeps the keyboard; its frame says so.
@@ -1615,7 +1618,14 @@ impl CorgiWindow {
                     // listener runs before its parent's, so the layer's
                     // never hears it. The dialog's own children heard it first.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .w(self.scaled(720.))
+                    // The orphans' list is wide, as the hotkeys dialog.
+                    .w(
+                        self.scaled(if matches!(self.dialogs.open, Some(Dialog::Orphans(_))) {
+                            900.
+                        } else {
+                            720.
+                        }),
+                    )
                     .max_w(relative(0.92))
                     .flex()
                     .flex_col()
@@ -1630,7 +1640,7 @@ impl CorgiWindow {
             )
     }
 
-    fn dialog_title(&self, title: String) -> impl IntoElement {
+    pub(crate) fn dialog_title(&self, title: String) -> impl IntoElement {
         div()
             .flex()
             .flex_row()
@@ -2204,7 +2214,7 @@ impl CorgiWindow {
 /// How tall a dialog's content may be: what the window leaves below the
 /// dialog's top margin, its padding and frame and a bottom margin, with the
 /// text `scale` times its default size.
-fn dialog_room(window: &Window, scale: f32) -> f32 {
+pub(crate) fn dialog_room(window: &Window, scale: f32) -> f32 {
     f32::from(window.viewport_size().height)
         - DIALOG_TOP
         - (DIALOG_PADDING * scale + DIALOG_BORDER)

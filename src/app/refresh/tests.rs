@@ -34,9 +34,11 @@ use crate::{
 const ROOT: &str = "/repos/refresh-weather";
 
 /// A Herdr whose snapshots wait until the test opens them, and that counts
-/// them and keeps every prompt typed into an agent, until dropped.
+/// them and keeps every prompt typed into an agent, until dropped. Its
+/// clients record their markers in a scratch directory of its own.
 struct SlowHerdr {
     socket: PathBuf,
+    scratch: ScratchDir,
     open: Arc<AtomicBool>,
     snapshots: Arc<AtomicUsize>,
     prompts: Arc<Mutex<Vec<String>>>,
@@ -62,6 +64,7 @@ impl SlowHerdr {
         });
         Self {
             socket,
+            scratch: ScratchDir::new(label),
             open,
             snapshots,
             prompts,
@@ -71,7 +74,13 @@ impl SlowHerdr {
     }
 
     fn client(&self) -> HerdrClient {
-        HerdrClient::from_socket_path(&self.socket)
+        HerdrClient::from_socket_path(&self.socket).with_marker_record(self.marker_record())
+    }
+
+    /// Where its clients record the markers they set or confirm, rather than
+    /// in the user's state directory.
+    fn marker_record(&self) -> PathBuf {
+        self.scratch.join("markers.json")
     }
 
     /// Lets the snapshot asked for, and every later one, through.
@@ -312,6 +321,14 @@ fn a_refresh_asked_for_while_one_runs_waits_for_it_and_wakes_nobody_twice() {
     assert_eq!(herdr.snapshots(), 2);
     assert_eq!(herdr.prompts().len(), 1);
     assert!(!app.refresh_due(), "the next waits its interval");
+
+    // The supervisor's marker the pass confirmed went into the test's own
+    // record, not the user's state directory.
+    let record = corgi_core::markers::read(&herdr.marker_record());
+    assert_eq!(
+        record.panes["w1:p1"].session.as_deref(),
+        Some("supervisor-weather-session")
+    );
 }
 
 #[test]
@@ -423,6 +440,7 @@ fn a_setup_notice_is_shown_once_in_a_popup_after_any_other_closes() {
 
     // Taken while another popup is open, it waits for the prompt to close.
     app.overlay = Overlay::Close(crate::app::CloseWorkspaceForm {
+        pane_id: String::new(),
         workspace_id: "w1".into(),
         tab_id: "t1".into(),
         label: "corgi".into(),

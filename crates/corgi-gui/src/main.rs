@@ -13,6 +13,7 @@ mod keymap;
 mod layout;
 mod link;
 mod options;
+mod orphans;
 mod question;
 mod rows;
 mod store;

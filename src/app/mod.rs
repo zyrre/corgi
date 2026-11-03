@@ -60,6 +60,7 @@ mod bar;
 mod cards;
 mod cli;
 mod navigate;
+pub(crate) mod orphans;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub(crate) use cli::digest_summary;
@@ -69,6 +70,7 @@ pub use cli::{
     supervisor_command, tag_command,
 };
 pub use edit::{EDIT_USAGE, edit_command};
+pub use orphans::{ORPHANS_USAGE, orphans_command};
 mod hook;
 pub(crate) use edit::{open_checkout, selection_file, write_selection};
 pub use hook::{HOOK_USAGE, hook_command};
@@ -190,6 +192,8 @@ pub(crate) struct App {
     recovery_job: Job<Result<recovery::Event>, String>,
     /// Starts an exited agent again (`R`).
     resume_job: Job<Result<String, String>>,
+    /// Looking for orphaned sessions, or applying a choice, for the dialog.
+    orphans_job: Job<Result<orphans::Found>>,
     /// The model catalogs and harness configurations behind the new-agent
     /// form's selectors.
     model_catalogs: ModelCatalogs,
@@ -277,6 +281,7 @@ impl App {
             merge_job: Job::default(),
             recovery_job: Job::default(),
             resume_job: Job::default(),
+            orphans_job: Job::default(),
             model_catalogs: ModelCatalogs::default(),
             inboxes: None,
             status_hold_until: None,
@@ -525,6 +530,7 @@ impl App {
             Overlay::Close(_) => self.handle_close_workspace_key(key),
             Overlay::Merge(_) => self.handle_merge_worktree_key(key),
             Overlay::Sessions(_) => self.handle_sessions_key(key),
+            Overlay::Orphans(_) => self.handle_orphans_key(key),
             Overlay::Notice(_) => {
                 if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
                     self.overlay = Overlay::None;
@@ -573,6 +579,7 @@ impl App {
             KeyCode::Char('r') => self.request_refresh(),
             KeyCode::Char('S') => self.begin_sessions(),
             KeyCode::Char('R') => self.resume_selected(),
+            KeyCode::Char('o') => self.begin_orphans(),
             _ => {}
         }
         false
@@ -642,6 +649,7 @@ impl App {
         self.show_pending_notice();
         self.poll_launch();
         self.poll_recovery();
+        self.poll_orphans();
         self.poll_plan_usage();
         self.poll_codex_task_titles();
         self.poll_model_catalogs();

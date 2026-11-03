@@ -163,6 +163,7 @@ Exactly one per request, with its `id`.
 | `close_form` | a `CloseForm` | `close_check` |
 | `close_dirty` | `message` | `close` on a worktree with uncommitted changes |
 | `digest` | `text` | `digest` |
+| `orphans` | `candidates` | `orphans` |
 
 ## The state
 
@@ -365,6 +366,8 @@ finish.
 | `focus` | `pane_id` | **yes** | Brings the agent's pane into view in Herdr. |
 | `edit` | `pane_id` | **yes** | Opens the agent's checkout in the editor, in a new Herdr tab it goes to. |
 | `digest` | `project_root`, `lookup` | | Reads the supervisor's memory. |
+| `orphans` | | | Finds orphaned sessions; reads only. |
+| `orphan_apply` | `key`, `fingerprint`, `action` | | Does what the user chose for one. |
 
 ### `prompt`
 
@@ -526,7 +529,9 @@ A merge is the dashboard's `m` dialog as three commands.
 ```
 
 `target` is `worktree` (removes the checkout from disk; the branch stays),
-`tab` (its tab in the project's workspace) or `workspace`. `close` does it.
+`tab` (its tab in the project's workspace), `workspace` (one Corgi created)
+or `pane` (the agent's pane alone, in a workspace Corgi did not create).
+`close` does it.
 A worktree with uncommitted changes replies `close_dirty`; confirm again
 with `force: true` to discard them.
 
@@ -578,3 +583,37 @@ What `corgi digest` prints, as `text`. `lookup.kind` is `summary` (the
 default; the whole digest), `search` and `decision` (with `words`), `show`
 (with `handle`, such as `decisions.md:12`), `ledger` and `brief` (with
 `id`).
+
+### Orphaned sessions
+
+`orphans` looks for the sessions Corgi gets wrong, only when asked, and
+replies with each candidate as `corgi orphans --json` prints it
+(`corgi_core::orphans::Candidate`, re-exported as `protocol::Orphan`):
+
+```json
+{"kind":"orphans","candidates":[{"key":"pane:wQ:p1","cause":"worker",
+ "confidence":"certain","pane_id":"wQ:p1","workspace_id":"wQ",
+ "workspace":"pay","harness":"claude","name":"restored-wq",
+ "cwd":"/repos/webshop/.claude/worktrees/pay",
+ "summary":"Worker its supervisor lost track of",
+ "evidence":["Ledger entry r-pay (w-pay, dispatched) names this checkout and branch pay"],
+ "actions":[{"kind":"worker","project":"webshop","project_root":"/repos/webshop",
+             "request_id":"r-pay","agent":"w-pay"},
+            {"kind":"leave"},{"kind":"close","target":"worktree"}],
+ "suggested":0,"fingerprint":"worker wQ:p1 6adb… r-pay"}]}
+```
+
+- `cause` is `hidden`, `not_detected`, `supervisor`, `worker`,
+  `no_project` or `duplicate`; `confidence` is `certain`, `likely` or
+  `guess`. `fix`, when present, is what the user can run outside Corgi
+  (`herdr integration install codex`).
+- `actions` are what the evidence allows, never empty; `suggested` is the
+  index of the one to preselect. An action's `kind` is `supervisor`,
+  `worker`, `close` (with the `target` the close dialog names) or `leave`.
+
+`orphan_apply` sends one candidate's `key` and `fingerprint` back with the
+chosen `action`, as `orphans` gave it. Serve looks again first and refuses a
+candidate that is gone, whose fingerprint changed (another session or
+process in its pane), or that no longer offers the action; else it replies
+`done`. `leave` is kept in Corgi's state directory, and the candidate is not
+listed again until its evidence changes.

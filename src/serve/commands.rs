@@ -31,11 +31,12 @@ use corgi_core::{
         tell_supervisor_about_merge,
     },
     model::DashboardAgent,
-    progress,
+    orphans, progress,
     projects::{ProjectMemory, known_projects, new_project_parent, project_choices},
     protocol::{
-        Choice, CloseForm, Command, DigestQuery, MergeForm, MergeOutcome, NewAgentForm, Progress,
-        Reply, ReplyResult, Request, ServerMessage, SpawnRequest, UpstreamChoice,
+        Choice, CloseForm, Command, DigestQuery, MergeForm, MergeOutcome, NewAgentForm,
+        OrphanAction, Progress, Reply, ReplyResult, Request, ServerMessage, SpawnRequest,
+        UpstreamChoice,
     },
     restart, supervisor,
     tag::{TagOptions, tag_agent},
@@ -157,7 +158,32 @@ impl Server {
                 project_root,
                 lookup,
             } => self.digest(id, project_root, lookup),
+            Command::Orphans => self.orphans(id),
+            Command::OrphanApply {
+                key,
+                fingerprint,
+                action,
+            } => self.orphan_apply(id, key, fingerprint, action),
         }
+    }
+
+    /// Finds orphaned sessions, on the window's asking only. Reads only.
+    fn orphans(&mut self, id: u64) {
+        self.work(id, false, move |shared| {
+            let options = orphans::Options::in_state(None, shared.inboxes.clone());
+            Ok(ReplyResult::Orphans {
+                candidates: orphans::detect(&shared.client, &options)?,
+            })
+        });
+    }
+
+    /// Does what the user chose for one orphan.
+    fn orphan_apply(&mut self, id: u64, key: String, fingerprint: String, action: OrphanAction) {
+        self.work(id, true, move |shared| {
+            let options = orphans::Options::in_state(None, shared.inboxes.clone());
+            let message = orphans::apply(&shared.client, &options, &key, &fingerprint, &action)?;
+            Ok(ReplyResult::Done { message })
+        });
     }
 
     fn done(&self, id: u64, message: &str) {
@@ -793,6 +819,7 @@ impl Server {
             }
             CloseTarget::Tab { .. } => ("tab", None, "Close tab"),
             CloseTarget::Workspace => ("workspace", None, "Close workspace"),
+            CloseTarget::Pane => ("pane", None, "Close pane"),
         };
         self.shared.output.reply(answered(
             id,
@@ -812,10 +839,7 @@ impl Server {
         let Some(agent) = self.agent_or_refuse(id, pane_id) else {
             return;
         };
-        let mut form = close_form(&agent, &self.workspaces, &self.agents);
-        if let CloseTarget::Worktree { force: forced, .. } = &mut form.target {
-            *forced = force;
-        }
+        let form = close_form(&agent, &self.workspaces, &self.agents).forced(force);
         self.work(id, true, move |shared| {
             match close(&shared.client, None, form) {
                 Closed::Done(message) => Ok(ReplyResult::Done { message }),

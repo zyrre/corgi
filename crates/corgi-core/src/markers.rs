@@ -226,6 +226,18 @@ pub fn spawn_lock(
     Ok(Some(lock))
 }
 
+/// The Corgi tokens `tokens` holds, as [`mark_pane`] takes the complete set
+/// to keep: a mark added to a pane passes these along with it.
+pub fn corgi_pane_tokens(tokens: &Tokens) -> Vec<(&str, &str)> {
+    tokens
+        .iter()
+        .filter(|(key, _)| {
+            PANE_TOKENS.contains(&key.as_str()) && key.as_str() != OLD_SUPERVISOR_TOKEN
+        })
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect()
+}
+
 /// Only Herdr's live session can establish pane ownership.
 pub fn session_of(agent: &AgentInfo) -> Option<&str> {
     supervisor::native_session(agent)

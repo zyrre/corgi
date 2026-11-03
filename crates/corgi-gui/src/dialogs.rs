@@ -5,9 +5,12 @@
 
 use std::time::Instant;
 
-use corgi_core::protocol::{
-    BacklogEntry, CloseForm, MergeForm, MergeOutcome, Progress, Question, Reply, ReplyResult,
-    UpstreamChoice,
+use corgi_core::{
+    orphans::Choices,
+    protocol::{
+        BacklogEntry, CloseForm, MergeForm, MergeOutcome, Progress, Question, Reply, ReplyResult,
+        UpstreamChoice,
+    },
 };
 
 use crate::{
@@ -68,6 +71,8 @@ pub enum Dialog {
     NewAgentLoading,
     Merge(Box<Merge>),
     Close(Close),
+    /// Find orphaned sessions: the candidates and the choice for each.
+    Orphans(Box<Orphans>),
 }
 
 impl Dialog {
@@ -247,6 +252,32 @@ pub struct Close {
     pub dirty: Option<String>,
     pub running: bool,
     pub error: Option<String>,
+}
+
+/// The "Orphaned sessions" dialog: looking, then the list with a choice for
+/// each candidate (`corgi_core::orphans::Choices`, as the dashboard's), and
+/// the candidate whose choice is being applied.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Orphans {
+    pub looking: bool,
+    pub choices: Choices,
+    /// The key of the candidate being applied.
+    pub applying: Option<String>,
+}
+
+impl Orphans {
+    pub fn looking() -> Self {
+        Self {
+            looking: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether keys can change the choices: the list is here and nothing
+    /// is being applied.
+    pub fn idle(&self) -> bool {
+        !self.looking && self.applying.is_none()
+    }
 }
 
 /// A line in the status bar saying what a command did.
@@ -487,6 +518,38 @@ impl Dialogs {
                 }
                 None
             }
+            Purpose::Orphans => {
+                let Some(Dialog::Orphans(orphans)) = &mut self.open else {
+                    // Closed while it looked.
+                    return None;
+                };
+                orphans.looking = false;
+                match (error, reply.result) {
+                    (Some(error), _) => orphans.choices.error = Some(error),
+                    (None, Some(ReplyResult::Orphans { candidates })) => {
+                        orphans.choices.show(candidates);
+                    }
+                    _ => orphans.choices.error = Some("corgi serve sent no list".into()),
+                }
+                None
+            }
+            Purpose::OrphanApply { key } => {
+                match (error, &mut self.open) {
+                    (Some(error), Some(Dialog::Orphans(orphans))) => {
+                        orphans.applying = None;
+                        orphans.choices.error = Some(error);
+                    }
+                    (Some(error), _) => self.say(error, true),
+                    (None, Some(Dialog::Orphans(orphans))) => {
+                        orphans.applying = None;
+                        let message = message.unwrap_or_else(|| "Done".into());
+                        orphans.choices.applied(&key, message.clone());
+                        self.say(message, false);
+                    }
+                    (None, _) => self.say(message.unwrap_or_else(|| "Done".into()), false),
+                }
+                None
+            }
             Purpose::Close => {
                 match (error, reply.result, &mut self.open) {
                     (Some(error), _, Some(Dialog::Close(close))) => {
@@ -536,6 +599,14 @@ impl Dialogs {
                 (Purpose::Close, Some(Dialog::Close(close))) => {
                     close.running = false;
                     close.error = Some(why.into());
+                }
+                (
+                    Purpose::Orphans | Purpose::OrphanApply { .. },
+                    Some(Dialog::Orphans(orphans)),
+                ) => {
+                    orphans.looking = false;
+                    orphans.applying = None;
+                    orphans.choices.error = Some(why.into());
                 }
                 (Purpose::NewAgentForm, Some(Dialog::NewAgentLoading)) => {
                     self.open = None;
@@ -1036,5 +1107,91 @@ mod tests {
         assert_eq!(followup, Some(Followup::ShowSupervisor("w1:p1".into())));
         dialogs.reply(Purpose::Tag, refused("w-fix is working", None));
         assert!(dialogs.flash.as_ref().unwrap().error);
+    }
+
+    fn orphan(key: &str) -> corgi_core::protocol::Orphan {
+        use corgi_core::protocol::{OrphanAction, OrphanCause, OrphanConfidence};
+        corgi_core::protocol::Orphan {
+            key: key.into(),
+            cause: OrphanCause::Hidden,
+            confidence: OrphanConfidence::Likely,
+            pane_id: Some("wR:p2".into()),
+            workspace_id: "wR".into(),
+            workspace: "scratchpad".into(),
+            harness: "codex".into(),
+            name: "codex".into(),
+            cwd: "/repos/scratchpad".into(),
+            summary: String::new(),
+            evidence: vec![],
+            fix: None,
+            actions: vec![
+                OrphanAction::Leave,
+                OrphanAction::Close {
+                    target: "pane".into(),
+                },
+            ],
+            suggested: 0,
+            fingerprint: format!("hidden {key}"),
+        }
+    }
+
+    #[test]
+    fn the_orphans_list_arrives_and_an_applied_choice_takes_its_row_away() {
+        let mut dialogs = Dialogs {
+            open: Some(Dialog::Orphans(Box::new(Orphans::looking()))),
+            ..Dialogs::default()
+        };
+        dialogs.reply(
+            Purpose::Orphans,
+            ok(ReplyResult::Orphans {
+                candidates: vec![orphan("pane:a"), orphan("pane:b")],
+            }),
+        );
+        let orphans = |dialogs: &Dialogs| match &dialogs.open {
+            Some(Dialog::Orphans(orphans)) => orphans.as_ref().clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(orphans(&dialogs).idle());
+        assert_eq!(orphans(&dialogs).choices.candidates.len(), 2);
+
+        // A refusal keeps the row and says why in the dialog.
+        if let Some(Dialog::Orphans(open)) = &mut dialogs.open {
+            open.applying = Some("pane:a".into());
+        }
+        dialogs.reply(
+            Purpose::OrphanApply {
+                key: "pane:a".into(),
+            },
+            refused("codex changed since the list was read", None),
+        );
+        let now = orphans(&dialogs);
+        assert!(now.idle());
+        assert_eq!(now.choices.candidates.len(), 2);
+        assert_eq!(
+            now.choices.error.as_deref(),
+            Some("codex changed since the list was read")
+        );
+
+        dialogs.reply(
+            Purpose::OrphanApply {
+                key: "pane:a".into(),
+            },
+            done("Left codex as it is"),
+        );
+        let now = orphans(&dialogs);
+        assert_eq!(now.choices.candidates.len(), 1);
+        assert_eq!(now.choices.candidates[0].key, "pane:b");
+        assert_eq!(now.choices.done, ["Left codex as it is"]);
+        assert_eq!(dialogs.flash.unwrap().text, "Left codex as it is");
+
+        // A lost connection while it looks says so in the dialog.
+        let mut dialogs = Dialogs {
+            open: Some(Dialog::Orphans(Box::new(Orphans::looking()))),
+            ..Dialogs::default()
+        };
+        dialogs.lost(&[Purpose::Orphans]);
+        let now = orphans(&dialogs);
+        assert!(!now.looking);
+        assert!(now.choices.error.unwrap().contains("connection"));
     }
 }

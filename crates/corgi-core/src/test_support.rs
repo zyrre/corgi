@@ -108,6 +108,9 @@ pub fn answer(listener: &UnixListener, reply: impl FnOnce(&Value) -> Value) {
 pub struct FakeHerdr {
     pub socket: PathBuf,
     snapshot: Arc<Mutex<Value>>,
+    /// Each pane's foreground processes, as `pane.process_info` gives them;
+    /// a pane not named has none.
+    processes: Arc<Mutex<std::collections::HashMap<String, Value>>>,
     prompts: Arc<Mutex<Prompts>>,
     requests: Arc<Mutex<Vec<Value>>>,
     stop: Arc<AtomicBool>,
@@ -130,12 +133,14 @@ pub enum Prompts {
 impl FakeHerdr {
     pub fn start(label: &str, snapshot: Value) -> Self {
         let snapshot = Arc::new(Mutex::new(snapshot));
+        let processes = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let prompts = Arc::new(Mutex::new(Prompts::Accept));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let (socket, server) = {
-            let (snapshot, prompts, requests, stop) = (
+            let (snapshot, processes, prompts, requests, stop) = (
                 snapshot.clone(),
+                processes.clone(),
                 prompts.clone(),
                 requests.clone(),
                 stop.clone(),
@@ -147,10 +152,14 @@ impl FakeHerdr {
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            let (snapshot, prompts, requests) =
-                                (snapshot.clone(), prompts.clone(), requests.clone());
+                            let (snapshot, processes, prompts, requests) = (
+                                snapshot.clone(),
+                                processes.clone(),
+                                prompts.clone(),
+                                requests.clone(),
+                            );
                             thread::spawn(move || {
-                                serve_one(stream, &snapshot, &prompts, &requests)
+                                serve_one(stream, &snapshot, &processes, &prompts, &requests)
                             });
                         }
                         Err(_) => thread::sleep(std::time::Duration::from_millis(2)),
@@ -161,6 +170,7 @@ impl FakeHerdr {
         Self {
             socket,
             snapshot,
+            processes,
             prompts,
             requests,
             stop,
@@ -171,6 +181,15 @@ impl FakeHerdr {
     /// Replaces the session snapshot Herdr gives from now on.
     pub fn set_snapshot(&self, snapshot: Value) {
         *self.snapshot.lock().expect("snapshot") = snapshot;
+    }
+
+    /// The foreground processes of `pane_id` from now on, each a JSON
+    /// object as Herdr gives it (`name`, `cwd`, `argv`, `pid`).
+    pub fn set_processes(&self, pane_id: &str, processes: Value) {
+        self.processes
+            .lock()
+            .expect("processes")
+            .insert(pane_id.to_string(), processes);
     }
 
     /// How `agent.prompt` is answered from now on.
@@ -219,6 +238,7 @@ impl Drop for FakeHerdr {
 fn serve_one(
     stream: std::os::unix::net::UnixStream,
     snapshot: &Mutex<Value>,
+    processes: &Mutex<std::collections::HashMap<String, Value>>,
     prompts: &Mutex<Prompts>,
     requests: &Mutex<Vec<Value>>,
 ) {
@@ -269,6 +289,19 @@ fn serve_one(
             "read": {"pane_id": params["target"], "text": ""},
         }),
         "plugin.list" => serde_json::json!({"type": "plugin_list", "plugins": []}),
+        "pane.process_info" => {
+            let pane = params["pane_id"].as_str().unwrap_or_default();
+            let foreground = processes
+                .lock()
+                .expect("processes")
+                .get(pane)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            serde_json::json!({
+                "type": "pane_process_info",
+                "process_info": {"pane_id": pane, "foreground_processes": foreground},
+            })
+        }
         _ => serde_json::json!({"type": "ok"}),
     };
     let mut response = serde_json::json!({"id": request["id"], "result": result});
@@ -294,4 +327,55 @@ impl Progress for Recorded {
     fn report(&mut self, message: String) {
         self.0.push(message);
     }
+}
+
+/// Runs `git args` in `dir` with a test identity and no signing, whatever
+/// the developer's own Git configuration says, and fails the test if Git
+/// does.
+pub fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Corgi Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "Corgi Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?} in {}", dir.display());
+}
+
+/// A repository at `dir` on branch `main` with one empty commit, created
+/// with its parents; returns its canonical path, as Git reports paths.
+pub fn git_repo(dir: &Path) -> PathBuf {
+    fs::create_dir_all(dir).expect("create repository directory");
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    dir.canonicalize().expect("canonical repository path")
+}
+
+/// A plain linked worktree of `repo` at `dir` on a new `branch`, as
+/// `git worktree add` (and Claude Code's `--worktree`) makes one; returns
+/// its canonical path.
+pub fn git_worktree(repo: &Path, dir: &Path, branch: &str) -> PathBuf {
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            branch,
+            &dir.to_string_lossy(),
+        ],
+    );
+    dir.canonicalize().expect("canonical worktree path")
 }

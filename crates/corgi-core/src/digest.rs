@@ -213,6 +213,8 @@ pub struct LedgerEntry {
     pub agent: String,
     pub status: String,
     pub branch: String,
+    /// The checkout the worker was sent to, when the supervisor wrote it.
+    pub cwd: String,
     pub summary: String,
     pub outcome: String,
     /// The supervisor's questions to the user about this work, still unanswered,
@@ -225,9 +227,33 @@ pub struct LedgerEntry {
 impl LedgerEntry {
     /// Statuses whose work needs nothing more: `done` is finished work with
     /// nothing to merge (a check, a review, an investigation).
-    fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         matches!(self.status.as_str(), "merged" | "abandoned" | "done")
     }
+}
+
+/// Whether `entry` is about the agent named `name` now, spawned with the
+/// request id `request`: the entry names it, is the request's own entry, or
+/// names the agent the request's entry was written for, since a worker that
+/// Herdr renamed keeps its request id but not its name. `ledger` is every
+/// id's newest entry.
+fn entry_is_about(
+    entry: &LedgerEntry,
+    ledger: &[LedgerEntry],
+    name: &str,
+    request: Option<&str>,
+) -> bool {
+    if entry.agent.is_empty() {
+        return false;
+    }
+    let Some(request) = request.filter(|request| !request.is_empty()) else {
+        return entry.agent == name;
+    };
+    entry.agent == name
+        || entry.id == request
+        || ledger
+            .iter()
+            .any(|spawned| spawned.id == request && spawned.agent == entry.agent)
 }
 
 /// What one line of `ledger.jsonl` holds.
@@ -263,6 +289,7 @@ fn read_ledger_line(line: &str, number: usize) -> LedgerLine {
         agent: field("agent"),
         status: field("status"),
         branch: field("branch"),
+        cwd: field("cwd"),
         summary: field("summary"),
         outcome: field("outcome"),
         questions: match object.get("questions") {
@@ -348,14 +375,17 @@ pub fn compact_ledger(text: &str) -> Option<(String, String)> {
 
 /// The questions the newest ledger entry of `agent` leaves open, or `None`
 /// when it leaves none: its status is `needs-answer` or its `questions` are
-/// not empty. An agent without an entry, such as one the user started, has
-/// none. An entry with status `needs-answer` but no questions listed gives
-/// an empty list.
-pub fn open_questions(ledger: &str, agent: &str) -> Option<Vec<String>> {
-    let entry = parse_ledger(ledger)
-        .into_iter()
-        .filter(|entry| entry.agent == agent)
-        .max_by_key(|entry| entry.line)?;
+/// not empty. An agent spawned with the request id `request` is found under
+/// the name it was spawned with too. An agent without an entry, such as one
+/// the user started, has none. An entry with status `needs-answer` but no
+/// questions listed gives an empty list.
+pub fn open_questions(ledger: &str, agent: &str, request: Option<&str>) -> Option<Vec<String>> {
+    let entries = parse_ledger(ledger);
+    let entry = entries
+        .iter()
+        .filter(|entry| entry_is_about(entry, &entries, agent, request))
+        .max_by_key(|entry| entry.line)?
+        .clone();
     (entry.status == "needs-answer" || !entry.questions.is_empty()).then_some(entry.questions)
 }
 
@@ -381,6 +411,9 @@ pub fn all_open_questions(ledger: &str) -> Vec<(String, String)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveAgent {
     pub name: String,
+    /// The `corgi_request` id its spawn tagged it with, which is the id of
+    /// its brief and ledger entry and, unlike its name, survives a rename.
+    pub request: Option<String>,
     pub state: String,
     pub context_percent: Option<u8>,
 }
@@ -481,7 +514,7 @@ pub fn render(input: &DigestInput) -> String {
     if open.is_empty() {
         out.push_str("none\n");
     }
-    out.push_str(&open_work(&open, input.fleet, input.now));
+    out.push_str(&open_work(&open, &ledger, input.fleet, input.now));
 
     let _ = writeln!(out, "\n# Recently finished");
     let finished: Vec<_> = ledger
@@ -569,11 +602,23 @@ pub fn render(input: &DigestInput) -> String {
 /// [`OPEN_WORK_BYTES`] (an entry of a running agent, or one `needs-answer` or
 /// `blocked`, always), and listed in ledger order; one more line names those
 /// left out.
-fn open_work(open: &[&LedgerEntry], fleet: &[LiveAgent], now: u64) -> String {
+fn open_work(
+    open: &[&LedgerEntry],
+    ledger: &[LedgerEntry],
+    fleet: &[LiveAgent],
+    now: u64,
+) -> String {
+    // By name, else by its spawn's request id: a renamed worker, such as one
+    // brought back under another name, is still the entry's.
     let running = |entry: &LedgerEntry| {
         fleet
             .iter()
             .find(|agent| !entry.agent.is_empty() && agent.name == entry.agent)
+            .or_else(|| {
+                fleet.iter().find(|agent| {
+                    entry_is_about(entry, ledger, &agent.name, agent.request.as_deref())
+                })
+            })
     };
     let stale = |entry: &LedgerEntry| {
         entry.status == "reported"
@@ -642,7 +687,7 @@ fn open_entry(entry: &LedgerEntry, live: Option<&LiveAgent>) -> String {
     let mut out = if entry.agent.is_empty() {
         format!("- {} [{}] no worker\n", entry.id, or_dash(&entry.status))
     } else {
-        let live = live.map_or_else(
+        let live_state = live.map_or_else(
             || "**NOT RUNNING**".to_string(),
             |agent| {
                 let context = agent
@@ -651,8 +696,12 @@ fn open_entry(entry: &LedgerEntry, live: Option<&LiveAgent>) -> String {
                 format!("{}, ctx {context}", agent.state)
             },
         );
+        let renamed = live
+            .filter(|agent| agent.name != entry.agent)
+            .map(|agent| format!(" (now {})", agent.name))
+            .unwrap_or_default();
         format!(
-            "- {} [{}] agent {}: {live}; branch {}\n",
+            "- {} [{}] agent {}{renamed}: {live_state}; branch {}\n",
             entry.id,
             or_dash(&entry.status),
             entry.agent,
@@ -825,6 +874,7 @@ not json
 
         let fleet = [LiveAgent {
             name: "w-c".into(),
+            request: None,
             state: "idle".into(),
             context_percent: Some(41),
         }];
@@ -832,6 +882,49 @@ not json
         assert!(rendered.contains("# Open work (2)\n- b [dispatched] agent w-b: **NOT RUNNING**"));
         assert!(rendered.contains("- c [reported] agent w-c: idle, ctx 41%; branch worktree/c"));
         assert!(rendered.contains("# Recently finished\n- 2026-10-01  merged  w-a  done well\n"));
+    }
+
+    #[test]
+    fn a_renamed_worker_is_found_by_its_request_id_and_named_as_it_is_now() {
+        let ledger = concat!(
+            r#"{"id":"20261103-w-a","agent":"w-a","status":"dispatched","branch":"worktree/a"}"#,
+            "\n",
+            r#"{"id":"20261103-w-b","agent":"w-b","status":"dispatched","branch":"worktree/b"}"#,
+            "\n",
+            r#"{"id":"20261103-w-a2","agent":"w-a","status":"dispatched","branch":"worktree/a"}"#,
+            "\n",
+        );
+        let fleet = [
+            LiveAgent {
+                name: "restored-w1".into(),
+                request: Some("20261103-w-a".into()),
+                state: "idle".into(),
+                context_percent: Some(12),
+            },
+            // Another worker's request id under the entry's old name: the
+            // name still wins.
+            LiveAgent {
+                name: "w-b".into(),
+                request: Some("20261103-w-other".into()),
+                state: "working".into(),
+                context_percent: None,
+            },
+        ];
+        let rendered = render(&input("", ledger, &fleet));
+        assert!(
+            rendered.contains(
+                "- 20261103-w-a [dispatched] agent w-a (now restored-w1): idle, ctx 12%; \
+                 branch worktree/a\n"
+            ),
+            "{rendered}"
+        );
+        // A follow-up written under the name it was spawned with.
+        assert!(
+            rendered.contains("- 20261103-w-a2 [dispatched] agent w-a (now restored-w1): idle"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("- 20261103-w-b [dispatched] agent w-b: working, ctx -;"));
+        assert!(!rendered.contains("NOT RUNNING"));
     }
 
     #[test]
@@ -909,24 +1002,48 @@ not json
         let other = r#"{"id":"b","agent":"w-b","status":"needs-answer","questions":["Q1: B?"]}"#;
 
         assert_eq!(
-            open_questions(&format!("{dispatched}\n{asked}"), "w-a"),
+            open_questions(&format!("{dispatched}\n{asked}"), "w-a", None),
             Some(vec!["Q2: Keep the flag?".into(), "Q3: Rename it?".into()])
         );
         assert_eq!(
-            open_questions(listed, "w-a"),
+            open_questions(listed, "w-a", None),
             Some(vec!["Q4: Which default?".into()])
         );
-        assert_eq!(open_questions(bare, "w-a"), Some(Vec::new()));
+        assert_eq!(open_questions(bare, "w-a", None), Some(Vec::new()));
         // A newer line that clears the questions answers them.
-        assert_eq!(open_questions(&format!("{asked}\n{answered}"), "w-a"), None);
-        // Another agent's questions, no entry, no ledger, or a broken one.
         assert_eq!(
-            open_questions(&format!("{dispatched}\n{other}"), "w-a"),
+            open_questions(&format!("{asked}\n{answered}"), "w-a", None),
             None
         );
-        assert_eq!(open_questions(other, "w-a"), None);
-        assert_eq!(open_questions("", "w-a"), None);
-        assert_eq!(open_questions("not json\n{", "w-a"), None);
+        // Another agent's questions, no entry, no ledger, or a broken one.
+        assert_eq!(
+            open_questions(&format!("{dispatched}\n{other}"), "w-a", None),
+            None
+        );
+        assert_eq!(open_questions(other, "w-a", None), None);
+        assert_eq!(open_questions("", "w-a", None), None);
+        assert_eq!(open_questions("not json\n{", "w-a", None), None);
+
+        // Renamed, the worker is found by its request id, and so is a
+        // follow-up entry written under the name it was spawned with.
+        let follow_up =
+            r#"{"id":"a2","agent":"w-a","status":"needs-answer","questions":["Q5: Split it?"]}"#;
+        assert_eq!(
+            open_questions(asked, "restored-w1", Some("a")),
+            Some(vec!["Q2: Keep the flag?".into(), "Q3: Rename it?".into()])
+        );
+        assert_eq!(
+            open_questions(
+                &format!("{dispatched}\n{follow_up}"),
+                "restored-w1",
+                Some("a")
+            ),
+            Some(vec!["Q5: Split it?".into()])
+        );
+        assert_eq!(
+            open_questions(&format!("{asked}\n{other}"), "restored-w1", Some("c")),
+            None
+        );
     }
 
     /// 2026-10-27T12:00:00Z.
@@ -974,6 +1091,7 @@ not json
         .join("\n");
         let fleet = [LiveAgent {
             name: "w-live".into(),
+            request: None,
             state: "idle".into(),
             context_percent: None,
         }];
@@ -1103,8 +1221,8 @@ not json
         assert_eq!(strip(parse_ledger(&kept)), strip(parse_ledger(&ledger)));
         for agent in ["w-a", "w-b", "w-x"] {
             assert_eq!(
-                open_questions(&kept, agent),
-                open_questions(&ledger, agent),
+                open_questions(&kept, agent, None),
+                open_questions(&ledger, agent, None),
                 "{agent}"
             );
         }

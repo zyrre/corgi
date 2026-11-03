@@ -224,30 +224,30 @@
 <text x="9" y="553" fill="#585b70">S</text>
 <text x="27 36 45 54 63 72 81 90" y="553" fill="#585b70">sessions</text>
 <text x="108" y="553" fill="#585b70">·</text>
-<text x="126 135 144" y="553" fill="#585b70">j/k</text>
-<text x="162 171 180 189 198 207" y="553" fill="#585b70">select</text>
-<text x="225" y="553" fill="#585b70">·</text>
-<text x="243 252 261" y="553" fill="#585b70">→/←</text>
-<text x="279 288 297 306 315 324 333 342 351 360 369 378 387 396 405" y="553" fill="#585b70">expand/collapse</text>
-<text x="423 432 441 450 459 468 477" y="553" fill="#585b70">project</text>
-<text x="495" y="553" fill="#585b70">·</text>
-<text x="513 522 531 540 549" y="553" fill="#585b70">space</text>
-<text x="567 576 585 594 603 612 621" y="553" fill="#585b70">session</text>
-<text x="639" y="553" fill="#585b70">·</text>
-<text x="657" y="553" fill="#585b70">p</text>
-<text x="675 684 693 702 711 720" y="553" fill="#585b70">prompt</text>
-<text x="738" y="553" fill="#585b70">·</text>
-<text x="756" y="553" fill="#585b70">n</text>
-<text x="774 783 792" y="553" fill="#585b70">new</text>
-<text x="810 819 828 837 846" y="553" fill="#585b70">agent</text>
-<text x="864" y="553" fill="#585b70">·</text>
-<text x="882" y="553" fill="#585b70">t</text>
-<text x="900 909 918 927 936 945 954" y="553" fill="#585b70">scratch</text>
+<text x="126" y="553" fill="#585b70">o</text>
+<text x="144 153 162 171 180 189 198" y="553" fill="#585b70">orphans</text>
+<text x="216" y="553" fill="#585b70">·</text>
+<text x="234 243 252" y="553" fill="#585b70">j/k</text>
+<text x="270 279 288 297 306 315" y="553" fill="#585b70">select</text>
+<text x="333" y="553" fill="#585b70">·</text>
+<text x="351 360 369" y="553" fill="#585b70">→/←</text>
+<text x="387 396 405 414 423 432 441 450 459 468 477 486 495 504 513" y="553" fill="#585b70">expand/collapse</text>
+<text x="531 540 549 558 567 576 585" y="553" fill="#585b70">project</text>
+<text x="603" y="553" fill="#585b70">·</text>
+<text x="621 630 639 648 657" y="553" fill="#585b70">space</text>
+<text x="675 684 693 702 711 720 729" y="553" fill="#585b70">session</text>
+<text x="747" y="553" fill="#585b70">·</text>
+<text x="765" y="553" fill="#585b70">p</text>
+<text x="783 792 801 810 819 828" y="553" fill="#585b70">prompt</text>
+<text x="846" y="553" fill="#585b70">·</text>
+<text x="864" y="553" fill="#585b70">n</text>
+<text x="882 891 900" y="553" fill="#585b70">new</text>
+<text x="918 927 936 945 954" y="553" fill="#585b70">agent</text>
 <text x="972" y="553" fill="#585b70">·</text>
-<text x="990" y="553" fill="#585b70">s</text>
-<text x="1008 1017 1026 1035 1044 1053 1062 1071 1080 1089" y="553" fill="#585b70">supervisor</text>
-<text x="1107" y="553" fill="#585b70">·</text>
-<text x="1125" y="553" fill="#585b70">e</text>
-<text x="1143 1152 1161" y="553" fill="#585b70">edi</text>
+<text x="990" y="553" fill="#585b70">t</text>
+<text x="1008 1017 1026 1035 1044 1053 1062" y="553" fill="#585b70">scratch</text>
+<text x="1080" y="553" fill="#585b70">·</text>
+<text x="1098" y="553" fill="#585b70">s</text>
+<text x="1116 1125 1134 1143 1152 1161" y="553" fill="#585b70">superv</text>
 </g>
 </svg>

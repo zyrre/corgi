@@ -12,7 +12,7 @@ use gpui::{
 };
 
 use crate::{
-    dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage},
+    dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage, Orphans},
     form::{self, Key},
     hotkeys::HotkeysDialog,
     keymap::{self, Action, Hit, Key as KeymapKey, Keymap},
@@ -89,6 +89,8 @@ pub struct CorgiWindow {
     pub prompt_input: Entity<TextInput>,
     pub task_input: Entity<TextInput>,
     pub overview_scroll: ScrollHandle,
+    /// The orphans dialog's list, which keys keep on the selected card.
+    pub orphans_scroll: ScrollHandle,
     /// Where the overview's rows were drawn, to scroll one into view.
     pub rows: Rows,
     /// The answer box's question text, back at its top for each question.
@@ -243,6 +245,7 @@ impl CorgiWindow {
             prompt_input,
             task_input,
             overview_scroll: ScrollHandle::new(),
+            orphans_scroll: ScrollHandle::new(),
             rows: Rows::default(),
             question_scroll: ScrollHandle::new(),
             drag: None,
@@ -989,6 +992,64 @@ impl CorgiWindow {
         cx.notify();
     }
 
+    /// The header's "Find orphaned sessions" and its key: opens the dialog
+    /// and asks `corgi serve` to look. Only now is anything looked for.
+    pub fn find_orphans(&mut self, cx: &mut Context<Self>) {
+        if self.dialogs.open.is_some() {
+            return;
+        }
+        if self.send(Command::Orphans, Purpose::Orphans) {
+            self.dialogs.open = Some(Dialog::Orphans(Box::new(Orphans::looking())));
+            self.focus_dialog(cx);
+        }
+        cx.notify();
+    }
+
+    /// Scrolls the orphans' list just far enough to show card `index` in
+    /// full, as the overview does its selected row (`rows::revealed`):
+    /// GPUI's `scroll_to_item` leaves a tall card's foot under the edge.
+    fn reveal_orphan(&self, index: usize) {
+        let scroll = &self.orphans_scroll;
+        let Some(card) = scroll.bounds_for_item(index) else {
+            return;
+        };
+        let view = scroll.bounds();
+        let offset = scroll.offset();
+        let y = crate::rows::revealed(
+            offset.y,
+            (view.top(), view.bottom()),
+            (card.top(), card.bottom()),
+        );
+        scroll.set_offset(gpui::point(offset.x, y));
+    }
+
+    /// Applies the choice made for the selected orphan.
+    pub fn apply_orphan(&mut self, cx: &mut Context<Self>) {
+        let Some(Dialog::Orphans(orphans)) = &mut self.dialogs.open else {
+            return;
+        };
+        if !orphans.idle() {
+            return;
+        }
+        let Some((candidate, action)) = orphans.choices.choice() else {
+            return;
+        };
+        let key = candidate.key.clone();
+        let command = Command::OrphanApply {
+            key: key.clone(),
+            fingerprint: candidate.fingerprint.clone(),
+            action: action.clone(),
+        };
+        orphans.applying = Some(key.clone());
+        orphans.choices.error = None;
+        if !self.send(command, Purpose::OrphanApply { key })
+            && let Some(Dialog::Orphans(orphans)) = &mut self.dialogs.open
+        {
+            orphans.applying = None;
+        }
+        cx.notify();
+    }
+
     pub fn merge_action(&mut self, action: MergeAction, cx: &mut Context<Self>) {
         let Some(Dialog::Merge(merge)) = &mut self.dialogs.open else {
             return;
@@ -1215,6 +1276,7 @@ impl CorgiWindow {
             Action::Tag => self.toggle_tag(cx),
             Action::Resume => self.resume(cx),
             Action::Refresh => self.refresh(cx),
+            Action::Orphans => self.find_orphans(cx),
             Action::AnswerFirst => self.answer_nth(0, window, cx),
             // The focus view's and the merge dialog's own.
             Action::Leave | Action::FocusSide | Action::AskSupervisor => return,
@@ -1300,6 +1362,38 @@ impl CorgiWindow {
                 }
                 _ => false,
             },
+            Some(Dialog::Orphans(orphans)) => {
+                if !orphans.idle() {
+                    true
+                } else {
+                    let choices = &mut orphans.choices;
+                    match key {
+                        "enter" => {
+                            self.apply_orphan(cx);
+                            true
+                        }
+                        "j" | "down" | "k" | "up" => {
+                            choices.select_by(if matches!(key, "j" | "down") { 1 } else { -1 });
+                            let selected = choices.selected;
+                            self.reveal_orphan(selected);
+                            true
+                        }
+                        "right" | "tab" if !modifiers.shift => {
+                            choices.cycle(1);
+                            true
+                        }
+                        "left" | "tab" => {
+                            choices.cycle(-1);
+                            true
+                        }
+                        "s" | "w" | "x" | "l" => {
+                            choices.choose_key(key.chars().next().unwrap_or_default());
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+            }
             Some(Dialog::NewAgent(new)) => {
                 let Some(form_key) = form_key(event) else {
                     return;
