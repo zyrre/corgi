@@ -170,7 +170,7 @@ was the whole `kern.boottime` text, which ends in a local-time date, so a
 time zone change looked like a reboot and armed every same-boot Save's
 holds. It now keeps only `{ sec, usec }`, and older records still compare.
 
-## Options
+## Options considered
 
 ### 1. Herdr resumes Corgi's agents with the right command (automatic)
 
@@ -215,8 +215,8 @@ these requirements on Corgi:
 - **A Codex supervisor's role does not fit.** Corgi passes it inline as
   `-c developer_instructions=…`, and `supervisor/ROLE.md` is 25,768 bytes
   against Herdr's 8 KiB, with 58 apostrophes (escapable as `\u0027`). Codex
-  supervisors need another way to carry the role on resume (an open
-  question below), or stay with option 3's restore.
+  supervisors need another way to carry the role on resume: see "Codex
+  supervisors" under the chosen design.
 - The command's first word must be a plain name on the pane's `PATH`
   (`claude`, `codex`), not `CORGI_CLAUDE_BIN`'s path.
 - Herdr 0.9.0, which the user runs, ignores the field **[docs]**, so the
@@ -268,29 +268,101 @@ ids, a missing Codex integration). The GUI gets Sessions through
   and with auto-resume off globally, Claude panes Corgi did not start come
   back as shells unless Restore includes them.
 
-## Recommendation
+## Chosen design
 
-**Option 1.** The test shows Herdr 0.9.5 keeps and runs a resume command
-Corgi reports from its own source, on panes Herdr's own integrations hold,
-for Claude and Codex, across repeated restarts. It is the only route where
-the right process comes back with no click and no extra launch: a reboot or
-server restart brings every Claude supervisor back with its role and memory
-access and every worker with its options, and the startup hook already puts
-Corgi's marks back. Build it with the requirements above (Corgi's own
-source, the session kept current, release on loss of ownership), and keep
-option 2's check as a warning only: a status line and GUI badge for an
-agent running without the options Corgi launched it with, which covers
-agents launched before the upgrade and Codex supervisors.
+Decided by the user on 3 November 2026. Not built yet.
 
-Left open: how a Codex supervisor carries its role through a resume
-(a shorter inline role, a file Codex can read, or the `S` restore for
-Codex supervisors only); and whether the `S` flow stays as it is for
-reviewed restores, since option 1 needs Herdr's auto-resume on and the
-Manual setup turns it off.
+### Automatic restarts: option 1
 
-Whatever is chosen, three setup steps need no code: upgrade Herdr to 0.9.5
-(`brew upgrade herdr`, then restart or hand off the server when convenient),
-install Herdr's Codex integration (`herdr integration install codex`),
-without which Codex conversations cannot come back at all, and look at the
-Homebrew launchd service, which retries every few seconds while a server
-runs and fills `/opt/homebrew/var/log/herdr.log`.
+After Corgi launches an agent, and whenever a pass sees its native
+session change, Corgi reports the agent's full resume command to Herdr
+(Herdr ≥ 0.9.2) with `pane.report_agent_session` from its own source
+`plugin:io.github.zyrre.corgi`, following the requirements under option 1.
+After a server restart or a reboot, Herdr then starts each agent in its
+pane with its session and options, and the startup hook puts Corgi's
+marks back. Nothing needs a click. A pane Corgi no longer owns has its
+command released.
+
+- **Claude supervisor:** `claude --resume <id> --append-system-prompt-file
+  <ROLE.md> --add-dir <state dir>`, as tested.
+- **Workers, Claude and Codex:** `--resume <id>` (`resume <id>` for Codex)
+  plus the launch's model, effort and extra arguments, from the launch
+  profile `recovery::record_launch` writes.
+- **Codex supervisors:** see below.
+
+### Codex supervisors
+
+A Codex supervisor gets its role as `-c developer_instructions=<ROLE.md
+text>`, too large for a resume command. Codex's own source shows that
+`codex resume <id>` **does not keep those instructions for good** **[code:
+openai/codex at tag `rust-v0.166.0`, read on GitHub; not tested, since
+Codex is not installed on this machine and the question turns on a
+compaction, which needs a model turn and so a login]**:
+
+- The session's developer instructions are taken from the configuration of
+  the process that runs, not from the rollout: `developer_instructions:
+  config.developer_instructions.clone()` when the session is built
+  (`codex-rs/core/src/session/mod.rs:940`). The per-turn record that resume
+  reads back, `TurnContextItem`, has no field for them
+  (`codex-rs/protocol/src/protocol.rs:3535`), so a resume cannot restore
+  them and does not notice that they changed (`session/mod.rs:5132`).
+- What survives at first is the conversation itself: resume rebuilds the
+  model-visible history from the rollout (`session/mod.rs:1693`–`1764`),
+  including the developer message with the original role, and restores the
+  context baseline (`session/rollout_reconstruction.rs:172`–`181`), so no
+  fresh initial context is sent.
+- The first compaction after the resume keeps only the user messages and
+  the summary (`codex-rs/core/src/compact.rs:587`–`612`) and rebuilds the
+  initial context from the running session's developer instructions
+  (`compact.rs:91`, `session/mod.rs:4725`–`4731`). A supervisor resumed
+  with only its short flags would lose its role there.
+
+So for automatic restores only, a Codex supervisor's resume command carries
+its short flags (`--sandbox workspace-write --ask-for-approval on-request
+-c sandbox_workspace_write.network_access=true --add-dir <state dir>`,
+tested) and a short developer instruction that tells it to read its
+`ROLE.md` before anything else. Until the first compaction it still has
+its full role from the conversation; after it, the short instruction is
+what Codex re-injects. A normal launch keeps the full inline role. The
+instruction must stay within Herdr's rules: no apostrophe, no newline, and
+the whole command under 8 KiB.
+
+### Sessions (`S`)
+
+**The Manual recovery setup step is retired once automatic restarts
+ship**: it turns Herdr's auto-resume off, which would turn the automatic
+restarts off too. `S` keeps Save and the reviewed Restore, for restoring
+from a saved snapshot by hand.
+
+### An agent that exits while Herdr runs
+
+Herdr resumes only after a server start: an agent that exits or is
+killed while Herdr keeps running (as on 3 November, when a test's watchdog
+killed every agent) leaves a shell in its pane. For that, a **Resume**
+action, a button and a key, relaunches the agent in the same pane with its
+session and full options, the same command Corgi reports to Herdr. It is
+shown **only on a pane where Corgi saw an agent session running before**,
+never on an arbitrary shell. Corgi does not relaunch on its own: cleanup
+after such an incident goes through these resumes and the separate work on
+orphaned sessions.
+
+### Rejected
+
+- **Option 2**, Corgi exiting and relaunching agents Herdr resumed without
+  their options: no longer needed, since option 1 gives Herdr the right
+  command, and stopping an agent seconds after a restart risks losing what
+  the user types. Its check survives only as a warning for agents launched
+  before the change.
+- **Option 3**, a one-click restore after each restart with automatic
+  saves: works on Herdr 0.9.0 but still needs a press after every restart,
+  and needs auto-resume off.
+- **Reporting under Herdr's `herdr:claude` or `herdr:codex` source**:
+  Herdr ignores the command there (tested).
+
+### Setup steps, no code
+
+Upgrade Herdr to 0.9.5 (`brew upgrade herdr`, then restart or hand off the
+server when convenient); install Herdr's Codex integration (`herdr
+integration install codex`), without which Codex conversations cannot come
+back at all; and look at the Homebrew launchd service, which retries every
+few seconds while a server runs and fills `/opt/homebrew/var/log/herdr.log`.
