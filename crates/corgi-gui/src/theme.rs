@@ -135,6 +135,12 @@ impl Colors {
     pub fn secondary(&self, fill: Hsla) -> Hsla {
         readable(self.roles.muted, fill, &[self.roles.quiet])
     }
+
+    /// Selected text's tint: the accent, as translucent as the focus
+    /// view's terminal paints its selection, so the text reads through it.
+    pub fn selection(&self) -> Hsla {
+        self.roles.accent.opacity(0x59 as f32 / 255.0)
+    }
 }
 
 /// A contrast below which text all but vanishes on its fill.

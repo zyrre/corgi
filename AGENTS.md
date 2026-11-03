@@ -202,6 +202,11 @@ selected row and the focus view's agent: a click on a row must leave the
 offset alone, and a key scroll it only as far as the row's edge
 (`src/rows.rs`). A selection that scrolls moves the offset while the frame is
 prepainted, so read it with `scroll`, not straight after a `key`.
+Told it is hidden on workspace 4, the window also stops watching the
+transcript, so a row expanded with Space shows "Reading the session…": put
+a `show` after the key that expands it. A scroll the expanded row settles
+on is drawn only by the next frame, so the shot after it may still show
+the old offset; read offsets with `scroll`.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 
