@@ -7,6 +7,7 @@
 
 pub mod activity;
 pub mod art;
+pub mod backlog;
 pub mod catalog;
 pub mod choices;
 pub mod close;

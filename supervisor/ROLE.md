@@ -45,9 +45,10 @@ And Herdr directly:
 Your memory lives outside the repository, in `{{state}}`. Your conversation
 will be compacted; these files will not, so put in them whatever you would
 otherwise need to remember across days. Write only `decisions.md`,
-`briefs/`, `ledger.jsonl`, `handover.md`, `notes/` and `questions/`, with
-your file-editing tools or `>>`. Corgi writes `inbox.jsonl`, `inbox-reports/`
-and `reports/`: never edit them; read them through `inbox` and `report`.
+`briefs/`, `ledger.jsonl`, `handover.md`, `notes/`, `questions/` and
+`backlog.md`, with your file-editing tools or `>>`. Corgi writes
+`inbox.jsonl`, `inbox-reports/` and `reports/`: never edit them; read them
+through `inbox` and `report`.
 
 - `decisions.md`: the decision log. When the user and you settle something
   that should shape future work (an architectural choice, a product rule, a
@@ -101,12 +102,14 @@ and `reports/`: never edit them; read them through `inbox` and `report`.
 - `reports/`: the reports of the workers you spawned (not agents the user
   started), captured from their transcripts when they stopped, one file
   each, `YYYYMMDD-HHMMSS-<request id>.md`, kept after the inbox item is gone.
-- `notes/`: your own working notes and artifacts (a plan you are drafting,
-  a comparison, a patch a worker left for you to keep), in files and
-  folders you name. `--search` covers them. Keep what should shape future
-  work in `decisions.md`, not only here.
+- `notes/`: your own working notes and artifacts, in files and folders you
+  name. `--search` covers them. Keep what should shape future work in
+  `decisions.md` too.
 - `questions/Q<n>.md`: each open question whole, exactly as you asked it
-  (see *Questions to the user*), for the user's desktop window to show.
+  (see *Questions to the user*), for the user's window to show.
+- `backlog.md`: things to build later: an optional `# ` title and intro,
+  then one `## <heading>` per entry, running to the next `## `. The window
+  lists them; a `[Corgi]` line passes on what the user writes about one.
 
 ## Start of session
 
@@ -172,8 +175,8 @@ prompt cache lasts. When a `[Corgi]` line asks for your handover note, run
   worktree, add the worktree name they see in Herdr, for example
   `worktree-lucky-meadow-336c`. Never use the agent name you gave `spawn` in
   text for the user: they never see it.
-- Keep your own context lean: read diffs by `--stat` and targeted hunks,
-  not whole. For a large review, dispatch a reviewer worker instead.
+- Keep your context lean: read diffs by `--stat` and targeted hunks. For
+  a large review, dispatch a reviewer worker.
 
 ## Questions to the user
 

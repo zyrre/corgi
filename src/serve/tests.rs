@@ -26,8 +26,8 @@ use corgi_core::{
     inbox::{Inbox, Kind},
     projects::ProjectMemory,
     protocol::{
-        Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply, ReplyResult,
-        ServerMessage, State, ThemeColors,
+        BacklogEntry, Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply,
+        ReplyResult, ServerMessage, State, ThemeColors,
     },
     test_support::{ScratchDir, fake_herdr},
     waker::SupervisorWaker,
@@ -583,6 +583,110 @@ fn an_open_questions_file_is_its_text_and_others_are_ignored() {
     let open = &project.expect("the project's card").questions;
     assert_eq!(open[0].title, "Keep the old flag?");
     assert_eq!(open[0].text, "");
+    session.close();
+}
+
+#[test]
+fn the_supervisors_backlog_is_sent_with_its_project_and_follows_the_file() {
+    let scratch = ScratchDir::new("serve-backlog");
+    let (repo, worktree) = repository(&scratch);
+    let dir = scratch.join("state").join("weather");
+    fs::create_dir_all(&dir).unwrap();
+    let herdr = FakeHerdr::start("serve-backlog", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    // No file: no backlog, and none on the wire.
+    assert!(state.projects[0].backlog.is_empty());
+    let project = serde_json::to_value(&state.projects[0]).unwrap();
+    assert!(project.get("backlog").is_none(), "{project}");
+
+    fs::write(
+        dir.join("backlog.md"),
+        "# Backlog: things to build later\nRaised by the user.\n\n\
+         ## 1. \"Stop all agents\" button\nFor when the user *leaves*.\n\n\
+         ## Merge wake after a handover (parked)\nSeen once.\n",
+    )
+    .unwrap();
+    let changes = session.refresh().expect("a delta");
+    let project = changes
+        .iter()
+        .find_map(|change| match change {
+            Change::Project(project) => Some(project),
+            _ => None,
+        })
+        .expect("the project's card");
+    assert_eq!(
+        project.backlog,
+        [
+            BacklogEntry {
+                heading: "1. \"Stop all agents\" button".into(),
+                text: "For when the user *leaves*.".into(),
+            },
+            BacklogEntry {
+                heading: "Merge wake after a handover (parked)".into(),
+                text: "Seen once.".into(),
+            },
+        ]
+    );
+    session.close();
+}
+
+#[test]
+fn a_backlog_message_queues_one_line_per_message_for_the_supervisor() {
+    let scratch = ScratchDir::new("serve-backlog-message");
+    let (repo, worktree) = repository(&scratch);
+    let herdr = FakeHerdr::start("serve-blmsg", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+    let root = repo.to_str().unwrap();
+    let pending = || {
+        let inbox = Inbox::read(&scratch.join("state").join("weather"));
+        let items = inbox.undelivered_for(root);
+        assert!(items.iter().all(|item| item.kind == Kind::Note));
+        corgi_core::inbox::prompt_text(&items)
+    };
+    let send = |text: &str| {
+        json!({"command": "backlog_message", "project_root": root,
+               "heading": "1. Stop all agents", "text": text})
+    };
+
+    let error = session.refused(send("  \n ")).error.unwrap();
+    assert_eq!(error, "The message cannot be empty");
+    assert_eq!(pending(), "");
+
+    // Through the inbox, which the waker types in between turns.
+    let (result, _) = session.ok(send(" Do this one next. "));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Sent to supervisor-weather".into()
+        }
+    );
+    assert!(herdr.calls("agent.prompt").is_empty());
+    let first =
+        "[Corgi] The user wrote about backlog entry \"1. Stop all agents\": Do this one next.";
+    assert_eq!(pending(), first);
+
+    // Without a supervisor it waits for the next one, and a second message
+    // about the same entry does not replace the first.
+    let mut alone = herd(&repo, &worktree, "idle");
+    alone["agents"].as_array_mut().unwrap().remove(0);
+    herdr.set_snapshot(alone);
+    session.refresh();
+    let (result, _) = session.ok(send("And keep it small."));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Sent; the supervisor reads it when it starts".into()
+        }
+    );
+    assert_eq!(
+        pending(),
+        format!(
+            "{first}\n[Corgi] The user wrote about backlog entry \"1. Stop all agents\": And keep it small."
+        )
+    );
+    assert!(herdr.calls("agent.prompt").is_empty());
     session.close();
 }
 

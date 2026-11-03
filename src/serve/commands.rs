@@ -126,6 +126,11 @@ impl Server {
                 project_root,
                 question,
             } => self.close_question(id, &project_root, &question),
+            Command::BacklogMessage {
+                project_root,
+                heading,
+                text,
+            } => self.backlog_message(id, &project_root, &heading, &text),
             Command::NewAgentForm {
                 pane_id,
                 project,
@@ -289,6 +294,45 @@ impl Server {
                 message: match supervisor {
                     Some(name) => format!("Asked {name} to drop {handle}"),
                     None => format!("{handle} is dropped once the supervisor starts"),
+                },
+            })
+        });
+    }
+
+    /// Tells the supervisor what the user wrote about its backlog entry
+    /// `heading`: an inbox line, typed in once it is between turns, or when
+    /// it next runs, as closing a question is.
+    fn backlog_message(&mut self, id: u64, root: &str, heading: &str, text: &str) {
+        if text.trim().is_empty() {
+            return self.refuse(id, "The message cannot be empty");
+        }
+        if heading.trim().is_empty() {
+            return self.refuse(id, "Name the backlog entry the message is about");
+        }
+        let root = root.trim_end_matches('/').to_string();
+        let supervisor = self
+            .agents
+            .iter()
+            .find(|agent| agent.supervisor && agent.project_root.trim_end_matches('/') == root)
+            .map(|agent| agent.info.display_name().to_string());
+        let text = supervisor::backlog_message(heading, text);
+        self.work(id, true, move |shared| {
+            // No key: each message goes out, however alike.
+            let item = Item {
+                project: root,
+                source: "serve".into(),
+                kind: Kind::Note,
+                text,
+                ..Default::default()
+            };
+            shared
+                .inboxes
+                .notify(item)
+                .context("The supervisor could not be told")?;
+            Ok(ReplyResult::Done {
+                message: match supervisor {
+                    Some(name) => format!("Sent to {name}"),
+                    None => "Sent; the supervisor reads it when it starts".into(),
                 },
             })
         });

@@ -849,6 +849,17 @@ pub fn question_closed_message(number: u32) -> String {
     )
 }
 
+/// The line that passes on what the user wrote in the desktop window about
+/// the backlog entry `heading` (`backlog.md`): the heading on one line, the
+/// user's text as they wrote it.
+pub fn backlog_message(heading: &str, text: &str) -> String {
+    let heading = heading.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!(
+        "{WAKE_PREFIX} The user wrote about backlog entry \"{heading}\": {}",
+        text.trim()
+    )
+}
+
 /// `The user merged <worker> (task "…"), branch <branch>, into <base> at
 /// <commit>`, the part both merge lines share.
 fn merged_clause(merge: &MergeLanded<'_>) -> String {
@@ -1826,6 +1837,22 @@ mod tests {
         assert!(!role.contains("read ARCHITECTURE.md"));
         assert!(role.contains("`/state/supervisors/corgi`"));
         assert!(!role.contains("{{"));
+    }
+
+    #[test]
+    fn a_backlog_message_names_the_entry_and_the_role_says_what_the_backlog_is() {
+        assert_eq!(
+            backlog_message(
+                "1. \"Stop all\"\n  button ",
+                "  Do this first.\nThen that.\n"
+            ),
+            "[Corgi] The user wrote about backlog entry \"1. \"Stop all\" button\": Do this first.\nThen that."
+        );
+        assert!(ROLE.contains(
+            "- `backlog.md`: things to build later: an optional `# ` title and intro,\n  \
+             then one `## <heading>` per entry, running to the next `## `. The window\n  \
+             lists them; a `[Corgi]` line passes on what the user writes about one."
+        ));
     }
 
     #[test]

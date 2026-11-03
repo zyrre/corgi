@@ -221,7 +221,8 @@ Exactly one per request, with its `id`.
  "questions":[{"id":"Q4","title":"Keep the old flag?","agent":"w-fix"}],
  "held":0,
  "merge_requests":[{"id":"!1677","title":"Fix the forecast","branch":"worktree/green-forest-025b",
-                    "draft":false,"url":"https://gitlab.example.com/team/weather/-/merge_requests/1677"}]}
+                    "draft":false,"url":"https://gitlab.example.com/team/weather/-/merge_requests/1677"}],
+ "backlog":[{"heading":"Stop all agents button","text":"For when the user leaves the network."}]}
 ```
 
 - `card` is true for a project led by its running supervisor, which the
@@ -254,6 +255,14 @@ Exactly one per request, with its `id`.
   missing, not logged in or fails, or the remote is neither; a merged or
   closed one drops out at the next listing. It arrives in a delta after
   the snapshot, never holding one up.
+- `backlog` is the supervisor's list of things to build later, from
+  `backlog.md` in its state directory, which only the supervisor writes:
+  one entry per `## ` heading, its `text` the Markdown up to the next
+  `## ` without the heading line; a title and intro above the first are
+  left out, and a `## ` inside a code fence starts no entry. At most
+  256 KB of the file is read (an entry cut there ends with `…`). The
+  field is left out when the file is missing or has no entry. Write to the
+  supervisor about one with `backlog_message`.
 
 ### `UsageCard`: the plan-usage header
 
@@ -328,6 +337,7 @@ finish.
 | `prompt` | `pane_id`, `text` | | Types `text` into the agent and submits it. |
 | `answer` | `project_root`, `question`, `text` | | Answers a numbered question. |
 | `close_question` | `project_root`, `question` | | Closes a numbered question without answering it. |
+| `backlog_message` | `project_root`, `heading`, `text` | | Tells the supervisor what the user wrote about a backlog entry. |
 | `new_agent_form` | `pane_id`?, `project`?, `harness`?, `model`? | | The new-agent form, preset. |
 | `spawn` | `project`, `new_project`, `harness`, `model`, `effort`, `task`, `checkout` | | Starts the agent. |
 | `start_supervisor` | `project_root` | | Starts the project's supervisor, or names the running one. |
@@ -377,6 +387,19 @@ supervisor running. Closing it again before the line goes out still sends
 one. Corgi does not write the ledger: the question stays in `questions`
 until the supervisor drops it, so show it as closing until then. Refused
 for a `question` that is not a number or not open in the ledger.
+
+### `backlog_message`
+
+```json
+{"id":4,"command":"backlog_message","project_root":"/repos/weather","heading":"Stop all agents button","text":"Do this one next"}
+```
+
+Puts one `[Corgi]` line in the supervisor's inbox, `The user wrote about
+backlog entry "Stop all agents button": Do this one next`, which goes out
+as `close_question`'s does, so it works with no supervisor running. Each
+message goes out, however alike. The heading is put on one line; the text
+is trimmed and otherwise kept as written. Refused for an empty `text` or
+`heading`; the heading need not still be in the backlog.
 
 ### `new_agent_form` and `spawn`
 

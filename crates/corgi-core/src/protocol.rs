@@ -302,6 +302,20 @@ pub struct Project {
     /// the forge cannot be asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merge_requests: Vec<MergeRequest>,
+    /// The things to build later in its supervisor's `backlog.md`, in the
+    /// file's order; empty without that file or an entry in it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backlog: Vec<BacklogEntry>,
+}
+
+/// One `## <heading>` entry of a supervisor's `backlog.md`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BacklogEntry {
+    /// The text after `## `.
+    pub heading: String,
+    /// The Markdown up to the next `## ` or the file's end, without its
+    /// heading line.
+    pub text: String,
 }
 
 /// An open merge request or pull request from one of a project's branches.
@@ -598,6 +612,14 @@ pub enum Command {
         project_root: String,
         question: String,
     },
+    /// Tells the project's supervisor what the user wrote about one of its
+    /// backlog entries, through its inbox as `CloseQuestion` does.
+    BacklogMessage {
+        project_root: String,
+        /// The entry's heading, as the backlog has it.
+        heading: String,
+        text: String,
+    },
     /// The new-agent form preset for `pane_id`'s project, else `project`,
     /// else the project used last, on `harness` and `model` when given.
     NewAgentForm {
@@ -724,6 +746,7 @@ impl Command {
             ("prompt", false),
             ("answer", false),
             ("close_question", false),
+            ("backlog_message", false),
             ("new_agent_form", false),
             ("spawn", false),
             ("start_supervisor", false),
@@ -808,14 +831,15 @@ mod tests {
     }
 
     #[test]
-    fn a_project_without_merge_requests_still_parses_and_sends_none() {
+    fn a_project_without_merge_requests_or_backlog_still_parses_and_sends_none() {
         let old = r#"{"group":"weather","root":"/r","card":true,"scratch":false,
             "supervisor":null,"agents":[],"workers":{"total":0,"blocked":0,"merge":0,
             "working":0,"done":0,"idle":0,"unknown":0},"blocked":[],"questions":[],"held":0}"#;
         let project: Project = serde_json::from_str(old).expect("an older server's project");
-        assert!(project.merge_requests.is_empty());
+        assert!(project.merge_requests.is_empty() && project.backlog.is_empty());
         let line = serde_json::to_value(&project).unwrap();
         assert!(line.get("merge_requests").is_none(), "{line}");
+        assert!(line.get("backlog").is_none(), "{line}");
         let with = Project {
             merge_requests: vec![MergeRequest {
                 id: "!1677".into(),
@@ -823,6 +847,10 @@ mod tests {
                 branch: "worktree/green-forest-025b".into(),
                 draft: true,
                 url: "https://gitlab.example.com/g/r/-/merge_requests/1677".into(),
+            }],
+            backlog: vec![BacklogEntry {
+                heading: "Stop all agents".into(),
+                text: "For when the user *leaves*.".into(),
             }],
             ..project
         };
@@ -881,6 +909,7 @@ mod tests {
             json!({"command": "prompt", "pane_id": "p", "text": "t"}),
             json!({"command": "answer", "project_root": "/r", "question": "Q1", "text": "A"}),
             json!({"command": "close_question", "project_root": "/r", "question": "Q1"}),
+            json!({"command": "backlog_message", "project_root": "/r", "heading": "H", "text": "T"}),
             json!({"command": "new_agent_form"}),
             json!({"command": "spawn"}),
             json!({"command": "start_supervisor", "project_root": "/r"}),

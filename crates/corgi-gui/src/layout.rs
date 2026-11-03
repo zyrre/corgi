@@ -54,7 +54,8 @@ pub const FONT_SIZE_MAX: f32 = 26.0;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Layout {
-    /// The side panel: the selected project's supervisor and its questions.
+    /// The side panel: the selected project's questions, merge requests
+    /// and backlog.
     pub side_open: bool,
     pub side_width: f32,
     /// The side panel beside the focus view's terminal.

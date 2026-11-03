@@ -1,12 +1,13 @@
 //! The window's dialogs and what each reply from `corgi serve` does to them:
-//! the prompt and answer boxes, the new-agent form, the merge confirmation
+//! the prompt, answer and backlog boxes, the new-agent form, the merge confirmation
 //! with its outcome, and the close confirmation. Pure, so every flow is
 //! tested without a window.
 
 use std::time::Instant;
 
 use corgi_core::protocol::{
-    CloseForm, MergeForm, MergeOutcome, Progress, Question, Reply, ReplyResult, UpstreamChoice,
+    BacklogEntry, CloseForm, MergeForm, MergeOutcome, Progress, Question, Reply, ReplyResult,
+    UpstreamChoice,
 };
 
 use crate::{
@@ -53,6 +54,14 @@ pub enum Dialog {
         sending: bool,
         error: Option<String>,
     },
+    /// Shows one of a supervisor's backlog entries whole, and writes the
+    /// supervisor about it.
+    Backlog {
+        project_root: String,
+        entry: BacklogEntry,
+        sending: bool,
+        error: Option<String>,
+    },
     NewAgent(Box<NewAgent>),
     /// The new-agent form, asked for and not here yet: the first one waits
     /// on the harnesses' model lists, which can take seconds.
@@ -62,24 +71,43 @@ pub enum Dialog {
 }
 
 impl Dialog {
-    /// The keys a prompt or answer box offers. A refused one stays open
-    /// with its text and keeps the keyboard, so Esc, the way back to the
-    /// overview's keys, comes first.
+    /// The keys a prompt, answer or backlog box offers. A refused one stays
+    /// open with its text and keeps the keyboard, so Esc, the way back to
+    /// the overview's keys, comes first.
     pub fn text_hints(&self) -> &'static [(&'static str, &'static str)] {
-        match self {
-            Dialog::Prompt { error: Some(_), .. } | Dialog::Answer { error: Some(_), .. } => {
-                &[(ESCAPE, "close"), (ENTER, "retry")]
-            }
-            _ => &[(ENTER, "send"), (ESCAPE, "cancel")],
+        if self.refused() {
+            &[(ESCAPE, "close"), (ENTER, "retry")]
+        } else {
+            &[(ENTER, "send"), (ESCAPE, "cancel")]
         }
     }
 
-    /// Whether a prompt or answer box shows a refusal.
+    /// Whether a prompt, answer or backlog box shows a refusal.
     pub fn refused(&self) -> bool {
         matches!(
             self,
-            Dialog::Prompt { error: Some(_), .. } | Dialog::Answer { error: Some(_), .. }
+            Dialog::Prompt { error: Some(_), .. }
+                | Dialog::Answer { error: Some(_), .. }
+                | Dialog::Backlog { error: Some(_), .. }
         )
+    }
+
+    /// Whether it is a box with a text field that sends what is typed.
+    pub fn is_text(&self) -> bool {
+        matches!(
+            self,
+            Dialog::Prompt { .. } | Dialog::Answer { .. } | Dialog::Backlog { .. }
+        )
+    }
+
+    /// A text box's sending flag and the refusal it shows.
+    pub fn text_state(&mut self) -> Option<(&mut bool, &mut Option<String>)> {
+        match self {
+            Dialog::Prompt { sending, error, .. }
+            | Dialog::Answer { sending, error, .. }
+            | Dialog::Backlog { sending, error, .. } => Some((sending, error)),
+            _ => None,
+        }
     }
 }
 
@@ -178,7 +206,7 @@ impl Flash {
 /// What the window does after a reply, beyond what the dialog shows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Followup {
-    /// Select this agent and show its project's supervisor panel.
+    /// Select this agent, so the side panel shows its project.
     ShowSupervisor(String),
     /// The new-agent form changed rows: move the keyboard.
     Form(form::Effect),
@@ -261,34 +289,16 @@ impl Dialogs {
                 }
                 None
             }
-            Purpose::Prompt | Purpose::Answer => {
-                match (error, &mut self.open) {
-                    (
-                        Some(error),
-                        Some(Dialog::Prompt {
-                            sending,
-                            error: shown,
-                            ..
-                        }),
-                    )
-                    | (
-                        Some(error),
-                        Some(Dialog::Answer {
-                            sending,
-                            error: shown,
-                            ..
-                        }),
-                    ) => {
+            Purpose::Prompt | Purpose::Answer | Purpose::BacklogMessage => {
+                match (error, self.open.as_mut().and_then(Dialog::text_state)) {
+                    (Some(error), Some((sending, shown))) => {
                         // The box stays open with its text, to retry by hand.
                         *sending = false;
                         *shown = Some(error);
                     }
-                    (Some(error), _) => self.say(error, true),
+                    (Some(error), None) => self.say(error, true),
                     (None, _) => {
-                        if matches!(
-                            self.open,
-                            Some(Dialog::Prompt { .. } | Dialog::Answer { .. })
-                        ) {
+                        if self.open.as_ref().is_some_and(Dialog::is_text) {
                             self.open = None;
                         }
                         self.say(message.unwrap_or_else(|| "Sent".into()), false);
@@ -450,16 +460,13 @@ impl Dialogs {
                 (Purpose::Spawn, Some(Dialog::NewAgent(new))) => {
                     new.refused(why.into(), None);
                 }
-                (
-                    Purpose::Prompt | Purpose::Answer,
-                    Some(Dialog::Prompt { sending, error, .. }),
-                )
-                | (
-                    Purpose::Prompt | Purpose::Answer,
-                    Some(Dialog::Answer { sending, error, .. }),
-                ) => {
-                    *sending = false;
-                    *error = Some(why.into());
+                (Purpose::Prompt | Purpose::Answer | Purpose::BacklogMessage, Some(dialog))
+                    if dialog.is_text() =>
+                {
+                    if let Some((sending, error)) = dialog.text_state() {
+                        *sending = false;
+                        *error = Some(why.into());
+                    }
                 }
                 (Purpose::Close, Some(Dialog::Close(close))) => {
                     close.running = false;
@@ -535,6 +542,50 @@ mod tests {
             sending: true,
             error: None,
         }
+    }
+
+    #[test]
+    fn a_backlog_message_closes_when_sent_and_keeps_its_box_when_refused_or_lost() {
+        let open = || Dialog::Backlog {
+            project_root: "/repos/weather".into(),
+            entry: BacklogEntry {
+                heading: "Stop all agents".into(),
+                text: "For when the user leaves.".into(),
+            },
+            sending: true,
+            error: None,
+        };
+        let mut dialogs = Dialogs {
+            open: Some(open()),
+            ..Dialogs::default()
+        };
+        assert_eq!(
+            dialogs.open.as_ref().unwrap().text_hints()[0],
+            ("↵", "send")
+        );
+        dialogs.reply(
+            Purpose::BacklogMessage,
+            refused("The message cannot be empty", None),
+        );
+        let shown = dialogs.open.as_ref().unwrap();
+        assert!(shown.refused());
+        assert_eq!(shown.text_hints()[0], ("Esc", "close"));
+        assert!(matches!(shown, Dialog::Backlog { sending: false, .. }));
+
+        dialogs.open = Some(open());
+        dialogs.lost(&[Purpose::BacklogMessage]);
+        assert!(matches!(
+            &dialogs.open,
+            Some(Dialog::Backlog { sending: false, error: Some(error), .. }) if error.contains("lost")
+        ));
+
+        dialogs.open = Some(open());
+        dialogs.reply(Purpose::BacklogMessage, done("Sent to supervisor-weather"));
+        assert_eq!(dialogs.open, None);
+        assert_eq!(
+            dialogs.flash.as_ref().map(|flash| flash.text.as_str()),
+            Some("Sent to supervisor-weather")
+        );
     }
 
     #[test]
