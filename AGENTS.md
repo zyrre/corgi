@@ -159,8 +159,11 @@ its `corgi_handler` token), tagged with a
 `session` token; a Claude session file under the private
 `~/.claude/projects/<cwd with / and . as ->/<session>.jsonl` gives it a model,
 context, cache and transcript (use the real path: `/tmp` is `/private/tmp`
-on macOS). Worktrees opened with `herdr worktree open` are linked worktrees
-to Corgi; plain workspaces on a `git worktree` are not. The private home
+on macOS). An agent's project is the repository
+`git rev-parse --git-common-dir` names, so a plain workspace on a
+`git worktree add` checkout is a linked worktree to Corgi as much as one
+opened with `herdr worktree open`; only Herdr's own is removed with Herdr's
+`worktree.remove`, a plain one with `git worktree remove`. The private home
 needs a Git identity in its `.gitconfig` for merges, and a bare `origin`
 for one to push.
 
@@ -313,6 +316,15 @@ The `herdr pane current` CLI sends the calling pane's ID from
 `HERDR_PANE_ID`, so run inside a pane it returns that pane, not the one
 focused in Herdr's UI; the socket request `pane.current` with `{}` returns
 the focused pane.
+
+`test_support::FakeHerdr` answers `pane.process_info` from what
+`set_processes` gave it (no processes otherwise), for tests of what runs in
+a pane: the orphans detector, the proven re-tag and Codex admission. A real
+Herdr lists every process of the foreground group, an MCP server beside the
+agent's CLI included, and may leave a process's `argv` out, so match on the
+program's file name (`ForegroundProcess::program`) and never assume `argv`.
+To try `corgi orphans` on the user's Herdr, run it as it is: it only reads
+(snapshot, process info, screens), and changes nothing anywhere.
 
 To test against an agent without starting one, report a shell pane in the
 preview workspace as one. Corgi hides agent panes without a session, so tag

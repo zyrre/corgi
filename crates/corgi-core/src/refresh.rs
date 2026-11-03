@@ -37,10 +37,12 @@ use crate::{
 use crate::{
     markers::{clear_stale_merge_tags, restore_markers},
     notice,
+    orphans::{RetagCache, retag_proven},
     project_main::{dashboard_pane_ids, relabel_project_mains},
+    repo::{RepoCache, agent_repo},
     rows::{
-        NO_TOOL_YET, SCRATCH_GROUP, SUPERVISOR_NAME, agent_project, agent_worktree, checkout_label,
-        codex_thread_id, has_herdr_agent_session, has_real_agent_session, is_corgi_scratch_codex,
+        NO_TOOL_YET, SCRATCH_GROUP, SUPERVISOR_NAME, agent_project, checkout_label,
+        codex_thread_id, has_herdr_agent_session, has_real_agent_session, is_corgi_workspace_codex,
         project_group, reported_context_percent, reported_effort, reported_model, task_summary,
     },
     waker::{SupervisorWaker, wake_supervisors},
@@ -76,6 +78,10 @@ pub struct RefreshState {
     /// Wakes supervisors about their projects' agents; only the interactive
     /// dashboard has one.
     pub waker: Option<SupervisorWaker>,
+    /// Which repository each agent's directory is in, as Git said lately.
+    pub repos: RepoCache,
+    /// What the proven re-tag learnt that needs no asking again.
+    retag: RetagCache,
     /// The project roots whose state directories this dashboard has checked
     /// for pre-rename state left beside them, so each is warned about once.
     state_dirs_checked: HashSet<String>,
@@ -160,6 +166,17 @@ struct Timings {
     wake: Duration,
 }
 
+/// Whether the snapshot's agent `info` gets a row: Herdr or Corgi's marks
+/// give it a session, or it is a Codex in a workspace Corgi created with
+/// `codex` in its pane's foreground at its cwd on this refresh.
+pub fn is_shown(client: &HerdrClient, info: &AgentInfo, workspace: Option<&WorkspaceInfo>) -> bool {
+    has_real_agent_session(info)
+        || (is_corgi_workspace_codex(info, workspace)
+            && client
+                .has_foreground_codex(&info.pane_id, info.cwd())
+                .unwrap_or(false))
+}
+
 /// The refresh as a whole: everything slow, run on whichever thread calls
 /// it. `log` is where a refresh worth reading is logged, if anywhere.
 pub fn run(inputs: &Inputs, mut state: RefreshState, log: Option<&RefreshLog>) -> Refreshed {
@@ -224,6 +241,24 @@ impl RefreshState {
         // clears the merge tags their agents worked past.
         if leading {
             status = restore_markers(client, &mut snapshot).map(|status| (status, MARKS_HOLD));
+            // Then the two marks Corgi can prove lost, which the marker
+            // record could not put back (a session changed, or it was
+            // never recorded).
+            if let Some(waker) = self.waker.as_ref()
+                && let Some(retagged) = retag_proven(
+                    client,
+                    &mut snapshot,
+                    &mut self.repos,
+                    &waker.inboxes(),
+                    &mut self.retag,
+                )
+            {
+                let line = match status.take() {
+                    Some((restored, _)) => format!("{restored}; {retagged}"),
+                    None => retagged,
+                };
+                status = Some((line, MARKS_HOLD));
+            }
             clear_stale_merge_tags(client, &mut snapshot);
         }
         relabel_project_mains(client, &mut snapshot.workspaces);
@@ -268,13 +303,11 @@ impl RefreshState {
             // changed the original HERDR_PANE_ID.
             .filter(|info| {
                 !dashboard_pane_ids.contains(info.pane_id.as_str())
-                    && (has_real_agent_session(info)
-                        || (is_corgi_scratch_codex(
-                            info,
-                            workspaces.get(info.workspace_id.as_str()).copied(),
-                        ) && client
-                            .has_foreground_codex(&info.pane_id, info.cwd())
-                            .unwrap_or(false)))
+                    && is_shown(
+                        client,
+                        info,
+                        workspaces.get(info.workspace_id.as_str()).copied(),
+                    )
             })
             .map(|info| {
                 let workspace = workspaces.get(info.workspace_id.as_str()).copied();
@@ -284,6 +317,8 @@ impl RefreshState {
         sort_agents(&mut agents);
         // Drops what is remembered about sessions no longer on the dashboard.
         self.sessions.retain(agents.iter().map(|agent| &agent.info));
+        self.repos
+            .retain(agents.iter().map(|agent| agent.info.cwd()));
         let transcript = inputs.transcript_pane.as_ref().and_then(|pane| {
             let agent = agents.iter().find(|agent| agent.info.pane_id == *pane)?;
             Some((pane.clone(), self.sessions.transcript(&agent.info)))
@@ -304,22 +339,19 @@ impl RefreshState {
         info: AgentInfo,
         workspace: Option<&WorkspaceInfo>,
     ) -> DashboardAgent {
-        let project = agent_project(&info, workspace);
-        let worktree = agent_worktree(&info, workspace);
-        let project_root = worktree
-            .map(|worktree| worktree.repo_root.as_str())
-            .filter(|root| !root.is_empty())
-            .unwrap_or_else(|| info.cwd())
-            .to_string();
+        let repo = agent_repo(&info, workspace, &mut self.repos);
+        let project = agent_project(&info, workspace, repo.as_ref());
+        let project_root = repo
+            .as_ref()
+            .map(|repo| repo.root.clone())
+            .unwrap_or_else(|| info.cwd().to_string());
         let scratch = is_home(&project_root);
         let project_group = if scratch {
             SCRATCH_GROUP.to_string()
         } else {
-            project_group(&info, workspace, &project)
+            project_group(repo.as_ref(), &project)
         };
-        let worktree_checkout = worktree
-            .filter(|worktree| worktree.is_linked_worktree)
-            .map(|worktree| worktree.checkout_path.clone());
+        let worktree_checkout = repo.filter(|repo| repo.linked).map(|repo| repo.checkout);
         let worktree_label = worktree_checkout
             .as_deref()
             .and_then(checkout_label)

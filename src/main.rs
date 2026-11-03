@@ -13,6 +13,7 @@ Commands:
   supervisor  Start a project's supervisor
   spawn       Start an agent in its own worktree
   fleet       List a project's agents, their context and prompt cache
+  orphans     List agent sessions Corgi gets wrong, and leftover workspaces
   digest      Print a summary of a supervisor's memory
   report      Print the report an agent left
   notify      Add an item to a supervisor's inbox
@@ -49,6 +50,8 @@ fn main() -> Result<()> {
         Some("supervisor") => corgi::app::supervisor_command(&args[2..]),
         Some("fleet") if help() => usage(corgi::app::FLEET_USAGE),
         Some("fleet") => corgi::app::fleet(&args[2..]),
+        Some("orphans") if help() => usage(corgi::app::ORPHANS_USAGE),
+        Some("orphans") => corgi::app::orphans_command(&args[2..]),
         Some("digest") if help() => usage(corgi::app::DIGEST_USAGE),
         Some("digest") => corgi::app::digest(&args[2..]),
         Some("report") if help() => usage(corgi::app::REPORT_USAGE),

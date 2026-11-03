@@ -20,6 +20,7 @@ mod dialogs;
 mod effects;
 mod header;
 mod new_agent;
+mod orphans;
 mod prompt;
 mod sessions;
 mod status;
@@ -101,7 +102,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Style::default().fg(roles().accent),
         ),
         Line::styled(
-            format!(" S sessions · {keys}"),
+            format!(" S sessions · o orphans · {keys}"),
             Style::default().fg(roles().muted),
         ),
     ];
@@ -173,6 +174,7 @@ fn draw_popup(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Placed
         Overlay::Merge(form) => draw_merge_worktree(frame, area, form, spinner),
         Overlay::Notice(message) => draw_notice(frame, area, message),
         Overlay::Sessions(form) => sessions::draw(frame, area, form),
+        Overlay::Orphans(dialog) => orphans::draw(frame, area, dialog, spinner),
     };
     let color = effects::frame_color(drawn.color, motion.outcome_effect().or(success));
     let fade = motion.content_fade();

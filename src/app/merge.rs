@@ -11,7 +11,7 @@ use crate::job::{Job, Update};
 
 use super::{
     App,
-    close::{CloseTarget, CloseWorkspaceForm, dashboard_supervisor_workspaces},
+    close::{CloseTarget, CloseWorkspaceForm, close_form, dashboard_supervisor_workspaces},
     overlay::Overlay,
     progress::JobReport,
     project_main::project_main_workspace,
@@ -264,22 +264,37 @@ impl App {
         let Some(form) = self.overlay.take_merge_worktree_form() else {
             return;
         };
+        let checkout = form.worktree_checkout.to_string_lossy().into_owned();
+        // The agent's own close, as `x` would ask it, so a plain
+        // `git worktree add` checkout closes its pane and goes through Git.
+        let close = self
+            .agents
+            .iter()
+            .find(|agent| {
+                agent.info.workspace_id == form.workspace_id
+                    && agent.worktree_checkout.as_deref() == Some(checkout.as_str())
+            })
+            .map(|agent| close_form(agent, &self.workspaces, &self.agents));
         let project_root = form.project_root.to_string_lossy().into_owned();
-        self.overlay = Overlay::Close(CloseWorkspaceForm {
-            workspace_id: form.workspace_id,
-            tab_id: String::new(),
-            label: form.label,
-            project_root: project_main_workspace(
-                &self.workspaces,
-                &dashboard_supervisor_workspaces(&self.agents),
-                &project_root,
-            )
-            .map(|main| main.project_root),
-            target: CloseTarget::Worktree {
-                checkout: form.worktree_checkout.to_string_lossy().into_owned(),
-                force: false,
-            },
-        });
+        self.overlay = Overlay::Close(close.unwrap_or_else(|| {
+            CloseWorkspaceForm {
+                workspace_id: form.workspace_id,
+                pane_id: String::new(),
+                tab_id: String::new(),
+                label: form.label,
+                project_root: project_main_workspace(
+                    &self.workspaces,
+                    &dashboard_supervisor_workspaces(&self.agents),
+                    &project_root,
+                )
+                .map(|main| main.project_root),
+                target: CloseTarget::Worktree {
+                    checkout,
+                    force: false,
+                    plain: None,
+                },
+            }
+        }));
         self.close_workspace();
     }
 

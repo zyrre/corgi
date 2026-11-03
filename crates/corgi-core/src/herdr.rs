@@ -130,15 +130,36 @@ impl HerdrClient {
     /// The processes in a pane's foreground, by process ID and name, such
     /// as a Corgi dashboard's.
     pub fn foreground_processes(&self, pane_id: &str) -> Result<Vec<(u32, String)>> {
+        Ok(self
+            .pane_processes(pane_id)?
+            .iter()
+            .filter_map(|process| Some((process.pid?, process.name.clone())))
+            .collect())
+    }
+
+    /// The processes in a pane's foreground, whole: name, cwd, arguments and
+    /// process ID. Read-only; nothing in the pane notices.
+    pub fn pane_processes(&self, pane_id: &str) -> Result<Vec<ForegroundProcess>> {
         let mut result = self.request("pane.process_info", json!({ "pane_id": pane_id }))?;
         expect_result_type(&result, "pane_process_info")?;
         let processes: PaneProcessInfo = serde_json::from_value(result["process_info"].take())
             .context("Herdr returned invalid pane process information")?;
-        Ok(processes
-            .foreground_processes
-            .iter()
-            .filter_map(|process| Some((process.pid?, process.name.clone())))
-            .collect())
+        anyhow::ensure!(
+            processes.pane_id == pane_id,
+            "Herdr answered for pane {} rather than {pane_id}",
+            processes.pane_id
+        );
+        Ok(processes.foreground_processes)
+    }
+
+    /// Closes one pane, leaving its tab's and workspace's other panes alone.
+    /// Herdr closes a tab or workspace left empty by itself.
+    pub fn close_pane(&self, pane_id: &str) -> Result<()> {
+        let result = self.request("pane.close", json!({ "pane_id": pane_id }))?;
+        if result.get("type").and_then(Value::as_str) == Some("ok") {
+            return Ok(());
+        }
+        expect_result_type(&result, "pane_closed")
     }
 
     /// The pane the user has focused in Herdr's UI, which is not
@@ -779,13 +800,29 @@ struct PaneProcessInfo {
     foreground_processes: Vec<ForegroundProcess>,
 }
 
-#[derive(Deserialize)]
-struct ForegroundProcess {
-    name: String,
-    cwd: String,
-    argv: Vec<String>,
+/// One process in a pane's foreground, as `pane.process_info` gives it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ForegroundProcess {
     #[serde(default)]
-    pid: Option<u32>,
+    pub name: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub argv: Vec<String>,
+    #[serde(default)]
+    pub pid: Option<u32>,
+}
+
+impl ForegroundProcess {
+    /// The file name of the program the process runs, from its first
+    /// argument (`/opt/homebrew/bin/codex` is `codex`), else its name.
+    pub fn program(&self) -> &str {
+        self.argv
+            .first()
+            .and_then(|program| Path::new(program).file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or(&self.name)
+    }
 }
 
 /// Location and identity of any pane in the session snapshot.
