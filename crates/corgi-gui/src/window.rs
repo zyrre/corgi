@@ -961,7 +961,11 @@ impl CorgiWindow {
                 self.send(Command::Merge { pane_id, upstream }, Purpose::Merge);
             }
             MergeAction::Handoff => {
-                self.send(Command::MergeHandoff { pane_id }, Purpose::MergeEnd);
+                if !merge.offers(MergeAction::Handoff) {
+                    return;
+                }
+                let error = merge.handoff_error();
+                self.send(Command::MergeHandoff { pane_id, error }, Purpose::MergeEnd);
             }
             MergeAction::Dismiss => {
                 self.send(Command::MergeDismiss { pane_id }, Purpose::MergeEnd);
@@ -1151,7 +1155,8 @@ impl CorgiWindow {
             Action::Tag => self.toggle_tag(cx),
             Action::Refresh => self.refresh(cx),
             Action::AnswerFirst => self.answer_nth(0, window, cx),
-            Action::Leave | Action::FocusSide => return,
+            // The focus view's and the merge dialog's own.
+            Action::Leave | Action::FocusSide | Action::AskSupervisor => return,
         }
         cx.stop_propagation();
     }
@@ -1186,6 +1191,16 @@ impl CorgiWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
+        // The merge dialog's rebindable key, which may have a modifier.
+        if let Some(Dialog::Merge(merge)) = &self.dialogs.open
+            && self.keymap.merge_dialog_hit(keystroke) == Some(Action::AskSupervisor)
+        {
+            if merge.offers(MergeAction::Handoff) {
+                self.merge_action(MergeAction::Handoff, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         let modifiers = keystroke.modifiers;
         if modifiers.platform || modifiers.control {
             return;
@@ -1207,7 +1222,7 @@ impl CorgiWindow {
             },
             Some(Dialog::Merge(merge)) => match key {
                 "enter" => {
-                    if let Some((_, action)) = merge.actions().first().copied() {
+                    if let Some(action) = merge.default_action() {
                         self.merge_action(action, cx);
                     }
                     true

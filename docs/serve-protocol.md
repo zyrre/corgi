@@ -333,7 +333,7 @@ finish.
 | `start_supervisor` | `project_root` | | Starts the project's supervisor, or names the running one. |
 | `merge_check` | `pane_id` | | The merge confirmation. |
 | `merge` | `pane_id`, `upstream` | | Runs the confirmed merge. |
-| `merge_handoff` | `pane_id` | | Hands a conflict or failed push to the supervisor. |
+| `merge_handoff` | `pane_id`, `error`? | | Asks the supervisor to fix the merge's failure. |
 | `merge_dismiss` | `pane_id` | | Forgets the merge. |
 | `close_check` | `pane_id` | | The close confirmation. |
 | `close` | `pane_id`, `force` | | Closes the agent's worktree, tab or workspace. |
@@ -447,11 +447,16 @@ A merge is the dashboard's `m` dialog as three commands.
     "project_root":"/repos/weather","worktree":"/repos/weather-fix",
     "source_branch":"worktree/fix","target_branch":"main",
     "commits":["1a2b3c4 Fix leap days"],"upstream":"origin/main",
-    "steps":["Check both worktrees","Fetch origin/main","Merge worktree/fix into main","Push main"]}
+    "steps":["Check both worktrees","Fetch origin/main","Merge worktree/fix into main","Push main"],
+    "supervisor":"supervisor-weather"}
    ```
 
-   It is refused for an agent outside a linked worktree, for a dirty
-   checkout, and when both are on the same branch.
+   `supervisor` is the project's running supervisor, absent when none runs.
+   It is refused for an agent outside a linked worktree. A merge Git
+   refuses before it starts (a dirty checkout, both on the same branch) is
+   still a `merge_form`, with `refused` saying why and the branches Git
+   could still tell: show the reason and offer `merge_handoff`; `merge`
+   refuses it.
 
 2. `merge` with `upstream` `check` (the default) runs it, with progress, and
    replies `merge_outcome`, `ok: true` whatever the outcome:
@@ -460,14 +465,19 @@ A merge is the dashboard's `m` dialog as three commands.
    | --- | --- | --- |
    | `succeeded` | `commit`, `message` | Done. The agent's merge tag is cleared and its supervisor is told. Offer `close_check`. |
    | `behind` | `commits` | The upstream has commits the target lacks; nothing merged. `merge` with `pull` brings them in first. |
-   | `fetch_failed` | `error` | Nothing merged. `merge` with `skip` merges without the upstream. |
+   | `fetch_failed` | `error`, `supervisor` | Nothing merged. `merge` with `skip` merges without the upstream; `merge_handoff` asks `supervisor` to fix the fetch. |
    | `conflicted` | `files`, `supervisor` | The primary checkout is mid-merge. `merge_handoff` aborts it and asks `supervisor` (when not `null`) to have the worker merge the base into its branch; `merge_dismiss` leaves it to resolve by hand. |
    | `push_failed` | `commit`, `error`, `supervisor` | Merged locally; the tag is cleared and the supervisor told. `merge_handoff` asks it to explain the error. |
-   | `failed` | `error` | |
+   | `failed` | `error`, `supervisor` | `merge_handoff` asks `supervisor` to fix it. |
 
-3. `merge_handoff` or `merge_dismiss` ends a conflicted or push-failed
-   merge. A succeeded or failed merge is forgotten by itself; `merge_check`
-   starts a new one.
+3. `merge_handoff` or `merge_dismiss` ends a merge that stopped: a refused,
+   fetch-failed, conflicted, push-failed or failed one. `merge_handoff`
+   asks the running supervisor to fix it and report back (a conflict is
+   aborted first, a failed push explained), and is refused while none
+   runs. Give `error` for a failure serve did not report (its own refusal
+   of a command, a lost connection): with no merge kept, the line is made
+   from the agent and that error. A succeeded merge is forgotten by itself;
+   `merge_check` starts a new one.
 
 ### Closing
 

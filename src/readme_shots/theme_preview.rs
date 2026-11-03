@@ -26,7 +26,7 @@ use super::{
 use corgi_core::palette::resolve;
 
 use crate::{
-    app::MergePhase,
+    app::{ConflictHelp, MergePhase},
     motion::{STAMP_DRAW, STAMP_HOLD},
     test_support::test_terminal,
     theme::{self, Palette, Source, Theme},
@@ -84,7 +84,10 @@ fn views() -> Vec<(&'static str, Buffer)> {
     let mut terminal = test_terminal(WIDTH, HEIGHT);
     settle(&mut terminal, &mut app);
     if let Some(form) = app.overlay.merge_worktree_form_mut() {
-        form.phase = MergePhase::Failed("git push: the remote rejected the branch".into());
+        form.phase = MergePhase::Failed {
+            error: "git push: the remote rejected the branch".into(),
+            help: ConflictHelp::Unavailable,
+        };
     }
     draw_at(&mut terminal, &mut app, 3_000);
     draw_at(&mut terminal, &mut app, 3_120);

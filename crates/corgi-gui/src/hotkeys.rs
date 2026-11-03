@@ -260,7 +260,12 @@ impl CorgiWindow {
         let columns: Vec<&[Area]> = if wide && filter.is_empty() {
             vec![
                 &[Area::Overview],
-                &[Area::Transcript, Area::Focus, Area::Window],
+                &[
+                    Area::Transcript,
+                    Area::Focus,
+                    Area::MergeDialog,
+                    Area::Window,
+                ],
             ]
         } else {
             vec![&Area::ALL]

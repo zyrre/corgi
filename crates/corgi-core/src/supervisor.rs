@@ -759,6 +759,62 @@ pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
     )
 }
 
+/// A merge of a worker's branch that failed, or was refused before it
+/// started, for any reason but a conflict or a failed push, which have
+/// lines of their own.
+pub struct MergeFailed<'a> {
+    /// The worker's agent name, as the supervisor's ledger has it.
+    pub worker: &'a str,
+    /// What the worker was asked to do; empty when unknown.
+    pub task: &'a str,
+    /// Empty when Git could not tell it.
+    pub branch: &'a str,
+    pub worktree: &'a Path,
+    /// The branch checked out in the primary checkout; empty when Git could
+    /// not tell it.
+    pub base: &'a str,
+    pub primary: &'a Path,
+    /// The error as the user saw it.
+    pub error: &'a str,
+}
+
+/// The line that asks a supervisor, at the user's request, to fix what
+/// stopped the user's merge of a worker's branch and report back.
+pub fn merge_failed_message(failed: &MergeFailed<'_>) -> String {
+    let MergeFailed {
+        worker,
+        task,
+        branch,
+        worktree,
+        base,
+        primary,
+        error,
+    } = failed;
+    let task = task_clause(task);
+    let branch = if branch.is_empty() {
+        String::new()
+    } else {
+        format!(", branch {branch}")
+    };
+    let base = if base.is_empty() {
+        "the primary checkout's branch"
+    } else {
+        base
+    };
+    format!(
+        "{WAKE_PREFIX} Merging {worker}{task}{branch} in worktree {}, into {base} in {} \
+         failed: {} The user asks you to fix it and report back. Find the cause; have \
+         {worker} fix what lies in its worktree or branch (prompt it with [supervisor] and \
+         append a ledger line for it with status `needs-followup`), and fix the rest \
+         yourself, but ask the user before committing, discarding or stashing changes of \
+         theirs. Then tell the user in a line or two what was wrong and what was done; the \
+         user merges again with m, so never merge it, pull or push yourself.",
+        worktree.display(),
+        primary.display(),
+        one_line(error)
+    )
+}
+
 /// `task` on one line as the clause a merge message names it in, or nothing
 /// when it is empty.
 fn task_clause(task: &str) -> String {
@@ -1893,7 +1949,7 @@ mod tests {
         ));
         // The role leaves the rest to the line.
         assert!(
-            ROLE.contains("Corgi sends one `[Corgi]` line saying what happened and what\nto do")
+            ROLE.contains("Corgi sends one\n`[Corgi]` line saying what happened and what to do")
         );
     }
 
@@ -1950,6 +2006,50 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    #[test]
+    fn a_failed_merge_the_user_hands_over_is_one_line_asking_for_a_fix() {
+        let failed = |branch: &'static str, base: &'static str| {
+            merge_failed_message(&MergeFailed {
+                worker: "w-fleet-cache",
+                task: "Cache the\nfleet rows",
+                branch,
+                worktree: Path::new("/w/corgi-silver"),
+                base,
+                primary: Path::new("/repos/corgi"),
+                error: "primary checkout has uncommitted or untracked changes: M AGENTS.md",
+            })
+        };
+        let line = failed("worktree/silver-river-fa87", "main");
+        assert!(!line.contains('\n'), "{line}");
+        assert!(
+            line.starts_with(
+                "[Corgi] Merging w-fleet-cache (task \"Cache the fleet rows\"), branch \
+                 worktree/silver-river-fa87 in worktree /w/corgi-silver, into main in \
+                 /repos/corgi failed: primary checkout has uncommitted or untracked changes: \
+                 M AGENTS.md. The user asks you to fix it and report back. "
+            ),
+            "{line}"
+        );
+        for rule in [
+            "have w-fleet-cache fix what lies in its worktree or branch",
+            "status `needs-followup`",
+            "ask the user before committing, discarding or stashing changes of theirs",
+            "never merge it, pull or push yourself.",
+        ] {
+            assert!(line.contains(rule), "{rule}: {line}");
+        }
+        // Git could not tell the branches of a merge refused before it ran.
+        assert!(failed("", "").starts_with(
+            "[Corgi] Merging w-fleet-cache (task \"Cache the fleet rows\") in worktree \
+             /w/corgi-silver, into the primary checkout's branch in /repos/corgi failed: "
+        ));
+        assert!(ROLE.contains(
+            "When the user's `m` merge lands, stops on conflicts the user hands to you,\n\
+             fails in a way the user asks you to fix, or cannot push, Corgi sends one\n\
+             `[Corgi]` line saying what happened and what to do."
+        ));
     }
 
     #[test]

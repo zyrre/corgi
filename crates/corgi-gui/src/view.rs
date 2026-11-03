@@ -2147,7 +2147,7 @@ impl CorgiWindow {
                         )
                     }),
             );
-        if merge.stage != MergeStage::Confirm {
+        if !matches!(merge.stage, MergeStage::Confirm | MergeStage::Refused(_)) {
             // A merge that succeeded went through every step.
             let mut progress = merge.progress.clone();
             if matches!(
@@ -2188,6 +2188,27 @@ impl CorgiWindow {
                     }));
                 }
             }
+            MergeStage::Refused(error) => {
+                dialog = dialog
+                    .child(
+                        div()
+                            .p_2()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(colors.roles.danger)
+                            .text_color(colors.roles.danger)
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("! Merge unavailable: {error}")),
+                    )
+                    .child(
+                        div()
+                            .text_color(colors.secondary(colors.roles.popup_fill))
+                            .child(format!(
+                                "Nothing ran. Fix it, then merge again with {}.",
+                                self.keymap.label(Hotkey::Merge)
+                            )),
+                    );
+            }
             MergeStage::Failed(error) => {
                 dialog = dialog.child(div().text_color(colors.roles.danger).child(error.clone()));
             }
@@ -2200,16 +2221,28 @@ impl CorgiWindow {
             }
             MergeStage::Confirm => {}
         }
-        let actions = merge.actions();
+        // Why the supervisor cannot be asked, beside its greyed button.
+        if let Some(why) = merge.no_supervisor() {
+            dialog = dialog.child(div().text_color(colors.roles.warning).child(why));
+        }
+        let default = merge.default_action();
+        let ask_key = self.keymap.label(Hotkey::AskSupervisor);
         let mut buttons = div().flex().flex_row().gap_2().pt_1();
-        for (index, (label, action)) in actions.into_iter().enumerate() {
-            let key = if index == 0 { keymap::ENTER } else { "" };
-            buttons =
-                buttons.child(
-                    self.button(key, label, true, index == 0, cx, move |this, _, cx| {
-                        this.merge_action(action, cx)
-                    }),
-                );
+        for (label, action, enabled) in merge.actions() {
+            let is_default = Some(action) == default;
+            let key = match action {
+                crate::dialogs::MergeAction::Handoff => ask_key.as_str(),
+                _ if is_default => keymap::ENTER,
+                _ => "",
+            };
+            buttons = buttons.child(self.button(
+                key,
+                label,
+                enabled,
+                is_default,
+                cx,
+                move |this, _, cx| this.merge_action(action, cx),
+            ));
         }
         dialog.child(buttons).into_any_element()
     }
