@@ -11,6 +11,7 @@ use std::{
 };
 
 use corgi_core::{
+    backlog,
     digest::{
         all_open_questions,
         lookup::{LEDGER_FILE, QUESTIONS_DIR},
@@ -87,7 +88,7 @@ pub(super) fn activity(entry: &model::Activity) -> Activity {
 }
 
 /// The projects of `agents`, in the dashboard's order, each with the open
-/// questions its supervisor's ledger in `inboxes` lists.
+/// questions its supervisor's ledger in `inboxes` lists and its backlog.
 pub(super) fn projects(
     agents: &[DashboardAgent],
     inboxes: &Inboxes,
@@ -106,12 +107,16 @@ pub(super) fn projects(
             } else {
                 lead.project_root.clone()
             };
-            let (questions, held) = if root.is_empty() {
-                (Vec::new(), 0)
+            let (questions, held, backlog) = if root.is_empty() {
+                (Vec::new(), 0, Vec::new())
             } else {
                 (
                     open_questions(inboxes, &root),
                     inboxes.held(client, &root).len(),
+                    inboxes
+                        .dir(&root)
+                        .map(|dir| backlog::read(&dir))
+                        .unwrap_or_default(),
                 )
             };
             Project {
@@ -143,6 +148,7 @@ pub(super) fn projects(
                 questions,
                 held,
                 merge_requests: Vec::new(),
+                backlog,
             }
         })
         .collect()
