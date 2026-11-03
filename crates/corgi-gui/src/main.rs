@@ -17,6 +17,7 @@ mod store;
 mod terminal;
 mod text_input;
 mod theme;
+mod transcript;
 mod view;
 mod window;
 
