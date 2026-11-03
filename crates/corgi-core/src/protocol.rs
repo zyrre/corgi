@@ -522,6 +522,16 @@ pub struct MergeForm {
     /// The target branch's upstream, fetched and checked first.
     pub upstream: Option<String>,
     pub steps: Vec<String>,
+    /// Why Git refuses this merge before it starts (a checkout with
+    /// uncommitted changes, both on one branch): the dialog shows it in
+    /// place of the confirmation, and `merge_handoff` asks `supervisor` to
+    /// fix it. The branches are what Git could still tell, maybe empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
+    /// The project's running supervisor, which `merge_handoff` asks to fix
+    /// a failure; `None` when no supervisor runs for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervisor: Option<String>,
 }
 
 /// How a merge ended. A merge that did not succeed is still an `ok` reply.
@@ -549,12 +559,18 @@ pub enum MergeOutcome {
     Behind {
         commits: Vec<String>,
     },
-    /// Fetching the upstream failed; `merge` with `skip` merges anyway.
+    /// Fetching the upstream failed; `merge` with `skip` merges anyway,
+    /// and `merge_handoff` asks `supervisor` to fix it.
     FetchFailed {
         error: String,
+        #[serde(default)]
+        supervisor: Option<String>,
     },
+    /// Anything else; `merge_handoff` asks `supervisor` to fix it.
     Failed {
         error: String,
+        #[serde(default)]
+        supervisor: Option<String>,
     },
 }
 
@@ -647,9 +663,15 @@ pub enum Command {
         #[serde(default)]
         upstream: UpstreamChoice,
     },
-    /// Hands a conflicted merge or a failed push to the supervisor.
+    /// Asks the project's supervisor to fix the merge's failure: a
+    /// conflicted merge is aborted and handed over, a failed push explained,
+    /// and any other failure or refusal sent with its error. `error` is the
+    /// one the frontend shows, for a failure `corgi serve` did not see (a
+    /// refused command, a lost connection); else the merge's own is sent.
     MergeHandoff {
         pane_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// Forgets the merge, leaving a conflict to resolve by hand.
     MergeDismiss {

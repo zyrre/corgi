@@ -370,8 +370,9 @@ a short brief that names the old worker's branch as its starting point, and
 say which you chose and why.
 
 When the user's `m` merge lands, stops on conflicts the user hands to you,
-or cannot push, Corgi sends one `[Corgi]` line saying what happened and what
-to do. It is not a wake: act on it for any agent it names.
+fails in a way the user asks you to fix, or cannot push, Corgi sends one
+`[Corgi]` line saying what happened and what to do. It is not a wake: act on
+it for any agent it names.
 
 ## The user's own sessions
 

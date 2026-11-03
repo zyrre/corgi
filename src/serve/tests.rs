@@ -1123,6 +1123,112 @@ fn a_conflicted_merge_is_handed_to_the_supervisor() {
 }
 
 #[test]
+fn a_merge_refused_before_it_starts_names_why_and_is_handed_to_the_supervisor() {
+    let scratch = ScratchDir::new("serve-refused");
+    let (repo, worktree) = repository(&scratch);
+    fs::write(repo.join("AGENTS.md"), "a note\n").unwrap();
+    let herdr = FakeHerdr::start("serve-refused", herd(&repo, &worktree, "done"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+
+    let (result, _) = session.ok(json!({"command": "merge_check", "pane_id": "w2:p1"}));
+    let ReplyResult::MergeForm(form) = result else {
+        panic!("{result:?}")
+    };
+    let error = "primary checkout has uncommitted or untracked changes: ?? AGENTS.md";
+    assert_eq!(form.refused.as_deref(), Some(error));
+    assert_eq!(form.supervisor.as_deref(), Some("supervisor-weather"));
+    assert_eq!(
+        (form.source_branch.as_str(), form.target_branch.as_str()),
+        ("worktree/fix", "main")
+    );
+    // It cannot be run.
+    let refused = session
+        .refused(json!({"command": "merge", "pane_id": "w2:p1"}))
+        .error
+        .unwrap();
+    assert_eq!(refused, format!("Merge unavailable: {error}"));
+
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1"}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Asked supervisor-weather to fix the merge of w-fix".into()
+        }
+    );
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    let items = inbox.undelivered();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, Kind::Conflict);
+    assert!(
+        items[0].text.starts_with("[Corgi] Merging w-fix"),
+        "{}",
+        items[0].text
+    );
+    assert!(
+        items[0].text.contains(&format!(
+            "into main in {} failed: {error}. The user asks you to fix it and report back.",
+            repo.display()
+        )),
+        "{}",
+        items[0].text
+    );
+    session.close();
+}
+
+#[test]
+fn a_failed_fetch_and_an_error_only_the_window_saw_are_handed_to_the_supervisor() {
+    let scratch = ScratchDir::new("serve-fetch-handoff");
+    let (repo, worktree) = repository(&scratch);
+    git(
+        &repo,
+        &["remote", "set-url", "origin", "/nonexistent/corgi-remote"],
+    );
+    let herdr = FakeHerdr::start("serve-fetch-handoff", herd(&repo, &worktree, "done"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+
+    session.ok(json!({"command": "merge_check", "pane_id": "w2:p1"}));
+    let (result, _) = session.ok(json!({"command": "merge", "pane_id": "w2:p1"}));
+    let ReplyResult::MergeOutcome(MergeOutcome::FetchFailed { error, supervisor }) = result else {
+        panic!("{result:?}")
+    };
+    assert!(error.contains("git fetch origin"), "{error}");
+    assert_eq!(supervisor.as_deref(), Some("supervisor-weather"));
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1"}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Asked supervisor-weather to fix the merge of w-fix".into()
+        }
+    );
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    assert!(
+        inbox.undelivered()[0]
+            .text
+            .contains("failed: could not fetch origin/main: git fetch origin"),
+        "{:?}",
+        inbox.undelivered()
+    );
+
+    // No merge is kept now; the window still hands over the error it shows.
+    let lost = "The connection to corgi serve was lost before it replied.";
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1",
+                                        "error": lost}));
+    assert!(matches!(result, ReplyResult::Done { .. }), "{result:?}");
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    let items = inbox.undelivered();
+    // The newer line for the same agent stands in for the older one.
+    assert!(
+        items
+            .iter()
+            .any(|item| item.text.contains(&format!("failed: {lost} The user asks"))),
+        "{items:?}"
+    );
+    session.close();
+}
+
+#[test]
 fn close_tag_focus_edit_and_digest_drive_their_flows() {
     let scratch = ScratchDir::new("serve-actions");
     let (repo, worktree) = repository(&scratch);

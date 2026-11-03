@@ -1566,7 +1566,7 @@ mod tests {
         poll_until(&mut app, App::poll_merge, |app| !app.merge_job.is_running());
         assert!(matches!(
             app.overlay.merge_worktree_form().map(|form| &form.phase),
-            Some(MergePhase::Failed(_))
+            Some(MergePhase::Failed { .. })
         ));
     }
 }

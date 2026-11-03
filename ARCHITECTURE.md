@@ -464,6 +464,21 @@ dashboard, the command line and other frontends run the same code.
   performs the merge, and Corgi never changes the user's checked-out branch.
   The core has the Git steps and the supervisor's inbox lines; the dialog,
   its phases' keys and the job are `src/app/merge.rs`.
+  Every way a merge can fail offers to ask the project's running supervisor
+  to fix it, with one key in both frontends (`ASK_SUPERVISOR_KEY`, `s`; in
+  the window the default of the rebindable "Merge dialog" hotkey, whose
+  keycap its button shows). The ways are a refusal before the merge starts
+  (`MergePhase::Refused`, such as a dirty checkout or both checkouts on one
+  branch, built by `refused_form` from what Git can still tell, so the
+  dialog says why instead of only a status line), a failed fetch, any other
+  failure, a conflict and a failed push. `handoff` gives each its inbox line:
+  conflicts and failed pushes keep their own, and the rest get
+  `merge_failed_item`, which carries the error as the user saw it and asks
+  the supervisor to fix it and report back. An upstream that moved on is a
+  question rather than a failure, and an agent outside a linked worktree has
+  nothing to merge, so neither offers it. A refused merge's Enter only closes
+  the dialog, since the user never confirmed it. Without a running
+  supervisor the dialog says why nobody can be asked.
 - `waker.rs` is `SupervisorWaker`, which wakes supervisors through their inboxes,
   puts the merge and merge-conflict lines in them, and hands them over, as
   described below; `draft.rs` tells it whether a supervisor's input box holds
@@ -632,7 +647,11 @@ when stdin closes and no command is still running.
   harness run on one of their own and reply from there, a panic becoming an
   error reply.
   Merges in progress are kept by pane between `merge_check`, `merge` and
-  `merge_handoff`.
+  `merge_handoff`. A merge Git refuses is still a `MergeForm` reply,
+  carrying `refused` and the project's `supervisor`, and is kept so
+  `merge_handoff` can hand it over. `merge_handoff` takes the `error` the
+  window shows, for a failure serve kept no merge for (its own refusal, a
+  lost connection).
 - `focus` and `edit` are the commands that call Herdr's focus methods,
   which move every attached client; the hello marks them so a GUI never
   sends them. `select` writes `selection/<socket>.<pid>` as a dashboard
@@ -705,7 +724,10 @@ must not be bound.
   (`form.rs`, the dashboard's rows and keys over the lists `serve` sends,
   with its own filter so a project typed over SSH is not looked up on the
   wrong machine) points at the row a refused `spawn` names; the merge dialog
-  shows the steps, the outcome and the follow-ups the outcome allows; the
+  shows the steps, the outcome and the follow-ups the outcome allows, and for
+  every failure an "Ask supervisor to fix" button, greyed with the reason
+  while no supervisor runs (Enter presses the first button that can be
+  pressed); the
   close dialog asks again for a dirty worktree. `Dialogs::escape` is what
   Esc does to each, and a left click outside the dialog does the same: the
   form's open list closes before the form, a form creating its agent stays,

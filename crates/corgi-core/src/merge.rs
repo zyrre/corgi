@@ -24,9 +24,14 @@ use crate::{
     markers,
     model::DashboardAgent,
     progress::Progress,
-    supervisor::{self, MergeConflict, MergeLanded},
+    supervisor::{self, MergeConflict, MergeFailed, MergeLanded},
     waker::Inboxes,
 };
+
+/// The key that asks the project's supervisor to fix a failed or refused
+/// merge, the same in every frontend's merge dialog: the dashboard's, and
+/// the window's by default (where it can be rebound).
+pub const ASK_SUPERVISOR_KEY: char = 's';
 
 /// A reviewed agent branch ready to be merged from its isolated worktree into
 /// the branch currently checked out in the repository's primary checkout.
@@ -103,7 +108,18 @@ pub enum MergePhase {
     /// Running the step of [`MergeWorktreeForm::steps`] at this index.
     Running(usize),
     Succeeded,
-    Failed(String),
+    /// The merge did not complete, with this error; `help` can take it over.
+    Failed {
+        error: String,
+        help: ConflictHelp,
+    },
+    /// Git refused the merge before it started, as the dialog opened: a
+    /// checkout with uncommitted changes, both on one branch, and the like.
+    /// Nothing ran; the user fixes it, or hands it to `help`.
+    Refused {
+        error: String,
+        help: ConflictHelp,
+    },
     /// `git merge` stopped on conflicts in these files, and the primary
     /// checkout is mid-merge.
     Conflicted {
@@ -114,7 +130,10 @@ pub enum MergePhase {
     /// each as its short hash and subject; nothing was merged yet.
     Behind(Vec<String>),
     /// Fetching the upstream failed with this error; nothing was merged yet.
-    FetchFailed(String),
+    FetchFailed {
+        error: String,
+        help: ConflictHelp,
+    },
     /// The branch was merged, the target branch now at `commit`, but
     /// `git push` failed with `error`.
     PushFailed {
@@ -124,8 +143,8 @@ pub enum MergePhase {
     },
 }
 
-/// Whether a conflicted merge, or a push that failed after a merge, can be
-/// handed to the project's supervisor.
+/// Whether a merge that failed, was refused, stopped on conflicts or could
+/// not push can be handed to the project's supervisor to fix.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConflictHelp {
     /// The project's supervisor, by name, which `s` asks.
@@ -135,6 +154,39 @@ pub enum ConflictHelp {
     /// This dashboard has no inbox to write to (it is the Omarchy popup),
     /// so it does not hand conflicts to a supervisor.
     Unavailable,
+}
+
+impl MergePhase {
+    /// Who can take this failure over, for a phase that is one.
+    pub fn help(&self) -> Option<&ConflictHelp> {
+        match self {
+            Self::Failed { help, .. }
+            | Self::Refused { help, .. }
+            | Self::FetchFailed { help, .. }
+            | Self::Conflicted { help, .. }
+            | Self::PushFailed { help, .. } => Some(help),
+            Self::Confirm | Self::Running(_) | Self::Succeeded | Self::Behind(_) => None,
+        }
+    }
+
+    pub fn help_mut(&mut self) -> Option<&mut ConflictHelp> {
+        match self {
+            Self::Failed { help, .. }
+            | Self::Refused { help, .. }
+            | Self::FetchFailed { help, .. }
+            | Self::Conflicted { help, .. }
+            | Self::PushFailed { help, .. } => Some(help),
+            Self::Confirm | Self::Running(_) | Self::Succeeded | Self::Behind(_) => None,
+        }
+    }
+
+    /// The supervisor the user can hand this failure to now.
+    pub fn helper(&self) -> Option<&str> {
+        match self.help() {
+            Some(ConflictHelp::Supervisor(name)) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 /// How a merge job ends when it does not succeed.
@@ -239,6 +291,37 @@ pub fn merge_form(agent: &DashboardAgent) -> Result<MergeWorktreeForm> {
         commits,
         upstream,
         phase: MergePhase::Confirm,
+    })
+}
+
+/// The merge dialog for `agent`, refused with `error` before it started, as
+/// far as Git can still tell its branches, so the user sees why and can
+/// hand it to the supervisor. `None` for an agent not in a linked worktree,
+/// which has nothing to merge and so nothing to fix.
+pub fn refused_form(
+    agent: &DashboardAgent,
+    error: String,
+    help: ConflictHelp,
+) -> Option<MergeWorktreeForm> {
+    let worktree_checkout = PathBuf::from(agent.worktree_checkout.as_deref()?);
+    let project_root = PathBuf::from(&agent.project_root);
+    let branch = |cwd: &Path| git_current_branch(cwd).unwrap_or_default();
+    Some(MergeWorktreeForm {
+        label: agent.project.clone(),
+        workspace_id: agent.info.workspace_id.clone(),
+        agent: agent
+            .info
+            .name
+            .clone()
+            .unwrap_or_else(|| agent.info.pane_id.clone()),
+        source_branch: branch(&worktree_checkout),
+        target_branch: branch(&project_root),
+        project_root,
+        worktree_checkout,
+        task: agent.task.clone(),
+        commits: Vec::new(),
+        upstream: Upstream::None,
+        phase: MergePhase::Refused { error, help },
     })
 }
 
@@ -347,6 +430,91 @@ pub fn push_failed_item(form: &MergeWorktreeForm, commit: &str, error: &str) -> 
         merged_key(form),
         supervisor::push_failed_message(&landed(form, commit, Some(error))),
     )
+}
+
+/// The inbox line that asks the project's supervisor, at the user's
+/// request, to fix `error`, which failed `form`'s merge or refused it, and
+/// report back. A newer one for the same agent replaces it while it waits.
+pub fn merge_failed_item(form: &MergeWorktreeForm, error: &str) -> Item {
+    let message = supervisor::merge_failed_message(&MergeFailed {
+        worker: &form.agent,
+        task: &form.task,
+        branch: &form.source_branch,
+        worktree: &form.worktree_checkout,
+        base: &form.target_branch,
+        primary: &form.project_root,
+        error,
+    });
+    merge_item(
+        form,
+        Kind::Conflict,
+        format!("{} merge failed", form.agent),
+        message,
+    )
+}
+
+/// Handing a failed merge to the project's supervisor: the line for its
+/// inbox, whether the conflicted merge is aborted first, and what the
+/// status line says once it is sent.
+#[derive(Debug, Clone)]
+pub struct Handoff {
+    pub item: Item,
+    /// The primary checkout is mid-merge: [`abort_merge`] it first, and send
+    /// nothing if that fails.
+    pub abort: bool,
+    pub status: String,
+}
+
+/// What asking `supervisor` to fix `form`'s failure sends, for any phase
+/// that is one: a conflict and a failed push have lines of their own, and
+/// every other failure the line of [`merge_failed_item`] with its error.
+/// `error` stands in for the phase's own when the frontend saw another
+/// (`corgi serve` refused a command, or the connection was lost).
+pub fn handoff(form: &MergeWorktreeForm, supervisor: &str, error: Option<&str>) -> Option<Handoff> {
+    let (item, abort, status) = match (&form.phase, error) {
+        (MergePhase::Conflicted { files, .. }, _) => (
+            conflict_item(form, files),
+            true,
+            format!(
+                "Merge aborted; asked {supervisor} to have {} merge {} into its branch",
+                form.agent, form.target_branch
+            ),
+        ),
+        (MergePhase::PushFailed { commit, error, .. }, _) => (
+            push_failed_item(form, commit, error),
+            false,
+            format!(
+                "Asked {supervisor} about the failed push of {}",
+                form.target_branch
+            ),
+        ),
+        (_, Some(error)) => (merge_failed_item(form, error), false, String::new()),
+        (MergePhase::Failed { error, .. } | MergePhase::Refused { error, .. }, None) => {
+            (merge_failed_item(form, error), false, String::new())
+        }
+        (MergePhase::FetchFailed { error, .. }, None) => {
+            let upstream = form.upstream.name().unwrap_or("the upstream");
+            let error = format!("could not fetch {upstream}: {error}");
+            (merge_failed_item(form, &error), false, String::new())
+        }
+        (
+            MergePhase::Confirm
+            | MergePhase::Running(_)
+            | MergePhase::Succeeded
+            | MergePhase::Behind(_),
+            None,
+        ) => return None,
+    };
+    let status = if status.is_empty() {
+        format!("Asked {supervisor} to fix the merge of {}", form.agent)
+    } else {
+        status
+    };
+    Some(Handoff {
+        item,
+        abort,
+        status,
+    })
 }
 
 /// An inbox item about the merge in `form`, for its project's supervisor.
