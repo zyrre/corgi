@@ -1,11 +1,13 @@
 # Handing over
 
 The Corgi dashboard replaces you with a fresh session of yourself, in the
-same place, once your context is half full, so compaction never loses what
-only your conversation holds. It also does so once you have been idle for
-nearly as long as your prompt cache lasts, with none of the project's
-workers busy and your context well past where your session started, so that
-waking you later is cheap. The request is what counts: Corgi measures your
+same place, once your context is half full and you have been idle for nearly
+as long as your prompt cache lasts, so compaction never loses what only your
+conversation holds and the handover finds the cache about to go cold, not
+warm. It also does so once you have been idle that long, with none of the
+project's workers busy and your context well past where your session
+started, so that waking you later is cheap. Idle here means resting between
+turns; a context past half does nothing until you rest that long. The request is what counts: Corgi measures your
 context and idle time its own way, which can differ from what your harness
 shows you, and its thresholds can be lowered for a test, so do not check the
 numbers before you comply.

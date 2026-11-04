@@ -340,8 +340,10 @@ pub fn reconcile(
     }
 }
 
-/// A hook's passes: the refresh with a waker that leaves the idle
-/// prompt-cache handover to dashboards.
+/// A hook's passes: the refresh with a waker that leaves asking for handovers
+/// to dashboards (every request waits for a timed rest, which no hook can
+/// time), while it still replaces a supervisor whose note a dashboard asked
+/// for.
 pub struct HookPasses {
     inputs: Inputs,
     state: RefreshState,

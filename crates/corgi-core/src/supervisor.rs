@@ -7,8 +7,10 @@
 //! conversation, so compaction does not lose it. Its memory is a directory of
 //! plain files under Corgi's state directory, outside the repository. The
 //! dashboard wakes it when one of its project's agents stops, and hands it
-//! over to a fresh session once its context is half full, or once it has
-//! sat idle nearly as long as its prompt cache lives.
+//! over to a fresh session once its context is half full and it has sat idle
+//! nearly as long as its prompt cache lives (so the handover comes as the
+//! cache is about to go cold, not while it is warm), or once it has sat idle
+//! that long with its context grown to twice its baseline.
 
 use std::{
     collections::BTreeMap,
@@ -435,7 +437,8 @@ pub const WAKE_PREFIX: &str = "[Corgi]";
 pub const OLD_WAKE_PREFIX: &str = "[corgi]";
 
 /// Context usage, in percent of the window, from which a supervisor is handed
-/// over to a fresh session.
+/// over to a fresh session once its prompt cache is about to expire (see
+/// [`CLAUDE_IDLE_SECS`]).
 const HANDOVER_PERCENT: u8 = 50;
 
 /// Lowers the handover threshold for a debug run, such as a live test that
@@ -455,9 +458,9 @@ fn percent_or_default(value: Option<&str>) -> u8 {
         .unwrap_or(HANDOVER_PERCENT)
 }
 
-/// How long a Claude Code supervisor rests before it is handed over: ten
-/// minutes short of its one-hour prompt cache, so the request still finds
-/// the cache warm.
+/// How long a Claude Code supervisor rests before its prompt cache counts as
+/// about to expire, which is when it is handed over: ten minutes short of its
+/// one-hour cache, so the request still finds the cache warm.
 const CLAUDE_IDLE_SECS: u64 = 50 * 60;
 
 /// The same for Codex, whose cache holds for about thirty minutes.
@@ -467,10 +470,11 @@ const CODEX_IDLE_SECS: u64 = 25 * 60;
 /// not a setting.
 const HANDOVER_IDLE_ENV: &str = "CORGI_DEBUG_HANDOVER_IDLE_SECS";
 
-/// How long a supervisor on `harness` rests before it is handed over:
-/// `CORGI_DEBUG_HANDOVER_IDLE_SECS` when it holds a positive number of
-/// seconds, else the harness's own. `None` for a harness whose context Corgi
-/// cannot read.
+/// How long a supervisor on `harness` rests before its prompt cache counts as
+/// about to expire and it is handed over: `CORGI_DEBUG_HANDOVER_IDLE_SECS`
+/// when it holds a positive number of seconds, else the harness's own. `None`
+/// for a harness whose context and cache life Corgi does not know, which is
+/// then never handed over.
 pub fn handover_idle_secs(harness: &Harness) -> Option<u64> {
     idle_secs_or_default(harness, env::var(HANDOVER_IDLE_ENV).ok().as_deref())
 }
@@ -650,7 +654,9 @@ pub fn handover_request(
                 note.display()
             );
         }
-        Trigger::Full(percent) => format!("Your context is past {percent}%"),
+        Trigger::Full(percent) => {
+            format!("Your context is past {percent}% and your prompt cache is about to expire")
+        }
         Trigger::Idle(minutes) => format!(
             "You have been idle for {minutes} minutes and your prompt cache is about \
              to expire"
@@ -1029,16 +1035,21 @@ pub struct Sighting<'a> {
 /// When the dashboard hands a supervisor over, for one refresh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thresholds {
-    /// Context usage, in percent of the window.
+    /// Context usage, in percent of the window, from which a rested
+    /// supervisor is handed over.
     pub percent: u8,
-    /// How long it has rested, in seconds, if its harness has an idle time.
+    /// How long it must have rested, in seconds, for its prompt cache to be
+    /// about to expire, if its harness has an idle time. Without one no
+    /// handover is due: neither trigger can tell that the cache is about to
+    /// expire. Both the context threshold and the idle trigger wait for it.
     pub idle_secs: Option<u64>,
 }
 
 /// Why a supervisor is asked for its handover note.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
-    /// Its context is past this percentage.
+    /// Its context is past this percentage and it has rested until its
+    /// prompt cache is about to expire.
     Full(u8),
     /// It has rested this many minutes, with its context at least
     /// [`IDLE_BASELINE_FACTOR`] times its baseline and no worker busy.
@@ -1062,9 +1073,11 @@ pub enum HandoverStep {
 /// Where one project's supervisor is in handing over, refresh by refresh.
 ///
 /// A session is asked once it is idle or done (never working, and never
-/// blocked on a question) with its context at the threshold, or once it has
-/// rested for its idle time with no worker busy and its context at least
-/// twice its baseline. The baseline is its context at the first refresh that
+/// blocked on a question), has rested for its idle time (its prompt cache is
+/// about to expire), and has its context at the threshold, or, with no
+/// worker busy, at least twice its baseline. A context at the threshold alone
+/// asks nothing while the cache is warm, however long the session has run
+/// without resting. The baseline is its context at the first refresh that
 /// finds it resting with a context: the end of its first turn when the
 /// dashboard saw that, else the first rest this dashboard saw, which only
 /// asks for more growth. It is kept on the pane as [`BASELINE_TOKEN`]; the
@@ -1219,22 +1232,28 @@ impl Handover {
     }
 
     /// Why the supervisor as `seen` at `now` is due for a handover, if it is:
-    /// only ever while it rests.
+    /// only once it has rested for the harness's idle time, when its prompt
+    /// cache is about to expire. Then a context at the threshold is
+    /// [`Trigger::Full`], at once; failing that, one grown past its baseline
+    /// with no worker busy is [`Trigger::Idle`]. A harness with no idle time
+    /// is never due.
     fn trigger(&self, seen: Sighting, limits: Thresholds, now: u64) -> Option<Trigger> {
         let (since, _) = self.resting?;
+        let rested = now.saturating_sub(since);
+        if limits.idle_secs.is_none_or(|idle| rested < idle) {
+            return None;
+        }
         if seen
             .context_percent
             .is_some_and(|used| used >= limits.percent)
         {
             return Some(Trigger::Full(limits.percent));
         }
-        let rested = now.saturating_sub(since);
         let grown = self
             .baseline
             .zip(seen.context_tokens)
             .is_some_and(|(baseline, tokens)| tokens >= baseline * IDLE_BASELINE_FACTOR);
-        (limits.idle_secs.is_some_and(|idle| rested >= idle) && grown && !seen.workers_busy)
-            .then_some(Trigger::Idle(rested / 60))
+        (grown && !seen.workers_busy).then_some(Trigger::Idle(rested / 60))
     }
 
     /// Starts the replacement of a supervisor whose note was found, unless
@@ -2162,10 +2181,13 @@ mod tests {
         assert!(task.contains("Project directory: /repos/weather."));
     }
 
-    /// The 50% threshold alone, as before idleness counted.
+    /// The 50% threshold with a prompt cache that is always about to expire,
+    /// so these tests of the handover's steps see a rested supervisor past it
+    /// due at once. `the_full_context_waits_for_the_cache_to_be_about_to_expire`
+    /// and the tests after it give the cache its time.
     const FULL: Thresholds = Thresholds {
         percent: 50,
-        idle_secs: None,
+        idle_secs: Some(0),
     };
 
     fn seen(state: AgentState, change: u64, percent: u8) -> Sighting<'static> {
@@ -2744,16 +2766,136 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_full_context_threshold_goes_first_and_is_unchanged_by_idleness() {
-        let full = Sighting {
-            context_percent: Some(55),
-            workers_busy: true,
+    /// What a rested supervisor at `percent` of its window, `workers_busy`,
+    /// is asked at each of `seconds` since it began to rest.
+    fn full_steps(percent: u8, workers_busy: bool, seconds: &[u64]) -> Vec<Option<HandoverStep>> {
+        let sighting = Sighting {
+            context_percent: Some(percent),
+            workers_busy,
             ..idle(Idle, 4, 31_000)
         };
+        // Each run is its own session's first rest, which starts at 0.
+        seconds
+            .iter()
+            .map(|&at| {
+                let mut handover = Handover::default();
+                handover.observe(sighting, CLAUDE, 0, |_| true, || true);
+                handover.observe(sighting, CLAUDE, at, |_| true, || true)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_full_context_waits_for_the_cache_to_be_about_to_expire() {
+        let last = CLAUDE_IDLE_SECS;
+        let ask = |at| Some(HandoverStep::Ask(at, Trigger::Full(50)));
+        // Past the threshold, a supervisor that has rested less than the idle
+        // time is left alone, since its cache is still warm; at exactly the
+        // idle time it is asked at that refresh, with no further wait.
         assert_eq!(
-            idle_steps(&[(7, full)]),
-            [Some(HandoverStep::Ask(7, Trigger::Full(50)))]
+            full_steps(55, false, &[0, 1, 600, last - 1, last, last + 1]),
+            [None, None, None, None, ask(last), ask(last + 1)]
+        );
+        // Whether a worker is busy does not matter: the cache is the cache.
+        assert_eq!(full_steps(55, true, &[last - 1, last]), [None, ask(last)]);
+        // At exactly the threshold counts as past it; one below it does not.
+        assert_eq!(full_steps(50, false, &[last - 1, last]), [None, ask(last)]);
+        assert_eq!(full_steps(49, false, &[last - 1, last]), [None, None]);
+        assert_eq!(full_steps(100, false, &[last - 1, last]), [None, ask(last)]);
+    }
+
+    #[test]
+    fn a_full_context_asks_in_one_refresh_after_a_run_without_rest() {
+        let last = CLAUDE_IDLE_SECS;
+        // Working past the threshold is no rest: the clock starts when it
+        // rests, and the request comes `last` seconds after, in one step.
+        let working = |change| Sighting {
+            context_percent: Some(60),
+            ..idle(Working, change, 31_000)
+        };
+        let resting = |change| Sighting {
+            context_percent: Some(60),
+            ..idle(Idle, change, 31_000)
+        };
+        let mut handover = Handover::default();
+        for (at, seen) in [(0, working(1)), (last, working(1)), (2 * last, working(1))] {
+            assert_eq!(handover.observe(seen, CLAUDE, at, |_| true, || true), None);
+        }
+        let start = 3 * last;
+        assert_eq!(
+            handover.observe(resting(2), CLAUDE, start, |_| true, || true),
+            None
+        );
+        assert_eq!(
+            handover.observe(resting(2), CLAUDE, start + last - 1, |_| true, || true),
+            None
+        );
+        assert_eq!(
+            handover.observe(resting(2), CLAUDE, start + last, |_| true, || true),
+            Some(HandoverStep::Ask(start + last, Trigger::Full(50)))
+        );
+    }
+
+    #[test]
+    fn below_the_threshold_the_idle_trigger_is_as_it_was() {
+        let last = CLAUDE_IDLE_SECS;
+        // Under 50%, a grown supervisor with no busy worker is asked for
+        // idleness at the idle time; with a worker busy it is not.
+        let grown = |workers_busy| Sighting {
+            workers_busy,
+            ..idle(Idle, 4, 60_000)
+        };
+        assert_eq!(
+            idle_steps(&[(0, grown(false)), (last, grown(false))]),
+            [None, ASK_IDLE]
+        );
+        assert_eq!(
+            idle_steps(&[(0, grown(true)), (last, grown(true))]),
+            [None, None]
+        );
+        // At the threshold and grown, with no worker busy, the full-context
+        // request goes first, as it did.
+        let full = Sighting {
+            context_percent: Some(50),
+            ..grown(false)
+        };
+        assert_eq!(
+            idle_steps(&[(0, full), (last, full)]),
+            [None, Some(HandoverStep::Ask(last, Trigger::Full(50)))]
+        );
+    }
+
+    #[test]
+    fn a_harness_with_no_idle_time_is_never_handed_over() {
+        // The hooks and the harnesses whose cache life is unknown have none:
+        // a full context cannot be told to be about to go cold.
+        let none = Thresholds {
+            percent: 50,
+            idle_secs: None,
+        };
+        let full = Sighting {
+            context_percent: Some(90),
+            ..idle(Idle, 4, 200_000)
+        };
+        let mut handover = Handover::default();
+        for at in [0, 1, CLAUDE_IDLE_SECS, 100 * CLAUDE_IDLE_SECS] {
+            assert_eq!(handover.observe(full, none, at, |_| true, || true), None);
+        }
+        // Their rest is still timed, so a dashboard taking over, which reads
+        // the record, finds it.
+        assert_eq!(
+            handover.observe(full, CLAUDE, 100 * CLAUDE_IDLE_SECS, |_| true, || true),
+            Some(HandoverStep::Ask(100 * CLAUDE_IDLE_SECS, Trigger::Full(50)))
+        );
+        // An unreadable context is never full.
+        let unknown = Sighting {
+            context_percent: None,
+            context_tokens: None,
+            ..full
+        };
+        assert_eq!(
+            idle_steps(&[(0, unknown), (CLAUDE_IDLE_SECS, unknown)]),
+            [None, None]
         );
     }
 
@@ -2874,7 +3016,10 @@ mod tests {
         assert!(prompt.contains("restate in full each open question"));
         let bin = Path::new("/opt/corgi/corgi");
         let request = handover_request(bin, "/repos/weather", state, Trigger::Full(50));
-        assert!(request.starts_with("[Corgi] Your context is past 50%"));
+        assert!(request.starts_with(
+            "[Corgi] Your context is past 50% and your prompt cache is about to expire, so a \
+             fresh supervisor session takes over from you. Run"
+        ));
         assert!(request.contains(
             "Run `/opt/corgi/corgi role handover /repos/weather` and write \
              /state/supervisors/weather/handover.md as it says"

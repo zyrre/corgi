@@ -68,9 +68,12 @@ pub struct SupervisorWaker {
     /// Whether the lock is kept from one pass to the next, as `corgi hook`
     /// keeps it while it goes round, rather than given up at each pass's end.
     hold: bool,
-    /// Whether this waker asks an idle supervisor for its handover when its
-    /// prompt cache is about to lapse. That is timed, and Herdr's hooks run
-    /// only when something happens, so only a dashboard does it.
+    /// Whether this waker asks a supervisor for its handover. Every request
+    /// waits for the supervisor's prompt cache to be about to lapse, which
+    /// needs a timed rest, and Herdr's hooks run only when something
+    /// happens, so only a dashboard asks. A hook still goes on with a
+    /// handover a dashboard started: it replaces the supervisor once its
+    /// note is written, and a request made by either is one handover.
     idle_handover: bool,
     /// A dashboard's share of `wake/<socket>.open`, held for as long as it
     /// runs, which tells the command-line tools a dashboard is open
@@ -490,8 +493,11 @@ impl SupervisorWaker {
         self.lock.is_some()
     }
 
-    /// Leaves the idle prompt-cache handover to dashboards: Herdr runs a
-    /// hook only when something happens, so no hook can time a rest.
+    /// Leaves asking for handovers to dashboards: both triggers wait for the
+    /// supervisor's prompt cache to be about to lapse, and Herdr runs a hook
+    /// only when something happens, so no hook can time a rest. With no idle
+    /// time a hook's pass asks for nothing, though it still follows a handover
+    /// a dashboard began.
     pub fn without_idle_handover(mut self) -> Self {
         self.idle_handover = false;
         self
@@ -1104,7 +1110,7 @@ impl SupervisorWaker {
                             report_tokens(client, &action, Some(&asked));
                             match trigger {
                                 supervisor::Trigger::Full(percent) => format!(
-                                    "{name}'s context is past {percent}%: asked for its handover note"
+                                    "{name}'s context is past {percent}% and its prompt cache is about to expire: asked for its handover note"
                                 ),
                                 supervisor::Trigger::Idle(minutes) => format!(
                                     "{name} has been idle {minutes} min, its prompt cache about to expire: asked for its handover note"
@@ -2162,7 +2168,7 @@ mod tests {
         assert_eq!(recipients, ["renamed-task"]);
 
         owner.context_percent = Some(80);
-        let actions = waker.hand_over(&[owner], 50, |_| None, 100, |_, _| false, |_| false);
+        let actions = waker.hand_over(&[owner], 50, |_| Some(0), 100, |_, _| false, |_| false);
         assert_eq!(actions.len(), 1);
         let action = &actions[0];
         assert_eq!(action.name, "renamed-task");
@@ -2320,7 +2326,7 @@ mod tests {
                 .hand_over(
                     std::slice::from_ref(&supervisor),
                     50,
-                    |_| None,
+                    |_| Some(0),
                     now,
                     |_, _| false,
                     |_| drafting,
@@ -2369,7 +2375,7 @@ mod tests {
                         .hand_over(
                             &agents,
                             50,
-                            |_| None,
+                            |_| Some(0),
                             now,
                             |_, _| true,
                             |supervisor| {
@@ -2452,7 +2458,7 @@ mod tests {
             waker.observe(agents, corgi_bin, |_| None);
             steps.extend(
                 waker
-                    .hand_over(agents, 50, |_| None, 1_000, |_, _| note, |_| false)
+                    .hand_over(agents, 50, |_| Some(0), 1_000, |_, _| note, |_| false)
                     .into_iter()
                     .filter_map(|action| Some((action.name, action.step?))),
             );
@@ -2556,7 +2562,7 @@ mod tests {
             waker.observe(&agents, corgi_bin, |_| None);
             steps.extend(
                 waker
-                    .hand_over(&agents, 50, |_| None, 1_000, |_, _| false, |_| false)
+                    .hand_over(&agents, 50, |_| Some(0), 1_000, |_, _| false, |_| false)
                     .into_iter()
                     .filter_map(|action| action.step),
             );
@@ -2735,14 +2741,34 @@ mod tests {
         supervisor.context_percent = Some(80);
         let agents = [supervisor, weather_worker("w-radar", Working, 1, false)];
 
-        // A hook's pass asks the full supervisor for its note.
+        // A hook's pass, which has no idle time (it cannot time a rest), asks
+        // the full supervisor for nothing, however long it has rested.
         let mut hook = SupervisorWaker::in_dir(&scratch).without_idle_handover();
         assert!(hook.begin(&client));
         hook.observe(&agents, Path::new("/opt/corgi"), |_| None);
-        let actions = hook.hand_over(&agents, 50, |_| None, 1_000, |_, _| false, |_| false);
+        for now in [1_000, 1_000_000] {
+            let actions = hook.hand_over(&agents, 50, |_| None, now, |_, _| false, |_| false);
+            assert!(actions.iter().all(|action| action.step.is_none()));
+        }
+        hook.end();
+        drop(hook);
+
+        // A dashboard's pass, which has one, asks the supervisor that has
+        // rested that long for its note.
+        let mut leader = SupervisorWaker::in_dir(&scratch);
+        assert!(leader.begin(&client));
+        leader.observe(&agents, Path::new("/opt/corgi"), |_| None);
+        let actions = leader.hand_over(
+            &agents,
+            50,
+            |_| Some(500),
+            1_000_000 + 500,
+            |_, _| false,
+            |_| false,
+        );
         assert!(matches!(
             actions[0].step,
-            Some(supervisor::HandoverStep::Ask(1_000, _))
+            Some(supervisor::HandoverStep::Ask(1_000_500, _))
         ));
         // Only one pass at a time.
         let mut dashboard = SupervisorWaker::in_dir(&scratch);
@@ -2750,8 +2776,8 @@ mod tests {
         assert!(!dashboard.end() && !dashboard.leading());
         // A dashboard that tried meanwhile marked it dirty.
         assert!(dashboard.mark_dirty(&client));
-        assert!(hook.end(), "the hook goes round again");
-        drop(hook);
+        assert!(leader.end(), "the leader goes round again");
+        drop(leader);
 
         // The dashboard's next pass goes on from there: the request is the
         // one being answered, and the worker is followed.
