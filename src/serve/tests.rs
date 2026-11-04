@@ -517,6 +517,51 @@ fn the_first_lines_are_the_hello_and_a_snapshot_of_rows_cards_and_questions() {
 }
 
 #[test]
+fn a_project_carries_why_its_supervisor_is_refused_wakes_and_what_waits() {
+    let scratch = ScratchDir::new("serve-refused");
+    let state = scratch.join("state");
+    let inboxes = SupervisorWaker::in_dir(&state).inboxes();
+    let client = HerdrClient::from_socket_path(scratch.join("no-socket"))
+        .with_marker_record(scratch.join("markers.json"));
+    inboxes
+        .notify(corgi_core::inbox::Item {
+            project: "/repos/weather".into(),
+            source: "notify".into(),
+            kind: corgi_core::inbox::Kind::Note,
+            key: "a-wake".into(),
+            text: "[Corgi] a wake".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut agents = vec![corgi_core::model::DashboardAgent {
+        project_group: "weather".into(),
+        project_root: "/repos/weather".into(),
+        supervisor: true,
+        ..Default::default()
+    }];
+
+    let projects = super::state::projects(&agents, &inboxes, &client);
+    assert_eq!(projects[0].refused, None);
+    assert!(
+        serde_json::to_value(&projects[0])
+            .unwrap()
+            .get("refused")
+            .is_none(),
+        "an older window reads the same project as ever"
+    );
+
+    agents[0].delivery_refused = Some("held until continued".into());
+    let projects = super::state::projects(&agents, &inboxes, &client);
+    assert_eq!(
+        projects[0].refused,
+        Some(corgi_core::protocol::Refused {
+            reason: "held until continued".into(),
+            waiting: 1,
+        })
+    );
+}
+
+#[test]
 fn a_question_about_a_plan_is_listed_with_its_text_and_no_worker() {
     let scratch = ScratchDir::new("serve-plan-question");
     let (repo, worktree) = repository(&scratch);

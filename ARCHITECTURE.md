@@ -1296,6 +1296,16 @@ status lines of its passes.
   `report` and `inbox` (`N inbox item(s) held: …`), and in `corgi serve`'s
   `held` count of each project, since a hook may hit it with no window
   open.
+- **Refused by a recovery hold.** `begin_delivery` also takes the session
+  it is about to type into, and refuses if a hold names that session
+  ("Confirmed conversation recovery" below). The items stay in the inbox.
+  A refusal lasts as long as its cause, so it is shown by what causes it,
+  not by the pass that met it: `recovery::mark_refused` sets
+  `DashboardAgent::delivery_refused` at every refresh, which the dashboard
+  draws as a row of the supervisor's card and `corgi serve` sends as the
+  project's `refused` (the reason and how many items wait), which the
+  window draws beside `held`. `corgi fleet`, `digest`, `report` and `inbox`
+  say the same (`Wakes are refused …`, from `recovery::project_refusal`).
 - **Dashboards.** A dashboard makes the same pass at each refresh, under
   the same lock, so it is the fallback where no hook runs: a Herdr whose
   plugin was linked before the manifest had hooks, or a hook that failed. A
@@ -2334,6 +2344,26 @@ existing directory/worktree. A durable native-identity intent precedes each
 mutation. Unconfirmed launches are reconciled, not repeated; a confirmed native
 identity permits metadata-only retry. Sequence-dependent merge and handover
 claims are not restored. See [the recovery contract](docs/session-recovery-design.md).
+
+A hold binds to a supervisor's native identity (`harness:id`), never to its
+project. `recovery::held_sessions` is the one reading of the journal's `held`
+and `released` and of other boots' saves: `held_projects`, `begin_delivery`,
+the frontends' markers and `corgi recovery` all go by it. So a project is held
+only while a session a hold names is its running supervisor. A supervisor
+started since, whose identity no hold names (say a handover's successor, or a
+new session of another harness), is never held back by an old snapshot, and
+that snapshot's holds stay listed, harmless, until released. A running
+supervisor whose identity is unknown cannot be told from a held one, so delivery
+to it is refused while its project has any hold; it is not "held" in
+`held_projects`' sense, since it may be new, so its stops are still recorded and
+wait in the inbox.
+
+A hold is released on purpose only: by Sessions' Continue, per project, for a
+running held supervisor, or by `corgi recovery release SESSION`
+(`release_session`), per session, with or without a supervisor running, for a
+hold whose session is gone for good. A session that is running takes `--running`
+as well, and if Herdr cannot say whether it runs the release fails. Both write
+the same `held` and `released` records, which older builds read too.
 
 Lifecycle tests must preserve a live native reference at disposable-server
 shutdown. Quitting the harness first clears that reference and exercises a

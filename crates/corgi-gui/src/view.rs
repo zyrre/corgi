@@ -828,6 +828,12 @@ impl CorgiWindow {
                 )
             })
             .children(format::held(project.held).map(|held| self.piece(&held, None)))
+            .children(
+                project
+                    .refused
+                    .as_ref()
+                    .map(|refused| self.piece(&format::refused(refused), None)),
+            )
             .into_any_element();
         let corner = project.card.then(|| {
             div()
@@ -1234,6 +1240,24 @@ impl CorgiWindow {
                     .child(self.piece(&held, None))
                     .child(div().text_color(colors.roles.muted).child(format!(
                         "Herdr never confirmed their delivery, so they may already be in the supervisor's box. Nothing more is typed in until they are read: corgi inbox {} --take",
+                        corgi_core::paths::tilde(&project.root)
+                    ))),
+            );
+        }
+
+        if let Some(refused) = &project.refused {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .p_2()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(colors.roles.warning)
+                    .child(self.piece(&format::refused(refused), None))
+                    .child(div().text_color(colors.roles.muted).child(format!(
+                        "Nothing is typed into its supervisor: {}. The wakes stay in its inbox: corgi inbox {}",
+                        refused.reason,
                         corgi_core::paths::tilde(&project.root)
                     ))),
             );

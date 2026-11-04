@@ -1,6 +1,6 @@
 //! The command-line tools: `corgi spawn`, `corgi supervisor`, `corgi fleet`,
 //! `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox`,
-//! `corgi tag` and `corgi role`.
+//! `corgi recovery`, `corgi tag` and `corgi role`.
 
 use std::{
     env, fs, io,
@@ -399,8 +399,8 @@ cold 180k once it has lapsed, with the context tokens the next prompt re-reads
 at the full input price; warm? and cold? when the lifetime is only estimated
 (Codex), so the cache may outlive it; - when unknown. TAG is merge for an agent
 a supervisor tagged ready to merge (corgi tag) that still rests where it was
-tagged, else -. When the project's supervisor has missed inbox items, a line on
-stderr says so.";
+tagged, else -. When the project's supervisor has missed inbox items, or Corgi
+refuses to type into it, a line on stderr says so.";
 
 /// `corgi fleet`: one tab-separated row per agent of a project (default: the
 /// project containing the current directory), for a supervisor to read.
@@ -939,9 +939,11 @@ pub fn inbox_command(args: &[String]) -> Result<()> {
     let inbox = Inbox::try_read(&dir)?;
     let (text, shown) = inbox_text(&inbox, &dir, &root, delivered);
     print!("{text}");
-    if let Some(note) = HerdrClient::from_env()
+    for note in HerdrClient::from_env()
         .ok()
-        .and_then(|client| held_note(&client, &root))
+        .into_iter()
+        .flat_map(|client| [held_note(&client, &root), refused_note(&client, &root)])
+        .flatten()
     {
         println!("{note}");
     }
@@ -1038,7 +1040,11 @@ fn inbox_entry(item: &Item, corgi_bin: &str, budget: Option<&mut usize>) -> Stri
 fn print_inbox_footer(root: &str) {
     let client = HerdrClient::from_env().ok();
     let delivering = client.as_ref().is_some_and(super::waker::inboxes_delivered);
-    if let Some(note) = client.as_ref().and_then(|client| held_note(client, root)) {
+    for note in client
+        .iter()
+        .flat_map(|client| [held_note(client, root), refused_note(client, root)])
+        .flatten()
+    {
         eprintln!("{note}");
     }
     if let Some(footer) = crate::supervisor::state_dir(root).ok().and_then(|dir| {
@@ -1068,6 +1074,98 @@ fn held_note(client: &HerdrClient, root: &str) -> Option<String> {
             corgi_bin_text()
         )
     })
+}
+
+/// The line saying that Corgi refuses to type into the supervisor of the project
+/// at `root`, if it does, and why.
+fn refused_note(client: &HerdrClient, root: &str) -> Option<String> {
+    let reason = crate::recovery::project_refusal(client, root)?;
+    let waiting = super::waker::Inboxes::default().undelivered(root);
+    Some(refused_text(&reason, waiting))
+}
+
+fn refused_text(reason: &str, waiting: usize) -> String {
+    format!(
+        "Wakes are refused for this project's supervisor: {reason}. {waiting} inbox item(s) \
+         wait; {} recovery lists what is held",
+        corgi_bin_text()
+    )
+}
+
+pub const RECOVERY_USAGE: &str = "\
+Usage: corgi recovery
+       corgi recovery release SESSION [--running]
+
+Lists the recovered supervisor sessions whose coordination is held on this
+Herdr session, one tab-separated row each under a header line: SESSION (its
+harness and native ID), PROJECT, FROM (restored, or saved when a save of another
+boot only names it) and PANE (where it runs, or - when it does not). A line on
+stderr names each project whose running supervisor Corgi refuses to type into.
+
+A hold binds to the session it names, so one whose session is gone stops
+nothing: a newly started supervisor of its project is not held. It stays listed
+until released. A session restored and running stays held until it is continued
+on purpose.
+
+Commands:
+  release SESSION  Release one hold, as SESSION is listed. Nothing is typed in,
+                   and a stop seen during the hold is not replayed
+
+Options:
+  --running  Also release a session that is running, which lets Corgi wake it";
+
+/// `corgi recovery`: lists the held sessions, or releases one.
+pub fn recovery_command(args: &[String]) -> Result<()> {
+    let client = HerdrClient::from_env()?;
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        [] => {
+            let store = crate::recovery::Store::for_client(&client)
+                .context("recovery storage unavailable")?;
+            let scope = client.socket_path().to_string_lossy();
+            let held = crate::recovery::held_sessions(&store, &scope)?;
+            let live = client.snapshot()?;
+            print!("{}", recovery_rows(&held, &live.agents));
+            let mut projects: Vec<&str> = held.iter().map(|hold| hold.project.as_str()).collect();
+            projects.dedup();
+            for project in projects {
+                if let Some(reason) = crate::recovery::project_refusal(&client, project) {
+                    eprintln!("Wakes are refused for {project}'s supervisor: {reason}");
+                }
+            }
+            Ok(())
+        }
+        ["release", session] => release_held(&client, session, false),
+        ["release", session, "--running"] | ["release", "--running", session] => {
+            release_held(&client, session, true)
+        }
+        _ => bail!("{RECOVERY_USAGE}"),
+    }
+}
+
+fn release_held(client: &HerdrClient, session: &str, running: bool) -> Result<()> {
+    crate::recovery::release_session(client, session, running)?;
+    println!("Released {session}.");
+    Ok(())
+}
+
+/// What `corgi recovery` prints of the holds `held`, with `live` running.
+fn recovery_rows(
+    held: &[crate::recovery::HeldSession],
+    live: &[crate::model::AgentInfo],
+) -> String {
+    if held.is_empty() {
+        return "No recovered session is held.\n".into();
+    }
+    let mut out = String::from("SESSION\tPROJECT\tFROM\tPANE\n");
+    for hold in held {
+        let pane = live
+            .iter()
+            .find(|agent| crate::recovery::session_key(agent).as_deref() == Some(&hold.key))
+            .map_or("-", |agent| agent.pane_id.as_str());
+        let from = if hold.restored { "restored" } else { "saved" };
+        out.push_str(&format!("{}\t{}\t{from}\t{pane}\n", hold.key, hold.project));
+    }
+    out
 }
 
 /// The root of `project` (default: the current directory): its
@@ -1184,6 +1282,44 @@ fn print_launch(started: &serde_json::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corgi_recovery_lists_each_hold_and_where_its_session_runs() {
+        use crate::recovery::HeldSession;
+        assert_eq!(recovery_rows(&[], &[]), "No recovered session is held.\n");
+        let hold = |key: &str, restored| HeldSession {
+            key: key.into(),
+            project: "/repos/weather".into(),
+            restored,
+            snapshots: Vec::new(),
+        };
+        let running = crate::model::AgentInfo {
+            agent: Some("codex".into()),
+            pane_id: "w1:p1".into(),
+            agent_session: Some(crate::model::AgentSession {
+                value: "a".into(),
+                kind: "id".into(),
+                agent: "codex".into(),
+                source: "test".into(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            recovery_rows(&[hold("codex:a", true), hold("codex:b", false)], &[running]),
+            "SESSION\tPROJECT\tFROM\tPANE\n\
+             codex:a\t/repos/weather\trestored\tw1:p1\n\
+             codex:b\t/repos/weather\tsaved\t-\n"
+        );
+    }
+
+    #[test]
+    fn a_refused_delivery_says_why_and_what_waits() {
+        let note = refused_text("this recovered session is held", 3);
+        assert!(note.contains("refused"), "{note}");
+        assert!(note.contains("this recovered session is held"), "{note}");
+        assert!(note.contains("3 inbox item(s)"), "{note}");
+        assert!(note.contains("recovery lists what is held"), "{note}");
+    }
 
     #[test]
     fn fleet_shows_whether_a_prompt_cache_is_warm_or_what_it_costs_cold() {

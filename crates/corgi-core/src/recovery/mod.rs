@@ -1,4 +1,7 @@
 //! Confirmed native conversation recovery. No function in this module sends a prompt.
+//!
+//! A hold names a supervisor session, by its harness and native ID, not a project
+//! ([`held_sessions`]): an old snapshot never holds back a session started since.
 pub mod native;
 pub mod store;
 
@@ -855,48 +858,226 @@ pub(crate) fn available_shell(client: &HerdrClient, pane: &str, cwd: &Path) -> R
     }))
 }
 
-/// Holds are session-bound. Every immutable manifest retains its next-boot
-/// intent until Continue acknowledges it; a newer Save cannot erase a hold.
-/// This also works before the first waker tick and across dashboard restarts.
-pub fn held_projects(client: &HerdrClient, agents: &[DashboardAgent]) -> Result<BTreeSet<String>> {
-    let Some(store) = Store::for_client(client) else {
-        return Ok(BTreeSet::new());
-    };
-    let journal = store.journal()?;
+/// The identity a hold names a session by: its harness and native ID.
+pub fn session_key(info: &AgentInfo) -> Option<String> {
+    supervisor::native_session(info).map(|id| format!("{}:{id}", info.kind()))
+}
+
+/// A recovered supervisor session whose coordination nobody has continued.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldSession {
+    /// `harness:native-id`, or `harness:` for a supervisor saved without an ID.
+    pub key: String,
+    pub project: String,
+    /// A restore started it (the journal's `held`), as opposed to a Save only
+    /// naming it.
+    pub restored: bool,
+    /// The saves of another boot that still arm it.
+    pub snapshots: Vec<String>,
+}
+
+/// The snapshots of this Herdr session, machine and account saved on another
+/// boot: what they name is armed until released.
+fn other_boot_snapshots(store: &Store, scope: &str) -> Result<Vec<Snapshot>> {
     let boot = store::boot()?;
-    let scope = client.socket_path().to_string_lossy();
     let host = store::host()?;
-    let snapshots = store.snapshots()?;
-    let mut held = BTreeSet::new();
-    for agent in agents.iter().filter(|a| a.supervisor) {
-        let Some(id) = supervisor::native_session(&agent.info) else {
-            continue;
-        };
-        let key = format!("{}:{id}", agent.info.kind());
-        let explicit = journal
-            .held
-            .get(scope.as_ref())
-            .is_some_and(|v| v.contains_key(&key));
-        let armed = snapshots.iter().any(|s| {
+    Ok(store
+        .snapshots()?
+        .into_iter()
+        .filter(|s| {
             s.scope == scope
                 && s.host == host
                 && s.uid == unsafe { libc::geteuid() }
                 && !store::same_boot(&s.boot, &boot)
-                && s.entries.iter().any(|e| {
-                    e.role == "supervisor"
-                        && e.kind == agent.info.kind()
-                        && e.native_id.as_deref() == Some(id)
-                })
-                && !journal
-                    .released
-                    .get(&s.id)
-                    .is_some_and(|v| v.contains(&key))
-        });
-        if explicit || armed {
-            held.insert(agent.project_root.clone());
+        })
+        .collect())
+}
+
+/// Every hold on the Herdr session `scope`, whether or not its session runs.
+/// The one reading of `held` and `released`: [`held_projects`], the check in
+/// [`begin_delivery`], the frontends' markers and `corgi recovery` all go by
+/// it, so they cannot disagree about what is held. Every immutable manifest
+/// retains its next-boot intent until it is released; a newer Save cannot
+/// erase a hold.
+pub fn held_sessions(store: &Store, scope: &str) -> Result<Vec<HeldSession>> {
+    let journal = store.journal()?;
+    let mut held: BTreeMap<String, HeldSession> = BTreeMap::new();
+    for (key, project) in journal.held.get(scope).into_iter().flatten() {
+        held.insert(
+            key.clone(),
+            HeldSession {
+                key: key.clone(),
+                project: project.clone(),
+                restored: true,
+                snapshots: Vec::new(),
+            },
+        );
+    }
+    for saved in other_boot_snapshots(store, scope)? {
+        for entry in saved.entries.iter().filter(|e| e.role == "supervisor") {
+            let key = saved_key(entry);
+            if journal
+                .released
+                .get(&saved.id)
+                .is_some_and(|released| released.contains(&key))
+            {
+                continue;
+            }
+            let session = held.entry(key.clone()).or_insert_with(|| HeldSession {
+                key,
+                project: entry.project.clone(),
+                restored: false,
+                snapshots: Vec::new(),
+            });
+            if !session.snapshots.contains(&saved.id) {
+                session.snapshots.push(saved.id.clone());
+            }
         }
     }
-    Ok(held)
+    Ok(held.into_values().collect())
+}
+
+fn saved_key(entry: &Entry) -> String {
+    format!(
+        "{}:{}",
+        entry.kind,
+        entry.native_id.as_deref().unwrap_or("")
+    )
+}
+
+/// Why nothing may be typed into `project`'s supervisor, the session `session`,
+/// given the holds `held`. A hold binds to the session it names: a session
+/// started since, whose identity no hold names, is never held back by what an
+/// old snapshot lists for its project. One whose identity is not known cannot
+/// be told from a held one, so it fails safe while its project has any hold.
+fn refusal(held: &[HeldSession], project: &str, session: Option<&str>) -> Option<&'static str> {
+    match session {
+        Some(session) => held
+            .iter()
+            .any(|hold| hold.key == session)
+            .then_some(REFUSED_HELD),
+        None => held
+            .iter()
+            .any(|hold| hold.project == project)
+            .then_some(REFUSED_UNIDENTIFIED),
+    }
+}
+
+const REFUSED_HELD: &str =
+    "this recovered session is held until continued (S sessions, or corgi recovery)";
+const REFUSED_UNIDENTIFIED: &str =
+    "its session identity is unknown while recovered sessions are held (corgi recovery)";
+const REFUSED_UNREADABLE: &str = "recovery state could not be read, so coordination is held";
+
+/// Sets [`DashboardAgent::delivery_refused`] on each running supervisor Corgi
+/// would refuse to type into, for the frontends to show for as long as it holds.
+pub fn mark_refused(client: &HerdrClient, agents: &mut [DashboardAgent]) {
+    let Some(store) = Store::for_client(client) else {
+        return;
+    };
+    let scope = client.socket_path().to_string_lossy();
+    let held = held_sessions(&store, &scope);
+    for agent in agents
+        .iter_mut()
+        .filter(|a| a.supervisor && !a.scratch && !a.exited)
+    {
+        agent.delivery_refused = match &held {
+            Ok(held) => refusal(
+                held,
+                &agent.project_root,
+                session_key(&agent.info).as_deref(),
+            ),
+            Err(_) => Some(REFUSED_UNREADABLE),
+        }
+        .map(str::to_string);
+    }
+}
+
+/// Why nothing may be typed into the supervisor of the project at `root`, if
+/// so, for a command that has no dashboard's rows. A project with no supervisor
+/// running refuses nothing: its items wait for one.
+pub fn project_refusal(client: &HerdrClient, root: &str) -> Option<String> {
+    let store = Store::for_client(client)?;
+    let scope = client.socket_path().to_string_lossy();
+    let held = match held_sessions(&store, &scope) {
+        Ok(held) => held,
+        Err(_) => return Some(REFUSED_UNREADABLE.into()),
+    };
+    if held.is_empty() {
+        return None;
+    }
+    let live = client.snapshot().ok()?;
+    live.agents
+        .iter()
+        .filter(|a| supervisor::is_supervisor(a) && a.cwd() == root)
+        .find_map(|a| refusal(&held, root, session_key(a).as_deref()))
+        .map(str::to_string)
+}
+
+/// The projects whose running supervisor is a held session, which no stop
+/// report, handover or inbox item may reach. This also works before the first
+/// waker tick and across dashboard restarts.
+pub fn held_projects(client: &HerdrClient, agents: &[DashboardAgent]) -> Result<BTreeSet<String>> {
+    let Some(store) = Store::for_client(client) else {
+        return Ok(BTreeSet::new());
+    };
+    let sessions = held_sessions(&store, &client.socket_path().to_string_lossy())?;
+    Ok(agents
+        .iter()
+        .filter(|a| a.supervisor)
+        .filter(|a| {
+            session_key(&a.info).is_some_and(|key| sessions.iter().any(|hold| hold.key == key))
+        })
+        .map(|a| a.project_root.clone())
+        .collect())
+}
+
+/// Releases the one held session `key`, on purpose and whichever project it
+/// was for: what [`continue_coordination`] does for a whole project whose
+/// supervisor is running. It needs no such supervisor, so a hold whose session
+/// is gone for good can go too. A session that is running is released only with
+/// `running`, since that lets Corgi wake it; Herdr must answer to tell, and a
+/// release fails when it cannot.
+pub fn release_session(client: &HerdrClient, key: &str, running: bool) -> Result<()> {
+    let store = Store::for_client(client).context("recovery storage unavailable")?;
+    let live = client.snapshot()?;
+    if let Some(agent) = live
+        .agents
+        .iter()
+        .find(|a| session_key(a).as_deref() == Some(key))
+    {
+        ensure!(
+            running,
+            "{key} is running in pane {}: releasing it lets Corgi wake it. Pass --running to continue it deliberately",
+            agent.pane_id
+        );
+    }
+    let scope = client.socket_path().to_string_lossy();
+    let _lock = store.lock()?;
+    ensure!(
+        held_sessions(&store, &scope)?
+            .iter()
+            .any(|hold| hold.key == key),
+        "no held session {key}"
+    );
+    let mut journal = store.journal()?;
+    if let Some(held) = journal.held.get_mut(scope.as_ref()) {
+        held.remove(key);
+    }
+    for saved in other_boot_snapshots(&store, &scope)? {
+        if saved
+            .entries
+            .iter()
+            .any(|e| e.role == "supervisor" && saved_key(e) == key)
+        {
+            journal
+                .released
+                .entry(saved.id)
+                .or_default()
+                .insert(key.to_string());
+        }
+    }
+    store.write_journal(&journal)
 }
 
 pub fn continue_coordination(client: &HerdrClient, projects: &BTreeSet<String>) -> Result<()> {
@@ -907,20 +1088,13 @@ pub fn continue_coordination(client: &HerdrClient, projects: &BTreeSet<String>) 
     if let Some(held) = journal.held.get_mut(scope.as_ref()) {
         held.retain(|_, project| !projects.contains(project));
     }
-    let host = store::host()?;
-    let boot = store::boot()?;
-    for saved in store.snapshots()?.into_iter().filter(|s| {
-        s.scope == scope
-            && s.host == host
-            && s.uid == unsafe { libc::geteuid() }
-            && !store::same_boot(&s.boot, &boot)
-    }) {
+    for saved in other_boot_snapshots(&store, &scope)? {
         journal.released.entry(saved.id).or_default().extend(
             saved
                 .entries
                 .iter()
                 .filter(|e| e.role == "supervisor" && projects.contains(&e.project))
-                .filter_map(|e| e.native_id.as_ref().map(|id| format!("{}:{id}", e.kind))),
+                .map(saved_key),
         );
     }
     store.write_journal(&journal)
@@ -1231,42 +1405,20 @@ fn bind_metadata(
 
 /// Persist only item identities, never prompt/report text. A failed or unknown
 /// send remains quarantined across dashboard restarts, including after Continue.
-pub fn begin_delivery(store: &Store, scope: &str, project: &str, ids: &[String]) -> Result<()> {
+/// `session` is the [`session_key`] of the supervisor about to be typed into:
+/// it is that session a hold refuses ([`refusal`]), not its project.
+pub fn begin_delivery(
+    store: &Store,
+    scope: &str,
+    project: &str,
+    session: Option<&str>,
+    ids: &[String],
+) -> Result<()> {
     let _lock = store.lock()?;
     let mut journal = store.journal()?;
-    let boot = store::boot()?;
-    let host = store::host()?;
-    let snapshots: Vec<_> = store
-        .snapshots()?
-        .into_iter()
-        .filter(|s| {
-            s.scope == scope
-                && s.host == host
-                && s.uid == unsafe { libc::geteuid() }
-                && !store::same_boot(&s.boot, &boot)
-        })
-        .collect();
-    ensure!(
-        !journal
-            .held
-            .get(scope)
-            .is_some_and(|held| held.values().any(|root| root == project)),
-        "recovered supervisor coordination held"
-    );
-    for saved in &snapshots {
-        ensure!(
-            !saved.entries.iter().any(|e| e.role == "supervisor"
-                && e.project == project
-                && !journal
-                    .released
-                    .get(&saved.id)
-                    .is_some_and(|released| released.contains(&format!(
-                        "{}:{}",
-                        e.kind,
-                        e.native_id.as_deref().unwrap_or("")
-                    )))),
-            "saved supervisor coordination held until explicitly continued"
-        );
+    let snapshots = other_boot_snapshots(store, scope)?;
+    if let Some(reason) = refusal(&held_sessions(store, scope)?, project, session) {
+        bail!("delivery refused: {reason}");
     }
     let key = |id: &str| format!("{scope}\n{project}\n{id}");
     ensure!(
@@ -1308,17 +1460,23 @@ pub fn abort_delivery(store: &Store, scope: &str, project: &str, ids: &[String])
 }
 
 /// The ids of `project`'s inbox items on the Herdr session `scope` whose
-/// delivery began and was never confirmed: quarantined, so they are never
-/// typed in again, and with them every later item of the project, until
-/// someone looks.
+/// delivery began and was never confirmed, or that a save of another boot
+/// listed as still on their way: quarantined, so they are never typed in again,
+/// and with them every later item of the project, until someone looks.
 pub fn quarantined(store: &Store, scope: &str, project: &str) -> Result<Vec<String>> {
     let journal = store.journal()?;
     let prefix = format!("{scope}\n{project}\n");
-    Ok(journal
+    let mut ids: BTreeSet<String> = journal
         .deliveries
         .iter()
         .filter_map(|key| key.strip_prefix(&prefix).map(str::to_string))
-        .collect())
+        .collect();
+    for saved in other_boot_snapshots(store, scope)? {
+        for entry in saved.entries.iter().filter(|e| e.project == project) {
+            ids.extend(entry.pending_inbox_ids.iter().cloned());
+        }
+    }
+    Ok(ids.into_iter().collect())
 }
 
 /// Puts back the pane tokens and, for a recovered workspace, the workspace

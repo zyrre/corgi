@@ -112,6 +112,9 @@ pub struct FakeHerdr {
     /// a pane not named has none.
     processes: Arc<Mutex<std::collections::HashMap<String, Value>>>,
     prompts: Arc<Mutex<Prompts>>,
+    /// The repository root `worktree.list` resolves every directory to; none
+    /// answers as a Herdr that lists nothing.
+    repo_root: Arc<Mutex<Option<String>>>,
     requests: Arc<Mutex<Vec<Value>>>,
     stop: Arc<AtomicBool>,
     server: Option<thread::JoinHandle<()>>,
@@ -135,13 +138,15 @@ impl FakeHerdr {
         let snapshot = Arc::new(Mutex::new(snapshot));
         let processes = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let prompts = Arc::new(Mutex::new(Prompts::Accept));
+        let repo_root = Arc::new(Mutex::new(None));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let (socket, server) = {
-            let (snapshot, processes, prompts, requests, stop) = (
+            let (snapshot, processes, prompts, repo_root, requests, stop) = (
                 snapshot.clone(),
                 processes.clone(),
                 prompts.clone(),
+                repo_root.clone(),
                 requests.clone(),
                 stop.clone(),
             );
@@ -152,14 +157,17 @@ impl FakeHerdr {
                 while !stop.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, _)) => {
-                            let (snapshot, processes, prompts, requests) = (
+                            let (snapshot, processes, prompts, repo_root, requests) = (
                                 snapshot.clone(),
                                 processes.clone(),
                                 prompts.clone(),
+                                repo_root.clone(),
                                 requests.clone(),
                             );
                             thread::spawn(move || {
-                                serve_one(stream, &snapshot, &processes, &prompts, &requests)
+                                serve_one(
+                                    stream, &snapshot, &processes, &prompts, &repo_root, &requests,
+                                )
                             });
                         }
                         Err(_) => thread::sleep(std::time::Duration::from_millis(2)),
@@ -172,10 +180,16 @@ impl FakeHerdr {
             snapshot,
             processes,
             prompts,
+            repo_root,
             requests,
             stop,
             server: Some(server),
         }
+    }
+
+    /// Makes `worktree.list` resolve every directory to the repository `root`.
+    pub fn set_repo_root(&self, root: &str) {
+        *self.repo_root.lock().expect("repo root") = Some(root.to_string());
     }
 
     /// Replaces the session snapshot Herdr gives from now on.
@@ -240,6 +254,7 @@ fn serve_one(
     snapshot: &Mutex<Value>,
     processes: &Mutex<std::collections::HashMap<String, Value>>,
     prompts: &Mutex<Prompts>,
+    repo_root: &Mutex<Option<String>>,
     requests: &Mutex<Vec<Value>>,
 ) {
     // A stream accepted from a non-blocking listener is non-blocking on
@@ -300,6 +315,14 @@ fn serve_one(
             serde_json::json!({
                 "type": "pane_process_info",
                 "process_info": {"pane_id": pane, "foreground_processes": foreground},
+            })
+        }
+        "worktree.list" if repo_root.lock().expect("repo root").is_some() => {
+            let root = repo_root.lock().expect("repo root").clone();
+            serde_json::json!({
+                "type": "worktree_list",
+                "source": {"repo_name": "repo", "repo_root": root, "source_checkout_path": root},
+                "worktrees": [],
             })
         }
         _ => serde_json::json!({"type": "ok"}),

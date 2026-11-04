@@ -486,6 +486,15 @@ fn supervisor_lines(
 ) -> Vec<Line<'static>> {
     let text_width = transcript_text_width(area_width);
     let mut lines = vec![agent_status_line(supervisor, selected, area_width, now)];
+    if let Some(reason) = &supervisor.delivery_refused {
+        lines.push(Line::from(vec![
+            gutter(selected),
+            Span::styled(
+                clip(&format!("⏸ Wakes refused: {reason}"), text_width),
+                bold(roles().warning),
+            ),
+        ]));
+    }
     for activity in [&supervisor.message, &supervisor.tool] {
         lines.extend(entry_lines(
             activity,
@@ -1336,6 +1345,25 @@ mod tests {
             .iter()
             .find(|row| row.contains(needle))
             .unwrap_or_else(|| panic!("no row with {needle:?} in {screen:#?}"))
+    }
+
+    #[test]
+    fn a_card_says_for_as_long_as_it_lasts_that_wakes_are_refused() {
+        let mut app = test_app();
+        app.agents = carded_herd();
+        let screen = rendered_screen(&mut app, 100, 40);
+        assert!(!screen.iter().any(|row| row.contains("Wakes refused")));
+
+        app.agents[0].delivery_refused = Some("held until continued".into());
+        let screen = rendered_screen(&mut app, 100, 40);
+        let top = screen
+            .iter()
+            .position(|row| row.starts_with("│ ╭ webshop ─"))
+            .expect("card top");
+        assert!(
+            screen[top + 2].contains("⏸ Wakes refused: held until continued"),
+            "{screen:#?}"
+        );
     }
 
     #[test]
