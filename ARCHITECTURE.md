@@ -1615,8 +1615,8 @@ status lines of its passes.
   never qualifies, and a supervisor on a harness whose session file Corgi
   cannot read is never handed over for idleness. The 50% trigger goes first
   when both hold, so it also asks while a worker is busy.
-  `CORGI_DEBUG_HANDOVER_IDLE_SECS` sets the idle time for a debug run on any
-  harness; it is not a setting. For a Claude Code or Codex supervisor only a
+  `CORGI_DEBUG_HANDOVER_IDLE_SECS` sets the idle time for a debug run on
+  Claude Code and Codex, the only harnesses with one; it is not a setting. For a Claude Code or Codex supervisor only a
   dashboard asks, for both triggers: they are timed, and Herdr runs hooks
   only when something happens, so they wait for a Corgi window to be open.
 - Claude Code's folder-trust question is the one question Corgi answers. It
