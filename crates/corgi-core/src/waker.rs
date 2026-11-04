@@ -68,9 +68,15 @@ pub struct SupervisorWaker {
     /// Whether the lock is kept from one pass to the next, as `corgi hook`
     /// keeps it while it goes round, rather than given up at each pass's end.
     hold: bool,
-    /// Whether this waker asks an idle supervisor for its handover when its
-    /// prompt cache is about to lapse. That is timed, and Herdr's hooks run
-    /// only when something happens, so only a dashboard does it.
+    /// Whether this waker can time a rest. Every request for a supervisor on
+    /// Claude Code or Codex waits for its prompt cache to be about to lapse,
+    /// which needs one, and Herdr's hooks run only when something happens, so
+    /// only a dashboard asks. A hook still goes on with a handover a
+    /// dashboard started: it replaces the supervisor once its note is
+    /// written, and a request made by either is one handover. A supervisor on
+    /// a harness with no known cache life has none to wait for, so a hook
+    /// asks for it at its first rest past the context threshold too
+    /// ([`supervisor::Cache`]).
     idle_handover: bool,
     /// A dashboard's share of `wake/<socket>.open`, held for as long as it
     /// runs, which tells the command-line tools a dashboard is open
@@ -490,8 +496,12 @@ impl SupervisorWaker {
         self.lock.is_some()
     }
 
-    /// Leaves the idle prompt-cache handover to dashboards: Herdr runs a
-    /// hook only when something happens, so no hook can time a rest.
+    /// Leaves asking for handovers of Claude Code and Codex supervisors to
+    /// dashboards: both triggers wait for the supervisor's prompt cache to be
+    /// about to lapse, and Herdr runs a hook only when something happens, so
+    /// no hook can time a rest. Such a hook's pass asks for nothing, though it
+    /// still follows a handover a dashboard began. A harness with no known
+    /// cache life is unaffected: its handover is not timed.
     pub fn without_idle_handover(mut self) -> Self {
         self.idle_handover = false;
         self
@@ -807,7 +817,8 @@ impl SupervisorWaker {
     }
 
     /// Advances each supervisor's handover by one refresh, with `percent` as
-    /// the threshold and `idle_secs` giving each harness's idle time, and
+    /// the threshold and `cache` giving what is known of each harness's
+    /// prompt cache (a harness without an idle time has none to wait for), and
     /// returns what to do about it. `note_since(root, at)` says whether
     /// `root`'s supervisor wrote its note since `at`, and `drafting(supervisor)`
     /// whether the user is writing in its input box, which holds a due
@@ -816,7 +827,7 @@ impl SupervisorWaker {
         &mut self,
         agents: &[DashboardAgent],
         percent: u8,
-        idle_secs: impl Fn(&Harness) -> Option<u64>,
+        cache: impl Fn(&Harness) -> supervisor::Cache,
         now: u64,
         mut note_since: impl FnMut(&str, u64) -> bool,
         mut drafting: impl FnMut(&DashboardAgent) -> bool,
@@ -857,7 +868,7 @@ impl SupervisorWaker {
             };
             let limits = supervisor::Thresholds {
                 percent,
-                idle_secs: idle_secs(&harness),
+                cache: cache(&harness),
             };
             let handover = self.handovers.entry(root.to_string()).or_default();
             let step = handover.observe(
@@ -1072,11 +1083,7 @@ impl SupervisorWaker {
         let actions = self.hand_over(
             &available,
             percent,
-            |harness| {
-                idle_handover
-                    .then(|| supervisor::handover_idle_secs(harness))
-                    .flatten()
-            },
+            |harness| supervisor::Cache::of(harness, idle_handover),
             unix_now(),
             |root, at| {
                 supervisor::state_dir(root)
@@ -1104,7 +1111,7 @@ impl SupervisorWaker {
                             report_tokens(client, &action, Some(&asked));
                             match trigger {
                                 supervisor::Trigger::Full(percent) => format!(
-                                    "{name}'s context is past {percent}%: asked for its handover note"
+                                    "{name}'s context is past {percent}% and its prompt cache is about to expire: asked for its handover note"
                                 ),
                                 supervisor::Trigger::Idle(minutes) => format!(
                                     "{name} has been idle {minutes} min, its prompt cache about to expire: asked for its handover note"
@@ -2162,7 +2169,14 @@ mod tests {
         assert_eq!(recipients, ["renamed-task"]);
 
         owner.context_percent = Some(80);
-        let actions = waker.hand_over(&[owner], 50, |_| None, 100, |_, _| false, |_| false);
+        let actions = waker.hand_over(
+            &[owner],
+            50,
+            |_| supervisor::Cache::Expires(0),
+            100,
+            |_, _| false,
+            |_| false,
+        );
         assert_eq!(actions.len(), 1);
         let action = &actions[0];
         assert_eq!(action.name, "renamed-task");
@@ -2223,7 +2237,14 @@ mod tests {
         waker.observe(&agents(Working), Path::new("/opt/corgi"), |_| None);
         waker.observe(&agents(Done), Path::new("/opt/corgi"), |_| None);
         assert!(waker.pending_for("/home/me").is_empty());
-        let actions = waker.hand_over(&agents(Done), 1, |_| Some(0), 1_000, |_, _| true, |_| false);
+        let actions = waker.hand_over(
+            &agents(Done),
+            1,
+            |_| supervisor::Cache::Expires(0),
+            1_000,
+            |_, _| true,
+            |_| false,
+        );
         assert!(actions.is_empty());
         assert!(waker.handovers.is_empty());
     }
@@ -2320,7 +2341,7 @@ mod tests {
                 .hand_over(
                     std::slice::from_ref(&supervisor),
                     50,
-                    |_| None,
+                    |_| supervisor::Cache::Expires(0),
                     now,
                     |_, _| false,
                     |_| drafting,
@@ -2369,7 +2390,7 @@ mod tests {
                         .hand_over(
                             &agents,
                             50,
-                            |_| None,
+                            |_| supervisor::Cache::Expires(0),
                             now,
                             |_, _| true,
                             |supervisor| {
@@ -2452,7 +2473,14 @@ mod tests {
             waker.observe(agents, corgi_bin, |_| None);
             steps.extend(
                 waker
-                    .hand_over(agents, 50, |_| None, 1_000, |_, _| note, |_| false)
+                    .hand_over(
+                        agents,
+                        50,
+                        |_| supervisor::Cache::Expires(0),
+                        1_000,
+                        |_, _| note,
+                        |_| false,
+                    )
                     .into_iter()
                     .filter_map(|action| Some((action.name, action.step?))),
             );
@@ -2556,7 +2584,14 @@ mod tests {
             waker.observe(&agents, corgi_bin, |_| None);
             steps.extend(
                 waker
-                    .hand_over(&agents, 50, |_| None, 1_000, |_, _| false, |_| false)
+                    .hand_over(
+                        &agents,
+                        50,
+                        |_| supervisor::Cache::Expires(0),
+                        1_000,
+                        |_, _| false,
+                        |_| false,
+                    )
                     .into_iter()
                     .filter_map(|action| action.step),
             );
@@ -2606,7 +2641,10 @@ mod tests {
                 .hand_over(
                     agents,
                     50,
-                    |harness| (*harness == Harness::Codex).then_some(60),
+                    |harness| match harness {
+                        Harness::Codex => supervisor::Cache::Expires(60),
+                        _ => supervisor::Cache::Untimed,
+                    },
                     now,
                     |_, _| true,
                     |_| false,
@@ -2733,16 +2771,44 @@ mod tests {
             ..Default::default()
         });
         supervisor.context_percent = Some(80);
+        supervisor.info.agent = Some("claude".into());
         let agents = [supervisor, weather_worker("w-radar", Working, 1, false)];
 
-        // A hook's pass asks the full supervisor for its note.
+        // A hook's pass, which cannot time a rest, asks a full Claude Code
+        // supervisor for nothing, however long it has rested.
         let mut hook = SupervisorWaker::in_dir(&scratch).without_idle_handover();
         assert!(hook.begin(&client));
         hook.observe(&agents, Path::new("/opt/corgi"), |_| None);
-        let actions = hook.hand_over(&agents, 50, |_| None, 1_000, |_, _| false, |_| false);
+        for now in [1_000, 1_000_000] {
+            let actions = hook.hand_over(
+                &agents,
+                50,
+                |harness| supervisor::Cache::of(harness, false),
+                now,
+                |_, _| false,
+                |_| false,
+            );
+            assert!(actions.iter().all(|action| action.step.is_none()));
+        }
+        hook.end();
+        drop(hook);
+
+        // A dashboard's pass, which has one, asks the supervisor that has
+        // rested that long for its note.
+        let mut leader = SupervisorWaker::in_dir(&scratch);
+        assert!(leader.begin(&client));
+        leader.observe(&agents, Path::new("/opt/corgi"), |_| None);
+        let actions = leader.hand_over(
+            &agents,
+            50,
+            |_| supervisor::Cache::Expires(500),
+            1_000_000 + 500,
+            |_, _| false,
+            |_| false,
+        );
         assert!(matches!(
             actions[0].step,
-            Some(supervisor::HandoverStep::Ask(1_000, _))
+            Some(supervisor::HandoverStep::Ask(1_000_500, _))
         ));
         // Only one pass at a time.
         let mut dashboard = SupervisorWaker::in_dir(&scratch);
@@ -2750,8 +2816,8 @@ mod tests {
         assert!(!dashboard.end() && !dashboard.leading());
         // A dashboard that tried meanwhile marked it dirty.
         assert!(dashboard.mark_dirty(&client));
-        assert!(hook.end(), "the hook goes round again");
-        drop(hook);
+        assert!(leader.end(), "the leader goes round again");
+        drop(leader);
 
         // The dashboard's next pass goes on from there: the request is the
         // one being answered, and the worker is followed.
@@ -2761,6 +2827,50 @@ mod tests {
         assert_eq!(dashboard.agents["w-radar"].change, 1);
         assert!(!dashboard.end());
         assert!(!dashboard.leading(), "a dashboard gives the lock up");
+    }
+
+    #[test]
+    fn a_hook_hands_over_a_full_supervisor_whose_harness_has_no_idle_time() {
+        use AgentState::Idle;
+        let scratch = ScratchDir::new("waker-untimed");
+        let supervisor = |kind: &str, percent| {
+            let mut supervisor = weather_supervisor(Idle);
+            supervisor.info.agent = Some(kind.into());
+            supervisor.info.tokens.insert(
+                SUPERVISOR_TOKEN.into(),
+                supervisor::marker("supervisor-weather", Some("s1")),
+            );
+            supervisor.info.agent_session = Some(crate::model::AgentSession {
+                value: "s1".into(),
+                ..Default::default()
+            });
+            supervisor.context_percent = Some(percent);
+            supervisor
+        };
+        let step = |kind: &str, percent| {
+            // A hook's waker, whose cache is timed for no harness.
+            let mut hook = SupervisorWaker::in_dir(&scratch).without_idle_handover();
+            let agents = [supervisor(kind, percent)];
+            let mut actions = hook.hand_over(
+                &agents,
+                50,
+                |harness| supervisor::Cache::of(harness, false),
+                1_000,
+                |_, _| false,
+                |_| false,
+            );
+            actions.pop().and_then(|action| action.step)
+        };
+        let ask = Some(supervisor::HandoverStep::Ask(
+            1_000,
+            supervisor::Trigger::Full(50),
+        ));
+        // With no cache life known there is no cache to wait for: percent alone.
+        assert_eq!(step("gemini", 80), ask);
+        assert_eq!(step("gemini", 49), None);
+        // Claude Code and Codex have one, which a hook cannot time.
+        assert_eq!(step("claude", 80), None);
+        assert_eq!(step("codex", 80), None);
     }
 
     #[test]
@@ -2901,7 +3011,14 @@ mod tests {
             .handovers
             .insert("/repos/gone".into(), supervisor::Handover::default());
         waker.paused.roots.insert("/repos/weather".into());
-        waker.hand_over(&[], 50, |_| None, 1_000, |_, _| false, |_| false);
+        waker.hand_over(
+            &[],
+            50,
+            |_| supervisor::Cache::Unknown,
+            1_000,
+            |_, _| false,
+            |_| false,
+        );
         assert!(waker.handovers.contains_key("/repos/weather"));
         assert!(!waker.handovers.contains_key("/repos/gone"));
     }

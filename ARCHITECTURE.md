@@ -1303,10 +1303,17 @@ status lines of its passes.
   and dashboards taking turns, nothing is delivered twice: a delivery is
   made and recorded under the lock, and the next pass reads the inbox
   afresh. A dashboard of an older Corgi holds the lock for as long as it
-  runs, so the hooks leave all the work to it until it quits. The idle
-  prompt-cache handover stays with dashboards (hooks run only when
-  something happens, so none could time a rest); the handover at 50% of the
-  context is the hooks' as well.
+  runs, so the hooks leave all the work to it until it quits. Asking a
+  Claude Code or Codex supervisor for a handover is left to dashboards: both
+  triggers wait for the supervisor's prompt cache to be about to expire,
+  which takes a timed rest, and hooks run only when something happens (a
+  hook's waker is `supervisor::Cache::Untimed` for them, so it never asks). A
+  hook still goes on with a handover a dashboard began: it replaces the
+  supervisor once its note is written, as a dashboard would, and a request
+  either made is one handover. Without a Corgi window open, then, such a
+  supervisor is not handed over. A harness with no known cache life
+  (`Cache::Unknown`) has no cache to wait for and no timed rest to need, so a
+  hook asks for it too, at its first rest at the context threshold.
 
 ### The supervisor
 
@@ -1535,10 +1542,14 @@ status lines of its passes.
   are not typed in again. The role tells a supervisor that is handing over to
   leave them to its successor.
 - The same dashboard hands a supervisor over to a fresh session once its
-  context is half full, since compaction would lose what only its
-  conversation holds (`supervisor::Handover`, once per harness session). A
-  supervisor that is idle or done, never working or blocked, at 50% or more
-  gets one `[Corgi]` line asking it to run `corgi role handover <root>`,
+  context is half full and its prompt cache is about to expire, since
+  compaction would lose what only its conversation holds, while a handover
+  with the cache still warm would spend a cold re-read too early
+  (`supervisor::Handover`, once per harness session). A supervisor that is
+  idle or done, never working or blocked, has rested for the harness's idle
+  time (50 minutes on Claude Code, 25 on Codex: ten minutes short of the
+  cache life, so the request finds it warm) and is at 50% or more, gets
+  one `[Corgi]` line asking it to run `corgi role handover <root>`,
   write `handover.md` in its state directory as that prints, and end its turn, held like a wake while its input box holds a
   draft and asked at a later refresh; the request is recorded as a
   `corgi_handover` pane token (`<unix seconds> <session>`), so a dashboard
@@ -1568,13 +1579,22 @@ status lines of its passes.
   without a note (or without an updated one), or a request not taken up
   within two minutes, leaves the supervisor in place with a status line, and
   it is asked again only after a later turn of its own.
-  `CORGI_DEBUG_HANDOVER_PERCENT` lowers the threshold for
-  a debug run; it is not a setting. Where each supervisor's handover stands
+  Both conditions are needed, and the request comes at the refresh that
+  meets the second, whichever it is, with no further wait; a supervisor past
+  50% that has not rested that long is left alone, however long it works
+  without rest, since the user's rule is to hand over only when the cache is
+  about to go cold. A harness with no idle time (its cache life unknown)
+  has no cache to wait for: it is handed over at its first rest at the
+  threshold, as before the cache counted, by a hook or a dashboard. Whether
+  another agent of the project is busy does not matter to this trigger. `CORGI_DEBUG_HANDOVER_PERCENT` lowers the
+  threshold, and `CORGI_DEBUG_HANDOVER_IDLE_SECS` the idle time, for a debug
+  run; neither is a setting. Where each supervisor's handover stands
   (`supervisor::Handover`) is kept in `wake/<socket>.handovers.json`, so a
-  hook that asks and a dashboard that replaces, or the other way round, are
-  one handover.
-- A second trigger hands over a supervisor whose prompt cache is about to go
-  cold, since its next turn would otherwise re-read the whole conversation
+  dashboard that asks and a hook that replaces, or one dashboard taking over
+  from another, are one handover.
+- A second trigger hands over a supervisor whose context is below the
+  threshold (at it, the first trigger goes first) when its prompt cache is
+  about to go cold, since its next turn would otherwise re-read the whole conversation
   uncached, while a fresh session is small enough to wake cold cheaply. It
   fires, with its own `[Corgi]` wording and status line and otherwise the
   same request, note check, exit, relaunch, and once-per-session rule, when
@@ -1594,10 +1614,11 @@ status lines of its passes.
   again and may ask late, never early. A session that only did its start-up
   never qualifies, and a supervisor on a harness whose session file Corgi
   cannot read is never handed over for idleness. The 50% trigger goes first
-  when both hold. `CORGI_DEBUG_HANDOVER_IDLE_SECS` sets the idle time for
-  a debug run on any harness; it is not a setting. Only a dashboard asks
-  for this one: it is timed, and Herdr runs hooks only when something
-  happens, so it waits for a Corgi window to be open.
+  when both hold, so it also asks while a worker is busy.
+  `CORGI_DEBUG_HANDOVER_IDLE_SECS` sets the idle time for a debug run on
+  Claude Code and Codex, the only harnesses with one; it is not a setting. For a Claude Code or Codex supervisor only a
+  dashboard asks, for both triggers: they are timed, and Herdr runs hooks
+  only when something happens, so they wait for a Corgi window to be open.
 - Claude Code's folder-trust question is the one question Corgi answers. It
   keys trust on a repository's main checkout, so the first worktree of a
   repository nobody trusted yet opens on it, even under a trusted folder. When
