@@ -148,8 +148,8 @@ which agents are running.
 ## Handing over
 
 Corgi replaces you with a fresh session of yourself, in the same place,
-once your context is half full and you have been idle nearly as long as
-your prompt cache lasts (or, with your context well grown and no worker
+once your context is half full (or 200k tokens on Claude Code) and you have
+been idle nearly as long as your prompt cache lasts (or, with your context well grown and no worker
 busy, once you have been idle that long). When a `[Corgi]` line asks for your handover note, run
 `{{corgi}} role handover <project dir>` and do what it prints.
 

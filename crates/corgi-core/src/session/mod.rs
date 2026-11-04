@@ -59,7 +59,10 @@ use std::{
 };
 
 use self::{
-    claude::{ClaudeFile, claude_events, claude_model_setting},
+    claude::{
+        ClaudeFile, ClaudeWindowSettings, claude_disable_long_context_env, claude_events,
+        claude_window_settings,
+    },
     codex::{CodexFile, codex_events},
     locate::{Search, claude_transcript, codex_rollout},
     tail::{Tail, file_length},
@@ -159,8 +162,8 @@ pub struct SessionReader {
     files: HashMap<String, Lookup>,
     parsed: HashMap<PathBuf, ParsedFacts>,
     transcripts: HashMap<PathBuf, ParsedTranscript>,
-    /// Claude Code's configured model, read once per reader.
-    claude_model_setting: OnceLock<Option<String>>,
+    /// What Claude Code's settings say about its window, read once per reader.
+    claude_window_settings: OnceLock<ClaudeWindowSettings>,
     /// The directory session files are looked for under, when it is not
     /// `$HOME`. It stands in for `CLAUDE_CONFIG_DIR` too.
     home: Option<PathBuf>,
@@ -250,10 +253,19 @@ impl SessionReader {
         if parsed.length != Some(length) {
             parsed.facts = match &mut parsed.file {
                 HarnessFile::Claude(file) => {
-                    let configured = self
-                        .claude_model_setting
-                        .get_or_init(|| claude_model_setting(&claude_dirs(self.home.as_deref())));
-                    file.facts(&path, configured.as_deref())
+                    let settings = self.claude_window_settings.get_or_init(|| {
+                        // A private home stands in for the whole environment.
+                        let environment = self
+                            .home
+                            .is_none()
+                            .then(claude_disable_long_context_env)
+                            .flatten();
+                        claude_window_settings(
+                            &claude_dirs(self.home.as_deref()),
+                            environment.as_deref(),
+                        )
+                    });
+                    file.facts(&path, settings)
                 }
                 HarnessFile::Codex(file) => file.facts(&path),
             };

@@ -61,6 +61,9 @@ A waker test's agents, built with `project_agent`, have no `agent` kind, so
 their harness is `Other`, which has no idle time for a handover. A test that
 needs Claude Code's behaviour sets `info.agent = Some("claude".into())`.
 
+`Handover::observe` times a rest from the first refresh that sees it, so a
+handover test must observe at second 0 before asserting at the idle time.
+
 `App::new` loads the real `projects` list from Corgi's state directory;
 `test_app()` keeps an in-memory one, so build test apps with it. Saving the
 list drops directories that do not exist, so a test that saves it to a file
@@ -78,8 +81,9 @@ The supervisor's role and the `[Corgi]` lines Corgi types into its box
 exact-inbox-text tests in `src/app/merge.rs`: change the wording, update
 both. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
 matter, since those tests match their text with `contains`. Another test
-there caps `ROLE.md` at three quarters of 34,516 bytes, and it is nearly
-full: a role addition must trim something else.
+there (`the_role_is_a_third_shorter_than_before_the_on_demand_parts_left_it`)
+caps `ROLE.md` at three quarters of 34,516 bytes, 25,887, and only 39 bytes
+are left: a role addition must trim something else.
 
 On macOS, copying a rebuilt binary over an existing file (say, a copy of
 `target/release/corgi` kept to compare before and after) gets it killed with
@@ -238,6 +242,14 @@ its first start. Exit it with Ctrl+C Ctrl+C: killed twice in fullscreen,
 it turns fullscreen off by itself (`"fullscreenAutoDisabled":{"strikes":2}`
 in its `.claude.json`), and wheel tests then silently scroll 0 lines until
 that key is deleted.
+To see the context window Claude Code itself gives a model or setting, run the
+real CLI that way with `--model <id>`, `ANTHROPIC_BASE_URL` at a small local
+fake of `/v1/messages` (streaming; it answers a canned turn with a chosen
+`usage`), and a `statusLine` command that saves its stdin: send one prompt, then
+read `context_window.context_window_size` from the saved JSON and
+`requestedModel` from the transcript. Do this when a new model ships:
+`claude_natively_long` in `crates/corgi-core/src/session/claude.rs` follows
+Claude Code's table by hand.
 The script steps `drag`, `wheel`, `link`, `ime`, `hide`, `show`,
 `deactivate` and `activate` drive the terminal (a scripted window is never
 really active, so `activate` stands in for the user coming back to it);

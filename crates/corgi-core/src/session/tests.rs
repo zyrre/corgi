@@ -50,7 +50,11 @@ impl Drop for TempDir {
 }
 
 fn claude_facts(path: &Path, configured_model: Option<&str>) -> SessionFacts {
-    ClaudeFile::default().facts(path, configured_model)
+    let settings = ClaudeWindowSettings {
+        model: configured_model.map(str::to_string),
+        long_context_disabled: false,
+    };
+    ClaudeFile::default().facts(path, &settings)
 }
 
 fn codex_facts(path: &Path) -> SessionFacts {
@@ -94,28 +98,29 @@ fn a_claude_transcript_reports_the_model_and_the_live_context_share() {
         &path,
         &[
             r#"{"type":"user","message":{"role":"user"}}"#,
-            r#"{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":2,"cache_creation_input_tokens":1000,"cache_read_input_tokens":19000,"output_tokens":500}}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-6","usage":{"input_tokens":2,"cache_creation_input_tokens":1000,"cache_read_input_tokens":19000,"output_tokens":500}}}"#,
             r#"{"type":"last-prompt","lastPrompt":"unrelated"}"#,
         ],
     );
 
-    // Without a long-context model configured the session fills the
-    // default window.
+    // This record names no requested model, as older versions wrote it, and
+    // an older model without a long-context one configured fills the default
+    // window.
     assert_eq!(
         claude_facts(&path, None),
         SessionFacts {
-            model: Some("Opus 5".into()),
+            model: Some("Opus 4.6".into()),
             context_percent: Some(10),
             context_tokens: Some(20_002),
             ..SessionFacts::default()
         }
     );
-    // The configured variant is the only thing that reveals a long-context
-    // session before it passes the default window.
+    // Without a requested model, the configured variant is all that reveals
+    // a long-context session before it passes the default window.
     assert_eq!(
         claude_facts(&path, Some("opus[1m]")),
         SessionFacts {
-            model: Some("Opus 5 1M".into()),
+            model: Some("Opus 4.6 1M".into()),
             context_percent: Some(2),
             context_tokens: Some(20_002),
             ..SessionFacts::default()
@@ -275,36 +280,259 @@ fn a_claude_transcript_reports_the_effort_recorded_beside_the_turn() {
         SessionFacts {
             model: Some("Opus 5".into()),
             effort: Some("xhigh".into()),
-            context_percent: Some(10),
+            context_percent: Some(2),
             context_tokens: Some(20_002),
             ..SessionFacts::default()
         }
     );
 }
 
+/// The window of a session with no settings of note.
+fn window_of(model_id: &str, requested: Option<&str>, tokens: u64) -> u64 {
+    claude_context_window(
+        model_id,
+        requested,
+        &ClaudeWindowSettings::default(),
+        tokens,
+    )
+}
+
+const DISABLED: ClaudeWindowSettings = ClaudeWindowSettings {
+    model: None,
+    long_context_disabled: true,
+};
+
 #[test]
-fn a_session_past_the_default_window_must_be_a_long_context_one() {
+fn a_model_has_the_window_of_claude_codes_own_table_from_the_first_request() {
+    // Each of these was checked against what the real CLI reported as
+    // `context_window_size` to its status line.
+    for long in [
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-mythos-5-1",
+        "claude-mythos-preview",
+        // A build date or a cloud provider's spelling changes nothing.
+        "claude-opus-5-5-20260601",
+        "us.anthropic.claude-opus-4-8",
+        "anthropic.claude-sonnet-5-5-v1:0",
+        "claude-opus-5-5@20260601",
+    ] {
+        assert_eq!(window_of(long, None, 20_000), CLAUDE_LONG_WINDOW, "{long}");
+    }
+    for default in [
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-1-20250805",
+        "claude-opus-4-20250514",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-20250514",
+        "claude-haiku-4-5-20251001",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
+    ] {
+        assert_eq!(
+            window_of(default, None, 20_000),
+            CLAUDE_DEFAULT_WINDOW,
+            "{default}"
+        );
+    }
+}
+
+#[test]
+fn a_newer_version_of_a_long_family_keeps_the_long_window() {
+    for newer in ["claude-opus-6", "claude-sonnet-5-6", "claude-haiku-6-1"] {
+        assert_eq!(
+            window_of(newer, None, 20_000),
+            CLAUDE_LONG_WINDOW,
+            "{newer}"
+        );
+    }
+}
+
+#[test]
+fn a_model_nothing_is_known_about_falls_back_to_the_default_window() {
+    // Claude Code itself assumes the default window for these.
+    for unknown in ["my-gateway-model", "opus-5-5", "claude-newfamily-1", ""] {
+        assert_eq!(
+            window_of(unknown, None, 20_000),
+            CLAUDE_DEFAULT_WINDOW,
+            "{unknown:?}"
+        );
+    }
+}
+
+#[test]
+fn the_requested_model_shows_the_long_context_variant_of_an_older_model() {
+    let opus = "claude-opus-4-6";
     assert_eq!(
-        claude_context_window("claude-opus-5", None, 20_000),
+        window_of(opus, Some("claude-opus-4-6[1m]"), 20_000),
+        CLAUDE_LONG_WINDOW
+    );
+    // Claude Code matches the tag in any case.
+    assert_eq!(
+        window_of(opus, Some("claude-opus-4-6[1M]"), 20_000),
+        CLAUDE_LONG_WINDOW
+    );
+    assert_eq!(window_of(opus, Some(opus), 20_000), CLAUDE_DEFAULT_WINDOW);
+    // A native model's tag is dropped before it is recorded, so its absence
+    // must not take the long window away.
+    assert_eq!(
+        window_of("claude-opus-5-5", Some("claude-opus-5-5"), 20_000),
+        CLAUDE_LONG_WINDOW
+    );
+}
+
+#[test]
+fn the_configured_model_stands_in_only_for_a_record_without_a_requested_model() {
+    let settings = ClaudeWindowSettings {
+        model: Some("opus[1m]".into()),
+        long_context_disabled: false,
+    };
+    let window = |model, requested| claude_context_window(model, requested, &settings, 20_000);
+
+    assert_eq!(window("claude-opus-4-6", None), CLAUDE_LONG_WINDOW);
+    // Another family says nothing about this one.
+    assert_eq!(window("claude-sonnet-4-6", None), CLAUDE_DEFAULT_WINDOW);
+    // The session's own record outranks a setting that may be newer than it,
+    // or that its `--model` overrode.
+    assert_eq!(
+        window("claude-opus-4-6", Some("claude-opus-4-6")),
         CLAUDE_DEFAULT_WINDOW
     );
+}
+
+#[test]
+fn turning_long_context_off_holds_a_session_to_the_default_window() {
+    for (model, requested) in [
+        ("claude-opus-5-5", Some("claude-opus-5-5")),
+        ("claude-fable-5-1", None),
+        ("claude-opus-4-6", Some("claude-opus-4-6[1m]")),
+    ] {
+        assert_eq!(
+            claude_context_window(model, requested, &DISABLED, 20_000),
+            CLAUDE_DEFAULT_WINDOW,
+            "{model}"
+        );
+    }
+}
+
+#[test]
+fn a_session_past_the_default_window_has_the_long_one_whatever_else_says() {
     assert_eq!(
-        claude_context_window("claude-opus-5", None, 220_000),
+        window_of("claude-opus-4-6", Some("claude-opus-4-6"), 220_000),
         CLAUDE_LONG_WINDOW
     );
-    // Fable answers in a long window without being asked for one.
     assert_eq!(
-        claude_context_window("claude-fable-5-1", None, 20_000),
+        window_of("my-gateway-model", None, 220_000),
         CLAUDE_LONG_WINDOW
     );
+    // The flag may have been set after this session started.
     assert_eq!(
-        claude_model_name("claude-fable-5-1", CLAUDE_LONG_WINDOW),
-        "Fable 5.1"
+        claude_context_window("claude-opus-5-5", None, &DISABLED, 220_000),
+        CLAUDE_LONG_WINDOW
     );
+    // Exactly full is still within the default window.
     assert_eq!(
-        claude_model_name("claude-haiku-4-5-20251001", CLAUDE_DEFAULT_WINDOW),
+        window_of("claude-opus-4-6", None, CLAUDE_DEFAULT_WINDOW),
+        CLAUDE_DEFAULT_WINDOW
+    );
+}
+
+#[test]
+fn only_a_long_window_the_model_does_not_have_by_default_is_labelled() {
+    let name = claude_model_name;
+    assert_eq!(name("claude-fable-5-1", CLAUDE_LONG_WINDOW), "Fable 5.1");
+    assert_eq!(name("claude-opus-5-5", CLAUDE_LONG_WINDOW), "Opus 5.5");
+    assert_eq!(name("claude-opus-5-5", CLAUDE_DEFAULT_WINDOW), "Opus 5.5");
+    assert_eq!(name("claude-opus-4-6", CLAUDE_LONG_WINDOW), "Opus 4.6 1M");
+    assert_eq!(name("claude-opus-4-6", CLAUDE_DEFAULT_WINDOW), "Opus 4.6");
+    assert_eq!(
+        name("claude-haiku-4-5-20251001", CLAUDE_DEFAULT_WINDOW),
         "Haiku 4.5"
     );
+}
+
+#[test]
+fn the_window_shows_in_the_percentage_and_the_label_of_a_real_shaped_transcript() {
+    let directory = TempDir::new("claude-window");
+    let path = directory.join("session.jsonl");
+    let facts_of = |model: &str, requested: &str| {
+        let usage = r#""usage":{"input_tokens":2,"cache_creation_input_tokens":1000,"cache_read_input_tokens":90000,"output_tokens":5}"#;
+        write(
+            &path,
+            &[&format!(
+                r#"{{"type":"assistant","requestedModel":"{requested}","message":{{"model":"{model}",{usage}}}}}"#
+            )],
+        );
+        // A setting that would mislead, if it were asked before the record.
+        claude_facts(&path, Some("sonnet[1m]"))
+    };
+
+    let native = facts_of("claude-opus-5-5", "claude-opus-5-5");
+    assert_eq!(native.context_percent, Some(9));
+    assert_eq!(native.model.as_deref(), Some("Opus 5.5"));
+
+    let default = facts_of("claude-opus-4-6", "claude-opus-4-6");
+    assert_eq!(default.context_percent, Some(46));
+    assert_eq!(default.model.as_deref(), Some("Opus 4.6"));
+
+    let tagged = facts_of("claude-opus-4-6", "claude-opus-4-6[1m]");
+    assert_eq!(tagged.context_percent, Some(9));
+    assert_eq!(tagged.model.as_deref(), Some("Opus 4.6 1M"));
+}
+
+#[test]
+fn window_settings_are_read_local_first_and_over_the_environment() {
+    let directory = TempDir::new("claude-window-settings");
+    let (dir, other) = (directory.join("config"), directory.join("home"));
+    fs::create_dir_all(&dir).expect("create config dir");
+    fs::create_dir_all(&other).expect("create home dir");
+    let dirs = [dir.clone(), other.clone()];
+    let off = |dirs: &[PathBuf], environment| {
+        claude_window_settings(dirs, environment).long_context_disabled
+    };
+
+    // Nothing anywhere leaves long context on.
+    assert_eq!(
+        claude_window_settings(&dirs, None),
+        ClaudeWindowSettings::default()
+    );
+    // Claude Code's truthy values, and nothing else.
+    for on in ["1", "true", "TRUE", " yes ", "on"] {
+        assert!(off(&dirs, Some(on)), "{on:?}");
+    }
+    for not in ["0", "false", "", "off", "2"] {
+        assert!(!off(&dirs, Some(not)), "{not:?}");
+    }
+
+    fs::write(
+        other.join("settings.json"),
+        r#"{"model":"opus[1m]","env":{"CLAUDE_CODE_DISABLE_1M_CONTEXT":"1"}}"#,
+    )
+    .expect("write settings");
+    assert_eq!(
+        claude_window_settings(&dirs, None),
+        ClaudeWindowSettings {
+            model: Some("opus[1m]".into()),
+            long_context_disabled: true,
+        }
+    );
+    // Settings override what the session inherited, and local ones the user's.
+    assert!(off(&dirs, Some("0")));
+    fs::write(
+        dir.join("settings.local.json"),
+        r#"{"env":{"CLAUDE_CODE_DISABLE_1M_CONTEXT":"0"}}"#,
+    )
+    .expect("write settings");
+    assert!(!off(&dirs, Some("1")));
 }
 
 #[test]
@@ -1179,7 +1407,7 @@ fn a_claude_turn_whose_reply_is_not_written_yet_is_open_until_it_is() {
     // The prompt and the thinking are written; the reply is not: the newest
     // reply is the turn before's.
     assert_eq!(
-        turn_of(file.facts(&path, None)),
+        turn_of(file.facts(&path, &ClaudeWindowSettings::default())),
         (
             Some(TurnState::Open),
             Some("Waiting for discovery to write the list.".into())
@@ -1193,7 +1421,7 @@ fn a_claude_turn_whose_reply_is_not_written_yet_is_open_until_it_is() {
         ),
     );
     assert_eq!(
-        turn_of(file.facts(&path, None)),
+        turn_of(file.facts(&path, &ClaudeWindowSettings::default())),
         (
             Some(TurnState::Answered),
             Some("Understood. My plan: disable it.".into())

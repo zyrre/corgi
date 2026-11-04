@@ -280,10 +280,24 @@ All of this is in the core, `crates/corgi-core/src/`.
   pane's. A Codex pane without Herdr's identity has no file, for the same
   reason (Codex draws no status line). Nothing has to be installed
   into the agent CLIs, and a status-line bridge that reports `model` or `ctx`
-  as pane metadata is used only when the file cannot be read. Claude Code's
-  transcript records the model family but not its long-context variant, so the
-  window comes from the model configured in Claude Code's settings and from
-  any session that has already outgrown the default window.
+  as pane metadata is used only when the file cannot be read.
+  A Claude Code transcript does not record the window, so
+  `claude_context_window` works it out, first answer winning: a session past
+  200k tokens has the 1M window; `CLAUDE_CODE_DISABLE_1M_CONTEXT`, in Claude
+  Code's user settings or else Corgi's own environment, holds the rest to 200k
+  (a transcript shows no trace of it); a `[1m]` tag on the record's
+  `requestedModel` (`message.model` never has it) means 1M; a record without
+  `requestedModel`, from an older Claude Code, uses the tag on the configured
+  model of the same family instead; then the model's own window, from the table
+  inside Claude Code that `claude_natively_long` follows: 1M for Opus 4.7 and up,
+  Sonnet and Haiku 5 and up, Fable and Mythos, 200k for the rest and for any
+  model it does not know, as Claude Code assumes. So most sessions are on 1M
+  with no tag anywhere, and the `1M` on a model's name marks only a long window
+  that model does not have by default. Corgi cannot see that flag when it is set
+  only in the agent's own environment or project settings, or Claude Code's
+  fall back to 200k within a session when long-context credits run out; either
+  makes the percentage read low. It does not read
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, which sets the window of a gateway's model.
   The same transcript gives the prompt-cache countdown: every record carries a
   timestamp, and every usage record says whether the request wrote its cache
   with the five-minute or the one-hour lifetime. Anthropic re-warms a cache on
@@ -1552,13 +1566,16 @@ status lines of its passes.
   are not typed in again. The role tells a supervisor that is handing over to
   leave them to its successor.
 - The same dashboard hands a supervisor over to a fresh session once its
-  context is half full and its prompt cache is about to expire, since
+  context is half full, or on Claude Code at 200k tokens if that comes first
+  (`Trigger::Tokens`, which leaves a 200k window at 100k as before), and its
+  prompt cache is about to expire, since
   compaction would lose what only its conversation holds, while a handover
   with the cache still warm would spend a cold re-read too early
   (`supervisor::Handover`, once per harness session). A supervisor that is
   idle or done, never working or blocked, has rested for the harness's idle
   time (50 minutes on Claude Code, 25 on Codex: ten minutes short of the
-  cache life, so the request finds it warm) and is at 50% or more, gets
+  cache life, so the request finds it warm) and is at 50% or more or, on
+  Claude Code, at 200k tokens, gets
   one `[Corgi]` line asking it to run `corgi role handover <root>`,
   write `handover.md` in its state directory as that prints, and end its turn, held like a wake while its input box holds a
   draft and asked at a later refresh; the request is recorded as a
@@ -1591,11 +1608,17 @@ status lines of its passes.
   it is asked again only after a later turn of its own.
   Both conditions are needed, and the request comes at the refresh that
   meets the second, whichever it is, with no further wait; a supervisor past
-  50% that has not rested that long is left alone, however long it works
-  without rest, since the user's rule is to hand over only when the cache is
+  those thresholds that has not rested that long is left alone, however long
+  it works without rest, since the user's rule is to hand over only when the cache is
   about to go cold. A harness with no idle time (its cache life unknown)
-  has no cache to wait for: it is handed over at its first rest at the
-  threshold, as before the cache counted, by a hook or a dashboard. Whether
+  has no cache to wait for: it is handed over at its first rest at 50%,
+  as before the cache counted, by a hook or a dashboard. The 200k on Claude
+  Code is there because Claude Code compacts a session of that size by itself
+  after idling for 90% of its one-hour cache life, about 54 minutes
+  (`idleCompaction`, `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`), a few minutes after
+  the 50-minute rest, so a 1M window would never reach 50% with its
+  conversation intact. The percentage shown stays on the real window: while
+  it works, such a session has about 967k before compaction becomes due. Whether
   another agent of the project is busy does not matter to this trigger. `CORGI_DEBUG_HANDOVER_PERCENT` lowers the
   threshold, and `CORGI_DEBUG_HANDOVER_IDLE_SECS` the idle time, for a debug
   run; neither is a setting. Where each supervisor's handover stands
@@ -1623,7 +1646,7 @@ status lines of its passes.
   from the first refresh that saw it, so such a dashboard starts that clock
   again and may ask late, never early. A session that only did its start-up
   never qualifies, and a supervisor on a harness whose session file Corgi
-  cannot read is never handed over for idleness. The 50% trigger goes first
+  cannot read is never handed over for idleness. The context triggers go first
   when both hold, so it also asks while a worker is busy.
   `CORGI_DEBUG_HANDOVER_IDLE_SECS` sets the idle time for a debug run on
   Claude Code and Codex, the only harnesses with one; it is not a setting. For a Claude Code or Codex supervisor only a
