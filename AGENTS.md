@@ -61,6 +61,9 @@ A waker test's agents, built with `project_agent`, have no `agent` kind, so
 their harness is `Other`, which has no idle time for a handover. A test that
 needs Claude Code's behaviour sets `info.agent = Some("claude".into())`.
 
+`Handover::observe` times a rest from the first refresh that sees it, so a
+handover test must observe at second 0 before asserting at the idle time.
+
 `App::new` loads the real `projects` list from Corgi's state directory;
 `test_app()` keeps an in-memory one, so build test apps with it. Saving the
 list drops directories that do not exist, so a test that saves it to a file
@@ -78,8 +81,9 @@ The supervisor's role and the `[Corgi]` lines Corgi types into its box
 exact-inbox-text tests in `src/app/merge.rs`: change the wording, update
 both. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
 matter, since those tests match their text with `contains`. Another test
-there caps `ROLE.md` at three quarters of 34,516 bytes, and it is nearly
-full: a role addition must trim something else.
+there (`the_role_is_a_third_shorter_than_before_the_on_demand_parts_left_it`)
+caps `ROLE.md` at three quarters of 34,516 bytes, 25,887, and only 39 bytes
+are left: a role addition must trim something else.
 
 On macOS, copying a rebuilt binary over an existing file (say, a copy of
 `target/release/corgi` kept to compare before and after) gets it killed with
