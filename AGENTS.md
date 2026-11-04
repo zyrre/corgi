@@ -326,6 +326,10 @@ program's file name (`ForegroundProcess::program`) and never assume `argv`.
 To try `corgi orphans` on the user's Herdr, run it as it is: it only reads
 (snapshot, process info, screens), and changes nothing anywhere.
 
+`test_support::FakeHerdr` answers `worktree.list` with a bare `ok` unless told
+`set_repo_root`, and `corgi fleet` and `corgi digest` fail on that, so a test
+running either against it must set one.
+
 To test against an agent without starting one, report a shell pane in the
 preview workspace as one. Corgi hides agent panes without a session, so tag
 it with one too (the pane ID goes before the options), and release it
@@ -453,6 +457,15 @@ combine it with a fake socket, private synthetic HOME/state/native stores and
 CLI overrides for a safe labeled UI preview. It is not a production hold switch.
 The [recovery contract](docs/session-recovery-design.md) records compatibility
 limits and the user-waived live-Claude check; do not retry authentication errors.
+
+`recovery::begin_delivery` writes the journal even when it only checks, so try
+it on a copy of the state, never the real one. Keep the copy outside `/tmp` and
+`$TMPDIR` (say under `target/`): outside `cfg(test)`, `Store::lock` refuses a
+volatile directory.
+
+A `held` note (`N inbox item(s) held`) can be a delivery in flight, since the
+ids are recorded before the prompt and cleared once Herdr confirms it. Read
+`deliveries` in `recovery/progress.json` again before calling it a quarantine.
 
 ## README screenshots and animation
 
