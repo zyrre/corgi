@@ -57,6 +57,10 @@ Herdr refuses `agent.prompt` to it with `agent_not_ready`, since no agent is
 its foreground process. Testing a prompt live needs a real agent CLI, which
 tests must not drive, so test prompts against a fake Herdr socket.
 
+A waker test's agents, built with `project_agent`, have no `agent` kind, so
+their harness is `Other`, which has no idle time for a handover. A test that
+needs Claude Code's behaviour sets `info.agent = Some("claude".into())`.
+
 `App::new` loads the real `projects` list from Corgi's state directory;
 `test_app()` keeps an in-memory one, so build test apps with it. Saving the
 list drops directories that do not exist, so a test that saves it to a file
