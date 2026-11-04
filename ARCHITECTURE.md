@@ -72,6 +72,10 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   │                        when it was fetched, and the last fetch's error;
   │                        replaced whole through a temporary file and a rename
   ├─ usage/<provider>.lock ─ held by the one process fetching a new reading
+  ├─ last-harness.json ── the harness of the most recent spawn, from any path
+  │                        (`{"harness":"claude"}`), for the new-agent form to
+  │                        preselect; replaced whole through a temporary file
+  │                        and a rename; a missing or corrupt file is no record
   ├─ orphans-left.json ─ the orphaned sessions the user chose to leave, by
   │                        their evidence, so they are not offered again until
   │                        it changes; the newest 200
@@ -375,6 +379,13 @@ dashboard, the command line and other frontends run the same code.
 - `rows.rs` derives what a row shows from Herdr's metadata and the session
   facts: the project and its heading (`repo/checkout` for a linked worktree),
   the task summary, and the status-line bridge fallbacks.
+- `last_harness.rs` keeps the harness of the most recent spawn in
+  `last-harness.json`. `launch_agent` records it once the agent has started,
+  so the form, `corgi spawn` and a supervisor start all count (a supervisor
+  taking over its predecessor's pane does not: the user chose nothing). It
+  finds the file through the client's marker record (`<state>/markers/...`),
+  so a test client without one records nothing, and the core's own tests never
+  read the real file.
 - `repo.rs` says which repository an agent works in: the one
   `git rev-parse --git-common-dir` names for its cwd, whether Herdr opened
   its workspace as a linked worktree or not (decision 2026-11-03). Herdr's
@@ -606,7 +617,8 @@ Its submodules are split by flow, each adding methods to the one `App`.
   its shell, as a background job (`restart::resume`).
 - `form.rs` is the new-agent form: one task row over a short list of
   selector rows, each with an inline filterable list. The default agent kind
-  is `CORGI_DEFAULT_AGENT`, else the first installed CLI; the default project
+  is the harness of the last spawn, if it is still installed, else
+  `CORGI_DEFAULT_AGENT`, else the first installed CLI; the default project
   is the selected agent's repository, else the most recently used one. For a
   new project, or one with no agent session, the form launches the project's
   supervisor instead of a worker. It validates and builds a `LaunchPlan`, which
@@ -2209,7 +2221,7 @@ such as an expired login. To check the Claude reader by hand:
 
 | Variable | Effect |
 | --- | --- |
-| `CORGI_DEFAULT_AGENT` | The harness the form presets, instead of the first of `codex` or `claude` found |
+| `CORGI_DEFAULT_AGENT` | The harness the form presets until a spawn has been recorded (or when the recorded harness is no longer installed), instead of the first of `codex` or `claude` found |
 | `CORGI_CODEX_BIN`, `CORGI_CLAUDE_BIN` | Where that CLI is, when it is outside `PATH` and the usual install directories (`~/.local/bin`, `/opt/homebrew/bin`, npm, bun, nvm, cargo, volta) |
 | `CORGI_PROJECTS_FILE` | Where the remembered projects are kept |
 | `CORGI_THEME` | `catppuccin-mocha` or `catppuccin-latte` draws in Catppuccin's own colors; `terminal` skips the Omarchy theme and asks the terminal for its palette |

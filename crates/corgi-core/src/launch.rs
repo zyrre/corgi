@@ -17,7 +17,7 @@ use crate::{
     git::trust_root,
     harness::Harness,
     herdr::{CreatedWorkspace, HerdrClient, HerdrError, StartedAgent, WorktreeSource},
-    markers,
+    last_harness, markers,
     model::{AgentInfo, DashboardAgent},
     paths::{dir_name, is_home},
     progress::Progress,
@@ -382,6 +382,16 @@ pub fn launch_agent(
         prompt.clone()
     };
     let started = start_agent_when_shell_ready(client, name, harness, &args, &pane_id, progress)?;
+    // A supervisor taking over its predecessor's pane repeats that
+    // supervisor's harness; the user chose nothing, so it is not "last used".
+    if !matches!(
+        role,
+        Role::Supervisor {
+            handover_pane: Some(_)
+        }
+    ) {
+        last_harness::record_launch(client, harness);
+    }
     // How it was launched, so that Herdr can resume it the same way after a
     // restart and Resume can start it again once it has exited.
     let mut options = harness.launch_args(model, effort);
@@ -1249,7 +1259,9 @@ mod tests {
             }
             requests
         });
-        let client = HerdrClient::from_socket_path(&socket_path);
+        let state = crate::test_support::ScratchDir::new("launch-state");
+        let client = HerdrClient::from_socket_path(&socket_path)
+            .with_marker_record(state.join("markers/session.json"));
         let plan = LaunchPlan {
             name: "scratch-agent".into(),
             harness: Harness::Claude,
@@ -1265,6 +1277,11 @@ mod tests {
             request_id: request_id.map(str::to_string),
         };
         let launched = launch_agent(&client, &plan, &mut Silent).expect("scratch launch");
+        // The started agent's harness is what the next form opens on.
+        assert_eq!(
+            crate::last_harness::read(&state.join("last-harness.json")).as_deref(),
+            Some("claude")
+        );
         let requests = server.join().expect("fake server panicked");
         fs::remove_file(socket_path).expect("remove fake socket");
         (launched, requests)
