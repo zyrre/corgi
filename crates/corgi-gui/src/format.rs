@@ -4,7 +4,9 @@
 
 use corgi_core::{
     model::{AgentState, cache_countdown, compact_tokens},
-    protocol::{ActivityKind, Agent, BacklogEntry, Cache, MergeRequest, UsageCard, WorkerCounts},
+    protocol::{
+        ActivityKind, Agent, BacklogEntry, Cache, MergeRequest, Refused, UsageCard, WorkerCounts,
+    },
     time::LocalTime,
     usage::UsageWindow,
 };
@@ -223,6 +225,16 @@ pub fn held(count: usize) -> Option<Piece> {
         let items = if count == 1 { "item" } else { "items" };
         Piece::new(format!("⏸ {count} inbox {items} held"), Tone::Warning).bold()
     })
+}
+
+/// That Corgi refuses to type into a project's supervisor, with how much
+/// waits for it, while a recovery hold stands.
+pub fn refused(refused: &Refused) -> Piece {
+    let waiting = match refused.waiting {
+        0 => String::new(),
+        count => format!(" · {count} waiting"),
+    };
+    Piece::new(format!("⏸ wakes refused{waiting}"), Tone::Warning).bold()
 }
 
 /// The side panel's heading over a project's open merge requests, `None`
@@ -645,6 +657,19 @@ mod tests {
             texts(&worker_summary(&counts)),
             ["2 workers", "⏻ 1 exited", "○ 1 idle"]
         );
+    }
+
+    #[test]
+    fn a_refused_delivery_says_how_much_waits() {
+        let piece = |waiting| {
+            refused(&Refused {
+                reason: "held".into(),
+                waiting,
+            })
+        };
+        assert_eq!(piece(0).text, "⏸ wakes refused");
+        assert_eq!(piece(3).text, "⏸ wakes refused · 3 waiting");
+        assert_eq!(piece(3).tone, Tone::Warning);
     }
 
     #[test]

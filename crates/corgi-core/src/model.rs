@@ -206,6 +206,9 @@ pub struct DashboardAgent {
     /// (`role`, `memory`, `model`, a flag), as after a resume by a Herdr
     /// older than 0.9.2: a warning on its row.
     pub missing_options: Vec<String>,
+    /// Why Corgi refuses to type wakes into this supervisor, while it does
+    /// (`recovery::mark_refused`). The wakes wait in its inbox.
+    pub delivery_refused: Option<String>,
 }
 
 impl DashboardAgent {

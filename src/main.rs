@@ -18,6 +18,7 @@ Commands:
   report      Print the report an agent left
   notify      Add an item to a supervisor's inbox
   inbox       Print what a supervisor's inbox holds
+  recovery    List recovered sessions held from wakes, and release one
   tag         Tag an agent ready to merge, or clear its tag
   role        Print a part of the supervisor's role it reads on demand
   edit        Open the focused or selected agent's checkout in your editor
@@ -60,6 +61,8 @@ fn main() -> Result<()> {
         Some("notify") => corgi::app::notify(&args[2..]),
         Some("inbox") if help() => usage(corgi::app::INBOX_USAGE),
         Some("inbox") => corgi::app::inbox_command(&args[2..]),
+        Some("recovery") if help() => usage(corgi::app::RECOVERY_USAGE),
+        Some("recovery") => corgi::app::recovery_command(&args[2..]),
         Some("tag") if help() => usage(corgi::app::TAG_USAGE),
         Some("tag") => corgi::app::tag_command(&args[2..]),
         Some("role") if help() => usage(corgi::app::ROLE_USAGE),

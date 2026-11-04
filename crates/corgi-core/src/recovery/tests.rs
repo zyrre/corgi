@@ -355,9 +355,15 @@ fn a_boot_written_in_another_time_zone_is_the_same_boot() {
     ));
 
     // A save from this boot whose date another time zone wrote holds nothing.
+    // Only macOS's identity has braces and a date; Linux's is its boot ID alone.
     let mut f = Fixture::new();
     let store = f.store();
-    f.snapshot.boot = format!("{} Thu Jan  1 00:00:00 1970", store::boot().unwrap());
+    let boot = store::boot().unwrap();
+    f.snapshot.boot = if boot.contains('}') {
+        format!("{boot} Thu Jan  1 00:00:00 1970")
+    } else {
+        boot
+    };
     store.save(&f.snapshot).unwrap();
     assert!(
         held_projects(&f.client, &dashboard_agents(&f.snapshot))
@@ -467,6 +473,7 @@ fn unconfirmed_inbox_deliveries_stay_quarantined_after_continue() {
         &store,
         &f.snapshot.scope,
         &f.snapshot.entries[0].project,
+        Some(&saved_key(&f.snapshot.entries[0])),
         &ids,
     )
     .unwrap();
@@ -475,6 +482,7 @@ fn unconfirmed_inbox_deliveries_stay_quarantined_after_continue() {
             &store,
             &f.snapshot.scope,
             &f.snapshot.entries[0].project,
+            Some(&saved_key(&f.snapshot.entries[0])),
             &ids
         )
         .is_err()
@@ -494,6 +502,7 @@ fn unconfirmed_inbox_deliveries_stay_quarantined_after_continue() {
             &store,
             &f.snapshot.scope,
             &f.snapshot.entries[0].project,
+            Some(&saved_key(&f.snapshot.entries[0])),
             &["must-not-dispatch-while-held".into()]
         )
         .is_err()
@@ -504,6 +513,7 @@ fn unconfirmed_inbox_deliveries_stay_quarantined_after_continue() {
             &store,
             &f.snapshot.scope,
             &f.snapshot.entries[0].project,
+            Some(&saved_key(&f.snapshot.entries[0])),
             &ids
         )
         .is_err()
@@ -512,6 +522,7 @@ fn unconfirmed_inbox_deliveries_stay_quarantined_after_continue() {
         &store,
         &f.snapshot.scope,
         &f.snapshot.entries[0].project,
+        Some(&saved_key(&f.snapshot.entries[0])),
         &["new-explicit-item".into()],
     )
     .unwrap();
@@ -949,6 +960,7 @@ fn holds_survive_multiple_saves_partial_restore_continue_and_store_reopen() {
             &store,
             &f.snapshot.scope,
             &agents[1].project_root,
+            session_key(&agents[1].info).as_deref(),
             &["kept-inbox".into()]
         )
         .is_err()
@@ -970,6 +982,7 @@ fn holds_survive_multiple_saves_partial_restore_continue_and_store_reopen() {
         &store,
         &f.snapshot.scope,
         &agents[0].project_root,
+        session_key(&agents[0].info).as_deref(),
         &["still-quarantined".into()],
     )
     .unwrap();
@@ -988,6 +1001,7 @@ fn holds_survive_multiple_saves_partial_restore_continue_and_store_reopen() {
             &store,
             &f.snapshot.scope,
             &agents[0].project_root,
+            session_key(&agents[0].info).as_deref(),
             &["still-quarantined".into()]
         )
         .is_err()
@@ -1017,6 +1031,7 @@ fn prior_boot_holds_do_not_depend_on_being_observed_before_save() {
             &store,
             &f.snapshot.scope,
             &agents[0].project_root,
+            session_key(&agents[0].info).as_deref(),
             &["inbox-id".into()]
         )
         .is_err()
@@ -1027,6 +1042,7 @@ fn prior_boot_holds_do_not_depend_on_being_observed_before_save() {
         &store,
         &f.snapshot.scope,
         &agents[0].project_root,
+        session_key(&agents[0].info).as_deref(),
         &["inbox-id".into()],
     )
     .unwrap();
@@ -1142,4 +1158,239 @@ fn independent_identity_elsewhere_is_reused_and_duplicate_live_ids_block() {
             .contains("duplicate live conversation identities")
     );
     assert_eq!(server.state.lock().unwrap().starts, 0);
+}
+
+/// The fixture's first supervisor came back from the snapshot's boot; a new
+/// supervisor of the same project is another session.
+const NEW_SESSION: &str = "claude:00000000-0000-4000-8000-00000000000a";
+
+#[test]
+fn an_old_snapshot_does_not_block_a_new_supervisor_session_of_its_project() {
+    let f = Fixture::new();
+    let store = f.store();
+    store.save(&f.snapshot).unwrap();
+    let project = &f.snapshot.entries[0].project;
+    let scope = &f.snapshot.scope;
+    // Armed by the save alone, and restored too: neither names the new session.
+    let mut journal = store.journal().unwrap();
+    journal
+        .held
+        .entry(scope.clone())
+        .or_default()
+        .insert(saved_key(&f.snapshot.entries[0]), project.clone());
+    store.write_journal(&journal).unwrap();
+
+    begin_delivery(&store, scope, project, Some(NEW_SESSION), &["wake".into()]).unwrap();
+
+    let mut agents = dashboard_agents(&f.snapshot);
+    agents[0].info.agent_session.as_mut().unwrap().value =
+        NEW_SESSION.split_once(':').unwrap().1.into();
+    assert_eq!(
+        held_projects(&f.client, &agents[..1]).unwrap(),
+        BTreeSet::new()
+    );
+}
+
+#[test]
+fn a_restored_session_stays_held_until_it_is_released() {
+    let f = Fixture::new();
+    let store = f.store();
+    store.save(&f.snapshot).unwrap();
+    let entry = &f.snapshot.entries[0];
+    let key = saved_key(entry);
+    let scope = &f.snapshot.scope;
+    let mut journal = store.journal().unwrap();
+    journal
+        .held
+        .entry(scope.clone())
+        .or_default()
+        .insert(key.clone(), entry.project.clone());
+    store.write_journal(&journal).unwrap();
+    let begin =
+        |store: &Store| begin_delivery(store, scope, &entry.project, Some(&key), &["wake".into()]);
+
+    let refused = begin(&store).unwrap_err().to_string();
+    assert!(refused.contains("held until continued"), "{refused}");
+    assert_eq!(
+        held_projects(&f.client, &dashboard_agents(&f.snapshot)[..1])
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Herdr must say whether it runs; without one, the hold stays.
+    assert!(release_session(&f.client, &key, false).is_err());
+    assert!(begin(&store).is_err());
+
+    // Continuing it deliberately is what lets its wakes through.
+    continue_coordination(&f.client, &BTreeSet::from([entry.project.clone()])).unwrap();
+    begin(&store).unwrap();
+}
+
+#[test]
+fn a_supervisor_of_unknown_identity_fails_safe_while_its_project_has_a_hold() {
+    let f = Fixture::new();
+    let store = f.store();
+    let entry = &f.snapshot.entries[0];
+    let scope = &f.snapshot.scope;
+    begin_delivery(&store, scope, &entry.project, None, &["a".into()]).unwrap();
+    store.save(&f.snapshot).unwrap();
+    let refused = begin_delivery(&store, scope, &entry.project, None, &["b".into()])
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("identity is unknown"), "{refused}");
+    // Another project, with no hold of its own, is not held by this one.
+    begin_delivery(&store, scope, "/elsewhere", None, &["c".into()]).unwrap();
+}
+
+#[test]
+fn a_hold_whose_session_is_gone_is_released_alone_and_a_running_one_is_not() {
+    let mut f = Fixture::new();
+    let running_cwd = f.snapshot.entries[1].cwd.to_string_lossy().into_owned();
+    let herdr = crate::test_support::FakeHerdr::start(
+        "recovery-release",
+        json!({"workspaces": [], "tabs": [], "panes": [], "agents": [{
+            "pane_id": "w2:p1", "workspace_id": "w2", "tab_id": "t2",
+            "cwd": running_cwd, "agent": "claude", "agent_status": "idle",
+            "name": "supervisor-running",
+            "tokens": {(supervisor::SUPERVISOR_TOKEN): "supervisor-running"},
+            "agent_session": {"value": CLAUDE_ID, "kind": "id", "agent": "claude", "source": "test"},
+        }]}),
+    );
+    let client = HerdrClient::from_socket_path(&herdr.socket)
+        .with_marker_record(f.dir.join("state/markers/session.json"));
+    let scope = client.socket_path().to_string_lossy().into_owned();
+    f.snapshot.scope = scope.clone();
+    // A supervisor saved with no identity can be listed and released as well.
+    let mut anonymous = f.snapshot.entries[1].clone();
+    anonymous.native_id = None;
+    anonymous.project = "/repos/anonymous".into();
+    f.snapshot.entries.push(anonymous);
+    let store = f.store();
+    store.save(&f.snapshot).unwrap();
+    let [gone, running, anonymous] = &f.snapshot.entries[..] else {
+        panic!("three entries");
+    };
+    let (gone_key, running_key) = (saved_key(gone), saved_key(running));
+    let mut journal = store.journal().unwrap();
+    journal
+        .held
+        .entry(scope.clone())
+        .or_default()
+        .insert(gone_key.clone(), gone.project.clone());
+    store.write_journal(&journal).unwrap();
+
+    let keys: Vec<_> = held_sessions(&store, &scope)
+        .unwrap()
+        .into_iter()
+        .map(|hold| (hold.key, hold.restored, hold.snapshots.len()))
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            ("claude:".to_string(), false, 1),
+            (running_key.clone(), false, 1),
+            (gone_key.clone(), true, 1),
+        ]
+    );
+    // What a command with no dashboard's rows says of each project.
+    assert!(
+        project_refusal(&client, &running.project)
+            .unwrap()
+            .contains("held until continued")
+    );
+    assert_eq!(
+        project_refusal(&client, &gone.project),
+        None,
+        "no supervisor runs there, so nothing is being refused"
+    );
+
+    let error = release_session(&client, &running_key, false)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("running in pane w2:p1"), "{error}");
+    assert!(release_session(&client, "codex:no-such-session", false).is_err());
+
+    release_session(&client, &gone_key, false).unwrap();
+    let left: Vec<_> = held_sessions(&store, &scope)
+        .unwrap()
+        .into_iter()
+        .map(|hold| hold.key)
+        .collect();
+    assert_eq!(left, ["claude:".to_string(), running_key.clone()]);
+    begin_delivery(
+        &store,
+        &scope,
+        &gone.project,
+        Some(&gone_key),
+        &["wake".into()],
+    )
+    .unwrap();
+    // The release is recorded just as a Corgi from before this change reads it.
+    assert!(store.journal().unwrap().released[&f.snapshot.id].contains(&gone_key));
+    assert!(!store.journal().unwrap().held[&scope].contains_key(&gone_key));
+
+    release_session(&client, "claude:", false).unwrap();
+    assert!(
+        !held_sessions(&store, &scope)
+            .unwrap()
+            .iter()
+            .any(|hold| hold.project == anonymous.project)
+    );
+    release_session(&client, &running_key, true).unwrap();
+    assert!(held_sessions(&store, &scope).unwrap().is_empty());
+    assert_eq!(project_refusal(&client, &running.project), None);
+}
+
+#[test]
+fn a_refusal_is_marked_on_the_session_it_applies_to_for_as_long_as_it_lasts() {
+    let f = Fixture::new();
+    let store = f.store();
+    store.save(&f.snapshot).unwrap();
+    let mut agents = dashboard_agents(&f.snapshot);
+    // The second project's supervisor is a session the snapshot never saw.
+    agents[1].info.agent_session.as_mut().unwrap().value =
+        NEW_SESSION.split_once(':').unwrap().1.into();
+    mark_refused(&f.client, &mut agents);
+    assert!(
+        agents[0]
+            .delivery_refused
+            .as_deref()
+            .unwrap()
+            .contains("held until continued")
+    );
+    assert_eq!(agents[1].delivery_refused, None);
+
+    continue_coordination(&f.client, &BTreeSet::from([agents[0].project_root.clone()])).unwrap();
+    mark_refused(&f.client, &mut agents);
+    assert_eq!(agents[0].delivery_refused, None);
+
+    // Unreadable state holds everything, and says so.
+    fs::write(store.0.join("progress.json"), "not json").unwrap();
+    mark_refused(&f.client, &mut agents);
+    assert!(
+        agents[1]
+            .delivery_refused
+            .as_deref()
+            .unwrap()
+            .contains("could not be read")
+    );
+}
+
+#[test]
+fn items_a_save_of_another_boot_listed_count_as_quarantined() {
+    let mut f = Fixture::new();
+    let store = f.store();
+    f.snapshot.entries[0].pending_inbox_ids = vec!["pre-reboot".into()];
+    store.save(&f.snapshot).unwrap();
+    let entry = &f.snapshot.entries[0];
+    assert_eq!(
+        quarantined(&store, &f.snapshot.scope, &entry.project).unwrap(),
+        ["pre-reboot"]
+    );
+    assert!(
+        quarantined(&store, &f.snapshot.scope, &f.snapshot.entries[1].project)
+            .unwrap()
+            .is_empty()
+    );
 }

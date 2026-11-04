@@ -21,7 +21,7 @@ use corgi_core::{
     palette::{self, Palette, Rgb, Source, Theme},
     protocol::{
         Activity, ActivityKind, Agent, Blocked, Cache, Change, PaletteSet, Project, Question,
-        State, ThemeColors, WorkerCounts,
+        Refused, State, ThemeColors, WorkerCounts,
     },
     restart,
     waker::Inboxes,
@@ -125,6 +125,14 @@ pub(super) fn projects(
                         .unwrap_or_default(),
                 )
             };
+            let refused = rows
+                .iter()
+                .find(|agent| agent.supervisor)
+                .and_then(|agent| agent.delivery_refused.clone())
+                .map(|reason| Refused {
+                    reason,
+                    waiting: inboxes.undelivered(&root),
+                });
             Project {
                 group: lead.project_group.clone(),
                 root,
@@ -153,6 +161,7 @@ pub(super) fn projects(
                     .collect(),
                 questions,
                 held,
+                refused,
                 merge_requests: Vec::new(),
                 backlog,
             }

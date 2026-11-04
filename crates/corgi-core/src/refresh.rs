@@ -349,6 +349,7 @@ impl RefreshState {
             .collect();
         agents.extend(exited);
         sort_agents(&mut agents);
+        crate::recovery::mark_refused(client, &mut agents);
         // Drops what is remembered about sessions no longer on the dashboard.
         self.sessions.retain(agents.iter().map(|agent| &agent.info));
         self.repos
@@ -438,6 +439,7 @@ impl RefreshState {
             exited: false,
             paused: false,
             missing_options: Vec::new(),
+            delivery_refused: None,
         }
     }
 

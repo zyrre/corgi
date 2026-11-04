@@ -318,6 +318,10 @@ pub struct Project {
     /// read (`corgi inbox <root> --take`).
     #[serde(default)]
     pub held: usize,
+    /// Set while Corgi refuses to type anything into the supervisor because of
+    /// a recovery hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<Refused>,
     /// The open merge requests (GitLab) or pull requests (GitHub) whose
     /// source branch is one of the project's worktrees' or one its
     /// supervisor's ledger names, as the forge last listed them; empty when
@@ -369,6 +373,14 @@ pub struct WorkerCounts {
     /// counted under a state. Left out when there are none.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub exited: usize,
+}
+
+/// Why Corgi will not type into a project's supervisor, and what waits for that.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Refused {
+    pub reason: String,
+    /// The inbox items waiting, wakes among them.
+    pub waiting: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

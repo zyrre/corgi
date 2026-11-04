@@ -65,9 +65,9 @@ pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub(crate) use cli::digest_summary;
 pub use cli::{
-    DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, REPORT_USAGE, ROLE_USAGE, SPAWN_USAGE,
-    SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify, report, role_command, spawn,
-    supervisor_command, tag_command,
+    DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, RECOVERY_USAGE, REPORT_USAGE, ROLE_USAGE,
+    SPAWN_USAGE, SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify,
+    recovery_command, report, role_command, spawn, supervisor_command, tag_command,
 };
 pub use edit::{EDIT_USAGE, edit_command};
 pub use orphans::{ORPHANS_USAGE, orphans_command};

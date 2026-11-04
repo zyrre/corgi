@@ -185,7 +185,8 @@ impl Inboxes {
 
     /// The ids of `root`'s undelivered items that Corgi holds back on
     /// `client`'s Herdr session: a delivery of them began and Herdr never
-    /// confirmed it, so they may already be in the supervisor's box. Until
+    /// confirmed it, or a save of another boot listed them as on their way,
+    /// so they may already be in the supervisor's box. Until
     /// they are read and recorded (`corgi inbox <project> --take`), nothing
     /// more of the project is typed in.
     pub fn held(&self, client: &HerdrClient, root: &str) -> Vec<String> {
@@ -208,6 +209,12 @@ impl Inboxes {
             .filter(|item| held.contains(&item.id))
             .map(|item| item.id.clone())
             .collect()
+    }
+
+    /// How many of `root`'s items have not been delivered.
+    pub fn undelivered(&self, root: &str) -> usize {
+        self.dir(root)
+            .map_or(0, |dir| Inbox::read(&dir).undelivered_for(root).len())
     }
 
     /// Whether `root` has had a supervisor: one was prepared in its state
@@ -967,9 +974,13 @@ impl SupervisorWaker {
                 .as_deref()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            let session = crate::recovery::session_key(&agent.info);
             if let Some(store) = &self.recovery_store
-                && let Err(failed) = crate::recovery::begin_delivery(store, &scope, root, &ids)
+                && let Err(failed) =
+                    crate::recovery::begin_delivery(store, &scope, root, session.as_deref(), &ids)
             {
+                // It lasts as long as its cause, so `recovery::mark_refused`
+                // and `refused_note` keep saying so past this status line.
                 error = Some(format!("Coordination: {failed}"));
                 continue;
             }
@@ -2808,6 +2819,63 @@ mod tests {
                 .pending_for(&agents[0].project_root)
                 .is_empty()
         );
+    }
+
+    /// A waker with an inbox item waiting for the fixture's first project,
+    /// whose saved supervisor is `agents[0]`, and what it types there.
+    fn deliver_with_old_snapshot(session: &str) -> (Vec<String>, Option<String>, Vec<String>) {
+        let (scratch, client, saved, mut agents) = crate::recovery::fixture::hold_fixture();
+        let store = crate::recovery::Store::for_client(&client).unwrap();
+        store.save(&saved).unwrap();
+        let root = agents[0].project_root.clone();
+        agents.truncate(1);
+        agents[0].info.name = Some("supervisor-p".into());
+        agents[0].info.state = AgentState::Idle;
+        if let Some(identity) = &mut agents[0].info.agent_session {
+            identity.value = session.into();
+        }
+        let mut waker = SupervisorWaker::in_dir(&scratch.join("inboxes"));
+        waker.recovery_store = Some(store);
+        waker.socket = Some(client.socket_path().to_path_buf());
+        waker
+            .inboxes
+            .notify(Item {
+                project: root.clone(),
+                source: "notify".into(),
+                kind: Kind::Note,
+                key: "a-wake".into(),
+                text: "[Corgi] a wake".into(),
+                ..Item::default()
+            })
+            .unwrap();
+        let mut sent = Vec::new();
+        let error = waker.deliver(
+            &agents,
+            |_| false,
+            |supervisor, text| {
+                sent.push(format!("{supervisor}: {text}"));
+                Delivery::Sent
+            },
+        );
+        (sent, error, waker.inboxes.pending_for(&root))
+    }
+
+    #[test]
+    fn a_new_supervisor_session_gets_its_wakes_despite_an_old_snapshot_of_its_project() {
+        let (sent, error, pending) =
+            deliver_with_old_snapshot("00000000-0000-4000-8000-0000000000aa");
+        assert_eq!(error, None);
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].contains("[Corgi] a wake"), "{sent:?}");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn a_session_the_old_snapshot_names_gets_nothing_and_its_wakes_wait() {
+        let (sent, error, pending) = deliver_with_old_snapshot(crate::recovery::fixture::CODEX_ID);
+        assert!(sent.is_empty());
+        assert!(error.unwrap().contains("delivery refused"));
+        assert_eq!(pending.len(), 1);
     }
 
     /// Marks `panes` paused in `client`'s launch record, as Pause all does,

@@ -226,6 +226,16 @@ observation baselines but suppresses stop reports, inbox delivery, handover and
 replacement for held projects. Malformed recovery state fails closed with a
 visible status. Continue does not replay stops observed during a hold.
 
+A hold names a session, not a project: a project is held only while a session a
+hold names is its running supervisor. A supervisor started since is never held
+back by an old snapshot; one of unknown identity fails safe and is refused
+delivery while its project has any hold. `corgi recovery` lists every hold,
+whether or not its session runs, and `corgi recovery release SESSION` releases
+one, needing `--running` for a session that is running. A refused delivery shows
+for as long as it lasts: on the supervisor's card in the dashboard, in the
+project's `refused` in `corgi serve` and so in the window, and in the footers of
+`corgi fleet`, `digest`, `report` and `inbox`.
+
 Inbox delivery intents contain item IDs only and are persisted before sends.
 An uncertain delivery stays quarantined across dashboard/reboot; pre-reboot
 undelivered item IDs in the saved manifest also require inspection with

@@ -264,6 +264,10 @@ Exactly one per request, with its `id`.
   Show it: no window may have been open when it happened. A refusal before
   anything was typed (the supervisor not the pane's foreground process,
   blocked, gone) holds nothing; those items go out at a later pass.
+- `refused`, present only then, says Corgi refuses to type into the project's
+  supervisor because of a recovery hold: its `reason`, and how many inbox items
+  are `waiting`. It lasts until the session is continued or released (`corgi
+  recovery`). Show it: nothing else tells the user why no wake arrives.
 - `merge_requests` are the open merge requests (GitLab, `id` `!1677`) or
   pull requests (GitHub, `id` `#12`) whose source `branch` is a linked
   worktree's of the project or one its supervisor's ledger or ledger
