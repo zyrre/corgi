@@ -473,8 +473,8 @@ const HANDOVER_IDLE_ENV: &str = "CORGI_DEBUG_HANDOVER_IDLE_SECS";
 /// How long a supervisor on `harness` rests before its prompt cache counts as
 /// about to expire and it is handed over: `CORGI_DEBUG_HANDOVER_IDLE_SECS`
 /// when it holds a positive number of seconds, else the harness's own. `None`
-/// for a harness whose context and cache life Corgi does not know, which is
-/// then never handed over.
+/// for a harness whose cache life Corgi does not know, which is handed over
+/// at the first rest past the context threshold ([`Cache::Unknown`]).
 pub fn handover_idle_secs(harness: &Harness) -> Option<u64> {
     idle_secs_or_default(harness, env::var(HANDOVER_IDLE_ENV).ok().as_deref())
 }
@@ -1038,11 +1038,38 @@ pub struct Thresholds {
     /// Context usage, in percent of the window, from which a rested
     /// supervisor is handed over.
     pub percent: u8,
-    /// How long it must have rested, in seconds, for its prompt cache to be
-    /// about to expire, if its harness has an idle time. Without one no
-    /// handover is due: neither trigger can tell that the cache is about to
-    /// expire. Both the context threshold and the idle trigger wait for it.
-    pub idle_secs: Option<u64>,
+    /// What is known of its prompt cache, which both triggers wait on.
+    pub cache: Cache,
+}
+
+/// How a supervisor's prompt cache is known, for its handover.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cache {
+    /// The harness has an idle time: the cache is about to expire once the
+    /// supervisor has rested this many seconds. Both the context threshold
+    /// and the idle trigger wait for it.
+    Expires(u64),
+    /// The harness has an idle time, but this dashboard cannot time a rest
+    /// (a hook: it runs only when something happens), so it asks for
+    /// nothing and leaves that to a dashboard.
+    Untimed,
+    /// The harness has no known cache life ([`handover_idle_secs`] is
+    /// `None`), so none can be waited for: a rested supervisor at the
+    /// context threshold is handed over at once, as before the cache
+    /// counted. The idle trigger, which needs an idle time, never fires.
+    Unknown,
+}
+
+impl Cache {
+    /// The cache of a supervisor on `harness` for a waker that can time a
+    /// rest (`timed`) or cannot.
+    pub fn of(harness: &Harness, timed: bool) -> Self {
+        match (handover_idle_secs(harness), timed) {
+            (Some(secs), true) => Self::Expires(secs),
+            (Some(_), false) => Self::Untimed,
+            (None, _) => Self::Unknown,
+        }
+    }
 }
 
 /// Why a supervisor is asked for its handover note.
@@ -1077,7 +1104,8 @@ pub enum HandoverStep {
 /// about to expire), and has its context at the threshold, or, with no
 /// worker busy, at least twice its baseline. A context at the threshold alone
 /// asks nothing while the cache is warm, however long the session has run
-/// without resting. The baseline is its context at the first refresh that
+/// without resting. A harness with no known idle time has no cache to wait
+/// for: it is asked at its first rest at the threshold ([`Cache::Unknown`]). The baseline is its context at the first refresh that
 /// finds it resting with a context: the end of its first turn when the
 /// dashboard saw that, else the first rest this dashboard saw, which only
 /// asks for more growth. It is kept on the pane as [`BASELINE_TOKEN`]; the
@@ -1232,22 +1260,29 @@ impl Handover {
     }
 
     /// Why the supervisor as `seen` at `now` is due for a handover, if it is:
-    /// only once it has rested for the harness's idle time, when its prompt
-    /// cache is about to expire. Then a context at the threshold is
-    /// [`Trigger::Full`], at once; failing that, one grown past its baseline
-    /// with no worker busy is [`Trigger::Idle`]. A harness with no idle time
-    /// is never due.
+    /// only while it rests. On a harness with an idle time, once it has
+    /// rested that long, when its prompt cache is about to expire, a context
+    /// at the threshold is [`Trigger::Full`], at once; failing that, one grown
+    /// past its baseline with no worker busy is [`Trigger::Idle`]. A waker
+    /// that cannot time a rest ([`Cache::Untimed`]) asks for nothing. A
+    /// harness with no idle time ([`Cache::Unknown`]) has no cache to wait
+    /// for: a context at the threshold is `Full` at the first rest.
     fn trigger(&self, seen: Sighting, limits: Thresholds, now: u64) -> Option<Trigger> {
         let (since, _) = self.resting?;
         let rested = now.saturating_sub(since);
-        if limits.idle_secs.is_none_or(|idle| rested < idle) {
-            return None;
+        match limits.cache {
+            Cache::Expires(idle) if rested < idle => return None,
+            Cache::Untimed => return None,
+            Cache::Expires(_) | Cache::Unknown => {}
         }
         if seen
             .context_percent
             .is_some_and(|used| used >= limits.percent)
         {
             return Some(Trigger::Full(limits.percent));
+        }
+        if limits.cache == Cache::Unknown {
+            return None;
         }
         let grown = self
             .baseline
@@ -2187,7 +2222,7 @@ mod tests {
     /// and the tests after it give the cache its time.
     const FULL: Thresholds = Thresholds {
         percent: 50,
-        idle_secs: Some(0),
+        cache: Cache::Expires(0),
     };
 
     fn seen(state: AgentState, change: u64, percent: u8) -> Sighting<'static> {
@@ -2635,7 +2670,7 @@ mod tests {
 
     const CLAUDE: Thresholds = Thresholds {
         percent: 50,
-        idle_secs: Some(CLAUDE_IDLE_SECS),
+        cache: Cache::Expires(CLAUDE_IDLE_SECS),
     };
 
     /// A supervisor whose first turn ended at 30,000 tokens, at 10% of its
@@ -2866,12 +2901,12 @@ mod tests {
     }
 
     #[test]
-    fn a_harness_with_no_idle_time_is_never_handed_over() {
-        // The hooks and the harnesses whose cache life is unknown have none:
-        // a full context cannot be told to be about to go cold.
-        let none = Thresholds {
+    fn a_waker_that_cannot_time_a_rest_asks_for_nothing() {
+        // A hook, which has no cache clock of its own, leaves asking to a
+        // dashboard, however full the context and long the rest.
+        let untimed = Thresholds {
             percent: 50,
-            idle_secs: None,
+            cache: Cache::Untimed,
         };
         let full = Sighting {
             context_percent: Some(90),
@@ -2879,24 +2914,87 @@ mod tests {
         };
         let mut handover = Handover::default();
         for at in [0, 1, CLAUDE_IDLE_SECS, 100 * CLAUDE_IDLE_SECS] {
-            assert_eq!(handover.observe(full, none, at, |_| true, || true), None);
+            assert_eq!(handover.observe(full, untimed, at, |_| true, || true), None);
         }
-        // Their rest is still timed, so a dashboard taking over, which reads
+        // Its rest is still recorded, so a dashboard taking over, which reads
         // the record, finds it.
         assert_eq!(
             handover.observe(full, CLAUDE, 100 * CLAUDE_IDLE_SECS, |_| true, || true),
             Some(HandoverStep::Ask(100 * CLAUDE_IDLE_SECS, Trigger::Full(50)))
         );
-        // An unreadable context is never full.
-        let unknown = Sighting {
-            context_percent: None,
-            context_tokens: None,
-            ..full
+        // Nor is the idle trigger its to pull.
+        let grown = idle(Idle, 4, 60_000);
+        let mut handover = Handover::default();
+        for at in [0, CLAUDE_IDLE_SECS] {
+            assert_eq!(
+                handover.observe(grown, untimed, at, |_| true, || true),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn a_harness_with_no_idle_time_is_handed_over_at_its_first_rest_past_the_threshold() {
+        let unknown = Thresholds {
+            percent: 50,
+            cache: Cache::Unknown,
+        };
+        let at = |percent| Sighting {
+            context_percent: Some(percent),
+            ..idle(Idle, 4, 200_000)
+        };
+        let step = |percent, now| {
+            Handover::default().observe(at(percent), unknown, now, |_| true, || true)
+        };
+        // At the first rest, whenever it is seen, with no cache to wait for.
+        assert_eq!(step(50, 7), Some(HandoverStep::Ask(7, Trigger::Full(50))));
+        assert_eq!(step(99, 7), Some(HandoverStep::Ask(7, Trigger::Full(50))));
+        assert_eq!(step(49, 7), None);
+        assert_eq!(step(49, 100 * CLAUDE_IDLE_SECS), None);
+        // Working is no rest.
+        let mut handover = Handover::default();
+        let working = Sighting {
+            state: Working,
+            ..at(80)
         };
         assert_eq!(
-            idle_steps(&[(0, unknown), (CLAUDE_IDLE_SECS, unknown)]),
-            [None, None]
+            handover.observe(working, unknown, 0, |_| true, || true),
+            None
         );
+        // Without an idle time there is no idle trigger either: a grown
+        // supervisor under the threshold is never asked, however long it rests.
+        let grown = idle(Idle, 4, 60_000);
+        let mut handover = Handover::default();
+        for now in [0, CLAUDE_IDLE_SECS, 100 * CLAUDE_IDLE_SECS] {
+            assert_eq!(
+                handover.observe(grown, unknown, now, |_| true, || true),
+                None
+            );
+        }
+        // An unreadable context is never full.
+        let unreadable = Sighting {
+            context_percent: None,
+            context_tokens: None,
+            ..at(0)
+        };
+        assert_eq!(
+            Handover::default().observe(unreadable, unknown, 7, |_| true, || true),
+            None
+        );
+        // The harness decides: Claude Code and Codex know their cache life,
+        // and the hooks cannot time it.
+        assert!(matches!(
+            Cache::of(&Harness::Claude, true),
+            Cache::Expires(_)
+        ));
+        assert!(matches!(
+            Cache::of(&Harness::Codex, true),
+            Cache::Expires(_)
+        ));
+        assert_eq!(Cache::of(&Harness::Claude, false), Cache::Untimed);
+        assert_eq!(Cache::of(&Harness::Codex, false), Cache::Untimed);
+        assert_eq!(Cache::of(&Harness::Gemini, true), Cache::Unknown);
+        assert_eq!(Cache::of(&Harness::Gemini, false), Cache::Unknown);
     }
 
     #[test]
@@ -2919,7 +3017,7 @@ mod tests {
         }
         let codex = Thresholds {
             percent: 50,
-            idle_secs: idle_secs_or_default(&Harness::Codex, None),
+            cache: Cache::Expires(CODEX_IDLE_SECS),
         };
         let mut handover = Handover::default();
         assert_eq!(
