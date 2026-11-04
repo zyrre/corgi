@@ -1171,14 +1171,14 @@ impl CorgiWindow {
             })
             .collect();
         // The markers' column and the gap after it, as the activity lines
-        // have them (`w(12)`, `gap_2`), and `gap_2` between turns.
+        // have them (`w(12)`, `gap_2`); the turns follow each other line
+        // after line, as those lines do.
         let gap = self.scaled(REM / 2.0);
         div()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .pt_1()
             .pr_2()
             .child(TranscriptElement::new(
                 turns,
@@ -1186,7 +1186,7 @@ impl CorgiWindow {
                 self.focus.clone(),
                 colors.selection(),
                 self.scaled(12.) + gap,
-                gap,
+                px(0.),
             ))
             .into_any_element()
     }

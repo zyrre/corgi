@@ -30,8 +30,8 @@ pub const FOLDED_LINES: usize = 2;
 pub const MIN_LINES: f32 = 6.0;
 /// What a folded turn's last line ends in.
 const ELLIPSIS: &str = "…";
-/// What copied turns are joined with: a blank line, as the gap between them
-/// reads.
+/// What copied turns are joined with: a blank line, which keeps them apart
+/// in the copied text.
 const TURN_BREAK: &str = "\n\n";
 
 /// One turn as the row draws it.

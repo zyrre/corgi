@@ -218,6 +218,18 @@ the old offset; read offsets with `scroll`.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 
+To check layout alone, no Herdr is needed: `--corgi PATH` runs any program
+as the server, so a script that `cat`s a file of two JSON lines (a `hello`
+and a `snapshot`, written from a throwaway test with `serde_json` over
+`ServerMessage`) and then `cat`s stdin, to stay open, gives the window any
+state, a transcript included. Run it with a private `HOME` and
+`XDG_*` so no layout or keymap of the user's is read or written. For exact
+row geometry, put a temporary `eprintln!` of each row's top and bottom in
+`Rows::record` (`src/rows.rs`), which gets every row's bounds each frame,
+and remove it before committing; compare the numbers with and without a
+row expanded, since a screenshot only shows a difference of a few pixels
+to the eye.
+
 The focus view's terminal connects to the throwaway session's
 `herdr-client.sock` itself. After changing `src/endpoint/`, run
 `cargo test -p corgi-gui -- --ignored live_herdr`, which drives the adapter
