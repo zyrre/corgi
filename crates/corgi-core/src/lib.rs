@@ -30,6 +30,7 @@ pub mod notice;
 pub mod orphans;
 pub mod palette;
 pub mod paths;
+pub mod pause;
 pub mod progress;
 pub mod project_main;
 pub mod projects;

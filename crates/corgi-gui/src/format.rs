@@ -58,7 +58,9 @@ impl Piece {
 /// The badge an agent's row starts with: its state, or MERGE when its
 /// supervisor tagged it ready.
 pub fn badge(agent: &Agent) -> (&'static str, Tone) {
-    if agent.exited {
+    if agent.paused {
+        ("PAUSED", Tone::Warning)
+    } else if agent.exited {
         ("EXITED", Tone::Danger)
     } else if agent.ready_to_merge {
         ("MERGE", Tone::Merge)
@@ -83,7 +85,15 @@ pub fn missing_badge(agent: &Agent) -> Option<Piece> {
 /// something to do about it: an agent that exited and can be resumed with
 /// `resume_key`, or one running without its launch options.
 pub fn selected_hint(agent: &Agent, resume_key: &str) -> Option<(String, Tone)> {
-    if agent.exited {
+    if agent.paused {
+        Some((
+            format!(
+                "{} is paused · Resume all brings back every paused agent, {resume_key} this one",
+                agent.name
+            ),
+            Tone::Warning,
+        ))
+    } else if agent.exited {
         Some((
             format!(
                 "{} exited to its shell · {resume_key} resumes it with its session and options",

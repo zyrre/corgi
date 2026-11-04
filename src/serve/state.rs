@@ -70,6 +70,7 @@ pub(super) fn agent_row(agent: &DashboardAgent) -> Agent {
         can_prompt: info.state.can_prompt() && !agent.exited,
         can_merge: agent.worktree_checkout.is_some(),
         exited: agent.exited,
+        paused: agent.paused,
         warning: (!agent.missing_options.is_empty())
             .then(|| restart::warning_text(&agent.missing_options)),
         missing_options: agent.missing_options.clone(),

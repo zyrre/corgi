@@ -8,8 +8,8 @@ use std::time::Instant;
 use corgi_core::{
     orphans::Choices,
     protocol::{
-        BacklogEntry, CloseForm, MergeForm, MergeOutcome, Progress, Question, Reply, ReplyResult,
-        UpstreamChoice,
+        BacklogEntry, CloseForm, MergeForm, MergeOutcome, PauseForm, Progress, Question, Reply,
+        ReplyResult, UpstreamChoice,
     },
 };
 
@@ -73,6 +73,8 @@ pub enum Dialog {
     Close(Close),
     /// Find orphaned sessions: the candidates and the choice for each.
     Orphans(Box<Orphans>),
+    /// The confirmation before Pause all, and the pause while it runs.
+    Pause(PauseAll),
 }
 
 impl Dialog {
@@ -254,7 +256,17 @@ pub struct Close {
     pub error: Option<String>,
 }
 
-/// The "Orphaned sessions" dialog: looking, then the list with a choice for
+/// The confirmation before Pause all: what stops, by project, and which
+/// agents are working; then the pause while it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PauseAll {
+    pub form: PauseForm,
+    pub running: bool,
+    pub error: Option<String>,
+    pub progress: Option<String>,
+}
+
+/// The "Find sessions" dialog: looking, then the list with a choice for
 /// each candidate (`corgi_core::orphans::Choices`, as the dashboard's), and
 /// the candidate whose choice is being applied.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -312,6 +324,9 @@ pub enum Followup {
 pub struct Dialogs {
     pub open: Option<Dialog>,
     pub flash: Option<Flash>,
+    /// Pause all or Resume all is running: what the header's button says
+    /// meanwhile, which takes no click.
+    pub all_running: Option<&'static str>,
 }
 
 impl Dialogs {
@@ -348,7 +363,12 @@ impl Dialogs {
                 .running
                 .get_or_insert_with(Steps::default)
                 .update(progress),
-            (_, Purpose::StartSupervisor) => {
+            (Some(Dialog::Pause(pause)), Purpose::PauseAll) => {
+                if progress.status.is_some() {
+                    pause.progress = progress.status.clone();
+                }
+            }
+            (_, Purpose::StartSupervisor | Purpose::PauseAll | Purpose::ResumeAll) => {
                 if let Some(status) = &progress.status {
                     self.say(status.clone(), false);
                 }
@@ -493,6 +513,46 @@ impl Dialogs {
                 };
                 None
             }
+            Purpose::PauseCheck => {
+                match (error, reply.result) {
+                    (Some(error), _) => self.say(error, true),
+                    (None, Some(ReplyResult::PauseForm(form))) => {
+                        self.open = Some(Dialog::Pause(PauseAll {
+                            form,
+                            running: false,
+                            error: None,
+                            progress: None,
+                        }));
+                    }
+                    _ => {}
+                }
+                None
+            }
+            Purpose::PauseAll => {
+                self.all_running = None;
+                match (error, &mut self.open) {
+                    (Some(error), Some(Dialog::Pause(pause))) => {
+                        pause.running = false;
+                        pause.error = Some(error);
+                    }
+                    (Some(error), _) => self.say(error, true),
+                    (None, _) => {
+                        if matches!(self.open, Some(Dialog::Pause(_))) {
+                            self.open = None;
+                        }
+                        self.say(message.unwrap_or_else(|| "Paused".into()), false);
+                    }
+                }
+                None
+            }
+            Purpose::ResumeAll => {
+                self.all_running = None;
+                match error {
+                    Some(error) => self.say(error, true),
+                    None => self.say(message.unwrap_or_else(|| "Resumed".into()), false),
+                }
+                None
+            }
             Purpose::MergeEnd | Purpose::Tag | Purpose::Resume => {
                 if matches!(self.open, Some(Dialog::Merge(_))) && purpose == Purpose::MergeEnd {
                     self.open = None;
@@ -599,6 +659,15 @@ impl Dialogs {
                 (Purpose::Close, Some(Dialog::Close(close))) => {
                     close.running = false;
                     close.error = Some(why.into());
+                }
+                (Purpose::PauseAll, Some(Dialog::Pause(pause))) => {
+                    self.all_running = None;
+                    pause.running = false;
+                    pause.error = Some(why.into());
+                }
+                (Purpose::PauseAll | Purpose::ResumeAll, _) => {
+                    self.all_running = None;
+                    self.say(why, true);
                 }
                 (
                     Purpose::Orphans | Purpose::OrphanApply { .. },
@@ -1193,5 +1262,82 @@ mod tests {
         let now = orphans(&dialogs);
         assert!(!now.looking);
         assert!(now.choices.error.unwrap().contains("connection"));
+    }
+
+    fn pause_form() -> PauseForm {
+        PauseForm {
+            agents: 3,
+            working: 1,
+            projects: vec![corgi_core::protocol::PauseProject {
+                project: "corgi".into(),
+                supervisors: 1,
+                workers: 2,
+                working: vec!["fix-cache".into()],
+            }],
+            left: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pause_check_opens_the_confirmation_and_pause_all_ends_it_with_its_outcome() {
+        let mut dialogs = Dialogs::default();
+        dialogs.reply(
+            Purpose::PauseCheck,
+            ok(ReplyResult::PauseForm(pause_form())),
+        );
+        let Some(Dialog::Pause(pause)) = &mut dialogs.open else {
+            panic!("no confirmation")
+        };
+        assert_eq!(pause.form.agents, 3);
+        pause.running = true;
+        dialogs.all_running = Some("Pausing…");
+        dialogs.progress(
+            &Purpose::PauseAll,
+            &Progress {
+                id: 1,
+                status: Some("Stopping 3 agents…".into()),
+                ..Progress::default()
+            },
+        );
+        assert!(
+            matches!(&dialogs.open, Some(Dialog::Pause(p)) if p.progress.as_deref() == Some("Stopping 3 agents…"))
+        );
+        dialogs.reply(
+            Purpose::PauseAll,
+            ok(ReplyResult::Done {
+                message: "Paused 3 agents".into(),
+            }),
+        );
+        assert!(dialogs.open.is_none() && dialogs.all_running.is_none());
+        assert_eq!(
+            dialogs.flash.as_ref().map(|f| f.text.as_str()),
+            Some("Paused 3 agents")
+        );
+    }
+
+    #[test]
+    fn a_failed_or_lost_pause_stays_open_with_why_and_the_button_comes_back() {
+        let mut dialogs = Dialogs::default();
+        dialogs.reply(
+            Purpose::PauseCheck,
+            ok(ReplyResult::PauseForm(pause_form())),
+        );
+        dialogs.all_running = Some("Pausing…");
+        dialogs.lost(&[Purpose::PauseAll]);
+        assert!(matches!(&dialogs.open, Some(Dialog::Pause(p)) if !p.running && p.error.is_some()));
+        assert!(dialogs.all_running.is_none());
+        dialogs.all_running = Some("Resuming…");
+        dialogs.reply(
+            Purpose::ResumeAll,
+            Reply {
+                id: Some(2),
+                ok: false,
+                error: Some("No agent is paused".into()),
+                field: None,
+                result: None,
+            },
+        );
+        assert!(dialogs.all_running.is_none());
+        assert!(dialogs.flash.as_ref().is_some_and(|f| f.error));
     }
 }

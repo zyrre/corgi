@@ -1586,6 +1586,80 @@ fn an_exited_agent_has_a_row_that_takes_resume_and_refuses_prompts() {
 }
 
 #[test]
+fn pause_check_names_what_pause_all_stops_and_a_paused_row_says_so() {
+    let scratch = ScratchDir::new("serve-pause");
+    let (repo, worktree) = repository(&scratch);
+    let mut snapshot = herd(&repo, &worktree, "working");
+    snapshot["panes"] = json!([
+        {"pane_id": "w2:p2", "workspace_id": "w2", "tab_id": "w2:t2", "cwd": worktree},
+    ]);
+    // Native ids, which Resume needs.
+    for (index, agent) in snapshot["agents"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        agent["agent_session"]["value"] =
+            json!(format!("{index}1111111-2222-4333-8444-555555555555"));
+    }
+    let launched = |paused: bool| corgi_core::restart::Launched {
+        kind: "claude".into(),
+        name: "w-old".into(),
+        cwd: worktree.clone(),
+        session: Some("11111111-2222-4333-8444-555555555555".into()),
+        paused: paused.then(|| corgi_core::restart::Paused {
+            at: 1,
+            project_root: repo.to_string_lossy().into_owned(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let record = corgi_core::restart::Record {
+        panes: std::collections::BTreeMap::from([("w2:p2".to_string(), launched(true))]),
+    };
+    fs::write(
+        scratch.join("markers.launches.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let herdr = FakeHerdr::start("serve-pause", snapshot);
+    let mut session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    let row = |pane: &str| state.agents.iter().find(|a| a.pane_id == pane).unwrap();
+    assert!(row("w2:p2").exited && row("w2:p2").paused);
+    assert!(!row("w2:p1").paused);
+
+    let (result, _) = session.ok(json!({"command": "pause_check"}));
+    let ReplyResult::PauseForm(form) = result else {
+        panic!("not a pause form: {result:?}")
+    };
+    assert_eq!((form.agents, form.working), (3, 1));
+    assert_eq!(form.projects.len(), 2);
+    assert_eq!(
+        (form.projects[0].supervisors, form.projects[0].workers),
+        (1, 1)
+    );
+    assert_eq!(form.projects[0].working, ["w-fix"]);
+    assert_eq!(form.projects[1].project, "Scratch");
+    // Checking changes nothing.
+    assert!(herdr.calls("agent.prompt").is_empty());
+
+    // The fake Herdr knows no `pane.process_info`, so the shell cannot be
+    // checked: the paused agent is named and nothing starts.
+    let (result, _) = session.ok(json!({"command": "resume_all"}));
+    let ReplyResult::Done { message } = result else {
+        panic!("not done: {result:?}")
+    };
+    assert!(
+        message.starts_with("Resumed 0 agents; not 1 agent: w-old"),
+        "{message}"
+    );
+    assert!(herdr.calls("agent.start").is_empty());
+    session.close();
+}
+
+#[test]
 fn orphans_are_found_on_asking_and_a_choice_is_applied_after_a_fresh_look() {
     let scratch = ScratchDir::new("serve-orphans");
     let root = scratch.join("webshop");

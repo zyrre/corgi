@@ -92,6 +92,42 @@ pub(crate) fn close_dialog_lines(form: &CloseWorkspaceForm) -> DialogContent<'_>
     }
 }
 
+/// The confirmation before Pause all: how many agents stop in each
+/// project, which of them are working, and what is left running.
+pub(super) fn draw_pause(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    form: &corgi_core::protocol::PauseForm,
+) -> Drawn {
+    let words = corgi_core::pause::confirmation(form);
+    let mut lines = vec![
+        Line::styled(words[0].clone(), bold(roles().text)),
+        Line::raw(""),
+    ];
+    for line in &words[1..] {
+        let color = if line.contains("current turn is lost") {
+            roles().warning
+        } else {
+            roles().muted
+        };
+        lines.push(Line::styled(line.clone(), Style::default().fg(color)));
+    }
+    draw_message_dialog(
+        frame,
+        area,
+        DialogContent {
+            mark: POPUP_MARK,
+            title: "Pause all agents",
+            color: roles().warning,
+            lines,
+            legend: vec![
+                ("Enter", "pause all", roles().danger),
+                ("Esc", "cancel", roles().warning),
+            ],
+        },
+    )
+}
+
 /// A notice another command left for the dashboard, such as `corgi setup`
 /// saying which key opens Corgi: a success, stamped once it has opened.
 pub(super) fn draw_notice(frame: &mut Frame<'_>, area: Rect, message: &str) -> Drawn {

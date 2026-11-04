@@ -350,10 +350,11 @@ impl CorgiWindow {
                             .child(self.font_button(true, cx))
                             .child(self.appearance_toggle(cx)),
                     )
-                    // The keys' dialog, under the buttons above, and
-                    // finding orphaned sessions under it.
+                    // The keys' dialog, under the buttons above, finding
+                    // orphaned sessions under it, and Pause all last.
                     .child(self.hotkeys_button(cx))
-                    .child(self.orphans_button(cx)),
+                    .child(self.orphans_button(cx))
+                    .child(self.pause_button(cx)),
             )
             .on_mouse_down(
                 MouseButton::Left,
@@ -1584,6 +1585,7 @@ impl CorgiWindow {
             Some(Dialog::Merge(merge)) => self.merge_dialog(merge, cx),
             Some(Dialog::Close(close)) => self.close_dialog(close, cx),
             Some(Dialog::Orphans(orphans)) => self.orphans_dialog(orphans, window, cx),
+            Some(Dialog::Pause(pause)) => self.pause_dialog(pause, cx),
             None => div().into_any_element(),
         };
         // A refused prompt keeps the keyboard; its frame says so.

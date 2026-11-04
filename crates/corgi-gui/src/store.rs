@@ -187,6 +187,10 @@ pub enum Purpose {
     Close,
     Tag,
     Resume,
+    /// What Pause all would stop, for its confirmation.
+    PauseCheck,
+    PauseAll,
+    ResumeAll,
     /// Finds orphaned sessions for the dialog.
     Orphans,
     /// Applies the choice made for the orphan `key`.

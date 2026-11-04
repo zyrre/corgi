@@ -199,6 +199,9 @@ pub struct DashboardAgent {
     /// row stands for it, offers Resume (`restart::resume`) and nothing
     /// else acts on it. Its `info` describes the pane, with no session.
     pub exited: bool,
+    /// An exited row Pause all stopped ([`crate::pause`]): Resume all
+    /// starts it again.
+    pub paused: bool,
     /// What the running agent lacks of the options Corgi launched it with
     /// (`role`, `memory`, `model`, a flag), as after a resume by a Herdr
     /// older than 0.9.2: a warning on its row.

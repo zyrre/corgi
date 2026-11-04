@@ -810,7 +810,9 @@ pub(super) fn agent_status_line(
 ) -> Line<'static> {
     let marker = gutter(selected);
     // A worker a supervisor tagged ready to merge reads MERGE while it rests.
-    let (status, status_color) = if agent.exited {
+    let (status, status_color) = if agent.paused {
+        (format!(" {PAUSED_LABEL} "), roles().warning)
+    } else if agent.exited {
         (format!(" {EXITED_LABEL} "), roles().danger)
     } else if agent.ready_to_merge() {
         (" MERGE ".to_string(), roles().merge)
@@ -890,6 +892,9 @@ pub(super) fn agent_status_line(
 /// The state badge of an agent that exited to its shell, and its mark in
 /// a collapsed card's counts.
 pub(super) const EXITED_LABEL: &str = "EXITED";
+/// The state badge of an agent Pause all stopped, which Resume all brings
+/// back.
+pub(super) const PAUSED_LABEL: &str = "PAUSED";
 const EXITED_MARK: &str = "⏻";
 
 /// The short warning after the state of an agent running without some of

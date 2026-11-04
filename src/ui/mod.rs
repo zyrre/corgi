@@ -28,7 +28,7 @@ mod status;
 
 use agents::draw_agents;
 pub(crate) use dialogs::{close_dialog_lines, merge_dialog_lines};
-use dialogs::{draw_close_workspace, draw_merge_worktree, draw_notice};
+use dialogs::{draw_close_workspace, draw_merge_worktree, draw_notice, draw_pause};
 use header::{HEADER_HEIGHT, draw_header};
 pub(crate) use header::{HERD_WIDTH, herd_header, show_usage_card, usage_lines_for_slot};
 use new_agent::{draw_new_agent, draw_new_agent_launch};
@@ -113,10 +113,16 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         ),
         _ => (app.status.clone(), roles().accent),
     };
+    // One key for both: Resume all while any agent is paused.
+    let pause = if corgi_core::pause::paused_rows(&app.agents) > 0 {
+        "P resume all"
+    } else {
+        "P pause all"
+    };
     let lines = vec![
         Line::styled(format!(" {} ", status.0), Style::default().fg(status.1)),
         Line::styled(
-            format!(" S sessions · o orphans · {keys}"),
+            format!(" S sessions · o orphans · {pause} · {keys}"),
             Style::default().fg(roles().muted),
         ),
     ];
@@ -189,6 +195,7 @@ fn draw_popup(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Placed
         Overlay::Notice(message) => draw_notice(frame, area, message),
         Overlay::Sessions(form) => sessions::draw(frame, area, form),
         Overlay::Orphans(dialog) => orphans::draw(frame, area, dialog, spinner),
+        Overlay::Pause(form) => draw_pause(frame, area, form),
     };
     let color = effects::frame_color(drawn.color, motion.outcome_effect().or(success));
     let fade = motion.content_fade();

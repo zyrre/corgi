@@ -108,6 +108,10 @@ pub struct SupervisorWaker {
     /// Recovery holds suppress outgoing work while preserving observed baselines.
     recovery_held: HashSet<String>,
     recovery_store: Option<crate::recovery::Store>,
+    /// Pause all's marks, as this pass took them up (`pause::Holds`): the
+    /// panes whose stops wake no one and whose supervisor gets nothing, and
+    /// the projects whose supervisor's handover is kept while it is away.
+    paused: crate::pause::Holds,
     /// The pauses before reading a report again ([`REPORT_REREADS`]).
     report_rereads: &'static [Duration],
 }
@@ -133,6 +137,7 @@ impl Default for SupervisorWaker {
             replacements: Vec::new(),
             recovery_held: HashSet::new(),
             recovery_store: None,
+            paused: crate::pause::Holds::default(),
             report_rereads: &REPORT_REREADS,
         }
     }
@@ -715,6 +720,7 @@ impl SupervisorWaker {
             let root = agent.project_root.as_str();
             if let Some(state) = woke
                 && !self.recovery_held.contains(root)
+                && !self.paused.panes.contains(pane)
                 && (supervisors.contains(root) || self.handing_over(root) || own(agent))
             {
                 stops.push(Stop {
@@ -886,8 +892,10 @@ impl SupervisorWaker {
             .filter(|agent| agent.supervisor)
             .map(|agent| agent.project_root.as_str())
             .collect();
-        self.handovers
-            .retain(|root, handover| live.contains(root.as_str()) || handover.in_progress());
+        let away = &self.paused.roots;
+        self.handovers.retain(|root, handover| {
+            live.contains(root.as_str()) || handover.in_progress() || away.contains(root)
+        });
         actions
     }
 
@@ -1017,9 +1025,14 @@ impl SupervisorWaker {
         };
         self.recovery_held = held.iter().cloned().collect();
         self.recovery_store = crate::recovery::Store::for_client(client);
+        // Paused agents too: their stops are followed and wake no one, and
+        // a paused supervisor is neither typed into nor handed over.
+        self.paused = crate::pause::Holds::read(client);
         let available: Vec<_> = agents
             .iter()
-            .filter(|a| !held.contains(&a.project_root))
+            .filter(|a| {
+                !held.contains(&a.project_root) && !self.paused.panes.contains(&a.info.pane_id)
+            })
             .cloned()
             .collect();
         self.socket
@@ -1030,6 +1043,11 @@ impl SupervisorWaker {
         });
         let corgi_bin = corgi_bin.clone();
         let mut status = self.observe(agents, &corgi_bin, report);
+        // What this pass followed is recorded: a paused agent seen back now
+        // is taken up from here, and its mark goes.
+        if !self.paused.is_empty() {
+            crate::pause::settle(client, agents, unix_now());
+        }
         let mut finished = Vec::new();
         self.replacements.retain_mut(|(root, replacement)| {
             let Some(outcome) = replacement.outcome() else {
@@ -2790,6 +2808,102 @@ mod tests {
                 .pending_for(&agents[0].project_root)
                 .is_empty()
         );
+    }
+
+    /// Marks `panes` paused in `client`'s launch record, as Pause all does,
+    /// the first a supervisor's.
+    fn pause(client: &HerdrClient, panes: &[&str], resuming: bool) {
+        let path = crate::restart::record_path(client).unwrap();
+        crate::restart::update(&path, |record| {
+            for (index, pane) in panes.iter().enumerate() {
+                let entry = record.panes.entry(pane.to_string()).or_default();
+                entry.kind = "claude".into();
+                entry.session = Some("s1".into());
+                entry.paused = Some(crate::restart::Paused {
+                    at: unix_now(),
+                    project_root: "/repos/weather".into(),
+                    supervisor: index == 0,
+                    resuming,
+                });
+            }
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn paused_agents_wake_no_one_as_they_stop_or_come_back_and_no_handover_starts() {
+        use AgentState::{Idle, Working};
+        let scratch = ScratchDir::new("waker-pause");
+        let client = HerdrClient::from_socket_path(crate::test_support::UNUSED_SOCKET)
+            .with_marker_record(scratch.join("markers.json"));
+        let mut supervisor = weather_supervisor(Idle);
+        supervisor.info.tokens.insert(
+            SUPERVISOR_TOKEN.into(),
+            supervisor::marker("supervisor-weather", Some("s1")),
+        );
+        supervisor.info.agent_session = Some(crate::model::AgentSession {
+            value: "s1".into(),
+            ..Default::default()
+        });
+        // Past the threshold: unpaused, it would be asked for its note.
+        supervisor.context_percent = Some(80);
+        let agents = |state, change| {
+            vec![
+                supervisor.clone(),
+                weather_worker("w-radar", state, change, true),
+                weather_worker("w-cache", state, change, false),
+            ]
+        };
+        // Each pass a hook's: a new process that takes up what the last left.
+        // Returns its status, whether a handover runs, and what waits for
+        // the supervisor.
+        let pass = |agents: &[DashboardAgent]| {
+            let mut waker = SupervisorWaker::in_dir(&scratch.join("inboxes"));
+            waker.corgi_bin = Some("/opt/corgi".into());
+            assert!(waker.lead(&scratch.join("test.lock")));
+            let status = waker.tick(&client, agents, |_| Capture::Found(None));
+            (
+                status,
+                waker.handing_over("/repos/weather"),
+                waker.inboxes.pending_for("/repos/weather").len(),
+            )
+        };
+        let panes = ["supervisor-weather:p1", "w-radar:p1", "w-cache:p1"];
+        pass(&agents(Working, 1));
+        pause(&client, &panes, false);
+        // Interrupted with Esc, then exited: neither wakes nor hands over.
+        assert_eq!(pass(&agents(Idle, 2)), (None, false, 0));
+        assert_eq!(pass(&[]), (None, false, 0));
+
+        // Resume all: each comes back resting, which is no news.
+        pause(&client, &panes, true);
+        assert_eq!(pass(&agents(Idle, 1)).2, 0);
+        assert!(
+            crate::restart::read(&client)
+                .panes
+                .values()
+                .all(|entry| entry.paused.is_none()),
+            "the marks go once the agents were seen back"
+        );
+        // From then on a stop wakes the supervisor as before.
+        pass(&agents(Working, 2));
+        let (_, _, pending) = pass(&agents(Idle, 3));
+        assert_eq!(pending, 2);
+    }
+
+    #[test]
+    fn a_paused_supervisors_project_keeps_its_handover_while_it_is_away() {
+        let mut waker = SupervisorWaker::default();
+        waker
+            .handovers
+            .insert("/repos/weather".into(), supervisor::Handover::default());
+        waker
+            .handovers
+            .insert("/repos/gone".into(), supervisor::Handover::default());
+        waker.paused.roots.insert("/repos/weather".into());
+        waker.hand_over(&[], 50, |_| None, 1_000, |_, _| false, |_| false);
+        assert!(waker.handovers.contains_key("/repos/weather"));
+        assert!(!waker.handovers.contains_key("/repos/gone"));
     }
 
     // ---- Adversarial review tests (throwaway; not for the branch) ----
