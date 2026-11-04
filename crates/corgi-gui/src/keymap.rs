@@ -191,7 +191,7 @@ impl Action {
             Action::Tag => "Tag / untag ready to merge",
             Action::Close => "Close agent",
             Action::Refresh => "Refresh",
-            Action::Orphans => "Sessions: find orphaned sessions",
+            Action::Orphans => "Find sessions",
             Action::AnswerFirst => "Answer first question",
             Action::Collapse => "Collapse session",
             Action::ScrollUp => "Scroll up a view",
@@ -899,7 +899,7 @@ mod tests {
         assert_eq!(keymap.key(Action::PauseAll), &key("shift-p"));
         assert_eq!(Action::PauseAll.area(), Area::Overview);
         assert_eq!(Action::PauseAll.name(), "Pause all / Resume all agents");
-        assert_eq!(Action::Orphans.name(), "Sessions: find orphaned sessions");
+        assert_eq!(Action::Orphans.name(), "Find sessions");
         assert!(keymap.assign(Action::PauseAll, key("ctrl-p"), false));
         assert_eq!(keymap.key(Action::PauseAll), &key("ctrl-p"));
     }

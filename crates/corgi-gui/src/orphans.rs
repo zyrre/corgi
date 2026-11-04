@@ -22,8 +22,8 @@ use crate::{
 };
 
 impl CorgiWindow {
-    /// The header's button under "Hotkeys", "Sessions": finds orphaned
-    /// sessions, as its key does. Nothing is looked for until it is pressed.
+    /// The header's button under "Hotkeys", "Sessions": opens "Find sessions" (orphaned
+    /// sessions), as its key does. Nothing is looked for until it is pressed.
     pub fn orphans_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         div()
@@ -86,7 +86,7 @@ impl CorgiWindow {
             .flex_col()
             .gap_2()
             .max_h(px(tallest.max(0.0)))
-            .child(div().flex_none().child(self.dialog_title("Orphaned sessions".into())))
+            .child(div().flex_none().child(self.dialog_title("Find sessions".into())))
             .child(note(
                 "Agents Corgi gets wrong, and leftover workspaces. Nothing changes until you apply a choice."
                     .into(),
@@ -99,7 +99,7 @@ impl CorgiWindow {
             .when(!orphans.looking && choices.candidates.is_empty(), |d| {
                 d.child(
                     div().child(
-                        "No orphaned sessions: every agent Herdr lists has its row, role and project.",
+                        "Nothing to find: every agent Herdr lists has its row, role and project.",
                     ),
                 )
             })

@@ -266,7 +266,7 @@ pub struct PauseAll {
     pub progress: Option<String>,
 }
 
-/// The "Orphaned sessions" dialog: looking, then the list with a choice for
+/// The "Find sessions" dialog: looking, then the list with a choice for
 /// each candidate (`corgi_core::orphans::Choices`, as the dashboard's), and
 /// the candidate whose choice is being applied.
 #[derive(Debug, Clone, Default, PartialEq)]

@@ -818,7 +818,7 @@ must not be bound.
   takes no click (`Dialogs::all_running`). A paused row's badge reads
   PAUSED.
 - `orphans.rs` is the header's Sessions button (under Hotkeys) and the
-  "Orphaned sessions" dialog it and the rebindable `o` open: a card per
+  "Find sessions" dialog it and the rebindable `o` open: a card per
   candidate with its evidence, chips for its cause and certainty, and its
   choices as buttons, the chosen one marked; Enter or the Apply button
   sends `orphan_apply` for the selected card. Its state is
