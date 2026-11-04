@@ -817,7 +817,8 @@ impl SupervisorWaker {
     }
 
     /// Advances each supervisor's handover by one refresh, with `percent` as
-    /// the threshold and `cache` giving what is known of each harness's
+    /// the threshold (and its harness's token threshold, if it has one) and
+    /// `cache` giving what is known of each harness's
     /// prompt cache (a harness without an idle time has none to wait for), and
     /// returns what to do about it. `note_since(root, at)` says whether
     /// `root`'s supervisor wrote its note since `at`, and `drafting(supervisor)`
@@ -868,6 +869,7 @@ impl SupervisorWaker {
             };
             let limits = supervisor::Thresholds {
                 percent,
+                tokens: supervisor::handover_tokens(&harness),
                 cache: cache(&harness),
             };
             let handover = self.handovers.entry(root.to_string()).or_default();
@@ -1112,6 +1114,10 @@ impl SupervisorWaker {
                             match trigger {
                                 supervisor::Trigger::Full(percent) => format!(
                                     "{name}'s context is past {percent}% and its prompt cache is about to expire: asked for its handover note"
+                                ),
+                                supervisor::Trigger::Tokens(tokens) => format!(
+                                    "{name}'s context is past {}k tokens and its prompt cache is about to expire: asked for its handover note",
+                                    tokens / 1000
                                 ),
                                 supervisor::Trigger::Idle(minutes) => format!(
                                     "{name} has been idle {minutes} min, its prompt cache about to expire: asked for its handover note"
@@ -2609,6 +2615,46 @@ mod tests {
             sent,
             ["supervisor-weather: [Corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
         );
+    }
+
+    #[test]
+    fn only_a_claude_supervisor_is_handed_over_at_200k_tokens_under_half_its_window() {
+        let scratch = ScratchDir::new("waker");
+        let asked = |kind: &str| {
+            let mut supervisor = project_agent(
+                "supervisor-weather",
+                "/repos/weather",
+                true,
+                AgentState::Idle,
+            );
+            supervisor.info.agent = Some(kind.into());
+            supervisor.info.agent_session = Some(crate::model::AgentSession {
+                value: "s1".into(),
+                ..Default::default()
+            });
+            supervisor.context_percent = Some(20);
+            supervisor.context_tokens = Some(200_000);
+            SupervisorWaker::in_dir(&scratch)
+                .hand_over(
+                    std::slice::from_ref(&supervisor),
+                    50,
+                    |_| supervisor::Cache::Expires(0),
+                    7,
+                    |_, _| false,
+                    |_| false,
+                )
+                .into_iter()
+                .filter_map(|action| action.step)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            asked("claude"),
+            [supervisor::HandoverStep::Ask(
+                7,
+                supervisor::Trigger::Tokens(200_000)
+            )]
+        );
+        assert_eq!(asked("codex"), []);
     }
 
     #[test]
