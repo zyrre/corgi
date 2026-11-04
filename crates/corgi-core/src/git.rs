@@ -37,12 +37,31 @@ pub fn git_current_branch(cwd: &Path) -> Result<String> {
     Ok(branch.to_string())
 }
 
+/// Refuses a checkout with uncommitted or untracked changes, naming the
+/// first few as `git status --short` does, so the user and a supervisor
+/// asked to fix it see which.
 pub fn ensure_git_clean(cwd: &Path, label: &str) -> Result<()> {
+    const NAMED: usize = 5;
     let changes = git_output(cwd, &["status", "--porcelain", "--untracked-files=normal"])?;
-    if !changes.trim().is_empty() {
-        bail!("{label} has uncommitted or untracked changes");
+    let changes: Vec<&str> = changes
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if !changes.is_empty() {
+        let mut named = changes[..changes.len().min(NAMED)].join(", ");
+        if changes.len() > NAMED {
+            named.push_str(&format!(" and {} more", changes.len() - NAMED));
+        }
+        bail!("{label} has uncommitted or untracked changes: {named}");
     }
     Ok(())
+}
+
+/// Whether a checkout has no uncommitted or untracked changes.
+pub fn git_status_clean(cwd: &Path) -> Result<bool> {
+    let changes = git_output(cwd, &["status", "--porcelain", "--untracked-files=normal"])?;
+    Ok(changes.trim().is_empty())
 }
 
 pub fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {

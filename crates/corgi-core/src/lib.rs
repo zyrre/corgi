@@ -7,6 +7,7 @@
 
 pub mod activity;
 pub mod art;
+pub mod backlog;
 pub mod catalog;
 pub mod choices;
 pub mod close;
@@ -27,14 +28,18 @@ pub mod markers;
 pub mod merge;
 pub mod model;
 pub mod notice;
+pub mod orphans;
 pub mod palette;
 pub mod paths;
+pub mod pause;
 pub mod progress;
 pub mod project_main;
 pub mod projects;
 pub mod protocol;
 pub mod recovery;
 pub mod refresh;
+pub mod repo;
+pub mod restart;
 pub mod rows;
 pub mod session;
 pub mod setup;

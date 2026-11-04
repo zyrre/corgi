@@ -60,6 +60,7 @@ mod bar;
 mod cards;
 mod cli;
 mod navigate;
+pub(crate) mod orphans;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub(crate) use cli::digest_summary;
@@ -69,6 +70,7 @@ pub use cli::{
     supervisor_command, tag_command,
 };
 pub use edit::{EDIT_USAGE, edit_command};
+pub use orphans::{ORPHANS_USAGE, orphans_command};
 mod hook;
 pub(crate) use edit::{open_checkout, selection_file, write_selection};
 pub use hook::{HOOK_USAGE, hook_command};
@@ -81,8 +83,10 @@ pub use setup::{SETUP_USAGE, setup};
 // the record of the marks Corgi sets in Herdr, the supervisor waker and the
 // draft check it makes before typing into a supervisor's pane, is in the core.
 mod launch;
+mod pause;
 pub(crate) mod recovery;
 mod refresh;
+mod resume;
 use corgi_core::{markers, notice, progress, project_main, rows, setup, sweep, waker};
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
 use progress::JobReport;
@@ -187,6 +191,12 @@ pub(crate) struct App {
     codex_task_job: Job<Result<HashMap<String, String>, String>>,
     merge_job: Job<Result<String, merge::MergeError>, JobReport>,
     recovery_job: Job<Result<recovery::Event>, String>,
+    /// Starts an exited agent again (`R`).
+    resume_job: Job<Result<String, String>>,
+    /// Pause all or Resume all (`P`).
+    pause_job: Job<Result<String, String>>,
+    /// Looking for orphaned sessions, or applying a choice, for the dialog.
+    orphans_job: Job<Result<orphans::Found>>,
     /// The model catalogs and harness configurations behind the new-agent
     /// form's selectors.
     model_catalogs: ModelCatalogs,
@@ -273,6 +283,9 @@ impl App {
             codex_task_job: Job::default(),
             merge_job: Job::default(),
             recovery_job: Job::default(),
+            resume_job: Job::default(),
+            pause_job: Job::default(),
+            orphans_job: Job::default(),
             model_catalogs: ModelCatalogs::default(),
             inboxes: None,
             status_hold_until: None,
@@ -521,6 +534,8 @@ impl App {
             Overlay::Close(_) => self.handle_close_workspace_key(key),
             Overlay::Merge(_) => self.handle_merge_worktree_key(key),
             Overlay::Sessions(_) => self.handle_sessions_key(key),
+            Overlay::Orphans(_) => self.handle_orphans_key(key),
+            Overlay::Pause(_) => self.handle_pause_key(key),
             Overlay::Notice(_) => {
                 if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
                     self.overlay = Overlay::None;
@@ -558,16 +573,19 @@ impl App {
             KeyCode::Char('d') if self.expanded => self.scroll_transcript(1),
             KeyCode::Home if self.expanded => self.transcript_scroll = 0,
             KeyCode::End if self.expanded => self.transcript_scroll = u16::MAX,
-            KeyCode::Char('p') => self.begin_prompt(),
+            KeyCode::Char('p') if !self.exited_refusal() => self.begin_prompt(),
             KeyCode::Char('n') => self.begin_new_agent(),
             KeyCode::Char('t') => self.begin_scratch_agent(),
             KeyCode::Char('s') => self.begin_supervisor(),
-            KeyCode::Char('f') | KeyCode::Enter => self.focus_selected(),
+            KeyCode::Char('f') | KeyCode::Enter if !self.exited_refusal() => self.focus_selected(),
             KeyCode::Char('e') => self.edit_selected(),
             KeyCode::Char('m') => self.begin_merge_worktree(),
             KeyCode::Char('x') => self.begin_close_workspace(),
             KeyCode::Char('r') => self.request_refresh(),
             KeyCode::Char('S') => self.begin_sessions(),
+            KeyCode::Char('R') => self.resume_selected(),
+            KeyCode::Char('o') => self.begin_orphans(),
+            KeyCode::Char('P') => self.pause_or_resume_all(),
             _ => {}
         }
         false
@@ -637,10 +655,13 @@ impl App {
         self.show_pending_notice();
         self.poll_launch();
         self.poll_recovery();
+        self.poll_orphans();
         self.poll_plan_usage();
         self.poll_codex_task_titles();
         self.poll_model_catalogs();
         self.poll_merge();
+        self.poll_resume();
+        self.poll_pause();
         self.close_started_launch();
         self.share_selection();
         self.refresh_plan_usage();
@@ -1566,7 +1587,7 @@ mod tests {
         poll_until(&mut app, App::poll_merge, |app| !app.merge_job.is_running());
         assert!(matches!(
             app.overlay.merge_worktree_form().map(|form| &form.phase),
-            Some(MergePhase::Failed(_))
+            Some(MergePhase::Failed { .. })
         ));
     }
 }

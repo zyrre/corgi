@@ -1,5 +1,7 @@
-//! Which keys the focus view keeps for itself. Everything else goes to the
-//! pane, where Herdr encodes it for the program's keyboard mode.
+//! Which fixed keys the focus view keeps for itself, beside the two the
+//! user can move (`keymap.rs`: back to the overview, the side panel).
+//! Everything else goes to the pane, where Herdr encodes it for the
+//! program's keyboard mode.
 //!
 //! The view's own keys are chords no terminal program reads: on macOS the
 //! Command key, which never reaches a pane, and elsewhere Ctrl+Shift, the
@@ -11,10 +13,6 @@ use gpui::Keystroke;
 /// A key the focus view handles itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Chord {
-    /// Back to the overview: Cmd+Esc on macOS, Ctrl+Shift+Esc elsewhere.
-    Leave,
-    /// Show or hide the side panel: Cmd+\ or Ctrl+Shift+\.
-    ToggleSide,
     /// Copy the selection: Cmd+C or Ctrl+Shift+C.
     Copy,
     /// Paste the clipboard: Cmd+V, Ctrl+Shift+V or Shift+Insert.
@@ -36,8 +34,6 @@ pub fn chord(keystroke: &Keystroke, mac: bool) -> Option<Chord> {
     };
     if ours {
         let chord = match key {
-            "escape" => Chord::Leave,
-            "\\" | "|" => Chord::ToggleSide,
             "c" | "C" if !mac || !m.shift => Chord::Copy,
             "v" | "V" if !mac || !m.shift => Chord::Paste,
             _ => return None,
@@ -53,16 +49,6 @@ pub fn chord(keystroke: &Keystroke, mac: bool) -> Option<Chord> {
     }
 }
 
-/// How the leave chord reads on this platform, for the button that says it.
-pub fn leave_label(mac: bool) -> &'static str {
-    if mac { "⌘⎋" } else { "Ctrl+Shift+Esc" }
-}
-
-/// How the side panel's chord reads.
-pub fn side_label(mac: bool) -> &'static str {
-    if mac { "⌘\\" } else { "Ctrl+Shift+\\" }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,10 +59,6 @@ mod tests {
 
     #[test]
     fn the_views_chords_use_command_on_macos_and_ctrl_shift_elsewhere() {
-        assert_eq!(chord(&key("cmd-escape"), true), Some(Chord::Leave));
-        assert_eq!(chord(&key("ctrl-shift-escape"), false), Some(Chord::Leave));
-        assert_eq!(chord(&key("cmd-\\"), true), Some(Chord::ToggleSide));
-        assert_eq!(chord(&key("ctrl-shift-\\"), false), Some(Chord::ToggleSide));
         assert_eq!(chord(&key("cmd-c"), true), Some(Chord::Copy));
         assert_eq!(chord(&key("ctrl-shift-c"), false), Some(Chord::Copy));
         assert_eq!(chord(&key("cmd-v"), true), Some(Chord::Paste));

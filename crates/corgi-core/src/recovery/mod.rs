@@ -1,6 +1,5 @@
 //! Confirmed native conversation recovery. No function in this module sends a prompt.
 pub mod native;
-pub mod setup;
 pub mod store;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -106,6 +105,10 @@ pub struct Snapshot {
     pub uid: u32,
     pub host: String,
     pub boot: String,
+    /// Whether the retired Manual recovery setup had turned Herdr's
+    /// auto-resume off at Save. Always false since automatic restarts
+    /// shipped; kept so older and newer Corgi read each other's saves.
+    #[serde(default)]
     pub manual_prepared: bool,
     pub entries: Vec<Entry>,
 }
@@ -484,7 +487,7 @@ pub fn capture(client: &HerdrClient, displayed: &[DashboardAgent]) -> Result<Sna
         uid: unsafe { libc::geteuid() },
         host: store::host()?,
         boot: store::boot()?,
-        manual_prepared: setup::prepared(client),
+        manual_prepared: false,
         entries,
     })
 }
@@ -570,21 +573,19 @@ pub struct Row {
     pub differences: Vec<String>,
 }
 
-pub fn plan(client: &HerdrClient, saved: &Snapshot, manual: bool) -> Result<Vec<Row>> {
-    plan_in(client, saved, &Runtime::read(manual)?)
+pub fn plan(client: &HerdrClient, saved: &Snapshot) -> Result<Vec<Row>> {
+    plan_in(client, saved, &Runtime::read()?)
 }
 
 pub struct Runtime {
     pub boot: String,
-    pub manual: bool,
     pub stores: BTreeMap<String, PathBuf>,
     pub clis: BTreeSet<String>,
 }
 impl Runtime {
-    fn read(manual: bool) -> Result<Self> {
+    fn read() -> Result<Self> {
         Ok(Self {
             boot: store::boot()?,
-            manual,
             stores: ["codex", "claude"]
                 .into_iter()
                 .filter_map(|k| native::store_root(k).ok().map(|p| (k.into(), p)))
@@ -665,7 +666,7 @@ fn plan_entry(
     ensure!(matches.len() < 2, "duplicate live conversation identities");
     if let Some(agent) = matches.first() {
         if journal.attempts.get(&entry.key()).is_some_and(|a| {
-            a.boot == runtime.boot
+            store::same_boot(&a.boot, &runtime.boot)
                 && a.pane == agent.pane_id
                 && matches!(a.phase.as_str(), "start_pending" | "metadata_pending")
         }) && agent.interactive_ready
@@ -692,13 +693,9 @@ fn plan_entry(
             differences: Vec::new(),
         });
     }
-    ensure!(
-        runtime.manual,
-        "Herdr automatic resume enabled/unknown; confirm manual-recovery setup first"
-    );
     if let Some(attempt) = journal.attempts.get(&entry.key()) {
         ensure!(
-            attempt.boot != runtime.boot || attempt.phase == "placement_ready",
+            !store::same_boot(&attempt.boot, &runtime.boot) || attempt.phase == "placement_ready",
             "previous launch outcome unresolved in {}; inspect it, do not retry",
             attempt.pane
         );
@@ -775,7 +772,7 @@ fn plan_entry(
     let retry = journal
         .attempts
         .get(&entry.key())
-        .filter(|a| a.boot == runtime.boot && a.phase == "placement_ready");
+        .filter(|a| store::same_boot(&a.boot, &runtime.boot) && a.phase == "placement_ready");
     let (expected_ws, expected_tab, expected_pane) = retry
         .map(|a| (&a.workspace, &a.tab, &a.pane))
         .unwrap_or((&entry.workspace, &entry.tab, &entry.pane));
@@ -839,7 +836,7 @@ fn plan_entry(
 /// Herdr owns launch readiness. A restored shell is usable when its shell PID
 /// owns the foreground group, all foreground processes are that shell, and cwd
 /// matches. No terminal text, command history or draft is copied or injected.
-fn available_shell(client: &HerdrClient, pane: &str, cwd: &Path) -> Result<bool> {
+pub(crate) fn available_shell(client: &HerdrClient, pane: &str, cwd: &Path) -> Result<bool> {
     let reply = client.request("pane.process_info", json!({"pane_id":pane}))?;
     let info = &reply["process_info"];
     let Some(shell) = info["shell_pid"].as_u64() else {
@@ -884,7 +881,7 @@ pub fn held_projects(client: &HerdrClient, agents: &[DashboardAgent]) -> Result<
             s.scope == scope
                 && s.host == host
                 && s.uid == unsafe { libc::geteuid() }
-                && s.boot != boot
+                && !store::same_boot(&s.boot, &boot)
                 && s.entries.iter().any(|e| {
                     e.role == "supervisor"
                         && e.kind == agent.info.kind()
@@ -913,7 +910,10 @@ pub fn continue_coordination(client: &HerdrClient, projects: &BTreeSet<String>) 
     let host = store::host()?;
     let boot = store::boot()?;
     for saved in store.snapshots()?.into_iter().filter(|s| {
-        s.scope == scope && s.host == host && s.uid == unsafe { libc::geteuid() } && s.boot != boot
+        s.scope == scope
+            && s.host == host
+            && s.uid == unsafe { libc::geteuid() }
+            && !store::same_boot(&s.boot, &boot)
     }) {
         journal.released.entry(saved.id).or_default().extend(
             saved
@@ -930,18 +930,10 @@ pub fn restore(
     client: &HerdrClient,
     saved: &Snapshot,
     chosen: &[(usize, Target, Vec<String>)],
-    manual: bool,
     stop: &AtomicBool,
     mut report: impl FnMut(String),
 ) -> Result<()> {
-    restore_in(
-        client,
-        saved,
-        chosen,
-        &Runtime::read(manual)?,
-        stop,
-        &mut report,
-    )
+    restore_in(client, saved, chosen, &Runtime::read()?, stop, &mut report)
 }
 
 fn restore_in(
@@ -1251,7 +1243,7 @@ pub fn begin_delivery(store: &Store, scope: &str, project: &str, ids: &[String])
             s.scope == scope
                 && s.host == host
                 && s.uid == unsafe { libc::geteuid() }
-                && s.boot != boot
+                && !store::same_boot(&s.boot, &boot)
         })
         .collect();
     ensure!(

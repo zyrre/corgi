@@ -2,3 +2,6 @@
 # Redraws the README screenshots and animation in docs/images/ from the
 # dashboard's own UI code and made-up agents; see src/readme_shots.rs.
 readme-shots = "test --lib readme_shots::tests::readme_shots -- --ignored --exact"
+# Draws Corgi's macOS app icon in assets/icon/ from the corgi's pixel grid;
+# needs macOS for iconutil. See src/app_icon.rs.
+app-icon = "test --lib app_icon::tests::app_icon -- --ignored --exact"

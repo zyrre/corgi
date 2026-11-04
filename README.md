@@ -72,6 +72,9 @@ flowchart TD
 | `f` or `Enter` | Focus the selected agent's pane |
 | `e` | Open the selected agent's checkout in your editor, in a new tab of its workspace |
 | `x` | Close the selected agent, and delete its worktree checkout (asks first) |
+| `o` | Find orphaned sessions: agents Corgi does not show, or shows without their role or under the wrong project, and leftover workspaces, each with its evidence and a choice to apply |
+| `R` | Resume the selected agent that exited to its shell |
+| `P` | Pause all: stop every agent in every project to its shell (asks first, naming those working); while agents are paused, `P` resumes them all |
 | `r` | Refresh now |
 | `Esc`, `q` | Collapse the transcript, or close Corgi; `q` always closes |
 
@@ -111,18 +114,21 @@ In an expanded card, a project without a supervisor, and the scratch sessions, e
 
 `n` opens the new-agent form with everything but the task preset: the selected agent's project, the default harness with its own model and effort, and a fresh worktree. Type the task and press `Enter`; `←` / `→` change a setting in place, and `Space` or typing opens its list. In a project with no agents yet, the first one is its supervisor. Each worker gets its own Git worktree on a fresh `worktree/<name>` branch; switch the Checkout row to work in the project directory as it is instead.
 
+### Restarts and Resume
+
+After a Herdr restart, a live handoff or a reboot, Corgi's agents come back by themselves with the options they were launched with: a supervisor with its role and access to its memory, a worker with its model, effort and extra arguments. Corgi gives Herdr each agent's resume command and keeps it on the agent's current session (after `/clear` too); Herdr 0.9.2 or later runs it, and older versions ignore it. An agent that exits or is killed while Herdr keeps running drops to its shell; its row then reads `EXITED`, and `R` (the window's Resume button, `⇧R`) starts it again in the same pane with its session and options. Corgi never restarts one on its own. An agent running without the options Corgi launched it with, as one an older Herdr resumed, shows `⚠ no role` or `⚠ no launch options`: exit it, then press `R`.
+
+Before you leave the network, or whenever every agent should stop, Pause all (`P`, or the window's Pause all button) stops every Claude and Codex agent Corgi shows, supervisors and workers in all projects, through its own `/exit` or `/quit`, so each conversation is saved. It asks first, saying how many stop in each project and which are working right now: those are interrupted with Esc and lose their current turn. Their rows read `PAUSED`; stopping them wakes no supervisor and starts no handover, and a Herdr restart in the meantime does not bring them back. Resume all (the same key and button) starts each one again in its own pane with its session and launch options. Agents that exited some other way are left to `R`. Nothing is ever killed: an agent that does not stop, or has your unsent text in its input box, keeps running and is named.
+
 ### Save and restore sessions
 
-Press `S` before reboot to save supervisors, workers and scratch sessions. Save
-records private recovery references while agents keep running; it lists missing
-IDs, unsupported harnesses and interrupted work. Prepare **Manual recovery
-setup** once before reboot: its explicit confirmation disables Herdr's automatic
-agent resume while retaining layout restoration. Save reports when this setup
-is still needed.
+Press `S` to save supervisors, workers and scratch sessions, to restore them by
+hand later. Save records private recovery references while agents keep running;
+it lists missing IDs, unsupported harnesses and interrupted work.
 
-![Sessions menu with Save, Restore, manual setup and held coordination actions](docs/images/session-recovery.svg)
+![Sessions menu with Save, Restore and held coordination actions](docs/images/session-recovery.svg)
 
-After reboot, choose **Restore sessions**, browse a dated snapshot and select
+To restore, choose **Restore sessions**, browse a dated snapshot and select
 Codex or Claude Code conversations individually. Nothing is selected initially;
 launching requires a separate confirmation with Cancel focused. Corgi resumes
 inside the original Herdr-restored terminals, reuses matching running agents,
@@ -138,11 +144,11 @@ for limits, retry behavior and the Claude documentation/fixture verification.
 
 ### Merging
 
-`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout, and offers to close the worktree. When the base branch has an upstream, it is fetched first: if it has commits the base lacks (pushed from another machine, say), the popup lists them and Enter pulls them into the base (a fast-forward when it can be, else a merge; a pull that conflicts is aborted for you to pull by hand) before merging, while Esc stops. A fetch that fails is shown, and Enter merges anyway. If the push still fails, the branch is merged all the same: the popup shows Git's error, and with a supervisor running, `s` asks it what the error means and what to run. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand.
+`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout, and offers to close the worktree. When the base branch has an upstream, it is fetched first: if it has commits the base lacks (pushed from another machine, say), the popup lists them and Enter pulls them into the base (a fast-forward when it can be, else a merge; a pull that conflicts is aborted for you to pull by hand) before merging, while Esc stops. A fetch that fails is shown, and Enter merges anyway. If the push still fails, the branch is merged all the same: the popup shows Git's error, and with a supervisor running, `s` asks it what the error means and what to run. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand. Any other error, a failed fetch included, and a merge Git refuses before it starts (an uncommitted change in either checkout, both on one branch) shows its reason in the popup, and `s` asks the supervisor to fix it and report back; without a running supervisor the popup says why it cannot ask one. The desktop window offers the same as an "Ask supervisor to fix" button, also on `s` (rebindable under Hotkeys).
 
 ## Desktop window (preview)
 
-`corgi-gui` is a native window, on macOS and on Linux (Wayland), that shows what the dashboard shows: project cards and agent rows, the plan-usage header, the selected agent's session under the overview, and a side panel with the project's supervisor, the workers its supervisor tagged ready to merge, its numbered questions, each opening in full, as the supervisor asked it (its Markdown rendered), to be answered there, and the open merge requests (GitLab) or pull requests (GitHub) from the project's worktree and ledger branches, as `glab` or `gh` lists them, each opening in the browser. It prompts agents, answers questions, starts agents and supervisors, tags, merges and closes, keyboard first: `j`/`k` select, `↵` shows or hides the session, `\` the side panel, `p` prompt, `n` new agent, `s` supervisor, `m` merge, `t` tag, `x` close, `1`–`9` answer a question. Drag the edges between the panes to resize them; the window keeps its sizes. It follows the system's light or dark scheme, or the Omarchy theme when there is one; the sun/moon button at the header's right end switches between light and dark until the window closes. The A− and A+ buttons beside it make all of the window's text, its terminal's included, a point smaller or larger, and the window keeps the size. It has no terminals yet.
+`corgi-gui` is a native window, on macOS and on Linux (Wayland), that shows what the dashboard shows: project cards and agent rows, the plan-usage header, and a side panel with the project's numbered questions, each opening in full, as the supervisor asked it (its Markdown rendered), to be answered there, the open merge requests (GitLab) or pull requests (GitHub) from the project's worktree and ledger branches, as `glab` or `gh` lists them, each opening in the browser, and the supervisor's backlog of things to build later (its `backlog.md`), each entry opening in full with a field to write the supervisor about it. It prompts agents, answers questions, starts agents and supervisors, tags, merges and closes, keyboard first, with these keys by default: `j`/`k` select, `Space` expands the selected row, `↵` opens its terminal, `\` the side panel, `p` prompt, `n` new agent, `s` supervisor, `m` merge, `t` tag, `x` close, `1`–`9` answer a question. As in the dashboard, `Space` grows the selected row in place into its session's latest turns, down to the window's bottom (the newest in full, older ones two lines each); `Space` again or `Esc` collapses it, `j`/`k` take the expansion to the next row, and `u`/`d`, `PgUp`/`PgDn` and `Home`/`End` scroll it. The Hotkeys button under the header's right-end buttons lists every key and changes them: click a key, press the new one (a key another action has is swapped only when you confirm); the window keeps them, and its buttons and hints always show the keys as they are. Select its text with the mouse (drag, double click for a word, triple click for a whole turn) and copy it with `⌘C` (`Ctrl+Shift+C` on Linux); a folded turn the selection covers is copied whole. Drag the edge of the side panel to resize it; the window keeps its sizes. It follows the system's light or dark scheme, or the Omarchy theme when there is one; the sun/moon button at the header's right end switches between light and dark until the window closes. The A− and A+ buttons beside it make all of the window's text, its terminal's included, a point smaller or larger, and the window keeps the size. The Sessions button under Hotkeys (or `o`) opens "Find sessions", which finds orphaned sessions, as the dashboard's `o` does, and the Pause all button under it (or `⇧P`) pauses every agent, then reads Resume all until they are back. It has no terminals yet.
 
 It runs `corgi serve` (the [protocol](docs/serve-protocol.md)) on this machine, or on another one over SSH, and reconnects by itself, showing the last state dimmed meanwhile:
 
@@ -159,7 +165,7 @@ cargo build --release && cargo build --release -p corgi-gui
 ./target/release/corgi-gui
 ```
 
-On Linux the window's Wayland app id, which compositor rules match, is `corgi-gui`. It uses CaskaydiaMono Nerd Font where installed, else the first of a few common monospace fonts, and Menlo on macOS; `CORGI_GUI_FONT` names another. `CORGI_GUI_APPEARANCE=light` or `dark` overrides the system's scheme.
+On macOS the window has no title bar: the header is its top edge, and dragging the header moves it. Cmd+W closes it, Cmd+M minimizes it and Ctrl+Cmd+F switches full screen, which its title bar's buttons did; Cmd+Q quits. On Linux the window's Wayland app id, which compositor rules match, is `corgi-gui`. It uses CaskaydiaMono Nerd Font where installed, else the first of a few common monospace fonts, and Menlo on macOS; `CORGI_GUI_FONT` names another. `CORGI_GUI_APPEARANCE=light` or `dark` overrides the system's scheme.
 
 ## Install
 

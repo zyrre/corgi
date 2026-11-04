@@ -306,6 +306,7 @@ fn bar_action_with(
                     CloseTarget::Worktree { force: false, .. } => "Remove worktree",
                     CloseTarget::Tab { .. } => "Close tab",
                     CloseTarget::Workspace => "Close workspace",
+                    CloseTarget::Pane => "Close pane",
                 });
             }
             Overlay::Merge(form) => {
@@ -313,10 +314,11 @@ fn bar_action_with(
                 let (phase, confirm) = match form.phase {
                     MergePhase::Confirm => ("confirm", "Merge + push"),
                     MergePhase::Behind(_) => ("confirm", "Pull, merge + push"),
-                    MergePhase::FetchFailed(_) => ("confirm", "Merge + push anyway"),
+                    MergePhase::FetchFailed { .. } => ("confirm", "Merge + push anyway"),
                     MergePhase::Running(_) => ("running", ""),
                     MergePhase::Succeeded => ("succeeded", ""),
-                    MergePhase::Failed(_)
+                    MergePhase::Failed { .. }
+                    | MergePhase::Refused { .. }
                     | MergePhase::Conflicted { .. }
                     | MergePhase::PushFailed { .. } => ("failed", ""),
                 };
@@ -346,7 +348,9 @@ fn bar_action_with(
                     Overlay::Close(_) => true,
                     Overlay::Merge(form) => matches!(
                         form.phase,
-                        MergePhase::Confirm | MergePhase::Behind(_) | MergePhase::FetchFailed(_)
+                        MergePhase::Confirm
+                            | MergePhase::Behind(_)
+                            | MergePhase::FetchFailed { .. }
                     ),
                     _ => false,
                 };

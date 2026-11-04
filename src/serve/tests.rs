@@ -26,8 +26,8 @@ use corgi_core::{
     inbox::{Inbox, Kind},
     projects::ProjectMemory,
     protocol::{
-        Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply, ReplyResult,
-        ServerMessage, State, ThemeColors,
+        BacklogEntry, Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply,
+        ReplyResult, ServerMessage, State, ThemeColors,
     },
     test_support::{ScratchDir, fake_herdr},
     waker::SupervisorWaker,
@@ -587,6 +587,110 @@ fn an_open_questions_file_is_its_text_and_others_are_ignored() {
 }
 
 #[test]
+fn the_supervisors_backlog_is_sent_with_its_project_and_follows_the_file() {
+    let scratch = ScratchDir::new("serve-backlog");
+    let (repo, worktree) = repository(&scratch);
+    let dir = scratch.join("state").join("weather");
+    fs::create_dir_all(&dir).unwrap();
+    let herdr = FakeHerdr::start("serve-backlog", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    // No file: no backlog, and none on the wire.
+    assert!(state.projects[0].backlog.is_empty());
+    let project = serde_json::to_value(&state.projects[0]).unwrap();
+    assert!(project.get("backlog").is_none(), "{project}");
+
+    fs::write(
+        dir.join("backlog.md"),
+        "# Backlog: things to build later\nRaised by the user.\n\n\
+         ## 1. \"Stop all agents\" button\nFor when the user *leaves*.\n\n\
+         ## Merge wake after a handover (parked)\nSeen once.\n",
+    )
+    .unwrap();
+    let changes = session.refresh().expect("a delta");
+    let project = changes
+        .iter()
+        .find_map(|change| match change {
+            Change::Project(project) => Some(project),
+            _ => None,
+        })
+        .expect("the project's card");
+    assert_eq!(
+        project.backlog,
+        [
+            BacklogEntry {
+                heading: "1. \"Stop all agents\" button".into(),
+                text: "For when the user *leaves*.".into(),
+            },
+            BacklogEntry {
+                heading: "Merge wake after a handover (parked)".into(),
+                text: "Seen once.".into(),
+            },
+        ]
+    );
+    session.close();
+}
+
+#[test]
+fn a_backlog_message_queues_one_line_per_message_for_the_supervisor() {
+    let scratch = ScratchDir::new("serve-backlog-message");
+    let (repo, worktree) = repository(&scratch);
+    let herdr = FakeHerdr::start("serve-blmsg", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+    let root = repo.to_str().unwrap();
+    let pending = || {
+        let inbox = Inbox::read(&scratch.join("state").join("weather"));
+        let items = inbox.undelivered_for(root);
+        assert!(items.iter().all(|item| item.kind == Kind::Note));
+        corgi_core::inbox::prompt_text(&items)
+    };
+    let send = |text: &str| {
+        json!({"command": "backlog_message", "project_root": root,
+               "heading": "1. Stop all agents", "text": text})
+    };
+
+    let error = session.refused(send("  \n ")).error.unwrap();
+    assert_eq!(error, "The message cannot be empty");
+    assert_eq!(pending(), "");
+
+    // Through the inbox, which the waker types in between turns.
+    let (result, _) = session.ok(send(" Do this one next. "));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Sent to supervisor-weather".into()
+        }
+    );
+    assert!(herdr.calls("agent.prompt").is_empty());
+    let first =
+        "[Corgi] The user wrote about backlog entry \"1. Stop all agents\": Do this one next.";
+    assert_eq!(pending(), first);
+
+    // Without a supervisor it waits for the next one, and a second message
+    // about the same entry does not replace the first.
+    let mut alone = herd(&repo, &worktree, "idle");
+    alone["agents"].as_array_mut().unwrap().remove(0);
+    herdr.set_snapshot(alone);
+    session.refresh();
+    let (result, _) = session.ok(send("And keep it small."));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Sent; the supervisor reads it when it starts".into()
+        }
+    );
+    assert_eq!(
+        pending(),
+        format!(
+            "{first}\n[Corgi] The user wrote about backlog entry \"1. Stop all agents\": And keep it small."
+        )
+    );
+    assert!(herdr.calls("agent.prompt").is_empty());
+    session.close();
+}
+
+#[test]
 fn a_question_file_is_read_up_to_its_cap_and_only_when_plain() {
     use super::state::{QUESTION_TEXT_BYTES, question_text};
     let scratch = ScratchDir::new("serve-question-cap");
@@ -1019,6 +1123,112 @@ fn a_conflicted_merge_is_handed_to_the_supervisor() {
 }
 
 #[test]
+fn a_merge_refused_before_it_starts_names_why_and_is_handed_to_the_supervisor() {
+    let scratch = ScratchDir::new("serve-refused");
+    let (repo, worktree) = repository(&scratch);
+    fs::write(repo.join("AGENTS.md"), "a note\n").unwrap();
+    let herdr = FakeHerdr::start("serve-refused", herd(&repo, &worktree, "done"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+
+    let (result, _) = session.ok(json!({"command": "merge_check", "pane_id": "w2:p1"}));
+    let ReplyResult::MergeForm(form) = result else {
+        panic!("{result:?}")
+    };
+    let error = "primary checkout has uncommitted or untracked changes: ?? AGENTS.md";
+    assert_eq!(form.refused.as_deref(), Some(error));
+    assert_eq!(form.supervisor.as_deref(), Some("supervisor-weather"));
+    assert_eq!(
+        (form.source_branch.as_str(), form.target_branch.as_str()),
+        ("worktree/fix", "main")
+    );
+    // It cannot be run.
+    let refused = session
+        .refused(json!({"command": "merge", "pane_id": "w2:p1"}))
+        .error
+        .unwrap();
+    assert_eq!(refused, format!("Merge unavailable: {error}"));
+
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1"}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Asked supervisor-weather to fix the merge of w-fix".into()
+        }
+    );
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    let items = inbox.undelivered();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind, Kind::Conflict);
+    assert!(
+        items[0].text.starts_with("[Corgi] Merging w-fix"),
+        "{}",
+        items[0].text
+    );
+    assert!(
+        items[0].text.contains(&format!(
+            "into main in {} failed: {error}. The user asks you to fix it and report back.",
+            repo.display()
+        )),
+        "{}",
+        items[0].text
+    );
+    session.close();
+}
+
+#[test]
+fn a_failed_fetch_and_an_error_only_the_window_saw_are_handed_to_the_supervisor() {
+    let scratch = ScratchDir::new("serve-fetch-handoff");
+    let (repo, worktree) = repository(&scratch);
+    git(
+        &repo,
+        &["remote", "set-url", "origin", "/nonexistent/corgi-remote"],
+    );
+    let herdr = FakeHerdr::start("serve-fetch-handoff", herd(&repo, &worktree, "done"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+
+    session.ok(json!({"command": "merge_check", "pane_id": "w2:p1"}));
+    let (result, _) = session.ok(json!({"command": "merge", "pane_id": "w2:p1"}));
+    let ReplyResult::MergeOutcome(MergeOutcome::FetchFailed { error, supervisor }) = result else {
+        panic!("{result:?}")
+    };
+    assert!(error.contains("git fetch origin"), "{error}");
+    assert_eq!(supervisor.as_deref(), Some("supervisor-weather"));
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1"}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Asked supervisor-weather to fix the merge of w-fix".into()
+        }
+    );
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    assert!(
+        inbox.undelivered()[0]
+            .text
+            .contains("failed: could not fetch origin/main: git fetch origin"),
+        "{:?}",
+        inbox.undelivered()
+    );
+
+    // No merge is kept now; the window still hands over the error it shows.
+    let lost = "The connection to corgi serve was lost before it replied.";
+    let (result, _) = session.ok(json!({"command": "merge_handoff", "pane_id": "w2:p1",
+                                        "error": lost}));
+    assert!(matches!(result, ReplyResult::Done { .. }), "{result:?}");
+    let inbox = Inbox::read(&scratch.join("state").join("weather"));
+    let items = inbox.undelivered();
+    // The newer line for the same agent stands in for the older one.
+    assert!(
+        items
+            .iter()
+            .any(|item| item.text.contains(&format!("failed: {lost} The user asks"))),
+        "{items:?}"
+    );
+    session.close();
+}
+
+#[test]
 fn close_tag_focus_edit_and_digest_drive_their_flows() {
     let scratch = ScratchDir::new("serve-actions");
     let (repo, worktree) = repository(&scratch);
@@ -1303,4 +1513,207 @@ fn a_forge_is_asked_only_for_a_forge_remote_with_branches_to_match() {
     let found = forge::open_merge_requests(&cli, &inboxes, lone.to_str().unwrap()).unwrap();
     assert!(found.is_empty());
     assert_eq!(calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn an_exited_agent_has_a_row_that_takes_resume_and_refuses_prompts() {
+    let scratch = ScratchDir::new("serve-resume");
+    let (repo, worktree) = repository(&scratch);
+    let mut snapshot = herd(&repo, &worktree, "idle");
+    snapshot["panes"] = json!([
+        {"pane_id": "w2:p2", "workspace_id": "w2", "tab_id": "w2:t2", "cwd": worktree},
+    ]);
+    let session_id = "11111111-2222-4333-8444-555555555555";
+    let record = corgi_core::restart::Record {
+        panes: std::collections::BTreeMap::from([(
+            "w2:p2".to_string(),
+            corgi_core::restart::Launched {
+                kind: "codex".into(),
+                name: "w-old".into(),
+                cwd: worktree.clone(),
+                options: vec!["--model".into(), "gpt-6-sol".into()],
+                session: Some(session_id.into()),
+                ..Default::default()
+            },
+        )]),
+    };
+    fs::write(
+        scratch.join("markers.launches.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let herdr = FakeHerdr::start("serve-resume", snapshot);
+    let mut session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    let exited = state
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == "w2:p2")
+        .expect("a row for the exited agent");
+    assert!(exited.exited);
+    assert!(!exited.can_prompt);
+    assert_eq!(exited.name, "w-old");
+    assert_eq!(exited.model.as_deref(), Some("gpt-6-sol"));
+    assert_eq!(exited.project_group, state.agents[0].project_group);
+    let running = state.agents.iter().find(|a| a.pane_id == "w2:p1").unwrap();
+    assert!(!running.exited && running.warning.is_none());
+
+    let reply = session.refused(json!({"command": "prompt", "pane_id": "w2:p2", "text": "hi"}));
+    assert!(
+        reply
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("exited to its shell"),
+        "{reply:?}"
+    );
+    session.refused(json!({"command": "focus", "pane_id": "w2:p2"}));
+    let reply = session.refused(json!({"command": "resume", "pane_id": "w2:p1"}));
+    assert!(
+        reply
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("nothing to resume"),
+        "{reply:?}"
+    );
+    // The fake Herdr knows no `pane.process_info`, so the shell cannot be
+    // checked and nothing starts.
+    session.refused(json!({"command": "resume", "pane_id": "w2:p2"}));
+    assert!(herdr.calls("agent.start").is_empty());
+    assert_eq!(herdr.calls("pane.process_info").len(), 1);
+    session.close();
+}
+
+#[test]
+fn pause_check_names_what_pause_all_stops_and_a_paused_row_says_so() {
+    let scratch = ScratchDir::new("serve-pause");
+    let (repo, worktree) = repository(&scratch);
+    let mut snapshot = herd(&repo, &worktree, "working");
+    snapshot["panes"] = json!([
+        {"pane_id": "w2:p2", "workspace_id": "w2", "tab_id": "w2:t2", "cwd": worktree},
+    ]);
+    // Native ids, which Resume needs.
+    for (index, agent) in snapshot["agents"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        agent["agent_session"]["value"] =
+            json!(format!("{index}1111111-2222-4333-8444-555555555555"));
+    }
+    let launched = |paused: bool| corgi_core::restart::Launched {
+        kind: "claude".into(),
+        name: "w-old".into(),
+        cwd: worktree.clone(),
+        session: Some("11111111-2222-4333-8444-555555555555".into()),
+        paused: paused.then(|| corgi_core::restart::Paused {
+            at: 1,
+            project_root: repo.to_string_lossy().into_owned(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let record = corgi_core::restart::Record {
+        panes: std::collections::BTreeMap::from([("w2:p2".to_string(), launched(true))]),
+    };
+    fs::write(
+        scratch.join("markers.launches.json"),
+        serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let herdr = FakeHerdr::start("serve-pause", snapshot);
+    let mut session = Session::start(&herdr, &scratch);
+    let state = opening(&session);
+    let row = |pane: &str| state.agents.iter().find(|a| a.pane_id == pane).unwrap();
+    assert!(row("w2:p2").exited && row("w2:p2").paused);
+    assert!(!row("w2:p1").paused);
+
+    let (result, _) = session.ok(json!({"command": "pause_check"}));
+    let ReplyResult::PauseForm(form) = result else {
+        panic!("not a pause form: {result:?}")
+    };
+    assert_eq!((form.agents, form.working), (3, 1));
+    assert_eq!(form.projects.len(), 2);
+    assert_eq!(
+        (form.projects[0].supervisors, form.projects[0].workers),
+        (1, 1)
+    );
+    assert_eq!(form.projects[0].working, ["w-fix"]);
+    assert_eq!(form.projects[1].project, "Scratch");
+    // Checking changes nothing.
+    assert!(herdr.calls("agent.prompt").is_empty());
+
+    // The fake Herdr knows no `pane.process_info`, so the shell cannot be
+    // checked: the paused agent is named and nothing starts.
+    let (result, _) = session.ok(json!({"command": "resume_all"}));
+    let ReplyResult::Done { message } = result else {
+        panic!("not done: {result:?}")
+    };
+    assert!(
+        message.starts_with("Resumed 0 agents; not 1 agent: w-old"),
+        "{message}"
+    );
+    assert!(herdr.calls("agent.start").is_empty());
+    session.close();
+}
+
+#[test]
+fn orphans_are_found_on_asking_and_a_choice_is_applied_after_a_fresh_look() {
+    let scratch = ScratchDir::new("serve-orphans");
+    let root = scratch.join("webshop");
+    fs::create_dir_all(&root).unwrap();
+    let root = root.to_string_lossy().into_owned();
+    let main = |id: &str| {
+        json!({"workspace_id": id, "label": "webshop supervisor", "tokens": {
+            "corgi_workspace_role": "project-main",
+            "corgi_project_main_tab": format!("{id}:t1"),
+            "corgi_project_root": root,
+        }})
+    };
+    let herdr = FakeHerdr::start(
+        "serve-orphans",
+        json!({
+            "workspaces": [main("w4"), main("w9")],
+            "agents": [{"pane_id": "w4:p1", "workspace_id": "w4", "tab_id": "w4:t1",
+                        "agent": "claude", "name": "webshop-supervisor", "cwd": root,
+                        "agent_status": "idle", "tokens": {"corgi_handler": "session:s1"},
+                        "agent_session": {"value": "s1"}}],
+            "tabs": [{"tab_id": "w4:t1", "workspace_id": "w4"},
+                     {"tab_id": "w9:t1", "workspace_id": "w9"}],
+            "panes": [{"pane_id": "w4:p1", "workspace_id": "w4", "tab_id": "w4:t1"},
+                      {"pane_id": "w9:p1", "workspace_id": "w9", "tab_id": "w9:t1"}],
+        }),
+    );
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+    // Nothing is looked for until asked.
+    assert!(herdr.calls("pane.process_info").is_empty());
+
+    let (result, _) = session.ok(json!({"command": "orphans"}));
+    let ReplyResult::Orphans { candidates } = result else {
+        panic!("{result:?}")
+    };
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    let duplicate = &candidates[0];
+    assert_eq!(duplicate.key, "workspace:w9");
+    let close = duplicate.actions[duplicate.suggested].clone();
+
+    // A stale fingerprint is refused, and nothing closes.
+    let refused = session.refused(json!({"command": "orphan_apply", "key": duplicate.key,
+        "fingerprint": "duplicate w1", "action": close}));
+    assert!(refused.error.unwrap().contains("changed since"));
+    assert!(herdr.calls("workspace.close").is_empty());
+
+    let (result, _) = session.ok(json!({"command": "orphan_apply", "key": duplicate.key,
+        "fingerprint": duplicate.fingerprint, "action": close}));
+    assert_eq!(
+        result,
+        ReplyResult::Done {
+            message: "Closed duplicate workspace webshop supervisor".into()
+        }
+    );
+    assert_eq!(herdr.calls("workspace.close")[0]["workspace_id"], "w9");
+    session.close();
 }

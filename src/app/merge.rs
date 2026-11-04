@@ -11,7 +11,7 @@ use crate::job::{Job, Update};
 
 use super::{
     App,
-    close::{CloseTarget, CloseWorkspaceForm, dashboard_supervisor_workspaces},
+    close::{CloseTarget, CloseWorkspaceForm, close_form, dashboard_supervisor_workspaces},
     overlay::Overlay,
     progress::JobReport,
     project_main::project_main_workspace,
@@ -32,7 +32,22 @@ impl App {
         }
         match merge_form(agent) {
             Ok(form) => self.overlay = Overlay::merge(form),
-            Err(error) => self.status = format!("Merge unavailable: {error:#}"),
+            Err(error) => {
+                // Git refuses it before it starts: the dialog says why, and
+                // offers to ask the supervisor to fix it.
+                let error = format!("{error:#}");
+                let status = format!("Merge unavailable: {error}");
+                let form = refused_form(agent, error, ConflictHelp::Unavailable);
+                self.status = status;
+                let Some(mut form) = form else {
+                    return;
+                };
+                let help = conflict_help(&self.agents, &form, self.inboxes.is_some());
+                if let Some(slot) = form.phase.help_mut() {
+                    *slot = help;
+                }
+                self.overlay = Overlay::merge(form);
+            }
         }
     }
 
@@ -115,15 +130,17 @@ impl App {
                 }
                 Err(MergeError::FetchFailed(error)) => {
                     self.status = format!("Fetch failed: {error}");
+                    let help = self.conflict_help();
                     if let Some(form) = self.overlay.merge_worktree_form_mut() {
-                        form.phase = MergePhase::FetchFailed(error);
+                        form.phase = MergePhase::FetchFailed { error, help };
                     }
                 }
                 Err(MergeError::Failed(error)) => {
-                    if let Some(form) = self.overlay.merge_worktree_form_mut() {
-                        form.phase = MergePhase::Failed(error.clone());
-                    }
+                    let help = self.conflict_help();
                     self.status = format!("Merge/push failed: {error}");
+                    if let Some(form) = self.overlay.merge_worktree_form_mut() {
+                        form.phase = MergePhase::Failed { error, help };
+                    }
                     self.request_refresh();
                 }
                 Err(MergeError::Conflicts(files)) => {
@@ -171,7 +188,7 @@ impl App {
         }
     }
 
-    /// Who can take over the open merge dialog's conflict: its project's
+    /// Who can take over the open merge dialog's failure: its project's
     /// supervisor, when this dashboard can write to its inbox, as every
     /// interactive one can, whichever of them delivers.
     fn conflict_help(&self) -> ConflictHelp {
@@ -181,70 +198,43 @@ impl App {
         conflict_help(&self.agents, form, self.inboxes.is_some())
     }
 
-    /// Aborts the conflicted merge Corgi started in the primary checkout,
-    /// and adds a line to the inbox of the project's supervisor to have the worker
-    /// merge the base branch into its own branch and resolve it there. The
-    /// worktree stays open; the user merges again once the worker reports.
-    fn ask_supervisor_about_conflict(&mut self) {
+    /// Asks the project's supervisor, at the user's `s`, to fix what stopped
+    /// the open merge dialog's merge, and closes the dialog. A conflicted
+    /// merge Corgi started in the primary checkout is aborted first, and
+    /// the supervisor has the worker merge the base branch into its own
+    /// branch and resolve it there; a failed push it explains; any other
+    /// failure or refusal it fixes from the error, and reports back. The
+    /// worktree stays open; the user merges again once it reports.
+    fn ask_supervisor_to_fix(&mut self) {
         let Some(form) = self.overlay.merge_worktree_form() else {
-            return;
-        };
-        let MergePhase::Conflicted { files, .. } = &form.phase else {
             return;
         };
         let Some(supervisor) = project_supervisor(&self.agents, &form.project_root) else {
             self.supervisor_gone();
             return;
         };
-        if let Err(error) = abort_merge(&form.project_root) {
+        let Some(handoff) = handoff(form, &supervisor, None) else {
+            return;
+        };
+        if handoff.abort
+            && let Err(error) = abort_merge(&form.project_root)
+        {
             let error = format!("{error:#}");
             self.status = format!("Merge abort failed: {error}");
+            let help = self.conflict_help();
             if let Some(form) = self.overlay.merge_worktree_form_mut() {
-                form.phase = MergePhase::Failed(error);
+                form.phase = MergePhase::Failed { error, help };
             }
             return;
         }
-        let item = conflict_item(form, files);
-        let mut status = format!(
-            "Merge aborted; asked {supervisor} to have {} merge {} into its branch",
-            form.agent, form.target_branch
-        );
+        let mut status = handoff.status;
         if let Some(inboxes) = &self.inboxes
-            && let Err(error) = inboxes.notify(item)
+            && let Err(error) = inboxes.notify(handoff.item)
         {
-            status = format!("Merge aborted, but {supervisor} could not be told: {error:#}");
-        }
-        self.overlay = Overlay::None;
-        self.motion.succeeded();
-        self.set_status(status, Some(Duration::from_secs(15)));
-        self.request_refresh();
-    }
-
-    /// Adds a line to the inbox of the project's supervisor handing it the
-    /// push that failed after the open merge dialog's merge, so it tells the
-    /// user what the error means and what to run. It shares the merged
-    /// line's key: it says the merge landed too, and stands in for that line
-    /// when it has not gone out yet.
-    fn ask_supervisor_about_push(&mut self) {
-        let Some(form) = self.overlay.merge_worktree_form() else {
-            return;
-        };
-        let MergePhase::PushFailed { commit, error, .. } = &form.phase else {
-            return;
-        };
-        let Some(supervisor) = project_supervisor(&self.agents, &form.project_root) else {
-            self.supervisor_gone();
-            return;
-        };
-        let item = push_failed_item(form, commit, error);
-        let mut status = format!(
-            "Asked {supervisor} about the failed push of {}",
-            form.target_branch
-        );
-        if let Some(inboxes) = &self.inboxes
-            && let Err(error) = inboxes.notify(item)
-        {
-            status = format!("{supervisor} could not be asked about the push: {error:#}");
+            status = format!("{supervisor} could not be asked: {error:#}");
+            if handoff.abort {
+                status = format!("Merge aborted, but {status}");
+            }
         }
         self.overlay = Overlay::None;
         self.motion.succeeded();
@@ -257,8 +247,7 @@ impl App {
     fn supervisor_gone(&mut self) {
         self.status = "The supervisor is no longer running".into();
         if let Some(form) = self.overlay.merge_worktree_form_mut()
-            && let MergePhase::Conflicted { help, .. } | MergePhase::PushFailed { help, .. } =
-                &mut form.phase
+            && let Some(help) = form.phase.help_mut()
         {
             *help = ConflictHelp::NoSupervisor;
         }
@@ -275,30 +264,56 @@ impl App {
         let Some(form) = self.overlay.take_merge_worktree_form() else {
             return;
         };
+        let checkout = form.worktree_checkout.to_string_lossy().into_owned();
+        // The agent's own close, as `x` would ask it, so a plain
+        // `git worktree add` checkout closes its pane and goes through Git.
+        let close = self
+            .agents
+            .iter()
+            .find(|agent| {
+                agent.info.workspace_id == form.workspace_id
+                    && agent.worktree_checkout.as_deref() == Some(checkout.as_str())
+            })
+            .map(|agent| close_form(agent, &self.workspaces, &self.agents));
         let project_root = form.project_root.to_string_lossy().into_owned();
-        self.overlay = Overlay::Close(CloseWorkspaceForm {
-            workspace_id: form.workspace_id,
-            tab_id: String::new(),
-            label: form.label,
-            project_root: project_main_workspace(
-                &self.workspaces,
-                &dashboard_supervisor_workspaces(&self.agents),
-                &project_root,
-            )
-            .map(|main| main.project_root),
-            target: CloseTarget::Worktree {
-                checkout: form.worktree_checkout.to_string_lossy().into_owned(),
-                force: false,
-            },
-        });
+        self.overlay = Overlay::Close(close.unwrap_or_else(|| {
+            CloseWorkspaceForm {
+                workspace_id: form.workspace_id,
+                pane_id: String::new(),
+                tab_id: String::new(),
+                label: form.label,
+                project_root: project_main_workspace(
+                    &self.workspaces,
+                    &dashboard_supervisor_workspaces(&self.agents),
+                    &project_root,
+                )
+                .map(|main| main.project_root),
+                target: CloseTarget::Worktree {
+                    checkout,
+                    force: false,
+                    plain: None,
+                },
+            }
+        }));
         self.close_workspace();
     }
 
     pub fn handle_merge_worktree_key(&mut self, key: KeyEvent) -> bool {
         let phase = self.overlay.merge_worktree_form().map(|form| &form.phase);
+        if phase.and_then(MergePhase::helper).is_some()
+            && key.code == KeyCode::Char(ASK_SUPERVISOR_KEY)
+        {
+            self.ask_supervisor_to_fix();
+            return false;
+        }
         match (phase, key.code) {
             (
-                Some(MergePhase::Confirm | MergePhase::Behind(_) | MergePhase::FetchFailed(_)),
+                Some(
+                    MergePhase::Confirm
+                    | MergePhase::Behind(_)
+                    | MergePhase::FetchFailed { .. }
+                    | MergePhase::Refused { .. },
+                ),
                 KeyCode::Esc,
             ) => self.cancel_editor(),
             (Some(MergePhase::Confirm), KeyCode::Enter) => {
@@ -307,9 +322,12 @@ impl App {
             (Some(MergePhase::Behind(_)), KeyCode::Enter) => {
                 self.start_merge_worktree(Upstream::pulled)
             }
-            (Some(MergePhase::FetchFailed(_)), KeyCode::Enter) => {
+            (Some(MergePhase::FetchFailed { .. }), KeyCode::Enter) => {
                 self.start_merge_worktree(Upstream::skipped)
             }
+            // Nothing ran, and the user never confirmed it: m again, once
+            // it is fixed.
+            (Some(MergePhase::Refused { .. }), KeyCode::Enter) => self.dismiss_merge_worktree(),
             (Some(MergePhase::Running(_)), KeyCode::Esc) => {
                 self.status = "Merge and push are still running".into()
             }
@@ -319,7 +337,7 @@ impl App {
             }
             (
                 Some(
-                    MergePhase::Failed(_)
+                    MergePhase::Failed { .. }
                     | MergePhase::Conflicted { .. }
                     | MergePhase::PushFailed { .. },
                 ),
@@ -327,26 +345,12 @@ impl App {
             ) => self.start_merge_worktree(Upstream::checked),
             (
                 Some(
-                    MergePhase::Failed(_)
+                    MergePhase::Failed { .. }
                     | MergePhase::Conflicted { .. }
                     | MergePhase::PushFailed { .. },
                 ),
                 KeyCode::Esc,
             ) => self.dismiss_merge_worktree(),
-            (
-                Some(MergePhase::Conflicted {
-                    help: ConflictHelp::Supervisor(_),
-                    ..
-                }),
-                KeyCode::Char('s'),
-            ) => self.ask_supervisor_about_conflict(),
-            (
-                Some(MergePhase::PushFailed {
-                    help: ConflictHelp::Supervisor(_),
-                    ..
-                }),
-                KeyCode::Char('s'),
-            ) => self.ask_supervisor_about_push(),
             _ => {}
         }
         false
@@ -530,12 +534,7 @@ mod tests {
     /// The dashboard that wakes supervisors, with the conflicted merge of
     /// `form` reported by its merge job, and `agents` in view.
     fn conflicted_dashboard(form: &MergeWorktreeForm, agents: Vec<DashboardAgent>) -> App {
-        let mut app = test_app();
-        let mut waker =
-            SupervisorWaker::in_dir(&form.project_root.join(".git").join("corgi-state"));
-        assert!(waker.lead(&form.project_root.join(".git").join("corgi-wake.lock")));
-        app.wake_with(waker);
-        app.agents = agents;
+        let mut app = supervised_dashboard(&form.project_root, agents);
         let mut running = form.clone();
         running.phase = MergePhase::Running(1);
         app.overlay = Overlay::merge(running);
@@ -543,6 +542,169 @@ mod tests {
         app.merge_job = Job::spawn(move |_| run_merge(&form, &mut Silent));
         poll_until(&mut app, App::poll_merge, |app| !app.merge_job.is_running());
         app
+    }
+
+    /// The dashboard that wakes the supervisor of `repo`, with `agents` in
+    /// view.
+    fn supervised_dashboard(repo: &Path, agents: Vec<DashboardAgent>) -> App {
+        let mut app = test_app();
+        let mut waker = SupervisorWaker::in_dir(&repo.join(".git").join("corgi-state"));
+        assert!(waker.lead(&repo.join(".git").join("corgi-wake.lock")));
+        app.wake_with(waker);
+        app.agents = agents;
+        app
+    }
+
+    /// The worker of `form`, in its worktree, as the dashboard lists it.
+    fn worker_of(form: &MergeWorktreeForm) -> DashboardAgent {
+        let mut worker = project_agent(&form.agent, &form.project_root, false);
+        worker.worktree_checkout = Some(form.worktree_checkout.to_string_lossy().into_owned());
+        worker.task = form.task.clone();
+        worker
+    }
+
+    /// The start every line asking the supervisor to fix `form`'s merge
+    /// shares, up to its error.
+    fn asked_to_fix(form: &MergeWorktreeForm) -> String {
+        format!(
+            "[Corgi] Merging w-reviewed-agent (task \"Make the status file say agent\"), \
+             branch worktree/reviewed-agent in worktree {}, into main in {} failed: ",
+            form.worktree_checkout.display(),
+            form.project_root.display()
+        )
+    }
+
+    #[test]
+    fn a_merge_refused_by_a_dirty_primary_checkout_can_be_handed_to_the_supervisor() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-refused-dirty");
+        let root = repo.to_string_lossy().into_owned();
+        fs::write(repo.join("status.txt"), "edited by hand\n").expect("edit primary checkout");
+        let error = "primary checkout has uncommitted or untracked changes: M status.txt";
+
+        // Without a supervisor the dialog says why, and s asks no one.
+        let mut app = supervised_dashboard(&repo, vec![worker_of(&form)]);
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('m'))));
+        assert_eq!(
+            phase(&app),
+            Some(&MergePhase::Refused {
+                error: error.into(),
+                help: ConflictHelp::NoSupervisor,
+            })
+        );
+        assert_eq!(app.status, format!("Merge unavailable: {error}"));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
+        assert!(phase(&app).is_some(), "s is not offered");
+        assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
+        // Enter only closes it: nothing ran, and nothing was confirmed.
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Enter)));
+        assert!(matches!(app.overlay, Overlay::None));
+
+        app.agents
+            .push(project_agent("supervisor-corgi", &repo, true));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('m'))));
+        assert_eq!(
+            phase(&app),
+            Some(&MergePhase::Refused {
+                error: error.into(),
+                help: ConflictHelp::Supervisor("supervisor-corgi".into()),
+            })
+        );
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
+        assert!(matches!(app.overlay, Overlay::None), "{:?}", app.overlay);
+        assert_eq!(
+            app.status,
+            "Asked supervisor-corgi to fix the merge of w-reviewed-agent"
+        );
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0].starts_with(&format!(
+                "{}{error}. The user asks you to fix it and report back. ",
+                asked_to_fix(&form)
+            )),
+            "{pending:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.join("status.txt")).unwrap(),
+            "edited by hand\n",
+            "nothing ran"
+        );
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_failed_fetch_can_be_handed_to_the_supervisor() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-fetch-handoff");
+        let root = repo.to_string_lossy().into_owned();
+        git_test(
+            &repo,
+            &["remote", "set-url", "origin", "/nonexistent/corgi-remote"],
+        );
+        let before = git_test_stdout(&repo, &["rev-parse", "main"]);
+        let mut app = conflicted_dashboard(
+            &form,
+            vec![
+                project_agent("supervisor-corgi", &repo, true),
+                worker_of(&form),
+            ],
+        );
+        let Some(MergePhase::FetchFailed { error, help }) = phase(&app).cloned() else {
+            panic!("{:?}", app.overlay);
+        };
+        assert_eq!(help, ConflictHelp::Supervisor("supervisor-corgi".into()));
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
+        assert!(matches!(app.overlay, Overlay::None), "{:?}", app.overlay);
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        let error = error.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            pending[0].starts_with(&format!(
+                "{}could not fetch origin/main: {error}",
+                asked_to_fix(&form)
+            )),
+            "{pending:?}"
+        );
+        assert_eq!(git_test_stdout(&repo, &["rev-parse", "main"]), before);
+
+        remove_mergeable_repo(repo, worktree, remote);
+    }
+
+    #[test]
+    fn a_merge_that_failed_otherwise_can_be_handed_to_the_supervisor() {
+        let (repo, worktree, remote, form) = mergeable_repo("merge-failed-handoff");
+        let root = repo.to_string_lossy().into_owned();
+        // The agent went on working after the dialog opened.
+        fs::write(worktree.join("notes.txt"), "more\n").expect("write agent note");
+        let mut app = conflicted_dashboard(
+            &form,
+            vec![
+                project_agent("supervisor-corgi", &repo, true),
+                worker_of(&form),
+            ],
+        );
+        let error = "agent worktree has uncommitted or untracked changes: ?? notes.txt";
+        assert_eq!(
+            phase(&app),
+            Some(&MergePhase::Failed {
+                error: error.into(),
+                help: ConflictHelp::Supervisor("supervisor-corgi".into()),
+            })
+        );
+        assert!(!app.handle_key(KeyEvent::from(KeyCode::Char('s'))));
+        assert!(matches!(app.overlay, Overlay::None), "{:?}", app.overlay);
+        let pending = app.inboxes.as_ref().unwrap().pending_for(&root);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0].starts_with(&format!(
+                "{}{error}. The user asks you to fix it and report back. Find the cause; have \
+                 w-reviewed-agent fix what lies in its worktree or branch",
+                asked_to_fix(&form)
+            )),
+            "{pending:?}"
+        );
+
+        remove_mergeable_repo(repo, worktree, remote);
     }
 
     /// A repository with a bare remote and an agent worktree whose branch
@@ -695,7 +857,7 @@ mod tests {
             conflicted_dashboard(&form, vec![project_agent("supervisor-corgi", &repo, true)]);
         assert!(matches!(
             app.overlay.merge_worktree_form().map(|form| &form.phase),
-            Some(MergePhase::FetchFailed(_))
+            Some(MergePhase::FetchFailed { .. })
         ));
         assert!(app.inboxes.as_ref().unwrap().pending_for(&root).is_empty());
 
@@ -831,7 +993,7 @@ mod tests {
             conflicted_dashboard(&form, vec![project_agent("supervisor-corgi", &repo, true)]);
         assert!(matches!(phase(&app), Some(MergePhase::Behind(_))));
         press_and_finish(&mut app, KeyCode::Enter);
-        let Some(MergePhase::Failed(error)) = phase(&app) else {
+        let Some(MergePhase::Failed { error, .. }) = phase(&app) else {
             panic!("{:?}", app.overlay);
         };
         assert!(
@@ -867,7 +1029,7 @@ mod tests {
         );
 
         let mut app = conflicted_dashboard(&form, Vec::new());
-        let Some(MergePhase::FetchFailed(error)) = phase(&app) else {
+        let Some(MergePhase::FetchFailed { error, .. }) = phase(&app) else {
             panic!("{:?}", app.overlay);
         };
         assert!(error.contains("git fetch origin"), "{error}");
@@ -891,7 +1053,7 @@ mod tests {
         );
         let before = git_test_stdout(&repo2, &["rev-parse", "main"]);
         let mut app = conflicted_dashboard(&form2, Vec::new());
-        assert!(matches!(phase(&app), Some(MergePhase::FetchFailed(_))));
+        assert!(matches!(phase(&app), Some(MergePhase::FetchFailed { .. })));
         assert!(!app.handle_key(KeyEvent::from(KeyCode::Esc)));
         assert!(matches!(app.overlay, Overlay::None));
         assert_eq!(git_test_stdout(&repo2, &["rev-parse", "main"]), before);
@@ -1141,7 +1303,7 @@ mod tests {
         assert!(
             matches!(
                 app.overlay.merge_worktree_form().map(|form| &form.phase),
-                Some(MergePhase::Failed(error)) if error.contains("git merge --abort")
+                Some(MergePhase::Failed { error, .. }) if error.contains("git merge --abort")
             ),
             "{:?}",
             app.overlay

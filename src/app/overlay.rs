@@ -36,6 +36,10 @@ pub(crate) enum Overlay {
     /// `corgi setup`'s outcome, until Enter or Esc.
     Notice(String),
     Sessions(super::recovery::Sessions),
+    /// Find orphaned sessions: the candidates and the choice for each.
+    Orphans(super::orphans::OrphansDialog),
+    /// The confirmation before Pause all stops every agent.
+    Pause(corgi_core::protocol::PauseForm),
 }
 
 impl Overlay {
@@ -57,9 +61,10 @@ impl Overlay {
                 MergePhase::Confirm
                 | MergePhase::Running(_)
                 | MergePhase::Behind(_)
-                | MergePhase::FetchFailed(_) => None,
+                | MergePhase::FetchFailed { .. } => None,
                 MergePhase::Succeeded => Some(Outcome::Success),
-                MergePhase::Failed(_)
+                MergePhase::Failed { .. }
+                | MergePhase::Refused { .. }
                 | MergePhase::Conflicted { .. }
                 | MergePhase::PushFailed { .. } => Some(Outcome::Failure),
             },
@@ -73,6 +78,7 @@ impl Overlay {
             Self::Launch(launch) => matches!(launch.state, LaunchState::Running { .. }),
             Self::Merge(form) => matches!(form.phase, MergePhase::Running(_)),
             Self::Sessions(form) => form.stage == super::recovery::Stage::Working,
+            Self::Orphans(dialog) => dialog.stage != super::orphans::Stage::List,
             _ => false,
         }
     }

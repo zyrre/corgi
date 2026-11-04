@@ -4,7 +4,8 @@
 //! `Options:`, `Recommendation:` and `Until answered:` labels in bold, each
 //! option beside its letter, and the Markdown inside them rendered in the
 //! proportional font, code in the window's. Text off that form is plain
-//! Markdown, its line breaks kept.
+//! Markdown, its line breaks kept. A backlog entry is drawn the same way:
+//! its heading as the title, its text as plain Markdown.
 
 use std::ops::Range;
 
@@ -14,6 +15,8 @@ use gpui::{
     UnderlineStyle, div, px, relative,
 };
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+
+use corgi_core::protocol::BacklogEntry;
 
 use crate::window::CorgiWindow;
 
@@ -71,6 +74,21 @@ pub struct Choice {
 const LABELS: &[&str] = &["Context", "Options", "Recommendation", "Until answered"];
 
 impl Form {
+    /// A backlog entry: its heading as the title, and its text as plain
+    /// Markdown, never read as the question form's labels and options.
+    pub fn backlog(entry: &BacklogEntry) -> Self {
+        Form {
+            heading: Some(Heading {
+                title: entry.heading.clone(),
+                tag: None,
+            }),
+            parts: (!entry.text.trim().is_empty())
+                .then(|| Part::Free(entry.text.clone()))
+                .into_iter()
+                .collect(),
+        }
+    }
+
     pub fn parse(text: &str) -> Self {
         let mut form = Form::default();
         let mut lines = text.lines().peekable();
@@ -229,10 +247,30 @@ pub fn blocks(text: &str) -> Vec<Block> {
 pub fn flat(text: &str) -> Inline {
     let mut inline = Inline::default();
     let mut marks = MarkCount::default();
-    for event in Parser::new_ext(text, Options::ENABLE_STRIKETHROUGH) {
+    let text = literal_start(text.trim_start());
+    for event in Parser::new_ext(&text, Options::ENABLE_STRIKETHROUGH) {
         marks.take(&event, &mut inline);
     }
     inline
+}
+
+/// `line` with a block marker at its start escaped, so a title such as
+/// `1. Stop all agents` or `- later` keeps its marker as text rather than
+/// becoming a list or a quote.
+fn literal_start(line: &str) -> String {
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    let after = |at: usize| matches!(line.as_bytes().get(at), None | Some(b' ' | b'\t'));
+    if (1..=9).contains(&digits)
+        && matches!(line.as_bytes().get(digits), Some(b'.' | b')'))
+        && after(digits + 1)
+    {
+        return format!("{}\\{}", &line[..digits], &line[digits..]);
+    }
+    match line.as_bytes().first() {
+        Some(b'-' | b'+' | b'*') if after(1) => format!("\\{line}"),
+        Some(b'>' | b'#') => format!("\\{line}"),
+        _ => line.to_string(),
+    }
 }
 
 type Events<'a> = std::iter::Peekable<Parser<'a>>;
@@ -388,6 +426,17 @@ impl CorgiWindow {
     /// it what height the answer field and the hints leave, and it scrolls
     /// beyond that.
     pub fn question_text(&self, text: &str) -> AnyElement {
+        self.reading(&Form::parse(text))
+    }
+
+    /// A backlog entry whole, as [`Self::question_text`] draws a question.
+    pub fn backlog_text(&self, entry: &BacklogEntry) -> AnyElement {
+        self.reading(&Form::backlog(entry))
+    }
+
+    /// `form` as a document on the reading fill, scrolling in what height
+    /// the dialog leaves it.
+    fn reading(&self, form: &Form) -> AnyElement {
         let colors = &self.colors;
         let (ink, fill) = colors.reading();
         div()
@@ -406,7 +455,7 @@ impl CorgiWindow {
             .text_size(self.scaled(BODY_SIZE))
             .line_height(relative(BODY_LINE))
             .text_color(ink)
-            .child(self.document(&Form::parse(text)))
+            .child(self.document(form))
             .into_any_element()
     }
 
@@ -736,6 +785,51 @@ Until answered: no brief.";
         assert_eq!(blocks[2], Block::Code("cargo test".into()));
         assert!(matches!(&blocks[3], Block::Quote(inner) if inner.len() == 1));
         assert_eq!(blocks[4], Block::Rule);
+    }
+
+    #[test]
+    fn a_title_keeps_a_list_or_quote_marker_at_its_start() {
+        // A paragraph's end leaves a space, as it does after any title.
+        assert_eq!(
+            flat("1. \"Stop all agents\" button").text.trim_end(),
+            "1. \"Stop all agents\" button"
+        );
+        assert_eq!(flat("2) Later").text.trim_end(), "2) Later");
+        assert_eq!(flat("- a dash").text.trim_end(), "- a dash");
+        assert_eq!(flat("> quoted").text.trim_end(), "> quoted");
+        assert_eq!(flat("# hash").text.trim_end(), "# hash");
+        assert_eq!(
+            flat("2026-11-03: Use **Rust**").text.trim_end(),
+            "2026-11-03: Use Rust"
+        );
+        assert!(
+            flat("*bold-ish* start")
+                .spans
+                .iter()
+                .any(|span| span.1.italic)
+        );
+    }
+
+    #[test]
+    fn a_backlog_entry_is_its_heading_and_plain_markdown() {
+        let entry = BacklogEntry {
+            heading: "1. \"Stop all agents\" button [later]".into(),
+            text: "Context: not a label here.\nOptions:\n  A. not an option".into(),
+        };
+        let form = Form::backlog(&entry);
+        assert_eq!(
+            form.heading,
+            Some(Heading {
+                title: entry.heading.clone(),
+                tag: None,
+            })
+        );
+        assert_eq!(form.parts, vec![Part::Free(entry.text.clone())]);
+        let bare = Form::backlog(&BacklogEntry {
+            heading: "Bare".into(),
+            text: String::new(),
+        });
+        assert!(bare.parts.is_empty());
     }
 
     #[test]

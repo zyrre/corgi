@@ -130,15 +130,81 @@ impl HerdrClient {
     /// The processes in a pane's foreground, by process ID and name, such
     /// as a Corgi dashboard's.
     pub fn foreground_processes(&self, pane_id: &str) -> Result<Vec<(u32, String)>> {
+        Ok(self
+            .pane_processes(pane_id)?
+            .iter()
+            .filter_map(|process| Some((process.pid?, process.name.clone())))
+            .collect())
+    }
+
+    /// The processes in a pane's foreground, whole: name, cwd, arguments and
+    /// process ID. Read-only; nothing in the pane notices.
+    pub fn pane_processes(&self, pane_id: &str) -> Result<Vec<ForegroundProcess>> {
         let mut result = self.request("pane.process_info", json!({ "pane_id": pane_id }))?;
         expect_result_type(&result, "pane_process_info")?;
         let processes: PaneProcessInfo = serde_json::from_value(result["process_info"].take())
             .context("Herdr returned invalid pane process information")?;
-        Ok(processes
-            .foreground_processes
-            .iter()
-            .filter_map(|process| Some((process.pid?, process.name.clone())))
-            .collect())
+        anyhow::ensure!(
+            processes.pane_id == pane_id,
+            "Herdr answered for pane {} rather than {pane_id}",
+            processes.pane_id
+        );
+        Ok(processes.foreground_processes)
+    }
+
+    /// Closes one pane, leaving its tab's and workspace's other panes alone.
+    /// Herdr closes a tab or workspace left empty by itself.
+    pub fn close_pane(&self, pane_id: &str) -> Result<()> {
+        let result = self.request("pane.close", json!({ "pane_id": pane_id }))?;
+        if result.get("type").and_then(Value::as_str) == Some("ok") {
+            return Ok(());
+        }
+        expect_result_type(&result, "pane_closed")
+    }
+
+    /// What runs in a pane: its shell's process ID, the foreground process
+    /// group, and the processes in it with their command lines.
+    pub fn process_info(&self, pane_id: &str) -> Result<PaneProcesses> {
+        let mut result = self.request("pane.process_info", json!({ "pane_id": pane_id }))?;
+        expect_result_type(&result, "pane_process_info")?;
+        serde_json::from_value(result["process_info"].take())
+            .context("Herdr returned invalid pane process information")
+    }
+
+    /// Reports, from `source`, the command that resumes the `agent`
+    /// session `session_id` in a pane after a Herdr restart (Herdr 0.9.2
+    /// and later; older versions take the report and ignore the command).
+    /// A report from a source other than Herdr's own integration's does not
+    /// take over the pane's state or its session reference.
+    pub fn report_agent_session(
+        &self,
+        pane_id: &str,
+        source: &str,
+        agent: &str,
+        session_id: &str,
+        resume_argv: &[String],
+    ) -> Result<()> {
+        self.request(
+            "pane.report_agent_session",
+            json!({
+                "pane_id": pane_id,
+                "source": source,
+                "agent": agent,
+                "agent_session_id": session_id,
+                "resume_argv": resume_argv,
+            }),
+        )
+        .map(|_| ())
+    }
+
+    /// Withdraws what `source` reported for the `agent` in a pane, such as
+    /// a resume command, leaving other sources' reports alone.
+    pub fn release_agent(&self, pane_id: &str, source: &str, agent: &str) -> Result<()> {
+        self.request(
+            "pane.release_agent",
+            json!({ "pane_id": pane_id, "source": source, "agent": agent }),
+        )
+        .map(|_| ())
     }
 
     /// The pane the user has focused in Herdr's UI, which is not
@@ -773,19 +839,69 @@ pub struct SessionSnapshot {
     pub focused_pane_id: Option<String>,
 }
 
+/// What runs in one pane, as `pane.process_info` reports it.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PaneProcesses {
+    #[serde(default)]
+    pub shell_pid: Option<u32>,
+    #[serde(default)]
+    pub foreground_process_group_id: Option<u32>,
+    #[serde(default)]
+    pub foreground_processes: Vec<PaneProcess>,
+}
+
+/// One process in a pane's foreground group.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PaneProcess {
+    pub pid: u32,
+    #[serde(default)]
+    pub name: String,
+    /// Absent where Herdr cannot read it.
+    #[serde(default)]
+    pub argv: Option<Vec<String>>,
+}
+
+impl PaneProcesses {
+    /// The foreground processes other than the pane's shell: the agent and
+    /// whatever it runs in the foreground.
+    pub fn agent_pids(&self) -> Vec<u32> {
+        self.foreground_processes
+            .iter()
+            .map(|process| process.pid)
+            .filter(|pid| Some(*pid) != self.shell_pid)
+            .collect()
+    }
+}
+
 #[derive(Deserialize)]
 struct PaneProcessInfo {
     pane_id: String,
     foreground_processes: Vec<ForegroundProcess>,
 }
 
-#[derive(Deserialize)]
-struct ForegroundProcess {
-    name: String,
-    cwd: String,
-    argv: Vec<String>,
+/// One process in a pane's foreground, as `pane.process_info` gives it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+pub struct ForegroundProcess {
     #[serde(default)]
-    pid: Option<u32>,
+    pub name: String,
+    #[serde(default)]
+    pub cwd: String,
+    #[serde(default)]
+    pub argv: Vec<String>,
+    #[serde(default)]
+    pub pid: Option<u32>,
+}
+
+impl ForegroundProcess {
+    /// The file name of the program the process runs, from its first
+    /// argument (`/opt/homebrew/bin/codex` is `codex`), else its name.
+    pub fn program(&self) -> &str {
+        self.argv
+            .first()
+            .and_then(|program| Path::new(program).file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or(&self.name)
+    }
 }
 
 /// Location and identity of any pane in the session snapshot.

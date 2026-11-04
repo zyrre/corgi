@@ -7,7 +7,7 @@ Issues and pull requests are welcome at
 a person or a coding agent. It has how to build and test (`cargo fmt --check`,
 `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` and
 `cargo build --release`; on macOS run the tests as `TMPDIR=/tmp cargo test`),
-the shell tests for the scripts, how to redraw the README images, and the
+the shell tests for the scripts, and the
 handoff to follow before you call a change done. [ARCHITECTURE.md](ARCHITECTURE.md)
 explains how Corgi works and why.
 

@@ -128,6 +128,10 @@ impl State {
     }
 }
 
+fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
 /// Replaces the item of `items` with `item`'s key, or appends it.
 fn replace_keyed<T>(items: &mut Vec<T>, item: T, key: impl Fn(&T) -> &String) {
     match items.iter_mut().find(|old| key(old) == key(&item)) {
@@ -240,6 +244,24 @@ pub struct Agent {
     pub can_prompt: bool,
     /// It works in a linked worktree, which `merge_check` can merge.
     pub can_merge: bool,
+    /// The agent Corgi launched in this pane has dropped to its shell: the
+    /// row stands for it, and `resume` starts it again in the pane with its
+    /// session and launch options. No other command but `close_check`,
+    /// `close`, `merge_check` and `edit` takes it. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exited: bool,
+    /// An exited row that Pause all stopped: `resume_all` starts it again.
+    /// Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
+    /// The agent runs without some of the options Corgi launched it with
+    /// (as after a resume by a Herdr older than 0.9.2), and what to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+    /// What it lacks, by name: `role`, `memory`, `model`, `effort` or a
+    /// flag, for a short badge.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_options: Vec<String>,
 }
 
 /// The prompt cache of a session.
@@ -302,6 +324,20 @@ pub struct Project {
     /// the forge cannot be asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub merge_requests: Vec<MergeRequest>,
+    /// The things to build later in its supervisor's `backlog.md`, in the
+    /// file's order; empty without that file or an entry in it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub backlog: Vec<BacklogEntry>,
+}
+
+/// One `## <heading>` entry of a supervisor's `backlog.md`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BacklogEntry {
+    /// The text after `## `.
+    pub heading: String,
+    /// The Markdown up to the next `## ` or the file's end, without its
+    /// heading line.
+    pub text: String,
 }
 
 /// An open merge request or pull request from one of a project's branches.
@@ -329,6 +365,10 @@ pub struct WorkerCounts {
     pub done: usize,
     pub idle: usize,
     pub unknown: usize,
+    /// Workers that exited to their shell, which Resume starts again; not
+    /// counted under a state. Left out when there are none.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub exited: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -449,6 +489,8 @@ pub enum ReplyResult {
     MergeForm(Box<MergeForm>),
     MergeOutcome(MergeOutcome),
     CloseForm(CloseForm),
+    /// `pause_check`: what Pause all would stop.
+    PauseForm(PauseForm),
     /// `close` found a dirty worktree; `close` with `force` discards it.
     CloseDirty {
         message: String,
@@ -456,7 +498,18 @@ pub enum ReplyResult {
     Digest {
         text: String,
     },
+    /// `orphans`: the candidates, each with its evidence and choices.
+    Orphans {
+        candidates: Vec<Orphan>,
+    },
 }
+
+/// An orphaned session or leftover workspace, as `corgi orphans --json`
+/// prints it (docs/orphaned-sessions.md).
+pub use crate::orphans::{
+    Action as OrphanAction, Candidate as Orphan, Cause as OrphanCause,
+    Confidence as OrphanConfidence,
+};
 
 /// The new-agent form, preset as the dashboard's `n` presets it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,6 +561,16 @@ pub struct MergeForm {
     /// The target branch's upstream, fetched and checked first.
     pub upstream: Option<String>,
     pub steps: Vec<String>,
+    /// Why Git refuses this merge before it starts (a checkout with
+    /// uncommitted changes, both on one branch): the dialog shows it in
+    /// place of the confirmation, and `merge_handoff` asks `supervisor` to
+    /// fix it. The branches are what Git could still tell, maybe empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
+    /// The project's running supervisor, which `merge_handoff` asks to fix
+    /// a failure; `None` when no supervisor runs for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supervisor: Option<String>,
 }
 
 /// How a merge ended. A merge that did not succeed is still an `ok` reply.
@@ -535,12 +598,18 @@ pub enum MergeOutcome {
     Behind {
         commits: Vec<String>,
     },
-    /// Fetching the upstream failed; `merge` with `skip` merges anyway.
+    /// Fetching the upstream failed; `merge` with `skip` merges anyway,
+    /// and `merge_handoff` asks `supervisor` to fix it.
     FetchFailed {
         error: String,
+        #[serde(default)]
+        supervisor: Option<String>,
     },
+    /// Anything else; `merge_handoff` asks `supervisor` to fix it.
     Failed {
         error: String,
+        #[serde(default)]
+        supervisor: Option<String>,
     },
 }
 
@@ -554,6 +623,34 @@ pub struct CloseForm {
     pub checkout: Option<String>,
     /// The confirm button's words, as the dashboard's dialog has them.
     pub confirm: String,
+}
+
+/// What `pause_all` stops, for the confirmation
+/// (`corgi_core::pause::confirmation` words it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseForm {
+    /// How many agents it stops.
+    pub agents: usize,
+    /// How many of them are working or waiting on a question now: their
+    /// current turn is lost.
+    pub working: usize,
+    /// The agents by project, in the dashboard's order.
+    pub projects: Vec<PauseProject>,
+    /// The agents it leaves running, each as `name: why`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub left: Vec<String>,
+}
+
+/// One project's share of a [`PauseForm`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PauseProject {
+    /// The project's heading (`Scratch` for the scratch sessions).
+    pub project: String,
+    pub supervisors: usize,
+    pub workers: usize,
+    /// The names of those working now.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub working: Vec<String>,
 }
 
 /// One line a frontend writes: an `id` it chooses, echoed in the reply and
@@ -598,6 +695,14 @@ pub enum Command {
         project_root: String,
         question: String,
     },
+    /// Tells the project's supervisor what the user wrote about one of its
+    /// backlog entries, through its inbox as `CloseQuestion` does.
+    BacklogMessage {
+        project_root: String,
+        /// The entry's heading, as the backlog has it.
+        heading: String,
+        text: String,
+    },
     /// The new-agent form preset for `pane_id`'s project, else `project`,
     /// else the project used last, on `harness` and `model` when given.
     NewAgentForm {
@@ -625,9 +730,15 @@ pub enum Command {
         #[serde(default)]
         upstream: UpstreamChoice,
     },
-    /// Hands a conflicted merge or a failed push to the supervisor.
+    /// Asks the project's supervisor to fix the merge's failure: a
+    /// conflicted merge is aborted and handed over, a failed push explained,
+    /// and any other failure or refusal sent with its error. `error` is the
+    /// one the frontend shows, for a failure `corgi serve` did not see (a
+    /// refused command, a lost connection); else the merge's own is sent.
     MergeHandoff {
         pane_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// Forgets the merge, leaving a conflict to resolve by hand.
     MergeDismiss {
@@ -645,6 +756,18 @@ pub enum Command {
         pane_id: String,
         merge: bool,
     },
+    /// Starts an exited agent's row again: the same session, in the same
+    /// pane, with the options Corgi launched it with.
+    Resume {
+        pane_id: String,
+    },
+    /// What `pause_all` would stop, for the confirmation.
+    PauseCheck,
+    /// Stops every Claude and Codex agent in every project to its shell,
+    /// working ones interrupted first, with their wakes held until Resume.
+    PauseAll,
+    /// Starts every agent `pause_all` stopped again, each in its own pane.
+    ResumeAll,
     /// Brings the agent's pane into view in Herdr: touches focus.
     Focus {
         pane_id: String,
@@ -658,6 +781,15 @@ pub enum Command {
         project_root: String,
         #[serde(default)]
         lookup: DigestQuery,
+    },
+    /// Finds orphaned sessions: reads only, and only when asked.
+    Orphans,
+    /// Does what the user chose for one orphan, refused when its pane's
+    /// occupant changed since `orphans` listed it.
+    OrphanApply {
+        key: String,
+        fingerprint: String,
+        action: OrphanAction,
     },
 }
 
@@ -724,6 +856,7 @@ impl Command {
             ("prompt", false),
             ("answer", false),
             ("close_question", false),
+            ("backlog_message", false),
             ("new_agent_form", false),
             ("spawn", false),
             ("start_supervisor", false),
@@ -734,9 +867,15 @@ impl Command {
             ("close_check", false),
             ("close", false),
             ("tag", false),
+            ("resume", false),
+            ("pause_check", false),
+            ("pause_all", false),
+            ("resume_all", false),
             ("focus", true),
             ("edit", true),
             ("digest", false),
+            ("orphans", false),
+            ("orphan_apply", false),
         ];
         COMMANDS
             .iter()
@@ -808,14 +947,15 @@ mod tests {
     }
 
     #[test]
-    fn a_project_without_merge_requests_still_parses_and_sends_none() {
+    fn a_project_without_merge_requests_or_backlog_still_parses_and_sends_none() {
         let old = r#"{"group":"weather","root":"/r","card":true,"scratch":false,
             "supervisor":null,"agents":[],"workers":{"total":0,"blocked":0,"merge":0,
             "working":0,"done":0,"idle":0,"unknown":0},"blocked":[],"questions":[],"held":0}"#;
         let project: Project = serde_json::from_str(old).expect("an older server's project");
-        assert!(project.merge_requests.is_empty());
+        assert!(project.merge_requests.is_empty() && project.backlog.is_empty());
         let line = serde_json::to_value(&project).unwrap();
         assert!(line.get("merge_requests").is_none(), "{line}");
+        assert!(line.get("backlog").is_none(), "{line}");
         let with = Project {
             merge_requests: vec![MergeRequest {
                 id: "!1677".into(),
@@ -823,6 +963,10 @@ mod tests {
                 branch: "worktree/green-forest-025b".into(),
                 draft: true,
                 url: "https://gitlab.example.com/g/r/-/merge_requests/1677".into(),
+            }],
+            backlog: vec![BacklogEntry {
+                heading: "Stop all agents".into(),
+                text: "For when the user *leaves*.".into(),
             }],
             ..project
         };
@@ -881,6 +1025,7 @@ mod tests {
             json!({"command": "prompt", "pane_id": "p", "text": "t"}),
             json!({"command": "answer", "project_root": "/r", "question": "Q1", "text": "A"}),
             json!({"command": "close_question", "project_root": "/r", "question": "Q1"}),
+            json!({"command": "backlog_message", "project_root": "/r", "heading": "H", "text": "T"}),
             json!({"command": "new_agent_form"}),
             json!({"command": "spawn"}),
             json!({"command": "start_supervisor", "project_root": "/r"}),
@@ -891,9 +1036,16 @@ mod tests {
             json!({"command": "close_check", "pane_id": "p"}),
             json!({"command": "close", "pane_id": "p"}),
             json!({"command": "tag", "pane_id": "p", "merge": true}),
+            json!({"command": "resume", "pane_id": "p"}),
+            json!({"command": "pause_check"}),
+            json!({"command": "pause_all"}),
+            json!({"command": "resume_all"}),
             json!({"command": "focus", "pane_id": "p"}),
             json!({"command": "edit", "pane_id": "p"}),
             json!({"command": "digest", "project_root": "/r"}),
+            json!({"command": "orphans"}),
+            json!({"command": "orphan_apply", "key": "pane:p", "fingerprint": "f",
+                   "action": {"kind": "leave"}}),
         ];
         assert_eq!(commands.len(), catalog.len());
         for (command, info) in commands.into_iter().zip(&catalog) {

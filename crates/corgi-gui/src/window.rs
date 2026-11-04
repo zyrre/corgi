@@ -4,16 +4,18 @@
 
 use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
-use corgi_core::protocol::{Agent, Command, Project, Question};
+use corgi_core::protocol::{Agent, BacklogEntry, Command, Project, Question};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent, Pixels,
-    ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility, px,
+    App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent,
+    Pixels, ScrollHandle, SharedString, Subscription, Task, Window, WindowVisibility, px,
 };
 
 use crate::{
-    dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage},
+    dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage, Orphans},
     form::{self, Key},
+    hotkeys::HotkeysDialog,
+    keymap::{self, Action, Hit, Key as KeymapKey, Keymap},
     layout::{Layout, Split},
     link::{Backoff, Link, LinkEvent},
     options::Options,
@@ -25,6 +27,7 @@ use crate::{
     },
     text_input::{FieldColors, TextInput},
     theme::{self, Colors, forced_light, is_light},
+    transcript::Transcript,
 };
 
 /// A split being dragged, and where the pointer was last.
@@ -51,6 +54,13 @@ pub struct CorgiWindow {
     /// A row has been picked since the window opened: from then on, when
     /// the selected row goes, another is selected in its place.
     picked: bool,
+    /// The selected row is expanded into its session's latest turns
+    /// (Space), down to the window's bottom; the expansion follows the
+    /// selection.
+    pub expanded: bool,
+    /// The expanded session's scroll, its text selection and its lines as
+    /// last drawn.
+    pub transcript: Transcript,
     /// The session `corgi serve` was asked to read the transcript of.
     watching: Option<String>,
     /// The project groups whose cards show only their supervisor.
@@ -61,7 +71,7 @@ pub struct CorgiWindow {
     /// The questions closed with ×, until the ledger drops them.
     pub closing: Closing,
     /// The window is on screen; while it is not, nothing is drawn and the
-    /// transcript is not read.
+    /// expanded session is not read.
     pub visible: bool,
     /// The system's appearance, and `CORGI_GUI_APPEARANCE`'s, which wins
     /// over it and the header's toggle (`theme::appearance`).
@@ -79,12 +89,10 @@ pub struct CorgiWindow {
     pub prompt_input: Entity<TextInput>,
     pub task_input: Entity<TextInput>,
     pub overview_scroll: ScrollHandle,
-    /// The overview's column as last laid out, the transcript's split
-    /// included; 0 before the first layout.
-    pub main_column_height: f32,
+    /// The orphans dialog's list, which keys keep on the selected card.
+    pub orphans_scroll: ScrollHandle,
     /// Where the overview's rows were drawn, to scroll one into view.
     pub rows: Rows,
-    pub transcript_scroll: ScrollHandle,
     /// The answer box's question text, back at its top for each question.
     pub question_scroll: ScrollHandle,
     pub drag: Option<Drag>,
@@ -96,6 +104,11 @@ pub struct CorgiWindow {
     pub focus_view: Option<String>,
     /// The keyboard should move to where the open dialog wants it.
     refocus: bool,
+    /// Which key does what (`keymap.rs`), and where it is kept.
+    pub keymap: Keymap,
+    keymap_path: Option<PathBuf>,
+    /// The hotkeys dialog, while it is open (`hotkeys.rs`).
+    pub hotkeys: Option<HotkeysDialog>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -112,6 +125,8 @@ impl CorgiWindow {
         let system_light = is_light(window.appearance());
         let layout_path = Layout::path();
         let layout = Layout::load(layout_path.as_deref());
+        let keymap_path = Keymap::path();
+        let keymap = Keymap::load(keymap_path.as_deref(), cfg!(target_os = "macos"));
         let store = Store::default();
         let (light, chosen) = theme::appearance(forced_light, None, system_light);
         let colors = Colors::new(&store.state.palette, light, chosen);
@@ -212,6 +227,8 @@ impl CorgiWindow {
             events,
             selected: None,
             picked: false,
+            expanded: false,
+            transcript: Transcript::default(),
             watching: None,
             collapsed: HashSet::new(),
             seen: HashSet::new(),
@@ -228,19 +245,22 @@ impl CorgiWindow {
             prompt_input,
             task_input,
             overview_scroll: ScrollHandle::new(),
-            main_column_height: 0.0,
+            orphans_scroll: ScrollHandle::new(),
             rows: Rows::default(),
-            transcript_scroll: ScrollHandle::new(),
             question_scroll: ScrollHandle::new(),
             drag: None,
             terminal,
             focus_view: None,
             refocus: false,
+            keymap,
+            keymap_path,
+            hotkeys: None,
             _tasks: vec![pump, tick],
             _subscriptions: subscriptions,
         };
         this.sync_terminal_socket(cx);
         this.color_terminal(cx);
+        this.share_keymap(cx);
         let scale = this.layout.text_scale();
         this.terminal
             .update(cx, |terminal, cx| terminal.set_text_scale(scale, cx));
@@ -437,7 +457,13 @@ impl CorgiWindow {
             .iter()
             .map(|agent| agent.pane_id.clone())
             .collect();
+        let before = self.selected.clone();
         self.selected = reconciled(self.selected.take(), self.picked, &visible);
+        if self.selected != before {
+            // Another session's turns start at its newest.
+            self.transcript.reset();
+        }
+        self.expanded &= self.selected.is_some();
         self.closing.prune(&self.store.state);
         self.recolor(cx);
         self.sync_watch();
@@ -448,6 +474,9 @@ impl CorgiWindow {
     /// enough to show the row in full.
     pub fn select(&mut self, pane_id: String, pick: Pick, cx: &mut Context<Self>) {
         self.rows.pick(&pane_id, pick);
+        if self.selected.as_deref() != Some(pane_id.as_str()) {
+            self.transcript.reset();
+        }
         self.selected = Some(pane_id);
         self.picked = true;
         self.sync_watch();
@@ -472,8 +501,8 @@ impl CorgiWindow {
         self.select(pane_id, Pick::Reveal, cx);
     }
 
-    /// Asks `corgi serve` to read the selected agent's transcript while the
-    /// transcript shows and the window is on screen, and to stop otherwise.
+    /// Asks `corgi serve` to read the selected agent's transcript while its
+    /// row is expanded and the window is on screen, and to stop otherwise.
     fn sync_watch(&mut self) {
         if !self.store.connected() {
             return;
@@ -481,7 +510,7 @@ impl CorgiWindow {
         let wanted = self
             .selected
             .clone()
-            .filter(|_| self.visible && self.layout.transcript_open && self.focus_view.is_none());
+            .filter(|_| self.visible && self.expanded && self.focus_view.is_none());
         if wanted != self.watching {
             self.watching = wanted.clone();
             self.send(Command::Watch { pane_id: wanted }, Purpose::Quiet);
@@ -552,7 +581,11 @@ impl CorgiWindow {
         if colors != self.colors {
             self.colors = colors;
             let field = field_colors(&self.colors);
-            for input in [&self.prompt_input, &self.task_input] {
+            let filter = self.hotkeys.as_ref().map(|dialog| &dialog.filter);
+            for input in [&self.prompt_input, &self.task_input]
+                .into_iter()
+                .chain(filter)
+            {
                 input.update(cx, |input, cx| {
                     input.colors = field;
                     cx.notify();
@@ -573,10 +606,33 @@ impl CorgiWindow {
         cx.notify();
     }
 
+    // ---- Keys ----
+
+    /// Keeps the keys the hotkeys dialog changed, and gives the focus
+    /// view's terminal its own two.
+    pub fn keymap_changed(&mut self, cx: &mut Context<Self>) {
+        self.keymap.save(self.keymap_path.as_deref());
+        self.share_keymap(cx);
+        cx.notify();
+    }
+
+    fn share_keymap(&mut self, cx: &mut Context<Self>) {
+        let keymap = self.keymap.clone();
+        self.terminal
+            .update(cx, |terminal, _| terminal.keymap = keymap);
+    }
+
     // ---- Layout ----
 
     pub fn save_layout(&self) {
         self.layout.save(self.layout_path.as_deref());
+    }
+
+    /// Keeps `window`'s size for the next run, as it closes.
+    pub fn keep_window_size(&mut self, window: &Window) {
+        let size = window.bounds().size;
+        self.layout.window = Some((f32::from(size.width), f32::from(size.height)));
+        self.save_layout();
     }
 
     /// The window's text a point `larger` or smaller, the terminal's with
@@ -609,11 +665,28 @@ impl CorgiWindow {
         cx.notify();
     }
 
-    pub fn toggle_transcript(&mut self, cx: &mut Context<Self>) {
-        self.layout.transcript_open = !self.layout.transcript_open;
-        self.save_layout();
+    /// Space: grows the selected row into its session's latest turns, down
+    /// to the window's bottom, or back. With no row selected there is
+    /// nothing to grow.
+    pub fn toggle_expanded(&mut self, cx: &mut Context<Self>) {
+        let Some(pane_id) = self.selected.clone() else {
+            return;
+        };
+        self.expanded = !self.expanded;
+        self.transcript.reset();
+        self.rows.pick(&pane_id, Pick::Reveal);
         self.sync_watch();
         cx.notify();
+    }
+
+    /// Puts the expanded session's selected text on the clipboard; false
+    /// when nothing is selected.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(text) = self.transcript.copied().filter(|_| self.expanded) else {
+            return false;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        true
     }
 
     /// Collapses `group`'s card, or expands it if collapsed: ← and →, a
@@ -635,12 +708,8 @@ impl CorgiWindow {
         let Some(drag) = self.drag.as_mut() else {
             return;
         };
-        let now = match drag.split {
-            Split::Side | Split::FocusSide => position.x,
-            Split::Transcript => position.y,
-        };
-        let delta = f32::from(now - drag.last);
-        drag.last = now;
+        let delta = f32::from(position.x - drag.last);
+        drag.last = position.x;
         let split = drag.split;
         self.layout.drag(split, delta);
         cx.notify();
@@ -697,15 +766,11 @@ impl CorgiWindow {
         }
     }
 
-    pub fn open_prompt(
-        &mut self,
-        pane_id: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(agent) = pane_id
+    /// Opens the prompt box for the selected agent.
+    pub fn open_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(agent) = self
+            .selected
             .as_deref()
-            .or(self.selected.as_deref())
             .and_then(|id| self.store.agent(id))
             .cloned()
         else {
@@ -752,6 +817,30 @@ impl CorgiWindow {
         self.dialogs.open = Some(Dialog::Answer {
             project_root,
             question,
+            sending: false,
+            error: None,
+        });
+        self.focus_dialog_now(window, cx);
+        cx.notify();
+    }
+
+    /// Shows the backlog entry `entry` of `project_root`'s supervisor
+    /// whole, with a field to write the supervisor about it.
+    pub fn open_backlog(
+        &mut self,
+        project_root: String,
+        entry: BacklogEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_input.update(cx, |input, cx| {
+            input.clear(cx);
+            input.set_placeholder("Write the supervisor about this entry");
+        });
+        self.question_scroll = ScrollHandle::new();
+        self.dialogs.open = Some(Dialog::Backlog {
+            project_root,
+            entry,
             sending: false,
             error: None,
         });
@@ -877,8 +966,87 @@ impl CorgiWindow {
         cx.notify();
     }
 
+    /// Starts the selected agent again when it has exited to its shell:
+    /// the same session, in its pane, with the options Corgi launched it
+    /// with.
+    pub fn resume(&mut self, cx: &mut Context<Self>) {
+        let Some(agent) = self.selected_agent() else {
+            return;
+        };
+        if !agent.exited {
+            self.dialogs.say(
+                "Resume starts an agent that has exited to its shell; this one runs",
+                true,
+            );
+            cx.notify();
+            return;
+        }
+        let pane_id = agent.pane_id.clone();
+        self.dialogs.say(format!("Resuming {}…", agent.name), false);
+        self.send(Command::Resume { pane_id }, Purpose::Resume);
+        cx.notify();
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.send(Command::Refresh, Purpose::Quiet);
+        cx.notify();
+    }
+
+    /// The header's "Find orphaned sessions" and its key: opens the dialog
+    /// and asks `corgi serve` to look. Only now is anything looked for.
+    pub fn find_orphans(&mut self, cx: &mut Context<Self>) {
+        if self.dialogs.open.is_some() {
+            return;
+        }
+        if self.send(Command::Orphans, Purpose::Orphans) {
+            self.dialogs.open = Some(Dialog::Orphans(Box::new(Orphans::looking())));
+            self.focus_dialog(cx);
+        }
+        cx.notify();
+    }
+
+    /// Scrolls the orphans' list just far enough to show card `index` in
+    /// full, as the overview does its selected row (`rows::revealed`):
+    /// GPUI's `scroll_to_item` leaves a tall card's foot under the edge.
+    fn reveal_orphan(&self, index: usize) {
+        let scroll = &self.orphans_scroll;
+        let Some(card) = scroll.bounds_for_item(index) else {
+            return;
+        };
+        let view = scroll.bounds();
+        let offset = scroll.offset();
+        let y = crate::rows::revealed(
+            offset.y,
+            (view.top(), view.bottom()),
+            (card.top(), card.bottom()),
+        );
+        scroll.set_offset(gpui::point(offset.x, y));
+    }
+
+    /// Applies the choice made for the selected orphan.
+    pub fn apply_orphan(&mut self, cx: &mut Context<Self>) {
+        let Some(Dialog::Orphans(orphans)) = &mut self.dialogs.open else {
+            return;
+        };
+        if !orphans.idle() {
+            return;
+        }
+        let Some((candidate, action)) = orphans.choices.choice() else {
+            return;
+        };
+        let key = candidate.key.clone();
+        let command = Command::OrphanApply {
+            key: key.clone(),
+            fingerprint: candidate.fingerprint.clone(),
+            action: action.clone(),
+        };
+        orphans.applying = Some(key.clone());
+        orphans.choices.error = None;
+        if !self.send(command, Purpose::OrphanApply { key })
+            && let Some(Dialog::Orphans(orphans)) = &mut self.dialogs.open
+        {
+            orphans.applying = None;
+        }
         cx.notify();
     }
 
@@ -895,7 +1063,11 @@ impl CorgiWindow {
                 self.send(Command::Merge { pane_id, upstream }, Purpose::Merge);
             }
             MergeAction::Handoff => {
-                self.send(Command::MergeHandoff { pane_id }, Purpose::MergeEnd);
+                if !merge.offers(MergeAction::Handoff) {
+                    return;
+                }
+                let error = merge.handoff_error();
+                self.send(Command::MergeHandoff { pane_id, error }, Purpose::MergeEnd);
             }
             MergeAction::Dismiss => {
                 self.send(Command::MergeDismiss { pane_id }, Purpose::MergeEnd);
@@ -970,13 +1142,32 @@ impl CorgiWindow {
                     Purpose::Answer,
                 )
             }
+            Some(Dialog::Backlog {
+                project_root,
+                entry,
+                sending,
+                error,
+            }) if !*sending => {
+                if text.is_empty() {
+                    *error = Some("Type a message first".into());
+                    return;
+                }
+                *sending = true;
+                *error = None;
+                (
+                    Command::BacklogMessage {
+                        project_root: project_root.clone(),
+                        heading: entry.heading.clone(),
+                        text,
+                    },
+                    Purpose::BacklogMessage,
+                )
+            }
             _ => return,
         };
         if !self.send(command.0, command.1) {
             // Not sent: let the user try again.
-            if let Some(Dialog::Prompt { sending, .. } | Dialog::Answer { sending, .. }) =
-                &mut self.dialogs.open
-            {
+            if let Some((sending, _)) = self.dialogs.open.as_mut().and_then(Dialog::text_state) {
                 *sending = false;
             }
         }
@@ -1024,45 +1215,72 @@ impl CorgiWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
-        let modifiers = keystroke.modifiers;
-        if modifiers.platform || modifiers.control || modifiers.alt {
+        // The focus view's copy keys copy the expanded session's selection.
+        if keys::chord(keystroke, cfg!(target_os = "macos")) == Some(Chord::Copy) {
+            if self.copy_selection(cx) {
+                cx.stop_propagation();
+            }
             return;
         }
         let selected_group = self
             .selected_agent()
             .map(|agent| agent.project_group.clone());
-        match keystroke.key.as_str() {
-            "j" | "down" => self.step(1, cx),
-            "k" | "up" => self.step(-1, cx),
-            "home" | "g" => self.step(-10_000, cx),
-            "end" => self.step(10_000, cx),
-            "enter" => {
+        let Some(hit) = self.keymap.overview_hit(keystroke, self.expanded) else {
+            return;
+        };
+        let action = match hit {
+            Hit::Answer(index) => {
+                self.answer_nth(index, window, cx);
+                cx.stop_propagation();
+                return;
+            }
+            Hit::Action(action) => action,
+        };
+        match action {
+            Action::Next => self.step(1, cx),
+            Action::Previous => self.step(-1, cx),
+            Action::First => self.step(-10_000, cx),
+            Action::Last => self.step(10_000, cx),
+            Action::Open => {
                 if let Some(pane_id) = self.selected.clone() {
                     self.open_agent(pane_id, window, cx);
                 }
             }
-            "space" => self.toggle_transcript(cx),
-            "\\" => self.toggle_side(cx),
-            "left" | "right" => {
+            Action::Expand | Action::Collapse => self.toggle_expanded(cx),
+            Action::ScrollUp | Action::ScrollDown => {
+                let pages = if action == Action::ScrollUp {
+                    -1.0
+                } else {
+                    1.0
+                };
+                self.transcript.scroll_pages(pages);
+                cx.notify();
+            }
+            Action::Newest | Action::Oldest => {
+                self.transcript.scroll_to_end(action == Action::Oldest);
+                cx.notify();
+            }
+            Action::SidePanel => self.toggle_side(cx),
+            Action::CollapseCard | Action::ExpandCard => {
                 let Some(group) = selected_group else { return };
-                let collapse = keystroke.key == "left";
+                let collapse = action == Action::CollapseCard;
                 if collapse != self.collapsed.contains(&group) {
                     self.toggle_card(&group, cx);
                 }
             }
-            "p" => self.open_prompt(None, window, cx),
-            "n" => self.new_agent(cx),
-            "m" => self.merge_check(cx),
-            "x" => self.close_check(None, cx),
-            "s" => self.start_supervisor(cx),
-            "t" => self.toggle_tag(cx),
-            "r" => self.refresh(cx),
-            "a" => self.answer_nth(0, window, cx),
-            key if key.len() == 1 && ('1'..='9').contains(&key.chars().next().unwrap_or('0')) => {
-                let index = key.parse::<usize>().unwrap_or(1) - 1;
-                self.answer_nth(index, window, cx);
-            }
-            _ => return,
+            Action::Prompt => self.open_prompt(window, cx),
+            Action::NewAgent => self.new_agent(cx),
+            Action::Merge => self.merge_check(cx),
+            Action::Close => self.close_check(None, cx),
+            Action::Supervisor => self.start_supervisor(cx),
+            Action::Tag => self.toggle_tag(cx),
+            Action::Resume => self.resume(cx),
+            Action::Refresh => self.refresh(cx),
+            Action::Orphans => self.find_orphans(cx),
+            Action::PauseAll => self.pause_or_resume_all(cx),
+            Action::AnswerFirst => self.answer_nth(0, window, cx),
+            // The focus view's and the merge dialog's own.
+            Action::Leave | Action::FocusSide | Action::AskSupervisor => return,
         }
         cx.stop_propagation();
     }
@@ -1077,13 +1295,14 @@ impl CorgiWindow {
         }
         let keystroke = &event.keystroke;
         let plain = !keystroke.modifiers.modified();
-        match keys::chord(keystroke, cfg!(target_os = "macos")) {
-            Some(Chord::Leave) => self.leave_focus(cx),
-            Some(Chord::ToggleSide) => self.toggle_side(cx),
-            _ if plain && keystroke.key == "escape" => self.leave_focus(cx),
-            _ if plain && keystroke.key == "\\" => self.toggle_side(cx),
-            _ if plain && keystroke.key == "enter" => window.focus(&terminal_focus, cx),
-            _ => return,
+        let side = KeymapKey::from_keystroke(keystroke) == *self.keymap.key(Action::SidePanel);
+        match self.keymap.focus_hit(keystroke) {
+            Some(Action::Leave) => self.leave_focus(cx),
+            Some(_) => self.toggle_side(cx),
+            None if plain && keystroke.key == "escape" => self.leave_focus(cx),
+            None if side => self.toggle_side(cx),
+            None if plain && keystroke.key == "enter" => window.focus(&terminal_focus, cx),
+            None => return,
         }
         cx.stop_propagation();
     }
@@ -1096,6 +1315,16 @@ impl CorgiWindow {
         cx: &mut Context<Self>,
     ) {
         let keystroke = &event.keystroke;
+        // The merge dialog's rebindable key, which may have a modifier.
+        if let Some(Dialog::Merge(merge)) = &self.dialogs.open
+            && self.keymap.merge_dialog_hit(keystroke) == Some(Action::AskSupervisor)
+        {
+            if merge.offers(MergeAction::Handoff) {
+                self.merge_action(MergeAction::Handoff, cx);
+            }
+            cx.stop_propagation();
+            return;
+        }
         let modifiers = keystroke.modifiers;
         if modifiers.platform || modifiers.control {
             return;
@@ -1108,16 +1337,18 @@ impl CorgiWindow {
         }
         let handled = match &mut self.dialogs.open {
             None => false,
-            Some(Dialog::Prompt { .. } | Dialog::Answer { .. }) => match key {
-                "enter" => {
-                    self.submit_text(cx);
-                    true
+            Some(Dialog::Prompt { .. } | Dialog::Answer { .. } | Dialog::Backlog { .. }) => {
+                match key {
+                    "enter" => {
+                        self.submit_text(cx);
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
-            },
+            }
             Some(Dialog::Merge(merge)) => match key {
                 "enter" => {
-                    if let Some((_, action)) = merge.actions().first().copied() {
+                    if let Some(action) = merge.default_action() {
                         self.merge_action(action, cx);
                     }
                     true
@@ -1132,6 +1363,45 @@ impl CorgiWindow {
                 }
                 _ => false,
             },
+            Some(Dialog::Pause(_)) => match key {
+                "enter" => {
+                    self.confirm_pause(cx);
+                    true
+                }
+                _ => false,
+            },
+            Some(Dialog::Orphans(orphans)) => {
+                if !orphans.idle() {
+                    true
+                } else {
+                    let choices = &mut orphans.choices;
+                    match key {
+                        "enter" => {
+                            self.apply_orphan(cx);
+                            true
+                        }
+                        "j" | "down" | "k" | "up" => {
+                            choices.select_by(if matches!(key, "j" | "down") { 1 } else { -1 });
+                            let selected = choices.selected;
+                            self.reveal_orphan(selected);
+                            true
+                        }
+                        "right" | "tab" if !modifiers.shift => {
+                            choices.cycle(1);
+                            true
+                        }
+                        "left" | "tab" => {
+                            choices.cycle(-1);
+                            true
+                        }
+                        "s" | "w" | "x" | "l" => {
+                            choices.choose_key(key.chars().next().unwrap_or_default());
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+            }
             Some(Dialog::NewAgent(new)) => {
                 let Some(form_key) = form_key(event) else {
                     return;
@@ -1192,9 +1462,13 @@ impl CorgiWindow {
 
     pub fn focus_dialog_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = match &self.dialogs.open {
+            _ if self.hotkeys.is_some() => match self.hotkeys_focus(cx) {
+                Some(target) => target,
+                None => return,
+            },
             None if self.focus_view.is_some() => self.terminal.read(cx).focus.clone(),
             None => self.focus.clone(),
-            Some(Dialog::Prompt { .. } | Dialog::Answer { .. }) => {
+            Some(Dialog::Prompt { .. } | Dialog::Answer { .. } | Dialog::Backlog { .. }) => {
                 self.prompt_input.read(cx).focus_handle(cx)
             }
             Some(Dialog::NewAgent(new)) if new.row == form::Row::Task && new.picker.is_none() => {
@@ -1248,18 +1522,52 @@ pub fn field_colors(colors: &Colors) -> FieldColors {
     }
 }
 
-/// Keeps the app's keys: quitting.
+/// Binds the window's fixed keys (`keymap::fixed`): quitting, and on macOS
+/// closing, minimizing and full screen.
 pub fn bind_app_keys(cx: &mut App) {
     let quit = if cfg!(target_os = "macos") {
-        "cmd-q"
+        keymap::QUIT_MAC
     } else {
-        "ctrl-q"
+        keymap::QUIT
     };
     cx.bind_keys([gpui::KeyBinding::new(quit, Quit, None)]);
     cx.on_action(|_: &Quit, cx| cx.quit());
+    // macOS draws no title bar buttons (`main.rs`), so their usual keys do
+    // what they did.
+    if cfg!(target_os = "macos") {
+        cx.bind_keys([
+            gpui::KeyBinding::new(keymap::CLOSE_WINDOW, CloseWindow, None),
+            gpui::KeyBinding::new(keymap::MINIMIZE, Minimize, None),
+            gpui::KeyBinding::new(keymap::FULL_SCREEN, ToggleFullScreen, None),
+        ]);
+        cx.on_action(|_: &CloseWindow, cx| {
+            on_active_window(cx, |view, window| {
+                view.keep_window_size(window);
+                window.remove_window();
+            });
+        });
+        cx.on_action(|_: &Minimize, cx| on_active_window(cx, |_, window| window.minimize_window()));
+        cx.on_action(|_: &ToggleFullScreen, cx| {
+            on_active_window(cx, |_, window| window.toggle_fullscreen());
+        });
+    }
 }
 
-gpui::actions!(corgi, [Quit]);
+gpui::actions!(corgi, [Quit, CloseWindow, Minimize, ToggleFullScreen]);
+
+/// Runs `act` on the window in front, once the key that asked for it is
+/// handled: the window cannot be updated while its key is dispatched.
+fn on_active_window(cx: &mut App, act: impl FnOnce(&mut CorgiWindow, &mut Window) + 'static) {
+    let Some(handle) = cx
+        .active_window()
+        .and_then(|handle| handle.downcast::<CorgiWindow>())
+    else {
+        return;
+    };
+    cx.defer(move |cx| {
+        let _ = handle.update(cx, |view, window, _| act(view, window));
+    });
+}
 
 /// Collapses each card of `projects` not yet `seen`, so the window opens,
 /// and a project new to it appears, on its supervisor; a card already seen
@@ -1433,6 +1741,51 @@ mod tests {
         );
         assert_eq!(reconciled(b, true, &[]), None);
         assert_eq!(reconciled(None, true, &rows(&["c"])), Some("c".to_string()));
+    }
+
+    #[test]
+    fn space_expands_and_the_sessions_keys_work_only_while_expanded() {
+        let keymap = Keymap::defaults(true);
+        let hit = |key: &str, expanded| {
+            keymap.overview_hit(&gpui::Keystroke::parse(key).unwrap(), expanded)
+        };
+        let action = |action| Some(Hit::Action(action));
+        assert_eq!(hit("space", false), action(Action::Expand));
+        assert_eq!(hit("space", true), action(Action::Expand));
+        assert_eq!(hit("escape", true), action(Action::Collapse));
+        for (key, scroll) in [
+            ("u", Action::ScrollUp),
+            ("pageup", Action::ScrollUp),
+            ("d", Action::ScrollDown),
+            ("pagedown", Action::ScrollDown),
+        ] {
+            assert_eq!(hit(key, true), action(scroll), "{key}");
+        }
+        assert_eq!(hit("home", true), action(Action::Newest));
+        assert_eq!(hit("end", true), action(Action::Oldest));
+        // Collapsed, they are the overview's: Home and End select rows, and
+        // Esc, u and d do nothing there.
+        assert_eq!(hit("home", false), action(Action::First));
+        assert_eq!(hit("end", false), action(Action::Last));
+        for key in ["escape", "u", "d", "pageup", "pagedown"] {
+            assert_eq!(hit(key, false), None, "{key}");
+        }
+        // j and k move the selection, and the expansion with it, either way.
+        assert_eq!(hit("j", true), action(Action::Next));
+        assert_eq!(hit("down", true), action(Action::Next));
+        assert_eq!(hit("enter", true), action(Action::Open));
+        // The view's modifiers reach no overview key.
+        assert_eq!(hit("cmd-j", false), None);
+    }
+
+    #[test]
+    fn the_overviews_copy_keys_are_the_focus_views() {
+        let key = |text: &str| gpui::Keystroke::parse(text).unwrap();
+        assert_eq!(keys::chord(&key("cmd-c"), true), Some(Chord::Copy));
+        assert_eq!(keys::chord(&key("ctrl-shift-c"), false), Some(Chord::Copy));
+        // Plain c, and Ctrl+C on Linux, are not copy.
+        assert_eq!(keys::chord(&key("c"), true), None);
+        assert_eq!(keys::chord(&key("ctrl-c"), false), None);
     }
 
     #[test]

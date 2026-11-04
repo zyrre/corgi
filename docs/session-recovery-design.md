@@ -13,29 +13,21 @@ Press **S** in the dashboard for Sessions. Nothing restores on startup.
 ┌ ◆ Sessions ────────────────────────────────────┐
 │ > Save sessions…                              │
 │   Restore sessions…                           │
-│   Manual recovery setup…                      │
 │   Continue held coordination…                 │
 │                          Enter open · Esc close│
 └───────────────────────────────────────────────┘
 ```
 
-Before the first reboot, open Manual recovery setup. It shows the selected
-Herdr config path and configured auto-resume value. Herdr 0.9.1 does not expose
-the running server's loaded config path, so **A**, **a** or **Space** toggles the
-acknowledgment that this is the correct file. **Tab**, then **Enter**, separately
-confirms `session.resume_agents_on_restore = false`. Corgi validates a staged file with
-`herdr config check`, backs up the original, changes only that TOML value and
-requires a fully applied config reload. Layout restoration remains enabled.
-Opening this screen, Save and Restore never change configuration.
-
-Setup records a private acknowledgment. Missing-agent launches remain blocked
-until the next normal Herdr start or reboot, with unchanged acknowledged config.
-The installed API cannot establish that an old auto-resume queue is empty, so a
-reload alone is insufficient. Corgi never requests a restart. Prepare setup
-before reboot; Save prominently reports whether it is prepared. If the config
-is edited afterward, confirm setup again. Existing matching agents can always
-be inspected and reused without another launch. Reconfirming unchanged setup
-retains its original server-start boundary.
+**Retired, 3 November 2026: Manual recovery setup.** It turned Herdr's
+`session.resume_agents_on_restore` off, so that Restore alone started the
+agents after a reboot. Since then Corgi reports each of its agents' full
+resume command to Herdr (Herdr 0.9.2 and later run it after a restart; see
+"Resume commands" in ARCHITECTURE.md and docs/restart-survival.md), and
+auto-resume off would turn that off too. The step is gone from the menu and
+Corgi no longer edits Herdr's configuration; Restore no longer waits for it.
+An agent Herdr already resumed is listed as running and reused. A
+`manual-setup.json` an older Corgi wrote stays on disk unread, and a config
+it changed keeps auto-resume off until the user turns it on again.
 
 Save inventories supervisors, workers and scratch sessions in this Herdr scope.
 It lists missing native identities, unsupported harnesses, busy states and
@@ -50,7 +42,6 @@ unknown settings, then defaults to Cancel:
 │ Scratch / notes · idle                         │
 │ Scratch / untracked · unknown · ID unavailable │
 │ References only; agents keep running.          │
-│ Manual recovery setup prepared.               │
 │ [Cancel]  Save       Tab choose · Enter confirm│
 │ R refresh · W observe idle (up to 30s)          │
 └───────────────────────────────────────────────┘
@@ -162,8 +153,7 @@ called out when detected.
 ## Private metadata, not a transcript backup
 
 The implementation is separated into [inventory/execution](../crates/corgi-core/src/recovery/mod.rs),
-[native adapters](../crates/corgi-core/src/recovery/native.rs), [storage](../crates/corgi-core/src/recovery/store.rs),
-[setup](../crates/corgi-core/src/recovery/setup.rs), [TUI state](../src/app/recovery.rs) and
+[native adapters](../crates/corgi-core/src/recovery/native.rs), [storage](../crates/corgi-core/src/recovery/store.rs), [TUI state](../src/app/recovery.rs) and
 [rendering](../src/ui/sessions.rs). It uses the existing Herdr client, theme
 roles, background jobs and marker reconciliation.
 
@@ -174,7 +164,7 @@ Data lives in `$XDG_STATE_HOME/corgi/recovery` (default
 snapshots/<dated-unique-id>.json    immutable version-1 manifest
 progress.json                     version-1 intents/outcomes/holds
 profiles/<harness>-<UUID>.json     allowlisted session-bound launch settings
-manual-setup.json                  confirmed config and server-start boundary
+manual-setup.json                  retired setup's proof, no longer read
 recovery.lock                     serializes mutations
 ```
 
@@ -262,9 +252,9 @@ Local source anchors at this revision: inventory
 [crates/corgi-core/src/recovery/mod.rs:944](../crates/corgi-core/src/recovery/mod.rs), delivery intents
 [crates/corgi-core/src/recovery/mod.rs:1257](../crates/corgi-core/src/recovery/mod.rs), native metadata/arguments
 [crates/corgi-core/src/recovery/native.rs:151](../crates/corgi-core/src/recovery/native.rs) and
-[crates/corgi-core/src/recovery/native.rs:322](../crates/corgi-core/src/recovery/native.rs), durable saves
-[crates/corgi-core/src/recovery/store.rs:49](../crates/corgi-core/src/recovery/store.rs), and explicit setup
-[crates/corgi-core/src/recovery/setup.rs:146](../crates/corgi-core/src/recovery/setup.rs).
+[crates/corgi-core/src/recovery/native.rs:322](../crates/corgi-core/src/recovery/native.rs), and durable saves
+[crates/corgi-core/src/recovery/store.rs:49](../crates/corgi-core/src/recovery/store.rs). The explicit setup
+of that revision (`recovery/setup.rs`) was removed with the step.
 
 Official references: [Herdr session restoration](https://herdr.dev/docs/session-state/)
 explains layout versus process/native restoration; [Codex resume](https://learn.chatgpt.com/docs/developer-commands?surface=cli#codex-resume)

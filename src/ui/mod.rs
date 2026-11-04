@@ -11,6 +11,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     app::{App, Overlay},
     motion::Outcome,
+    restart,
     theme::roles,
 };
 
@@ -20,13 +21,14 @@ mod dialogs;
 mod effects;
 mod header;
 mod new_agent;
+mod orphans;
 mod prompt;
 mod sessions;
 mod status;
 
 use agents::draw_agents;
 pub(crate) use dialogs::{close_dialog_lines, merge_dialog_lines};
-use dialogs::{draw_close_workspace, draw_merge_worktree, draw_notice};
+use dialogs::{draw_close_workspace, draw_merge_worktree, draw_notice, draw_pause};
 use header::{HEADER_HEIGHT, draw_header};
 pub(crate) use header::{HERD_WIDTH, herd_header, show_usage_card, usage_lines_for_slot};
 use new_agent::{draw_new_agent, draw_new_agent_launch};
@@ -95,13 +97,32 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
             "j/k select · →/← expand/collapse project · space session · p prompt · n new agent · t scratch · s supervisor · e edit · m merge · enter/f focus · x close agent · r refresh · q close"
         }
     };
-    let lines = vec![
-        Line::styled(
-            format!(" {} ", app.status),
-            Style::default().fg(roles().accent),
+    let selected = app.agents.get(app.selected);
+    // A row for an agent that exited answers fewer keys, R first.
+    let keys = if selected.is_some_and(|agent| agent.exited) {
+        "R resume · j/k select · space session · e edit · m merge · x close agent · q close"
+    } else {
+        keys
+    };
+    // Without a status of its own, the line warns about a selected agent
+    // running without the options Corgi launched it with.
+    let status = match selected.filter(|_| app.status.is_empty()) {
+        Some(agent) if !agent.missing_options.is_empty() => (
+            restart::warning_text(&agent.missing_options),
+            roles().warning,
         ),
+        _ => (app.status.clone(), roles().accent),
+    };
+    // One key for both: Resume all while any agent is paused.
+    let pause = if corgi_core::pause::paused_rows(&app.agents) > 0 {
+        "P resume all"
+    } else {
+        "P pause all"
+    };
+    let lines = vec![
+        Line::styled(format!(" {} ", status.0), Style::default().fg(status.1)),
         Line::styled(
-            format!(" S sessions · {keys}"),
+            format!(" S sessions · o orphans · {pause} · {keys}"),
             Style::default().fg(roles().muted),
         ),
     ];
@@ -173,6 +194,8 @@ fn draw_popup(frame: &mut Frame<'_>, area: Rect, app: &mut App) -> Option<Placed
         Overlay::Merge(form) => draw_merge_worktree(frame, area, form, spinner),
         Overlay::Notice(message) => draw_notice(frame, area, message),
         Overlay::Sessions(form) => sessions::draw(frame, area, form),
+        Overlay::Orphans(dialog) => orphans::draw(frame, area, dialog, spinner),
+        Overlay::Pause(form) => draw_pause(frame, area, form),
     };
     let color = effects::frame_color(drawn.color, motion.outcome_effect().or(success));
     let fade = motion.content_fade();
@@ -863,8 +886,10 @@ mod tests {
         };
         let left_edge =
             |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| top_left(terminal).0;
-        app.overlay.merge_worktree_form_mut().unwrap().phase =
-            MergePhase::Failed("git push failed".into());
+        app.overlay.merge_worktree_form_mut().unwrap().phase = MergePhase::Failed {
+            error: "git push failed".into(),
+            help: crate::app::ConflictHelp::Unavailable,
+        };
         draw_at(&mut terminal, &mut app, 1_000);
         let corner = |terminal: &ratatui::Terminal<ratatui::backend::TestBackend>| {
             terminal.backend().buffer()[top_left(terminal)].fg

@@ -1,29 +1,32 @@
 //! What the window draws: the header (the corgi and the wordmark, the
 //! herd's counts, plan usage), the overview of framed projects and their
-//! agent rows, the transcript under it, the supervisor's side panel, the
+//! agent rows (the selected one expanded into its session's turns), the
+//! supervisor's side panel, the
 //! focus view (an agent's terminal beside the side panel), the status bar
 //! and the dialogs. Every color comes from `theme::Colors`.
 
 use corgi_core::protocol::{Activity, Agent, MergeOutcome, Project};
 use gpui::{
     AnyElement, ClickEvent, Context, CursorStyle, Div, FontWeight, Hsla, InteractiveElement,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, TextRun, Window, canvas, div, prelude::FluentBuilder, px,
-    relative,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, Render,
+    SharedString, StatefulInteractiveElement, Styled, TextRun, Window, div, prelude::FluentBuilder,
+    px, relative,
 };
 
 use crate::{
     dialogs::{Dialog, Merge, MergeStage, Steps, outcome_line},
     form::Row,
     format::{self, Piece, Tone},
+    keymap::{self, Action as Hotkey},
     layout::{
         CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, FONT_SIZE, HEADER_HEIGHT,
-        HEADER_PADDING, PIXEL, Split, TRANSCRIPT_MIN, WORDMARK_CARD_GAP, WORDMARK_TOP,
+        HEADER_PADDING, PIXEL, Split, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
     rows::Pick,
     store::Connection,
-    terminal::{keys, open_url},
+    terminal::open_url,
     theme,
+    transcript::{FOLDED_LINES, TranscriptElement, Turn},
     window::{CorgiWindow, Drag},
 };
 
@@ -42,10 +45,11 @@ const FIELD_BORDER: f32 = 2.0;
 /// A dialog's padding (`p_4`, in rems) and its border, above and below it.
 const DIALOG_PADDING: f32 = 32.0;
 const DIALOG_BORDER: f32 = 2.0;
-/// The transcript's divider, across the overview's column.
-const DIVIDER: f32 = 4.0;
 /// The body text's line height, in text sizes.
 const LINE_HEIGHT: f32 = 1.45;
+/// How far a press on the header moves before it drags the window, so a
+/// click that wobbles stays a click.
+const WINDOW_DRAG_SLOP: f64 = 4.0;
 
 /// What a toolbar button does.
 type Action = fn(&mut CorgiWindow, &mut Window, &mut Context<CorgiWindow>);
@@ -65,7 +69,6 @@ impl Render for CorgiWindow {
         let connected = self.store.connected();
         let has_state = self.store.seq.is_some() || !self.store.state.agents.is_empty();
         let dialog = self.dialogs.open.is_some();
-        let viewport = window.viewport_size();
         let focus_view = self.focus_view.is_some();
         // Spacing given in rems grows and shrinks with the text, as a page
         // does when a browser zooms it.
@@ -97,7 +100,7 @@ impl Render for CorgiWindow {
                 .flex_1()
                 .min_h_0()
                 .when(!connected, |body| body.opacity(0.45))
-                .child(self.main_column(f32::from(viewport.height), cx))
+                .child(self.main_column(cx))
                 .when(self.layout.side_open, |body| {
                     body.child(self.divider(Split::Side, cx))
                         .child(self.side_panel(window, cx))
@@ -117,7 +120,9 @@ impl Render for CorgiWindow {
             .text_size(self.scaled(TEXT_SIZE))
             .line_height(self.scaled(TEXT_SIZE * LINE_HEIGHT))
             .on_key_down(cx.listener(|this, event, window, cx| {
-                if this.dialogs.open.is_some() {
+                if this.hotkeys.is_some() {
+                    this.hotkeys_key(event, window, cx);
+                } else if this.dialogs.open.is_some() {
                     this.dialog_key(event, window, cx);
                 } else if this.focus_view.is_some() {
                     this.focus_key(event, window, cx);
@@ -138,6 +143,16 @@ impl Render for CorgiWindow {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.end_drag()),
             )
+            // A press anywhere but in the expanded session's turns, which
+            // keep theirs, clears its text selection.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if this.transcript.clear_selection() {
+                        cx.notify();
+                    }
+                }),
+            )
             .child(
                 div()
                     .when(!connected, |header| header.opacity(0.45))
@@ -156,6 +171,7 @@ impl Render for CorgiWindow {
             .child(body)
             .child(self.status_bar(cx))
             .when(dialog, |root| root.child(self.dialog_layer(window, cx)))
+            .children(self.hotkeys_layer(window, cx))
     }
 }
 
@@ -291,6 +307,12 @@ impl CorgiWindow {
                     .mt(px(WORDMARK_TOP))
                     .child(wordmark_art(colors.supervisor())),
             );
+        // macOS draws no title bar (`main.rs`), so the window is dragged
+        // by its header: a press there that then moves a few pixels moves
+        // the window, and a click on a button stays a click. Linux leaves
+        // moving to its compositor.
+        let press = window.use_keyed_state("header-press", cx, |_, _| None::<Point<Pixels>>);
+        let pressed = press.clone();
         div()
             .flex()
             .flex_row()
@@ -317,18 +339,45 @@ impl CorgiWindow {
             .child(
                 div()
                     .flex()
-                    .flex_row()
+                    .flex_col()
                     .flex_none()
-                    .child(self.font_button(false, cx))
-                    .child(self.font_button(true, cx))
-                    .child(self.appearance_toggle(cx)),
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .child(self.font_button(false, cx))
+                            .child(self.font_button(true, cx))
+                            .child(self.appearance_toggle(cx)),
+                    )
+                    // The keys' dialog, under the buttons above, finding
+                    // orphaned sessions under it, and Pause all last.
+                    .child(self.hotkeys_button(cx))
+                    .child(self.orphans_button(cx))
+                    .child(self.pause_button(cx)),
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    pressed.update(cx, |pressed, _| *pressed = Some(event.position));
                     window.focus(&this.focus, cx);
                 }),
             )
+            .when(cfg!(target_os = "macos"), |header| {
+                header.on_mouse_move(move |event: &MouseMoveEvent, window, cx| {
+                    let Some(from) = *press.read(cx) else {
+                        return;
+                    };
+                    let held = event.pressed_button == Some(MouseButton::Left);
+                    if held && (event.position - from).magnitude() < WINDOW_DRAG_SLOP {
+                        return;
+                    }
+                    press.update(cx, |pressed, _| *pressed = None);
+                    if held {
+                        window.start_window_move();
+                    }
+                })
+            })
     }
 
     /// The sun or moon at the header's right end: the appearance a click
@@ -404,6 +453,8 @@ impl CorgiWindow {
         let can_merge = selected.is_some_and(|agent| agent.can_merge);
         let tagged = selected.is_some_and(|agent| agent.ready_to_merge);
         let has_agent = selected.is_some();
+        let exited = selected.is_some_and(|agent| agent.exited);
+        let running = has_agent && !exited;
         let mut bar = div()
             .flex()
             .flex_row()
@@ -414,38 +465,51 @@ impl CorgiWindow {
             .py_1()
             .border_b_1()
             .border_color(self.colors.roles.rule);
-        let buttons: [(&str, &str, bool, Action); 7] = [
-            ("n", "New agent", true, |this, _, cx| this.new_agent(cx)),
-            ("p", "Prompt", can_prompt, |this, window, cx| {
-                this.open_prompt(None, window, cx)
+        let buttons: [(Hotkey, &str, bool, Action); 8] = [
+            (Hotkey::NewAgent, "New agent", true, |this, _, cx| {
+                this.new_agent(cx)
             }),
-            ("s", "Supervisor", has_agent, |this, _, cx| {
-                this.start_supervisor(cx)
+            (Hotkey::Prompt, "Prompt", can_prompt, |this, window, cx| {
+                this.open_prompt(window, cx)
             }),
-            ("m", "Merge", can_merge, |this, _, cx| this.merge_check(cx)),
             (
-                "t",
+                Hotkey::Supervisor,
+                "Supervisor",
+                has_agent,
+                |this, _, cx| this.start_supervisor(cx),
+            ),
+            (Hotkey::Merge, "Merge", can_merge, |this, _, cx| {
+                this.merge_check(cx)
+            }),
+            (
+                Hotkey::Tag,
                 // As wide as each other, so selecting a tagged row cannot
                 // rewrap the toolbar and move the overview under the mouse.
                 if tagged { "Untag    " } else { "Tag merge" },
-                has_agent,
+                running,
                 |this, _, cx| this.toggle_tag(cx),
             ),
-            ("x", "Close", has_agent, |this, _, cx| {
+            (Hotkey::Resume, "Resume", exited, |this, _, cx| {
+                this.resume(cx)
+            }),
+            (Hotkey::Close, "Close", has_agent, |this, _, cx| {
                 this.close_check(None, cx)
             }),
-            ("r", "Refresh", true, |this, _, cx| this.refresh(cx)),
+            (Hotkey::Refresh, "Refresh", true, |this, _, cx| {
+                this.refresh(cx)
+            }),
         ];
         for (key, label, enabled, action) in buttons {
+            let key = self.keymap.label(key);
             bar =
                 bar.child(
-                    self.button(key, label, enabled, false, cx, move |this, window, cx| {
+                    self.button(&key, label, enabled, false, cx, move |this, window, cx| {
                         action(this, window, cx)
                     }),
                 );
         }
         bar.child(self.button(
-            "↵",
+            &self.keymap.label(Hotkey::Open),
             "Terminal",
             has_agent,
             false,
@@ -458,15 +522,7 @@ impl CorgiWindow {
         ))
         .child(div().flex_1())
         .child(self.button(
-            "␣",
-            "Transcript",
-            true,
-            self.layout.transcript_open,
-            cx,
-            |this, _, cx| this.toggle_transcript(cx),
-        ))
-        .child(self.button(
-            "\\",
+            &self.keymap.label(Hotkey::SidePanel),
             "Side panel",
             true,
             self.layout.side_open,
@@ -479,7 +535,6 @@ impl CorgiWindow {
     /// and how its terminal is, and the side panel's switch.
     fn focus_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
-        let mac = cfg!(target_os = "macos");
         let terminal = self.terminal.read(cx);
         let status = terminal.status_text();
         let (live, gone) = (terminal.live(), terminal.gone());
@@ -523,7 +578,7 @@ impl CorgiWindow {
             .border_b_1()
             .border_color(colors.roles.rule)
             .child(self.button(
-                keys::leave_label(mac),
+                &self.keymap.label(Hotkey::Leave),
                 "← Overview",
                 true,
                 false,
@@ -553,7 +608,7 @@ impl CorgiWindow {
             })
             .child(div().flex_1())
             .child(self.button(
-                keys::side_label(mac),
+                &self.keymap.label(Hotkey::FocusSide),
                 "Side panel",
                 true,
                 self.layout.focus_side_open,
@@ -563,7 +618,7 @@ impl CorgiWindow {
     }
 
     /// A button with its key drawn on a cap before its label.
-    fn button(
+    pub(crate) fn button(
         &self,
         key: &str,
         label: &str,
@@ -640,104 +695,107 @@ impl CorgiWindow {
             .child(div().flex_1().truncate().child(text))
             .when(retry, |banner| {
                 banner.child(
-                    self.button("⏎", "Retry now", true, false, cx, |this, _, cx| {
+                    self.button("", "Retry now", true, false, cx, |this, _, cx| {
                         this.retry_now(cx)
                     }),
                 )
             })
     }
 
-    // ---- The overview and the transcript ----
+    // ---- The overview ----
 
-    fn main_column(&self, window_height: f32, cx: &mut Context<Self>) -> impl IntoElement {
-        let transcript_open = self.layout.transcript_open;
-        // The column's height as last laid out, less the divider: the
-        // header, toolbar and status bar take more as the text grows, and
-        // the header wraps in a narrow window. Before the first layout, the
-        // window's less about what they take at today's text size.
-        let available = if self.main_column_height > 0.0 {
-            self.main_column_height - DIVIDER
-        } else {
-            (window_height - 180.0).max(TRANSCRIPT_MIN * 2.0)
-        };
-        let transcript_height = self.layout.transcript_height_in(available.max(0.0));
-        let entity = cx.entity().downgrade();
-        let measure = canvas(
-            move |bounds, _, cx| {
-                let height = f32::from(bounds.size.height);
-                let _ = entity.update(cx, |this, cx| {
-                    if (this.main_column_height - height).abs() >= 1.0 {
-                        this.main_column_height = height;
-                        cx.notify();
-                    }
-                });
-            },
-            |_, (), _, _| {},
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full();
+    fn main_column(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .relative()
             .flex()
             .flex_col()
             .flex_1()
             .min_w_0()
-            // Nothing in it draws over the status bar, even for the frame
-            // before a new height is measured.
+            // Nothing in it draws over the status bar.
             .overflow_hidden()
-            .child(measure)
             .child(self.overview(cx))
-            .when(transcript_open, |column| {
-                column
-                    .child(self.divider(Split::Transcript, cx))
-                    .child(self.transcript(transcript_height))
-            })
+    }
+
+    /// The selected row, while it is expanded and shows.
+    fn expanded_row(&self) -> Option<&str> {
+        let selected = self.selected.as_deref().filter(|_| self.expanded)?;
+        self.visible_agents()
+            .iter()
+            .any(|agent| agent.pane_id == selected)
+            .then_some(selected)
     }
 
     fn overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let state = &self.store.state;
+        let expanded = self.expanded_row();
+        let fill = self.rows.expand(expanded, &self.overview_scroll);
         // Prepainted after its cards, which record where their rows are.
         let (rows, scroll) = (self.rows.clone(), self.overview_scroll.clone());
-        let mut list = div()
+        let list = div()
             .on_children_prepainted(move |_, window, _| rows.apply(&scroll, window))
             .id("overview")
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .gap_3()
-            .p_3()
             .overflow_y_scroll()
             .track_scroll(&self.overview_scroll);
+        // Expanded, the cards stop at the expanded row, which grows to the
+        // view's bottom (see `rows.rs`).
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .gap_3()
+            .p_3()
+            .when_some(fill, |content, fill| content.min_h(fill));
         if state.agents.is_empty() {
             let text = if self.store.seq.is_none() {
                 "Waiting for corgi serve…"
             } else {
                 "No agents. Press n to start one."
             };
-            return list.child(div().text_color(self.colors.roles.muted).child(text));
+            return list
+                .child(content.child(div().text_color(self.colors.roles.muted).child(text)));
         }
         for project in &state.projects {
-            list = list.child(self.project(project, cx));
+            let holds = expanded.is_some_and(|id| project.agents.iter().any(|a| a == id));
+            content = content.child(self.project(project, expanded.filter(|_| holds), cx));
+            if holds {
+                break;
+            }
         }
-        list
+        list.child(content)
     }
 
-    fn project(&self, project: &Project, cx: &mut Context<Self>) -> AnyElement {
+    /// A project's card, or its heading and rows; with `expanded`, one of
+    /// its rows, it ends at that row, which grows into its session.
+    fn project(
+        &self,
+        project: &Project,
+        expanded: Option<&str>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = &self.colors;
         let collapsed = project.card && self.collapsed.contains(&project.group);
-        let agents: Vec<&Agent> = project
+        let mut agents: Vec<&Agent> = project
             .agents
             .iter()
             .filter(|id| !collapsed || project.supervisor.as_deref() == Some(id.as_str()))
             .filter_map(|id| self.store.agent(id))
             .collect();
+        if let Some(at) = expanded.and_then(|id| agents.iter().position(|a| a.pane_id == id)) {
+            agents.truncate(at + 1);
+        }
         let ids: Vec<String> = agents.iter().map(|agent| agent.pane_id.clone()).collect();
         let rows: Vec<AnyElement> = agents
             .into_iter()
-            .map(|agent| self.agent_row(agent, cx))
+            .map(|agent| {
+                if expanded == Some(agent.pane_id.as_str()) {
+                    self.expanded_agent_row(agent, cx)
+                } else {
+                    self.agent_row(agent, cx)
+                }
+            })
             .collect();
         let places = self.rows.clone();
         let title_color = if project.card {
@@ -775,9 +833,9 @@ impl CorgiWindow {
             div()
                 .text_color(colors.roles.muted)
                 .child(if collapsed {
-                    "→ expand"
+                    format!("{} expand", self.keymap.label(Hotkey::ExpandCard))
                 } else {
-                    "← collapse"
+                    format!("{} collapse", self.keymap.label(Hotkey::CollapseCard))
                 })
                 .into_any_element()
         });
@@ -788,7 +846,7 @@ impl CorgiWindow {
                 this.toggle_card(&group, cx);
             }))
         });
-        let footer = collapsed.then(|| {
+        let footer = (collapsed && expanded.is_none()).then(|| {
             div()
                 .flex()
                 .flex_col()
@@ -840,10 +898,12 @@ impl CorgiWindow {
                 .gap_1()
                 .px_2()
                 .pb_2()
+                .when(expanded.is_some(), |body| body.flex_1())
                 .children(rows)
                 .children(footer)
                 .on_children_prepainted(move |bounds, _, _| places.record(&ids, &bounds)),
         )
+        .when(expanded.is_some(), |card| card.flex_1())
         .id(SharedString::from(format!("project-{}", project.group)))
         // A right click anywhere in the frame collapses or expands it,
         // leaving the selection be. Rows take only left clicks.
@@ -857,13 +917,57 @@ impl CorgiWindow {
     }
 
     fn agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
+        let row = self
+            .row_frame(agent, cx)
+            .child(self.activity_line(&agent.message, 2, selected))
+            .child(self.activity_line(&agent.tool, 1, selected));
+        self.row_outline(agent, row, false)
+    }
+
+    /// The selected row, grown into its session's latest turns in place of
+    /// its activity lines, down to the overview's bottom. A press in the
+    /// turns selects their text and never reaches the row.
+    fn expanded_agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
+        let row = self
+            .row_frame(agent, cx)
+            .flex_1()
+            .child(self.session(agent));
+        self.row_outline(agent, row, true)
+    }
+
+    /// The row in a frame that every row has: a 2 px outline, transparent
+    /// until the row is selected, so selecting it moves no text. Selected,
+    /// the frame is outlined in the accent over the accent's faint tint
+    /// (`Colors::selected_row`), the expanded row whole.
+    fn row_outline(&self, agent: &Agent, row: gpui::Stateful<Div>, grows: bool) -> AnyElement {
+        let colors = &self.colors;
+        let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
+        div()
+            .flex()
+            .flex_col()
+            .when(grows, |frame| frame.flex_1())
+            .rounded_md()
+            .border_2()
+            .border_color(if selected {
+                colors.roles.accent
+            } else {
+                gpui::transparent_black()
+            })
+            .when(selected, |frame| frame.bg(colors.selected_row()))
+            .child(row)
+            .into_any_element()
+    }
+
+    /// A row's bar, its click and its status line, for its body to follow.
+    fn row_frame(&self, agent: &Agent, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let colors = &self.colors;
         let now = self.store.now();
         let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
         let (badge, badge_tone) = format::badge(agent);
         let badge_color = self.tone(badge_tone, None);
         let secondary = colors.secondary(if selected {
-            colors.roles.focus_bar
+            colors.selected_row()
         } else {
             colors.background
         });
@@ -873,16 +977,21 @@ impl CorgiWindow {
         } else {
             colors.roles.text
         };
-        // A narrow window wraps the fields after the task onto the next
-        // line rather than cutting them off.
+        // The line stays one line: every piece keeps its natural width and
+        // whatever passes the pane's right edge is clipped, never wrapped.
         let mut identity = div()
             .flex()
             .flex_row()
-            .flex_wrap()
+            .flex_nowrap()
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .w_full()
+            .min_w_0()
             .items_center()
             .gap_x_2()
             .child(
                 div()
+                    .flex_none()
                     .px_1()
                     .min_w(self.scaled(68.))
                     .flex()
@@ -892,18 +1001,24 @@ impl CorgiWindow {
                     .font_weight(FontWeight::BOLD)
                     .child(badge),
             )
+            .children(format::missing_badge(agent).map(|piece| {
+                div()
+                    .flex_none()
+                    .text_color(self.tone(piece.tone, None))
+                    .font_weight(FontWeight::BOLD)
+                    .child(piece.text)
+            }))
             .children(
-                format::last_activity(agent).map(|time| div().text_color(secondary).child(time)),
+                format::last_activity(agent)
+                    .map(|time| div().flex_none().text_color(secondary).child(time)),
             )
             .child(
                 div()
+                    .flex_none()
                     .text_color(task_color)
                     .when(selected || agent.supervisor, |d| {
                         d.font_weight(FontWeight::BOLD)
                     })
-                    .min_w_0()
-                    .max_w_full()
-                    .truncate()
                     .child(if agent.task.is_empty() {
                         agent.name.clone()
                     } else {
@@ -940,16 +1055,11 @@ impl CorgiWindow {
             .border_l_4()
             .border_color(if agent.supervisor {
                 colors.supervisor()
-            } else if selected {
-                colors.roles.accent
             } else {
                 gpui::transparent_black()
             })
-            .when(selected, |row| row.bg(colors.roles.focus_bar))
             .cursor(CursorStyle::PointingHand)
             .child(identity)
-            .child(self.activity_line(&agent.message, 2, selected))
-            .child(self.activity_line(&agent.tool, 1, selected))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.select(pane_id.clone(), Pick::Click, cx);
                 window.focus(&this.focus, cx);
@@ -957,15 +1067,14 @@ impl CorgiWindow {
                     this.open_agent(pane_id.clone(), window, cx);
                 }
             }))
-            .into_any_element()
     }
 
     /// An activity line; on the `selected` row, muted parts take the
-    /// colors' secondary so they read on the selection bar.
+    /// colors' secondary so they read on its tint.
     fn activity_line(&self, activity: &Activity, lines: usize, selected: bool) -> impl IntoElement {
         let colors = &self.colors;
         let secondary = colors.secondary(if selected {
-            colors.roles.focus_bar
+            colors.selected_row()
         } else {
             colors.background
         });
@@ -1005,102 +1114,80 @@ impl CorgiWindow {
             )
     }
 
-    fn transcript(&self, height: f32) -> impl IntoElement {
+    /// The expanded row's body: its session's turns, newest first, the
+    /// newest in full and older ones folded. Until they are read, or for a
+    /// harness Corgi cannot read, its activity lines and why.
+    fn session(&self, agent: &Agent) -> AnyElement {
         let colors = &self.colors;
-        let agent = self.selected_agent();
-        let title = agent.map_or("No agent selected".to_string(), |agent| {
-            format!(
-                "Session · {}",
-                agent.herdr_name.clone().unwrap_or(agent.name.clone())
-            )
-        });
         let transcript = self
             .store
             .state
             .transcript
             .as_ref()
-            .filter(|transcript| Some(&transcript.pane_id) == self.selected.as_ref());
-        let entries: Vec<AnyElement> = match transcript {
-            None if agent.is_some() => vec![
-                div()
-                    .text_color(colors.roles.muted)
-                    .child("Reading the session…")
-                    .into_any_element(),
-            ],
-            None => Vec::new(),
-            Some(transcript) if transcript.entries.is_empty() => vec![
-                div()
-                    .text_color(colors.roles.muted)
-                    .child("Corgi cannot read this harness's session file.")
-                    .into_any_element(),
-            ],
-            Some(transcript) => transcript
-                .entries
-                .iter()
-                .enumerate()
-                .map(|(index, entry)| {
-                    // The newest turn in full, older ones two lines each.
-                    let lines = if index == 0 { 0 } else { 2 };
-                    self.transcript_entry(entry, lines)
-                })
-                .collect(),
+            .filter(|transcript| transcript.pane_id == agent.pane_id);
+        let Some(transcript) = transcript.filter(|t| !t.entries.is_empty()) else {
+            let why = match transcript {
+                None => "Reading the session…",
+                Some(_)
+                    if corgi_core::harness::Harness::from_kind(&agent.harness)
+                        .session_format()
+                        .is_some() =>
+                {
+                    "This session has not written any turns yet"
+                }
+                Some(_) => {
+                    "Corgi reads transcripts from the session files Claude Code and Codex write"
+                }
+            };
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .child(self.activity_line(&agent.message, 2, true))
+                .child(self.activity_line(&agent.tool, 1, true))
+                .child(
+                    div()
+                        .text_color(colors.secondary(colors.selected_row()))
+                        .child(why),
+                )
+                .into_any_element();
         };
+        let turns = transcript
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| Turn {
+                text: entry.text.clone().into(),
+                marker: format::marker(entry.kind).into(),
+                marker_color: self.tone(format::marker_tone(entry.kind), None),
+                color: match entry.kind {
+                    corgi_core::protocol::ActivityKind::Prompt => colors.roles.accent,
+                    corgi_core::protocol::ActivityKind::Command
+                    | corgi_core::protocol::ActivityKind::Tool => colors.roles.quiet,
+                    _ => colors.roles.text,
+                },
+                // The newest turn, usually the closing summary, in full.
+                fold: (index > 0).then_some(FOLDED_LINES),
+            })
+            .collect();
+        // The markers' column and the gap after it, as the activity lines
+        // have them (`w(12)`, `gap_2`), and `gap_2` between turns.
+        let gap = self.scaled(REM / 2.0);
         div()
             .flex()
             .flex_col()
-            .h(px(height))
-            .flex_none()
-            .child(
-                div()
-                    .px_3()
-                    .py_1()
-                    .text_color(colors.roles.accent)
-                    .font_weight(FontWeight::BOLD)
-                    .child(title),
-            )
-            .child(
-                div()
-                    .id("transcript")
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_h_0()
-                    .gap_2()
-                    .px_3()
-                    .pb_2()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.transcript_scroll)
-                    .children(entries),
-            )
-    }
-
-    fn transcript_entry(&self, entry: &Activity, lines: usize) -> AnyElement {
-        let colors = &self.colors;
-        let text_color = match entry.kind {
-            corgi_core::protocol::ActivityKind::Prompt => colors.roles.accent,
-            corgi_core::protocol::ActivityKind::Command
-            | corgi_core::protocol::ActivityKind::Tool => colors.roles.quiet,
-            _ => colors.roles.text,
-        };
-        div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .child(
-                div()
-                    .flex_none()
-                    .w(self.scaled(12.))
-                    .text_color(self.tone(format::marker_tone(entry.kind), None))
-                    .child(format::marker(entry.kind)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(text_color)
-                    .when(lines > 0, |d| d.line_clamp(lines))
-                    .child(entry.text.clone()),
-            )
+            .flex_1()
+            .min_h_0()
+            .pt_1()
+            .pr_2()
+            .child(TranscriptElement::new(
+                turns,
+                self.transcript.clone(),
+                self.focus.clone(),
+                colors.selection(),
+                self.scaled(12.) + gap,
+                gap,
+            ))
             .into_any_element()
     }
 
@@ -1131,26 +1218,10 @@ impl CorgiWindow {
             return panel.child(
                 div()
                     .text_color(colors.roles.muted)
-                    .child("Select an agent to see its project's supervisor."),
+                    .child("Select an agent to see its project's questions and backlog."),
             );
         };
-        panel = panel.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_2()
-                .child(
-                    div()
-                        .text_color(colors.supervisor())
-                        .font_weight(FontWeight::BOLD)
-                        .child("SUPERVISOR"),
-                )
-                .child(
-                    div()
-                        .text_color(colors.roles.muted)
-                        .child(project.group.clone()),
-                ),
-        );
+        // Held deliveries wait on the user, so they come first.
         if let Some(held) = format::held(project.held) {
             panel = panel.child(
                 div()
@@ -1166,147 +1237,6 @@ impl CorgiWindow {
                         corgi_core::paths::tilde(&project.root)
                     ))),
             );
-        }
-        let supervisor = project
-            .supervisor
-            .as_deref()
-            .and_then(|id| self.store.agent(id));
-        match supervisor {
-            Some(supervisor) => {
-                let pane_id = supervisor.pane_id.clone();
-                let prompt_id = pane_id.clone();
-                let now = self.store.now();
-                let model = supervisor.model.as_deref().unwrap_or(&supervisor.harness);
-                let (badge, tone) = format::badge(supervisor);
-                let badge_color = self.tone(tone, None);
-                panel = panel
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .flex_wrap()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .px_1()
-                                    .bg(badge_color)
-                                    .text_color(colors.badge_text(badge_color))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(badge),
-                            )
-                            .children(format::fields(supervisor, now).into_iter().map(|piece| {
-                                div()
-                                    .text_color(self.tone(piece.tone, Some(model)))
-                                    .child(piece.text)
-                            })),
-                    )
-                    .child(self.activity_block(&supervisor.message))
-                    .child(self.activity_line(&supervisor.tool, 2, false))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(self.button(
-                                "p",
-                                "Prompt it",
-                                supervisor.can_prompt,
-                                false,
-                                cx,
-                                move |this, window, cx| {
-                                    this.open_prompt(Some(prompt_id.clone()), window, cx)
-                                },
-                            ))
-                            .child(self.button(
-                                "",
-                                // The focus view opens the supervisor's own terminal.
-                                if self.focus_view.is_some() {
-                                    "Open its terminal"
-                                } else {
-                                    "Select it"
-                                },
-                                true,
-                                false,
-                                cx,
-                                move |this, window, cx| {
-                                    if this.focus_view.is_some() {
-                                        this.open_agent(pane_id.clone(), window, cx)
-                                    } else {
-                                        this.select(pane_id.clone(), Pick::Reveal, cx)
-                                    }
-                                },
-                            )),
-                    );
-            }
-            None if project.scratch => {
-                panel = panel.child(
-                    div()
-                        .text_color(colors.roles.muted)
-                        .child("Scratch sessions belong to no project and have no supervisor."),
-                );
-            }
-            None => {
-                panel = panel
-                    .child(
-                        div()
-                            .text_color(colors.roles.muted)
-                            .child("No supervisor runs for this project."),
-                    )
-                    .child(self.button(
-                        "s",
-                        "Start its supervisor",
-                        true,
-                        false,
-                        cx,
-                        |this, _, cx| this.start_supervisor(cx),
-                    ));
-            }
-        }
-
-        let ready = self.store.ready_to_merge(project);
-        if !ready.is_empty() {
-            panel = panel.child(section_title(
-                "READY TO MERGE".into(),
-                self.tone(Tone::Merge, None),
-            ));
-            for agent in ready {
-                let (badge, tone) = format::badge(agent);
-                let badge_color = self.tone(tone, None);
-                let pane_id = agent.pane_id.clone();
-                panel = panel.child(
-                    div()
-                        .id(SharedString::from(format!(
-                            "ready-to-merge-{}",
-                            agent.pane_id
-                        )))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|style| style.bg(colors.roles.focus_bar))
-                        .child(
-                            div()
-                                .px_1()
-                                .bg(badge_color)
-                                .text_color(colors.badge_text(badge_color))
-                                .font_weight(FontWeight::BOLD)
-                                .child(badge),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(agent.task.clone()),
-                        )
-                        // The worker's row is in the overview, not under the
-                        // mouse: it scrolls into view.
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.select(pane_id.clone(), Pick::Reveal, cx);
-                        })),
-                );
-            }
         }
 
         // The numbered questions, each answered in place.
@@ -1447,48 +1377,29 @@ impl CorgiWindow {
             }
         }
 
-        if !project.blocked.is_empty() {
-            panel = panel.child(section_title("BLOCKED".into(), colors.roles.warning));
-            for blocked in &project.blocked {
+        // The supervisor's things to build later, each opened whole with a
+        // field to write the supervisor about it.
+        if let Some(title) = format::backlog_title(&project.backlog) {
+            panel = panel.child(section_title(title, colors.supervisor()));
+            for (index, entry) in project.backlog.iter().enumerate() {
+                let (root, entry) = (root.clone(), entry.clone());
                 panel = panel.child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::BOLD)
-                                .child(format!("▲ {}", blocked.task)),
-                        )
-                        .child(
-                            div()
-                                .text_color(colors.roles.warning)
-                                .child(blocked.waiting_on.clone()),
-                        ),
+                        .id(SharedString::from(format!("backlog-{index}")))
+                        .p_2()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(colors.roles.rule)
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|style| style.bg(colors.roles.focus_bar))
+                        .child(entry.heading.clone())
+                        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.open_backlog(root.clone(), entry.clone(), window, cx);
+                        })),
                 );
             }
         }
         panel
-    }
-
-    fn activity_block(&self, activity: &Activity) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .child(
-                div()
-                    .flex_none()
-                    .w(self.scaled(12.))
-                    .text_color(self.tone(format::marker_tone(activity.kind), None))
-                    .child(format::marker(activity.kind)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .line_clamp(12)
-                    .child(activity.text.clone()),
-            )
     }
 
     /// The handle between two panes, dragged to resize them.
@@ -1508,45 +1419,29 @@ impl CorgiWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    let last = match split {
-                        Split::Side | Split::FocusSide => event.position.x,
-                        Split::Transcript => event.position.y,
-                    };
+                    let last = event.position.x;
                     this.drag = Some(Drag { split, last });
                     cx.stop_propagation();
                     cx.notify();
                 }),
             );
-        match split {
-            Split::Side | Split::FocusSide => handle
-                .w(px(4.))
-                .h_full()
-                .cursor(CursorStyle::ResizeLeftRight),
-            Split::Transcript => handle
-                .h(px(DIVIDER))
-                .w_full()
-                .cursor(CursorStyle::ResizeUpDown),
-        }
+        handle
+            .w(px(4.))
+            .h_full()
+            .cursor(CursorStyle::ResizeLeftRight)
     }
 
     // ---- The status bar ----
 
     /// The keys the status bar reminds of.
     fn status_hints(&self) -> String {
-        if self.focus_view.is_none() {
-            return "j/k select · ↵ terminal · ←/→ or right-click card · 1–9 answer".into();
-        }
-        let mac = cfg!(target_os = "macos");
-        let (modifier, copy) = if mac {
-            ("⌘", "⌘C/⌘V")
+        if self.focus_view.is_some() {
+            self.keymap.focus_hints()
+        } else if self.expanded_row().is_some() {
+            self.keymap.expanded_hints()
         } else {
-            ("Ctrl", "Ctrl+Shift+C/V")
-        };
-        format!(
-            "{} overview · {} side panel · {copy} copy/paste · {modifier}-click a link",
-            keys::leave_label(mac),
-            keys::side_label(mac),
-        )
+            self.keymap.overview_hints()
+        }
     }
 
     fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1578,11 +1473,25 @@ impl CorgiWindow {
                     .truncate()
                     .child(flash.text.clone())
             });
-        let status = state.status.clone().map(|status| {
-            div()
-                .text_color(colors.roles.muted)
-                .truncate()
-                .child(status)
+        // The selected agent's own trouble, an exit or missing options,
+        // comes before the refresh's status line.
+        let hint = self
+            .selected_agent()
+            .and_then(|agent| format::selected_hint(agent, &self.keymap.label(Hotkey::Resume)))
+            .map(|(text, tone)| {
+                div()
+                    .flex_none()
+                    .text_color(self.tone(tone, None))
+                    .font_weight(FontWeight::BOLD)
+                    .child(text)
+            });
+        let status = hint.or_else(|| {
+            state.status.clone().map(|status| {
+                div()
+                    .text_color(colors.roles.muted)
+                    .truncate()
+                    .child(status)
+            })
         });
         let count = state.agents.len();
         div()
@@ -1604,7 +1513,10 @@ impl CorgiWindow {
             .children(flash.or(status))
             .child(div().flex_1())
             .child(
+                // The keys give way to what the status says.
                 div()
+                    .min_w_0()
+                    .truncate()
                     .text_color(colors.roles.muted)
                     .child(self.status_hints()),
             )
@@ -1656,10 +1568,24 @@ impl CorgiWindow {
                 error.as_deref(),
                 window,
             ),
+            Some(Dialog::Backlog {
+                entry,
+                sending,
+                error,
+                ..
+            }) => self.text_dialog(
+                "Backlog entry".into(),
+                Some(self.backlog_text(entry)),
+                *sending,
+                error.as_deref(),
+                window,
+            ),
             Some(Dialog::NewAgent(new)) => self.form_dialog(new, window, cx),
             Some(Dialog::NewAgentLoading) => self.loading_dialog(),
             Some(Dialog::Merge(merge)) => self.merge_dialog(merge, cx),
             Some(Dialog::Close(close)) => self.close_dialog(close, cx),
+            Some(Dialog::Orphans(orphans)) => self.orphans_dialog(orphans, window, cx),
+            Some(Dialog::Pause(pause)) => self.pause_dialog(pause, cx),
             None => div().into_any_element(),
         };
         // A refused prompt keeps the keyboard; its frame says so.
@@ -1698,7 +1624,14 @@ impl CorgiWindow {
                     // listener runs before its parent's, so the layer's
                     // never hears it. The dialog's own children heard it first.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .w(self.scaled(720.))
+                    // The orphans' list is wide, as the hotkeys dialog.
+                    .w(
+                        self.scaled(if matches!(self.dialogs.open, Some(Dialog::Orphans(_))) {
+                            900.
+                        } else {
+                            720.
+                        }),
+                    )
                     .max_w(relative(0.92))
                     .flex()
                     .flex_col()
@@ -1713,7 +1646,7 @@ impl CorgiWindow {
             )
     }
 
-    fn dialog_title(&self, title: String) -> impl IntoElement {
+    pub(crate) fn dialog_title(&self, title: String) -> impl IntoElement {
         div()
             .flex()
             .flex_row()
@@ -1848,7 +1781,7 @@ impl CorgiWindow {
                     .text_color(self.colors.secondary(self.colors.roles.popup_fill))
                     .child("Loading the form and the harnesses' models…"),
             )
-            .child(self.hints(&[("Esc", "cancel")]))
+            .child(self.hints(&[(keymap::ESCAPE, "cancel")]))
             .into_any_element()
     }
 
@@ -1974,11 +1907,11 @@ impl CorgiWindow {
             )
             .children(running)
             .child(self.hints(&[
-                ("↵", "create agent"),
+                (keymap::ENTER, "create agent"),
                 ("↑↓ ⇥", "rows"),
                 ("←→", "change"),
                 ("Space", "list"),
-                ("Esc", "cancel"),
+                (keymap::ESCAPE, "cancel"),
             ]))
             .into_any_element()
     }
@@ -2117,7 +2050,7 @@ impl CorgiWindow {
                         )
                     }),
             );
-        if merge.stage != MergeStage::Confirm {
+        if !matches!(merge.stage, MergeStage::Confirm | MergeStage::Refused(_)) {
             // A merge that succeeded went through every step.
             let mut progress = merge.progress.clone();
             if matches!(
@@ -2158,6 +2091,27 @@ impl CorgiWindow {
                     }));
                 }
             }
+            MergeStage::Refused(error) => {
+                dialog = dialog
+                    .child(
+                        div()
+                            .p_2()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(colors.roles.danger)
+                            .text_color(colors.roles.danger)
+                            .font_weight(FontWeight::BOLD)
+                            .child(format!("! Merge unavailable: {error}")),
+                    )
+                    .child(
+                        div()
+                            .text_color(colors.secondary(colors.roles.popup_fill))
+                            .child(format!(
+                                "Nothing ran. Fix it, then merge again with {}.",
+                                self.keymap.label(Hotkey::Merge)
+                            )),
+                    );
+            }
             MergeStage::Failed(error) => {
                 dialog = dialog.child(div().text_color(colors.roles.danger).child(error.clone()));
             }
@@ -2170,16 +2124,28 @@ impl CorgiWindow {
             }
             MergeStage::Confirm => {}
         }
-        let actions = merge.actions();
+        // Why the supervisor cannot be asked, beside its greyed button.
+        if let Some(why) = merge.no_supervisor() {
+            dialog = dialog.child(div().text_color(colors.roles.warning).child(why));
+        }
+        let default = merge.default_action();
+        let ask_key = self.keymap.label(Hotkey::AskSupervisor);
         let mut buttons = div().flex().flex_row().gap_2().pt_1();
-        for (index, (label, action)) in actions.into_iter().enumerate() {
-            let key = if index == 0 { "↵" } else { "" };
-            buttons =
-                buttons.child(
-                    self.button(key, label, true, index == 0, cx, move |this, _, cx| {
-                        this.merge_action(action, cx)
-                    }),
-                );
+        for (label, action, enabled) in merge.actions() {
+            let is_default = Some(action) == default;
+            let key = match action {
+                crate::dialogs::MergeAction::Handoff => ask_key.as_str(),
+                _ if is_default => keymap::ENTER,
+                _ => "",
+            };
+            buttons = buttons.child(self.button(
+                key,
+                label,
+                enabled,
+                is_default,
+                cx,
+                move |this, _, cx| this.merge_action(action, cx),
+            ));
         }
         dialog.child(buttons).into_any_element()
     }
@@ -2227,17 +2193,25 @@ impl CorgiWindow {
                     .flex_row()
                     .gap_2()
                     .pt_1()
-                    .child(
-                        self.button("↵", &confirm, !close.running, true, cx, |this, _, cx| {
-                            this.confirm_close(cx)
-                        }),
-                    )
-                    .child(
-                        self.button("Esc", "Cancel", true, false, cx, |this, _, cx| {
+                    .child(self.button(
+                        keymap::ENTER,
+                        &confirm,
+                        !close.running,
+                        true,
+                        cx,
+                        |this, _, cx| this.confirm_close(cx),
+                    ))
+                    .child(self.button(
+                        keymap::ESCAPE,
+                        "Cancel",
+                        true,
+                        false,
+                        cx,
+                        |this, _, cx| {
                             this.dialogs.open = None;
                             cx.notify();
-                        }),
-                    ),
+                        },
+                    )),
             )
             .into_any_element()
     }
@@ -2246,7 +2220,7 @@ impl CorgiWindow {
 /// How tall a dialog's content may be: what the window leaves below the
 /// dialog's top margin, its padding and frame and a bottom margin, with the
 /// text `scale` times its default size.
-fn dialog_room(window: &Window, scale: f32) -> f32 {
+pub(crate) fn dialog_room(window: &Window, scale: f32) -> f32 {
     f32::from(window.viewport_size().height)
         - DIALOG_TOP
         - (DIALOG_PADDING * scale + DIALOG_BORDER)
@@ -2354,6 +2328,8 @@ fn framed(
         });
     div().flex().flex_col().child(top).child(
         div()
+            .flex()
+            .flex_col()
             .flex_1()
             .border_l_1()
             .border_r_1()

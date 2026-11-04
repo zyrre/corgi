@@ -8,13 +8,17 @@ use std::path::Path;
 use crate::{
     harness::Harness,
     model::{AgentInfo, WorkspaceInfo, WorkspaceWorktreeInfo},
-    paths::{dir_name, is_home},
+    paths::dir_name,
     supervisor,
 };
 
 use crate::{
     launch::CORGI_REQUEST_TOKEN,
-    project_main::{CORGI_AGENT_WORKSPACE_ROLE, CORGI_WORKSPACE_ROLE_TOKEN, project_main_root},
+    project_main::{
+        CORGI_AGENT_WORKSPACE_ROLE, CORGI_PROJECT_MAIN_ROLE, CORGI_WORKSPACE_ROLE_TOKEN,
+        project_main_root,
+    },
+    repo::Repo,
 };
 
 /// What the dashboard calls a project's supervisor: its role, capitalised as
@@ -55,19 +59,29 @@ pub fn has_real_agent_session(info: &AgentInfo) -> bool {
             .is_some_and(|session| !session.trim().is_empty())
 }
 
-/// Workspace metadata alone survives pane reuse and cannot prove an agent is
-/// still running. This only selects candidates for a fresh process check.
-pub fn is_corgi_scratch_codex(info: &AgentInfo, workspace: Option<&WorkspaceInfo>) -> bool {
+/// Whether `info` is an unidentified Codex worth a fresh process check:
+/// Codex in a workspace Corgi created (a project workspace or an agent
+/// workspace, scratch or worktree). Workspace metadata alone survives pane
+/// reuse and cannot prove an agent is still running, so this only selects
+/// candidates; the refresh admits one only while `codex` runs in the pane's
+/// foreground at its cwd. Codex has no session integration on many
+/// machines, and without this its workers would be hidden (cause 1 of
+/// docs/orphaned-sessions.md); a workspace Corgi did not create is the
+/// user's own, where whatever runs in a shell stays out.
+pub fn is_corgi_workspace_codex(info: &AgentInfo, workspace: Option<&WorkspaceInfo>) -> bool {
     info.harness() == Harness::Codex
-        && is_home(info.cwd())
         && workspace.is_some_and(|workspace| {
-            workspace.workspace_id == info.workspace_id
-                && workspace.worktree.is_none()
-                && workspace
-                    .tokens
-                    .get(CORGI_WORKSPACE_ROLE_TOKEN)
-                    .is_some_and(|role| role == CORGI_AGENT_WORKSPACE_ROLE)
+            workspace.workspace_id == info.workspace_id && is_corgi_workspace(workspace)
         })
+}
+
+/// Whether Corgi created `workspace`: a project workspace or an agent
+/// workspace, as its role mark says.
+pub fn is_corgi_workspace(workspace: &WorkspaceInfo) -> bool {
+    workspace
+        .tokens
+        .get(CORGI_WORKSPACE_ROLE_TOKEN)
+        .is_some_and(|role| role == CORGI_AGENT_WORKSPACE_ROLE || role == CORGI_PROJECT_MAIN_ROLE)
 }
 
 /// The workspace's Git provenance, but only when the agent actually runs inside
@@ -89,17 +103,22 @@ pub fn agent_worktree<'a>(
     cwd.starts_with(&worktree.checkout_path).then_some(worktree)
 }
 
-/// The project shown on an agent row.
+/// The project shown on an agent row, in the repository `repo` it works
+/// in ([`crate::repo::agent_repo`]).
 ///
-/// Linked worktrees are shown as `repo/checkout` so sibling agents of one
-/// repository stay distinguishable while the repository name stays visible.
-/// Other workspaces use Herdr's label, then the cwd's last path component.
-pub fn agent_project(info: &AgentInfo, workspace: Option<&WorkspaceInfo>) -> String {
-    if let Some(worktree) = agent_worktree(info, workspace)
-        .filter(|worktree| worktree.is_linked_worktree && !worktree.repo_name.is_empty())
-        && let Some(checkout) = checkout_label(&worktree.checkout_path)
+/// Linked worktrees, Herdr's or plain `git worktree add` ones, are shown as
+/// `repo/checkout` so sibling agents of one repository stay distinguishable
+/// while the repository name stays visible. Other workspaces use Herdr's
+/// label, then the cwd's last path component.
+pub fn agent_project(
+    info: &AgentInfo,
+    workspace: Option<&WorkspaceInfo>,
+    repo: Option<&Repo>,
+) -> String {
+    if let Some(repo) = repo.filter(|repo| repo.linked && !repo.name.is_empty())
+        && let Some(checkout) = checkout_label(&repo.checkout)
     {
-        return format!("{}/{checkout}", worktree.repo_name);
+        return format!("{}/{checkout}", repo.name);
     }
     // Corgi's project workspace is labelled for its supervisor; the other agents
     // in it, such as shared-checkout tabs, are named after the repository.
@@ -123,10 +142,9 @@ pub fn agent_project(info: &AgentInfo, workspace: Option<&WorkspaceInfo>) -> Str
 ///
 /// Worktree rows retain their checkout in [`agent_project`], while their group
 /// uses the repository name so every `corgi/<checkout>` session appears below
-/// a single `corgi` heading.
-pub fn project_group(info: &AgentInfo, workspace: Option<&WorkspaceInfo>, project: &str) -> String {
-    agent_worktree(info, workspace)
-        .map(|worktree| worktree.repo_name.trim())
+/// a single `corgi` heading, whichever workspace it runs in.
+pub fn project_group(repo: Option<&Repo>, project: &str) -> String {
+    repo.map(|repo| repo.name.trim())
         .filter(|name| !name.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| project.to_string())
@@ -311,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn unidentified_scratch_candidates_require_corgi_plain_workspace_and_codex_at_home() {
+    fn unidentified_codex_candidates_require_a_workspace_corgi_created() {
         let home = crate::paths::home().expect("home directory");
         let mut info = AgentInfo {
             agent: Some("codex".into()),
@@ -330,25 +348,29 @@ mod tests {
             .into(),
             ..WorkspaceInfo::default()
         };
-        assert!(is_corgi_scratch_codex(&info, Some(&workspace)));
-        assert!(!is_corgi_scratch_codex(&info, None));
+        assert!(is_corgi_workspace_codex(&info, Some(&workspace)));
+        assert!(!is_corgi_workspace_codex(&info, None));
         workspace.workspace_id = "other".into();
-        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
+        assert!(!is_corgi_workspace_codex(&info, Some(&workspace)));
         workspace.workspace_id = "scratch".into();
+        // A worktree Corgi created, and a project outside home, count too.
         workspace.worktree = Some(WorkspaceWorktreeInfo::default());
-        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
-        workspace.worktree = None;
+        info.foreground_cwd = Some(home.join("repo").to_string_lossy().into_owned());
+        assert!(is_corgi_workspace_codex(&info, Some(&workspace)));
+        workspace.tokens.insert(
+            CORGI_WORKSPACE_ROLE_TOKEN.into(),
+            CORGI_PROJECT_MAIN_ROLE.into(),
+        );
+        assert!(is_corgi_workspace_codex(&info, Some(&workspace)));
+        // The user's own workspace does not.
         workspace.tokens.clear();
-        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
+        assert!(!is_corgi_workspace_codex(&info, Some(&workspace)));
         workspace.tokens.insert(
             CORGI_WORKSPACE_ROLE_TOKEN.into(),
             CORGI_AGENT_WORKSPACE_ROLE.into(),
         );
-        info.foreground_cwd = Some(home.join("repo").to_string_lossy().into_owned());
-        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
-        info.foreground_cwd = None;
         info.agent = Some("claude".into());
-        assert!(!is_corgi_scratch_codex(&info, Some(&workspace)));
+        assert!(!is_corgi_workspace_codex(&info, Some(&workspace)));
     }
 
     #[test]
@@ -368,7 +390,13 @@ mod tests {
             }),
             ..WorkspaceInfo::default()
         };
-        assert_eq!(agent_project(&info, Some(&linked)), "corgi/calm-otter-1f2e");
+        let repo = |workspace: &WorkspaceInfo| {
+            crate::repo::agent_repo(&info, Some(workspace), &mut Default::default())
+        };
+        assert_eq!(
+            agent_project(&info, Some(&linked), repo(&linked).as_ref()),
+            "corgi/calm-otter-1f2e"
+        );
         assert_eq!(linked.repo_root(), Some("/home/me/repos/corgi"));
 
         let primary = WorkspaceInfo {
@@ -379,9 +407,12 @@ mod tests {
             }),
             ..linked.clone()
         };
-        assert_eq!(agent_project(&info, Some(&primary)), "corgi");
         assert_eq!(
-            project_group(&info, Some(&linked), "corgi/calm-otter-1f2e"),
+            agent_project(&info, Some(&primary), repo(&primary).as_ref()),
+            "corgi"
+        );
+        assert_eq!(
+            project_group(repo(&linked).as_ref(), "corgi/calm-otter-1f2e"),
             "corgi"
         );
     }

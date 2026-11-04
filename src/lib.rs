@@ -3,10 +3,12 @@
 // the same in the dashboard's code.
 pub use corgi_core::{
     activity, choices, defaults, digest, git, harness, herdr, inbox, job, model, paths, projects,
-    recovery, session, supervisor, tag, time, usage, usage_cache,
+    recovery, restart, session, supervisor, tag, time, usage, usage_cache,
 };
 
 pub mod app;
+#[cfg(test)]
+mod app_icon;
 pub(crate) mod motion;
 #[cfg(test)]
 mod readme_shots;

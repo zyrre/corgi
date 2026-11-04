@@ -1,16 +1,21 @@
 //! The window's dialogs and what each reply from `corgi serve` does to them:
-//! the prompt and answer boxes, the new-agent form, the merge confirmation
+//! the prompt, answer and backlog boxes, the new-agent form, the merge confirmation
 //! with its outcome, and the close confirmation. Pure, so every flow is
 //! tested without a window.
 
 use std::time::Instant;
 
-use corgi_core::protocol::{
-    CloseForm, MergeForm, MergeOutcome, Progress, Question, Reply, ReplyResult, UpstreamChoice,
+use corgi_core::{
+    orphans::Choices,
+    protocol::{
+        BacklogEntry, CloseForm, MergeForm, MergeOutcome, PauseForm, Progress, Question, Reply,
+        ReplyResult, UpstreamChoice,
+    },
 };
 
 use crate::{
     form::{self, NewAgent},
+    keymap::{ENTER, ESCAPE},
     store::Purpose,
 };
 
@@ -52,33 +57,64 @@ pub enum Dialog {
         sending: bool,
         error: Option<String>,
     },
+    /// Shows one of a supervisor's backlog entries whole, and writes the
+    /// supervisor about it.
+    Backlog {
+        project_root: String,
+        entry: BacklogEntry,
+        sending: bool,
+        error: Option<String>,
+    },
     NewAgent(Box<NewAgent>),
     /// The new-agent form, asked for and not here yet: the first one waits
     /// on the harnesses' model lists, which can take seconds.
     NewAgentLoading,
     Merge(Box<Merge>),
     Close(Close),
+    /// Find orphaned sessions: the candidates and the choice for each.
+    Orphans(Box<Orphans>),
+    /// The confirmation before Pause all, and the pause while it runs.
+    Pause(PauseAll),
 }
 
 impl Dialog {
-    /// The keys a prompt or answer box offers. A refused one stays open
-    /// with its text and keeps the keyboard, so Esc, the way back to the
-    /// overview's keys, comes first.
+    /// The keys a prompt, answer or backlog box offers. A refused one stays
+    /// open with its text and keeps the keyboard, so Esc, the way back to
+    /// the overview's keys, comes first.
     pub fn text_hints(&self) -> &'static [(&'static str, &'static str)] {
-        match self {
-            Dialog::Prompt { error: Some(_), .. } | Dialog::Answer { error: Some(_), .. } => {
-                &[("Esc", "close"), ("↵", "retry")]
-            }
-            _ => &[("↵", "send"), ("Esc", "cancel")],
+        if self.refused() {
+            &[(ESCAPE, "close"), (ENTER, "retry")]
+        } else {
+            &[(ENTER, "send"), (ESCAPE, "cancel")]
         }
     }
 
-    /// Whether a prompt or answer box shows a refusal.
+    /// Whether a prompt, answer or backlog box shows a refusal.
     pub fn refused(&self) -> bool {
         matches!(
             self,
-            Dialog::Prompt { error: Some(_), .. } | Dialog::Answer { error: Some(_), .. }
+            Dialog::Prompt { error: Some(_), .. }
+                | Dialog::Answer { error: Some(_), .. }
+                | Dialog::Backlog { error: Some(_), .. }
         )
+    }
+
+    /// Whether it is a box with a text field that sends what is typed.
+    pub fn is_text(&self) -> bool {
+        matches!(
+            self,
+            Dialog::Prompt { .. } | Dialog::Answer { .. } | Dialog::Backlog { .. }
+        )
+    }
+
+    /// A text box's sending flag and the refusal it shows.
+    pub fn text_state(&mut self) -> Option<(&mut bool, &mut Option<String>)> {
+        match self {
+            Dialog::Prompt { sending, error, .. }
+            | Dialog::Answer { sending, error, .. }
+            | Dialog::Backlog { sending, error, .. } => Some((sending, error)),
+            _ => None,
+        }
     }
 }
 
@@ -94,6 +130,9 @@ pub enum MergeStage {
     Confirm,
     Running,
     Outcome(MergeOutcome),
+    /// Git refuses the merge before it starts, as `merge_check` found: a
+    /// checkout with uncommitted changes, both on one branch. Nothing ran.
+    Refused(String),
     /// The command itself was refused, or the connection was lost.
     Failed(String),
 }
@@ -102,6 +141,8 @@ pub enum MergeStage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeAction {
     Run(UpstreamChoice),
+    /// Ask the project's supervisor to fix the failure (`merge_handoff`),
+    /// with the key [`crate::keymap::Action::AskSupervisor`] too.
     Handoff,
     Dismiss,
     /// Offer to close the merged agent.
@@ -109,40 +150,99 @@ pub enum MergeAction {
     Done,
 }
 
+/// The words of the button that asks the supervisor to fix a failure.
+pub const ASK_SUPERVISOR: &str = "Ask supervisor to fix";
+
 impl Merge {
-    /// The buttons the dialog offers now, the default first (Enter).
-    pub fn actions(&self) -> Vec<(&'static str, MergeAction)> {
+    /// The buttons the dialog offers now, each with whether it can be
+    /// pressed; the first that can is the default (Enter). Every failure
+    /// offers to ask the supervisor to fix it, which cannot be pressed
+    /// while none runs ([`Merge::no_supervisor`] says why).
+    pub fn actions(&self) -> Vec<(&'static str, MergeAction, bool)> {
+        let ask = (
+            ASK_SUPERVISOR,
+            MergeAction::Handoff,
+            self.helper().is_some(),
+        );
+        let on = |label, action| (label, action, true);
         match &self.stage {
             MergeStage::Confirm => vec![
-                ("Merge", MergeAction::Run(UpstreamChoice::Check)),
-                ("Cancel", MergeAction::Done),
+                on("Merge", MergeAction::Run(UpstreamChoice::Check)),
+                on("Cancel", MergeAction::Done),
             ],
             MergeStage::Running => Vec::new(),
             MergeStage::Outcome(outcome) => match outcome {
                 MergeOutcome::Succeeded { .. } => vec![
-                    ("Close agent…", MergeAction::CloseAgent),
-                    ("Done", MergeAction::Done),
+                    on("Close agent…", MergeAction::CloseAgent),
+                    on("Done", MergeAction::Done),
                 ],
                 MergeOutcome::Behind { .. } => vec![
-                    ("Pull, then merge", MergeAction::Run(UpstreamChoice::Pull)),
-                    ("Cancel", MergeAction::Done),
+                    on("Pull, then merge", MergeAction::Run(UpstreamChoice::Pull)),
+                    on("Cancel", MergeAction::Done),
                 ],
                 MergeOutcome::FetchFailed { .. } => vec![
-                    ("Merge without it", MergeAction::Run(UpstreamChoice::Skip)),
-                    ("Cancel", MergeAction::Done),
+                    on("Merge without it", MergeAction::Run(UpstreamChoice::Skip)),
+                    ask,
+                    on("Cancel", MergeAction::Done),
                 ],
-                MergeOutcome::Conflicted { supervisor, .. }
-                | MergeOutcome::PushFailed { supervisor, .. } => {
-                    let mut actions = Vec::new();
-                    if supervisor.is_some() {
-                        actions.push(("Hand to supervisor", MergeAction::Handoff));
-                    }
-                    actions.push(("Leave it to me", MergeAction::Dismiss));
-                    actions
+                MergeOutcome::Conflicted { .. }
+                | MergeOutcome::PushFailed { .. }
+                | MergeOutcome::Failed { .. } => {
+                    vec![ask, on("Leave it to me", MergeAction::Dismiss)]
                 }
-                MergeOutcome::Failed { .. } => vec![("Done", MergeAction::Done)],
             },
-            MergeStage::Failed(_) => vec![("Done", MergeAction::Done)],
+            MergeStage::Refused(_) => vec![ask, on("Leave it to me", MergeAction::Dismiss)],
+            MergeStage::Failed(_) => vec![ask, on("Done", MergeAction::Done)],
+        }
+    }
+
+    /// The button Enter presses: the first that can be pressed.
+    pub fn default_action(&self) -> Option<MergeAction> {
+        self.actions()
+            .into_iter()
+            .find(|(_, _, enabled)| *enabled)
+            .map(|(_, action, _)| action)
+    }
+
+    /// Whether the dialog offers `action` now.
+    pub fn offers(&self, action: MergeAction) -> bool {
+        self.actions()
+            .iter()
+            .any(|(_, offered, enabled)| *offered == action && *enabled)
+    }
+
+    /// The running supervisor that can be asked to fix the failure shown.
+    pub fn helper(&self) -> Option<&str> {
+        match &self.stage {
+            MergeStage::Outcome(
+                MergeOutcome::Conflicted { supervisor, .. }
+                | MergeOutcome::PushFailed { supervisor, .. }
+                | MergeOutcome::FetchFailed { supervisor, .. }
+                | MergeOutcome::Failed { supervisor, .. },
+            ) => supervisor.as_deref(),
+            MergeStage::Refused(_) | MergeStage::Failed(_) => self.form.supervisor.as_deref(),
+            MergeStage::Confirm | MergeStage::Running | MergeStage::Outcome(_) => None,
+        }
+    }
+
+    /// Why the supervisor cannot be asked to fix the failure shown, for a
+    /// failure with no supervisor to ask.
+    pub fn no_supervisor(&self) -> Option<&'static str> {
+        let offered = self
+            .actions()
+            .iter()
+            .any(|(_, action, _)| *action == MergeAction::Handoff);
+        (offered && self.helper().is_none())
+            .then_some("No supervisor is running for this project, so none can be asked to fix it.")
+    }
+
+    /// The error `merge_handoff` sends with the request, for a failure
+    /// `corgi serve` may not have kept: its own refusal, or a lost
+    /// connection. Serve sends its own words for the rest.
+    pub fn handoff_error(&self) -> Option<String> {
+        match &self.stage {
+            MergeStage::Refused(error) | MergeStage::Failed(error) => Some(error.clone()),
+            _ => None,
         }
     }
 }
@@ -154,6 +254,42 @@ pub struct Close {
     pub dirty: Option<String>,
     pub running: bool,
     pub error: Option<String>,
+}
+
+/// The confirmation before Pause all: what stops, by project, and which
+/// agents are working; then the pause while it runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PauseAll {
+    pub form: PauseForm,
+    pub running: bool,
+    pub error: Option<String>,
+    pub progress: Option<String>,
+}
+
+/// The "Find sessions" dialog: looking, then the list with a choice for
+/// each candidate (`corgi_core::orphans::Choices`, as the dashboard's), and
+/// the candidate whose choice is being applied.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Orphans {
+    pub looking: bool,
+    pub choices: Choices,
+    /// The key of the candidate being applied.
+    pub applying: Option<String>,
+}
+
+impl Orphans {
+    pub fn looking() -> Self {
+        Self {
+            looking: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether keys can change the choices: the list is here and nothing
+    /// is being applied.
+    pub fn idle(&self) -> bool {
+        !self.looking && self.applying.is_none()
+    }
 }
 
 /// A line in the status bar saying what a command did.
@@ -177,7 +313,7 @@ impl Flash {
 /// What the window does after a reply, beyond what the dialog shows.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Followup {
-    /// Select this agent and show its project's supervisor panel.
+    /// Select this agent, so the side panel shows its project.
     ShowSupervisor(String),
     /// The new-agent form changed rows: move the keyboard.
     Form(form::Effect),
@@ -188,6 +324,9 @@ pub enum Followup {
 pub struct Dialogs {
     pub open: Option<Dialog>,
     pub flash: Option<Flash>,
+    /// Pause all or Resume all is running: what the header's button says
+    /// meanwhile, which takes no click.
+    pub all_running: Option<&'static str>,
 }
 
 impl Dialogs {
@@ -208,12 +347,7 @@ impl Dialogs {
                     self.open = None;
                 }
             }
-            Some(Dialog::Merge(merge))
-                if merge
-                    .actions()
-                    .iter()
-                    .any(|(_, action)| *action == MergeAction::Dismiss) =>
-            {
+            Some(Dialog::Merge(merge)) if merge.offers(MergeAction::Dismiss) => {
                 return Some(MergeAction::Dismiss);
             }
             Some(_) => self.open = None,
@@ -229,7 +363,12 @@ impl Dialogs {
                 .running
                 .get_or_insert_with(Steps::default)
                 .update(progress),
-            (_, Purpose::StartSupervisor) => {
+            (Some(Dialog::Pause(pause)), Purpose::PauseAll) => {
+                if progress.status.is_some() {
+                    pause.progress = progress.status.clone();
+                }
+            }
+            (_, Purpose::StartSupervisor | Purpose::PauseAll | Purpose::ResumeAll) => {
                 if let Some(status) = &progress.status {
                     self.say(status.clone(), false);
                 }
@@ -260,34 +399,16 @@ impl Dialogs {
                 }
                 None
             }
-            Purpose::Prompt | Purpose::Answer => {
-                match (error, &mut self.open) {
-                    (
-                        Some(error),
-                        Some(Dialog::Prompt {
-                            sending,
-                            error: shown,
-                            ..
-                        }),
-                    )
-                    | (
-                        Some(error),
-                        Some(Dialog::Answer {
-                            sending,
-                            error: shown,
-                            ..
-                        }),
-                    ) => {
+            Purpose::Prompt | Purpose::Answer | Purpose::BacklogMessage => {
+                match (error, self.open.as_mut().and_then(Dialog::text_state)) {
+                    (Some(error), Some((sending, shown))) => {
                         // The box stays open with its text, to retry by hand.
                         *sending = false;
                         *shown = Some(error);
                     }
-                    (Some(error), _) => self.say(error, true),
+                    (Some(error), None) => self.say(error, true),
                     (None, _) => {
-                        if matches!(
-                            self.open,
-                            Some(Dialog::Prompt { .. } | Dialog::Answer { .. })
-                        ) {
+                        if self.open.as_ref().is_some_and(Dialog::is_text) {
                             self.open = None;
                         }
                         self.say(message.unwrap_or_else(|| "Sent".into()), false);
@@ -351,13 +472,19 @@ impl Dialogs {
                 match (error, reply.result) {
                     (Some(error), _) => self.say(error, true),
                     (None, Some(ReplyResult::MergeForm(form))) => {
+                        // Refused before it starts: the dialog says why, and
+                        // offers to ask the supervisor to fix it.
+                        let stage = match &form.refused {
+                            Some(error) => MergeStage::Refused(error.clone()),
+                            None => MergeStage::Confirm,
+                        };
                         self.open = Some(Dialog::Merge(Box::new(Merge {
                             progress: Steps {
                                 steps: form.steps.clone(),
                                 ..Steps::default()
                             },
                             form: *form,
-                            stage: MergeStage::Confirm,
+                            stage,
                         })));
                     }
                     _ => {}
@@ -386,7 +513,47 @@ impl Dialogs {
                 };
                 None
             }
-            Purpose::MergeEnd | Purpose::Tag => {
+            Purpose::PauseCheck => {
+                match (error, reply.result) {
+                    (Some(error), _) => self.say(error, true),
+                    (None, Some(ReplyResult::PauseForm(form))) => {
+                        self.open = Some(Dialog::Pause(PauseAll {
+                            form,
+                            running: false,
+                            error: None,
+                            progress: None,
+                        }));
+                    }
+                    _ => {}
+                }
+                None
+            }
+            Purpose::PauseAll => {
+                self.all_running = None;
+                match (error, &mut self.open) {
+                    (Some(error), Some(Dialog::Pause(pause))) => {
+                        pause.running = false;
+                        pause.error = Some(error);
+                    }
+                    (Some(error), _) => self.say(error, true),
+                    (None, _) => {
+                        if matches!(self.open, Some(Dialog::Pause(_))) {
+                            self.open = None;
+                        }
+                        self.say(message.unwrap_or_else(|| "Paused".into()), false);
+                    }
+                }
+                None
+            }
+            Purpose::ResumeAll => {
+                self.all_running = None;
+                match error {
+                    Some(error) => self.say(error, true),
+                    None => self.say(message.unwrap_or_else(|| "Resumed".into()), false),
+                }
+                None
+            }
+            Purpose::MergeEnd | Purpose::Tag | Purpose::Resume => {
                 if matches!(self.open, Some(Dialog::Merge(_))) && purpose == Purpose::MergeEnd {
                     self.open = None;
                 }
@@ -408,6 +575,38 @@ impl Dialogs {
                         }));
                     }
                     _ => {}
+                }
+                None
+            }
+            Purpose::Orphans => {
+                let Some(Dialog::Orphans(orphans)) = &mut self.open else {
+                    // Closed while it looked.
+                    return None;
+                };
+                orphans.looking = false;
+                match (error, reply.result) {
+                    (Some(error), _) => orphans.choices.error = Some(error),
+                    (None, Some(ReplyResult::Orphans { candidates })) => {
+                        orphans.choices.show(candidates);
+                    }
+                    _ => orphans.choices.error = Some("corgi serve sent no list".into()),
+                }
+                None
+            }
+            Purpose::OrphanApply { key } => {
+                match (error, &mut self.open) {
+                    (Some(error), Some(Dialog::Orphans(orphans))) => {
+                        orphans.applying = None;
+                        orphans.choices.error = Some(error);
+                    }
+                    (Some(error), _) => self.say(error, true),
+                    (None, Some(Dialog::Orphans(orphans))) => {
+                        orphans.applying = None;
+                        let message = message.unwrap_or_else(|| "Done".into());
+                        orphans.choices.applied(&key, message.clone());
+                        self.say(message, false);
+                    }
+                    (None, _) => self.say(message.unwrap_or_else(|| "Done".into()), false),
                 }
                 None
             }
@@ -449,20 +648,34 @@ impl Dialogs {
                 (Purpose::Spawn, Some(Dialog::NewAgent(new))) => {
                     new.refused(why.into(), None);
                 }
-                (
-                    Purpose::Prompt | Purpose::Answer,
-                    Some(Dialog::Prompt { sending, error, .. }),
-                )
-                | (
-                    Purpose::Prompt | Purpose::Answer,
-                    Some(Dialog::Answer { sending, error, .. }),
-                ) => {
-                    *sending = false;
-                    *error = Some(why.into());
+                (Purpose::Prompt | Purpose::Answer | Purpose::BacklogMessage, Some(dialog))
+                    if dialog.is_text() =>
+                {
+                    if let Some((sending, error)) = dialog.text_state() {
+                        *sending = false;
+                        *error = Some(why.into());
+                    }
                 }
                 (Purpose::Close, Some(Dialog::Close(close))) => {
                     close.running = false;
                     close.error = Some(why.into());
+                }
+                (Purpose::PauseAll, Some(Dialog::Pause(pause))) => {
+                    self.all_running = None;
+                    pause.running = false;
+                    pause.error = Some(why.into());
+                }
+                (Purpose::PauseAll | Purpose::ResumeAll, _) => {
+                    self.all_running = None;
+                    self.say(why, true);
+                }
+                (
+                    Purpose::Orphans | Purpose::OrphanApply { .. },
+                    Some(Dialog::Orphans(orphans)),
+                ) => {
+                    orphans.looking = false;
+                    orphans.applying = None;
+                    orphans.choices.error = Some(why.into());
                 }
                 (Purpose::NewAgentForm, Some(Dialog::NewAgentLoading)) => {
                     self.open = None;
@@ -490,8 +703,10 @@ pub fn outcome_line(outcome: &MergeOutcome) -> String {
             commits.len(),
             if commits.len() == 1 { "" } else { "s" }
         ),
-        MergeOutcome::FetchFailed { error } => format!("Fetching the upstream failed: {error}"),
-        MergeOutcome::Failed { error } => format!("The merge failed: {error}"),
+        MergeOutcome::FetchFailed { error, .. } => {
+            format!("Fetching the upstream failed: {error}")
+        }
+        MergeOutcome::Failed { error, .. } => format!("The merge failed: {error}"),
     }
 }
 
@@ -534,6 +749,50 @@ mod tests {
             sending: true,
             error: None,
         }
+    }
+
+    #[test]
+    fn a_backlog_message_closes_when_sent_and_keeps_its_box_when_refused_or_lost() {
+        let open = || Dialog::Backlog {
+            project_root: "/repos/weather".into(),
+            entry: BacklogEntry {
+                heading: "Stop all agents".into(),
+                text: "For when the user leaves.".into(),
+            },
+            sending: true,
+            error: None,
+        };
+        let mut dialogs = Dialogs {
+            open: Some(open()),
+            ..Dialogs::default()
+        };
+        assert_eq!(
+            dialogs.open.as_ref().unwrap().text_hints()[0],
+            ("↵", "send")
+        );
+        dialogs.reply(
+            Purpose::BacklogMessage,
+            refused("The message cannot be empty", None),
+        );
+        let shown = dialogs.open.as_ref().unwrap();
+        assert!(shown.refused());
+        assert_eq!(shown.text_hints()[0], ("Esc", "close"));
+        assert!(matches!(shown, Dialog::Backlog { sending: false, .. }));
+
+        dialogs.open = Some(open());
+        dialogs.lost(&[Purpose::BacklogMessage]);
+        assert!(matches!(
+            &dialogs.open,
+            Some(Dialog::Backlog { sending: false, error: Some(error), .. }) if error.contains("lost")
+        ));
+
+        dialogs.open = Some(open());
+        dialogs.reply(Purpose::BacklogMessage, done("Sent to supervisor-weather"));
+        assert_eq!(dialogs.open, None);
+        assert_eq!(
+            dialogs.flash.as_ref().map(|flash| flash.text.as_str()),
+            Some("Sent to supervisor-weather")
+        );
     }
 
     #[test]
@@ -685,14 +944,137 @@ mod tests {
                 supervisor: None,
             })),
         );
-        let actions: Vec<_> = merge(&dialogs).actions().into_iter().map(|a| a.1).collect();
+        let actions: Vec<_> = merge(&dialogs).actions();
         assert_eq!(
             actions,
-            [MergeAction::Dismiss],
+            [
+                (ASK_SUPERVISOR, MergeAction::Handoff, false),
+                ("Leave it to me", MergeAction::Dismiss, true)
+            ],
             "no supervisor to hand it to"
         );
+        assert_eq!(merge(&dialogs).default_action(), Some(MergeAction::Dismiss));
+        assert!(merge(&dialogs).no_supervisor().is_some());
         dialogs.reply(Purpose::MergeEnd, done("Left the merge to resolve by hand"));
         assert_eq!(dialogs.open, None);
+    }
+
+    #[test]
+    fn every_merge_failure_offers_to_ask_the_supervisor_to_fix_it() {
+        let supervisor = || Some("supervisor-weather".to_string());
+        let with = |stage: MergeStage, supervisor: Option<String>| Merge {
+            form: MergeForm {
+                pane_id: "w2:p1".into(),
+                supervisor,
+                ..MergeForm::default()
+            },
+            stage,
+            progress: Steps::default(),
+        };
+        let outcome = |outcome| MergeStage::Outcome(outcome);
+        let failures = [
+            outcome(MergeOutcome::Conflicted {
+                files: vec!["a.rs".into()],
+                supervisor: supervisor(),
+            }),
+            outcome(MergeOutcome::PushFailed {
+                commit: "abc".into(),
+                error: "rejected".into(),
+                supervisor: supervisor(),
+            }),
+            outcome(MergeOutcome::FetchFailed {
+                error: "Could not resolve host".into(),
+                supervisor: supervisor(),
+            }),
+            outcome(MergeOutcome::Failed {
+                error: "git merge: fatal".into(),
+                supervisor: supervisor(),
+            }),
+            MergeStage::Refused("primary checkout has uncommitted changes: M AGENTS.md".into()),
+            MergeStage::Failed("The connection to corgi serve was lost".into()),
+        ];
+        for stage in failures {
+            let merge = with(stage.clone(), supervisor());
+            assert!(merge.offers(MergeAction::Handoff), "{stage:?}");
+            assert_eq!(merge.helper(), Some("supervisor-weather"), "{stage:?}");
+            assert_eq!(merge.no_supervisor(), None, "{stage:?}");
+            // Without a supervisor, it is shown greyed with the reason.
+            let mut alone = with(stage.clone(), None);
+            if let MergeStage::Outcome(
+                MergeOutcome::Conflicted { supervisor, .. }
+                | MergeOutcome::PushFailed { supervisor, .. }
+                | MergeOutcome::FetchFailed { supervisor, .. }
+                | MergeOutcome::Failed { supervisor, .. },
+            ) = &mut alone.stage
+            {
+                *supervisor = None;
+            }
+            assert!(!alone.offers(MergeAction::Handoff), "{stage:?}");
+            assert!(
+                alone
+                    .actions()
+                    .contains(&(ASK_SUPERVISOR, MergeAction::Handoff, false)),
+                "{stage:?}"
+            );
+            assert!(alone.no_supervisor().is_some(), "{stage:?}");
+        }
+        // Nothing to fix while it confirms, runs, succeeded, or waits on a
+        // pull.
+        for stage in [
+            MergeStage::Confirm,
+            MergeStage::Running,
+            outcome(MergeOutcome::Behind {
+                commits: vec!["abc".into()],
+            }),
+            outcome(MergeOutcome::Succeeded {
+                commit: "abc".into(),
+                message: "Merged".into(),
+            }),
+        ] {
+            let merge = with(stage.clone(), supervisor());
+            assert!(!merge.offers(MergeAction::Handoff), "{stage:?}");
+            assert_eq!(merge.no_supervisor(), None, "{stage:?}");
+        }
+        // The window's own errors go with the request; serve keeps the rest.
+        let failed = with(MergeStage::Failed("lost".into()), supervisor());
+        assert_eq!(failed.handoff_error().as_deref(), Some("lost"));
+        let fetch = with(
+            outcome(MergeOutcome::FetchFailed {
+                error: "x".into(),
+                supervisor: supervisor(),
+            }),
+            supervisor(),
+        );
+        assert_eq!(fetch.handoff_error(), None);
+        assert_eq!(
+            fetch.default_action(),
+            Some(MergeAction::Run(UpstreamChoice::Skip))
+        );
+    }
+
+    #[test]
+    fn a_merge_git_refuses_opens_saying_why_and_esc_leaves_it() {
+        let mut dialogs = Dialogs::default();
+        let error = "primary checkout has uncommitted or untracked changes: M AGENTS.md";
+        let form = MergeForm {
+            pane_id: "w2:p1".into(),
+            refused: Some(error.into()),
+            supervisor: Some("supervisor-weather".into()),
+            ..MergeForm::default()
+        };
+        dialogs.reply(
+            Purpose::MergeCheck,
+            ok(ReplyResult::MergeForm(Box::new(form))),
+        );
+        let Some(Dialog::Merge(merge)) = &dialogs.open else {
+            panic!("{:?}", dialogs.open)
+        };
+        assert_eq!(merge.stage, MergeStage::Refused(error.into()));
+        assert_eq!(merge.default_action(), Some(MergeAction::Handoff));
+        assert_eq!(merge.handoff_error().as_deref(), Some(error));
+        assert_eq!(dialogs.flash, None, "the dialog says it");
+        // Esc leaves it to the user, through serve, which forgets it.
+        assert_eq!(dialogs.escape(), Some(MergeAction::Dismiss));
     }
 
     #[test]
@@ -794,5 +1176,168 @@ mod tests {
         assert_eq!(followup, Some(Followup::ShowSupervisor("w1:p1".into())));
         dialogs.reply(Purpose::Tag, refused("w-fix is working", None));
         assert!(dialogs.flash.as_ref().unwrap().error);
+    }
+
+    fn orphan(key: &str) -> corgi_core::protocol::Orphan {
+        use corgi_core::protocol::{OrphanAction, OrphanCause, OrphanConfidence};
+        corgi_core::protocol::Orphan {
+            key: key.into(),
+            cause: OrphanCause::Hidden,
+            confidence: OrphanConfidence::Likely,
+            pane_id: Some("wR:p2".into()),
+            workspace_id: "wR".into(),
+            workspace: "scratchpad".into(),
+            harness: "codex".into(),
+            name: "codex".into(),
+            cwd: "/repos/scratchpad".into(),
+            summary: String::new(),
+            evidence: vec![],
+            fix: None,
+            actions: vec![
+                OrphanAction::Leave,
+                OrphanAction::Close {
+                    target: "pane".into(),
+                },
+            ],
+            suggested: 0,
+            fingerprint: format!("hidden {key}"),
+        }
+    }
+
+    #[test]
+    fn the_orphans_list_arrives_and_an_applied_choice_takes_its_row_away() {
+        let mut dialogs = Dialogs {
+            open: Some(Dialog::Orphans(Box::new(Orphans::looking()))),
+            ..Dialogs::default()
+        };
+        dialogs.reply(
+            Purpose::Orphans,
+            ok(ReplyResult::Orphans {
+                candidates: vec![orphan("pane:a"), orphan("pane:b")],
+            }),
+        );
+        let orphans = |dialogs: &Dialogs| match &dialogs.open {
+            Some(Dialog::Orphans(orphans)) => orphans.as_ref().clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(orphans(&dialogs).idle());
+        assert_eq!(orphans(&dialogs).choices.candidates.len(), 2);
+
+        // A refusal keeps the row and says why in the dialog.
+        if let Some(Dialog::Orphans(open)) = &mut dialogs.open {
+            open.applying = Some("pane:a".into());
+        }
+        dialogs.reply(
+            Purpose::OrphanApply {
+                key: "pane:a".into(),
+            },
+            refused("codex changed since the list was read", None),
+        );
+        let now = orphans(&dialogs);
+        assert!(now.idle());
+        assert_eq!(now.choices.candidates.len(), 2);
+        assert_eq!(
+            now.choices.error.as_deref(),
+            Some("codex changed since the list was read")
+        );
+
+        dialogs.reply(
+            Purpose::OrphanApply {
+                key: "pane:a".into(),
+            },
+            done("Left codex as it is"),
+        );
+        let now = orphans(&dialogs);
+        assert_eq!(now.choices.candidates.len(), 1);
+        assert_eq!(now.choices.candidates[0].key, "pane:b");
+        assert_eq!(now.choices.done, ["Left codex as it is"]);
+        assert_eq!(dialogs.flash.unwrap().text, "Left codex as it is");
+
+        // A lost connection while it looks says so in the dialog.
+        let mut dialogs = Dialogs {
+            open: Some(Dialog::Orphans(Box::new(Orphans::looking()))),
+            ..Dialogs::default()
+        };
+        dialogs.lost(&[Purpose::Orphans]);
+        let now = orphans(&dialogs);
+        assert!(!now.looking);
+        assert!(now.choices.error.unwrap().contains("connection"));
+    }
+
+    fn pause_form() -> PauseForm {
+        PauseForm {
+            agents: 3,
+            working: 1,
+            projects: vec![corgi_core::protocol::PauseProject {
+                project: "corgi".into(),
+                supervisors: 1,
+                workers: 2,
+                working: vec!["fix-cache".into()],
+            }],
+            left: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pause_check_opens_the_confirmation_and_pause_all_ends_it_with_its_outcome() {
+        let mut dialogs = Dialogs::default();
+        dialogs.reply(
+            Purpose::PauseCheck,
+            ok(ReplyResult::PauseForm(pause_form())),
+        );
+        let Some(Dialog::Pause(pause)) = &mut dialogs.open else {
+            panic!("no confirmation")
+        };
+        assert_eq!(pause.form.agents, 3);
+        pause.running = true;
+        dialogs.all_running = Some("Pausing…");
+        dialogs.progress(
+            &Purpose::PauseAll,
+            &Progress {
+                id: 1,
+                status: Some("Stopping 3 agents…".into()),
+                ..Progress::default()
+            },
+        );
+        assert!(
+            matches!(&dialogs.open, Some(Dialog::Pause(p)) if p.progress.as_deref() == Some("Stopping 3 agents…"))
+        );
+        dialogs.reply(
+            Purpose::PauseAll,
+            ok(ReplyResult::Done {
+                message: "Paused 3 agents".into(),
+            }),
+        );
+        assert!(dialogs.open.is_none() && dialogs.all_running.is_none());
+        assert_eq!(
+            dialogs.flash.as_ref().map(|f| f.text.as_str()),
+            Some("Paused 3 agents")
+        );
+    }
+
+    #[test]
+    fn a_failed_or_lost_pause_stays_open_with_why_and_the_button_comes_back() {
+        let mut dialogs = Dialogs::default();
+        dialogs.reply(
+            Purpose::PauseCheck,
+            ok(ReplyResult::PauseForm(pause_form())),
+        );
+        dialogs.all_running = Some("Pausing…");
+        dialogs.lost(&[Purpose::PauseAll]);
+        assert!(matches!(&dialogs.open, Some(Dialog::Pause(p)) if !p.running && p.error.is_some()));
+        assert!(dialogs.all_running.is_none());
+        dialogs.all_running = Some("Resuming…");
+        dialogs.reply(
+            Purpose::ResumeAll,
+            Reply {
+                id: Some(2),
+                ok: false,
+                error: Some("No agent is paused".into()),
+                field: None,
+                result: None,
+            },
+        );
+        assert!(dialogs.all_running.is_none());
+        assert!(dialogs.flash.as_ref().is_some_and(|f| f.error));
     }
 }

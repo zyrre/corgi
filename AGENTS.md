@@ -159,8 +159,11 @@ its `corgi_handler` token), tagged with a
 `session` token; a Claude session file under the private
 `~/.claude/projects/<cwd with / and . as ->/<session>.jsonl` gives it a model,
 context, cache and transcript (use the real path: `/tmp` is `/private/tmp`
-on macOS). Worktrees opened with `herdr worktree open` are linked worktrees
-to Corgi; plain workspaces on a `git worktree` are not. The private home
+on macOS). An agent's project is the repository
+`git rev-parse --git-common-dir` names, so a plain workspace on a
+`git worktree add` checkout is a linked worktree to Corgi as much as one
+opened with `herdr worktree open`; only Herdr's own is removed with Herdr's
+`worktree.remove`, a plain one with `git worktree remove`. The private home
 needs a Git identity in its `.gitconfig` for merges, and a bare `origin`
 for one to push.
 
@@ -181,7 +184,12 @@ and works without a redraw. While the Mac's screen is locked
 (`ioreg -n Root -d1 | grep CGSSessionScreenIsLocked`), the platform asks
 for the window's first frame and no more, so `shot` and the click steps
 draw a frame themselves (a click would otherwise hit-test that first
-frame); other steps still see it, and AeroSpace does not list the window. Move the window to AeroSpace workspace 4 the moment it
+frame); other steps still see it, and AeroSpace does not list the window.
+`screencapture -l` fails then too (and at any time without Screen
+Recording permission; `CGPreflightScreenCaptureAccess()` says), but
+`CGWindowListCopyWindowInfo` (filtered by owner pid) still gives the
+window's id and frame, so a frame taller than its content shows a native
+title bar. Move the window to AeroSpace workspace 4 the moment it
 appears (see the user's instructions); `render_to_image` still captures it
 there. Moved there, the window counts as occluded: it may be told it is
 hidden, and it draws no frames until a `shot` step draws one, so the focus
@@ -202,6 +210,11 @@ selected row and the focus view's agent: a click on a row must leave the
 offset alone, and a key scroll it only as far as the row's edge
 (`src/rows.rs`). A selection that scrolls moves the offset while the frame is
 prepainted, so read it with `scroll`, not straight after a `key`.
+Told it is hidden on workspace 4, the window also stops watching the
+transcript, so a row expanded with Space shows "Reading the session…": put
+a `show` after the key that expands it. A scroll the expanded row settles
+on is drawn only by the next frame, so the shot after it may still show
+the old offset; read offsets with `scroll`.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 
@@ -262,11 +275,13 @@ of their own open:
 `aerospace list-windows --all --json --format '%{window-id} %{app-name} %{app-pid}'`
 lists `app-pid` only when `--format` asks for it.
 
-Text on a fill other than the background (a badge, the selected row's bar,
+Text on a fill other than the background (a badge, the selected row's tint,
 a dialog) takes its color through `Colors::badge_text` or
 `Colors::secondary`, which keep the role unless it all but vanishes on
 that fill (Mocha's muted and black on its greys), so a theme keeps its
-look wherever its roles read.
+look wherever its roles read. A dialog's hints and other secondary text
+take `colors.secondary(colors.roles.popup_fill)`: plain `roles.muted` all
+but disappears on Mocha's popup fill.
 
 `HERDR_CONFIG_PATH=<file> herdr config check` validates a Herdr config file
 without a running server (and without touching the real config). Herdr's CLI
@@ -301,6 +316,15 @@ The `herdr pane current` CLI sends the calling pane's ID from
 `HERDR_PANE_ID`, so run inside a pane it returns that pane, not the one
 focused in Herdr's UI; the socket request `pane.current` with `{}` returns
 the focused pane.
+
+`test_support::FakeHerdr` answers `pane.process_info` from what
+`set_processes` gave it (no processes otherwise), for tests of what runs in
+a pane: the orphans detector, the proven re-tag and Codex admission. A real
+Herdr lists every process of the foreground group, an MCP server beside the
+agent's CLI included, and may leave a process's `argv` out, so match on the
+program's file name (`ForegroundProcess::program`) and never assume `argv`.
+To try `corgi orphans` on the user's Herdr, run it as it is: it only reads
+(snapshot, process info, screens), and changes nothing anywhere.
 
 To test against an agent without starting one, report a shell pane in the
 preview workspace as one. Corgi hides agent panes without a session, so tag
@@ -369,6 +393,12 @@ build; delete the session afterwards and check `herdr session list`. Then:
   Herdr sees a turn, writes the handover note when a line asks for one, and
   exits on `/exit`. A copied system binary must be signed with
   `codesign -s - -f`, or macOS kills it.
+  It must clear its screen when a turn ends, or Herdr keeps reading the
+  leftover "esc to interrupt" line as working. Herdr 0.9.5's
+  `pane report-agent` CLI has no `--session-start-source`, so the note
+  on it below cannot be followed through the CLI. Herdr judges a Codex pane's state from its
+  screen, not from `herdr:codex` reports, so a fake `codex` that does not
+  draw Codex's own working line always reads idle.
 - Keep the real agent CLIs unreachable. A login bash runs macOS's
   `path_helper`, which puts `/etc/paths.d/homebrew` (`/opt/homebrew/bin`,
   where `claude` lives) ahead of anything prepended to `PATH`, so set the
@@ -377,8 +407,22 @@ build; delete the session afterwards and check `herdr session list`. Then:
   `PATH` the same. Before typing into a pane, check with
   `herdr pane process-info --pane <id>` that each foreground process's
   executable (`lsof -a -p <pid> -d txt`, not `ps -o comm`, which gives only
-  the name it was started by) is a fake, and run a loop that kills any
-  other `claude`, `codex` or `node` of the private home.
+  the name it was started by) is a fake. If a real `claude`, `codex` or
+  `node` shows up under the private server, stop that server
+  (`herdr session stop <name>` with the private environment).
+- **Never kill processes by name, pattern, process group or user**: no
+  `pkill`, `killall`, pgrep-and-kill, kill loops or watchdogs. One such
+  loop (`pgrep -g ""` selects unrelated processes on macOS) killed every
+  agent on the machine. Kill a process only by PID, once, after walking its
+  ppid chain to your own private server's PID and checking with `lsof` that
+  its executable is one of your fakes. After a live handoff the panes'
+  processes no longer descend from the new server, so that walk fails:
+  tell a fake by the pane's `herdr pane process-info` and its executable's
+  `lsof` line instead, and still kill nothing by name, pattern or group.
+- `herdr update --handoff` is disabled for Homebrew installs. To hand off a
+  private server anyway, send it `server.live_handoff` on its socket, with
+  `import_exe` the Herdr binary to take over (the same one will do):
+  `{"id":"h","method":"server.live_handoff","params":{"import_exe":"<herdr>"}}`.
 - Report fake agents' states with a test `--source`. Only
   `--source herdr:claude` keeps an `--agent-session-id`, and Herdr then
   ignores the test source's states for that pane. **A pane with a
@@ -387,6 +431,15 @@ build; delete the session afterwards and check `herdr session list`. Then:
   the fakes must win on that shell's `PATH` (above) before any restart.
 - `herdr plugin log list --plugin io.github.zyrre.corgi` shows each hook's
   line, its exit code and its time.
+- A fake that reports a new native session (as Claude does after `/clear`)
+  must pass `--session-start-source` (`startup`, `resume` or `clear`), as
+  Herdr's integration does: without it Herdr keeps the old session. Herdr
+  0.9.2 and later run the resume command Corgi reported for each pane after
+  a restart, so fakes that log their argv show what every agent came back
+  with; `markers/<socket>.launches.json` under the private state shows what
+  Corgi reported. The Herdr 0.9.5 release binary may be downloaded into the
+  worktree's `target/` (check its SHA-256 against GitHub's) and run only as
+  a private server.
 
 ## Session recovery checks
 
@@ -403,29 +456,9 @@ limits and the user-waived live-Claude check; do not retry authentication errors
 
 ## README screenshots and animation
 
-The images in `docs/images/` are drawn by Corgi's own UI code from made-up
-agents in `src/readme_shots.rs`; nothing of the machine they are drawn on
-may appear in them (no real home paths, work names or e-mails). After a UI
-change, draw them again with:
-
-```bash
-cargo readme-shots
-```
-
-It writes the SVG screenshots and `merge-outcomes.gif`, a merge in the
-merge popup that ends and rests on its success stamp.
-The GIF plays the real effects of `src/motion.rs` on a manual clock at 25
-frames a second, and
-rasterizes each frame with resvg (a dev-dependency) and the system's
-monospace fonts, so it needs no tool beyond Cargo. It takes about half a
-minute; keep the GIF well under 2 MB. Delete an image the README stops
-using.
-
-Since the GIF's text comes from the system's fonts, `merge-outcomes.gif`
-differs from machine to machine. To check that a change left it alone,
-compare it with one drawn from a build of the base commit on the same
-machine, not with the committed file (`git archive <base>` into a scratch
-directory gives that build without touching a checkout).
+Do not run `cargo readme-shots` or update anything in `docs/images/` for now;
+the README and its images will be redone after the GUI work. Leave
+`docs/images/` untouched, and discard any change a tool makes there.
 
 ## Releasing
 

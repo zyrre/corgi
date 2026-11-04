@@ -162,7 +162,9 @@ Exactly one per request, with its `id`.
 | `merge_outcome` | a `MergeOutcome` | `merge` |
 | `close_form` | a `CloseForm` | `close_check` |
 | `close_dirty` | `message` | `close` on a worktree with uncommitted changes |
+| `pause_form` | a `PauseForm` | `pause_check` |
 | `digest` | `text` | `digest` |
+| `orphans` | `candidates` | `orphans` |
 
 ## The state
 
@@ -206,7 +208,24 @@ Exactly one per request, with its `id`.
 - `cache.expires_at` is when the prompt cache lapses (`estimated`: when its
   documented minimum retention ends). Count down from the snapshot's `now`.
 - `can_prompt` is false while the agent is blocked on its own question,
-  which is answered in its pane. `can_merge`: it works in a linked worktree.
+  which is answered in its pane, and for an exited row. `can_merge`: it
+  works in a linked worktree.
+- `exited: true` marks a row for an agent Corgi launched that has dropped to
+  its shell while Herdr kept running (it exited, or was killed). Its
+  `state` is `unknown`, its `message` says so and its `tool` names the
+  session; `resume` starts it again. It takes `close_check`, `close`,
+  `merge_check` and `edit`; `prompt`, `tag` and `focus` refuse it. Only a
+  pane where Corgi saw an agent session has one.
+- `paused: true` (left out when false) marks an exited row that
+  `pause_all` stopped: `resume_all` starts it again, as `resume` does for
+  it alone. While any row has it, a frontend offers Resume all in place of
+  Pause all. It is Corgi's state, not the frontend's, so a window opened
+  later sees it, and it survives a Herdr restart.
+- `warning`, with `missing_options`, says that the agent runs without some
+  of the options Corgi launched it with (`role`, `memory`, `model`,
+  `effort` or a flag), as after a resume by a Herdr older than 0.9.2:
+  `Running without its supervisor role: exit it, then Resume`. Both are
+  left out when there is nothing to say.
 - The rows are in the dashboard's order: by project, each led by its
   supervisor, the scratch sessions last, and within a project blocked,
   working, done, idle, unknown, the most recent first.
@@ -221,13 +240,15 @@ Exactly one per request, with its `id`.
  "questions":[{"id":"Q4","title":"Keep the old flag?","agent":"w-fix"}],
  "held":0,
  "merge_requests":[{"id":"!1677","title":"Fix the forecast","branch":"worktree/green-forest-025b",
-                    "draft":false,"url":"https://gitlab.example.com/team/weather/-/merge_requests/1677"}]}
+                    "draft":false,"url":"https://gitlab.example.com/team/weather/-/merge_requests/1677"}],
+ "backlog":[{"heading":"Stop all agents button","text":"For when the user leaves the network."}]}
 ```
 
 - `card` is true for a project led by its running supervisor, which the
   dashboard draws as a card; other projects and the scratch sessions
   (`scratch`, `root` empty) are a heading over their rows.
-- `workers` is what a collapsed card's footer sums up, the supervisor not
+- `workers` is what a collapsed card's footer sums up (`exited`, left out
+  when 0, counts workers that exited, under no state), the supervisor not
   counted; a worker tagged ready to merge counts only under `merge`.
 - `blocked` is each blocked worker and what it waits on: the question on its
   screen, else `waiting for your input`.
@@ -254,6 +275,14 @@ Exactly one per request, with its `id`.
   missing, not logged in or fails, or the remote is neither; a merged or
   closed one drops out at the next listing. It arrives in a delta after
   the snapshot, never holding one up.
+- `backlog` is the supervisor's list of things to build later, from
+  `backlog.md` in its state directory, which only the supervisor writes:
+  one entry per `## ` heading, its `text` the Markdown up to the next
+  `## ` without the heading line; a title and intro above the first are
+  left out, and a `## ` inside a code fence starts no entry. At most
+  256 KB of the file is read (an entry cut there ends with `…`). The
+  field is left out when the file is missing or has no entry. Write to the
+  supervisor about one with `backlog_message`.
 
 ### `UsageCard`: the plan-usage header
 
@@ -328,19 +357,26 @@ finish.
 | `prompt` | `pane_id`, `text` | | Types `text` into the agent and submits it. |
 | `answer` | `project_root`, `question`, `text` | | Answers a numbered question. |
 | `close_question` | `project_root`, `question` | | Closes a numbered question without answering it. |
+| `backlog_message` | `project_root`, `heading`, `text` | | Tells the supervisor what the user wrote about a backlog entry. |
 | `new_agent_form` | `pane_id`?, `project`?, `harness`?, `model`? | | The new-agent form, preset. |
 | `spawn` | `project`, `new_project`, `harness`, `model`, `effort`, `task`, `checkout` | | Starts the agent. |
 | `start_supervisor` | `project_root` | | Starts the project's supervisor, or names the running one. |
 | `merge_check` | `pane_id` | | The merge confirmation. |
 | `merge` | `pane_id`, `upstream` | | Runs the confirmed merge. |
-| `merge_handoff` | `pane_id` | | Hands a conflict or failed push to the supervisor. |
+| `merge_handoff` | `pane_id`, `error`? | | Asks the supervisor to fix the merge's failure. |
 | `merge_dismiss` | `pane_id` | | Forgets the merge. |
 | `close_check` | `pane_id` | | The close confirmation. |
 | `close` | `pane_id`, `force` | | Closes the agent's worktree, tab or workspace. |
 | `tag` | `pane_id`, `merge` | | Tags the agent ready to merge, or clears the tag. |
+| `resume` | `pane_id` | | Starts an exited row's agent again in its pane. |
+| `pause_check` | | | What `pause_all` would stop, for the confirmation. |
+| `pause_all` | | | Stops every Claude and Codex agent in every project to its shell. |
+| `resume_all` | | | Starts every agent `pause_all` stopped again. |
 | `focus` | `pane_id` | **yes** | Brings the agent's pane into view in Herdr. |
 | `edit` | `pane_id` | **yes** | Opens the agent's checkout in the editor, in a new Herdr tab it goes to. |
 | `digest` | `project_root`, `lookup` | | Reads the supervisor's memory. |
+| `orphans` | | | Finds orphaned sessions; reads only. |
+| `orphan_apply` | `key`, `fingerprint`, `action` | | Does what the user chose for one. |
 
 ### `prompt`
 
@@ -377,6 +413,19 @@ supervisor running. Closing it again before the line goes out still sends
 one. Corgi does not write the ledger: the question stays in `questions`
 until the supervisor drops it, so show it as closing until then. Refused
 for a `question` that is not a number or not open in the ledger.
+
+### `backlog_message`
+
+```json
+{"id":4,"command":"backlog_message","project_root":"/repos/weather","heading":"Stop all agents button","text":"Do this one next"}
+```
+
+Puts one `[Corgi]` line in the supervisor's inbox, `The user wrote about
+backlog entry "Stop all agents button": Do this one next`, which goes out
+as `close_question`'s does, so it works with no supervisor running. Each
+message goes out, however alike. The heading is put on one line; the text
+is trimmed and otherwise kept as written. Refused for an empty `text` or
+`heading`; the heading need not still be in the backlog.
 
 ### `new_agent_form` and `spawn`
 
@@ -449,11 +498,16 @@ A merge is the dashboard's `m` dialog as three commands.
     "project_root":"/repos/weather","worktree":"/repos/weather-fix",
     "source_branch":"worktree/fix","target_branch":"main",
     "commits":["1a2b3c4 Fix leap days"],"upstream":"origin/main",
-    "steps":["Check both worktrees","Fetch origin/main","Merge worktree/fix into main","Push main"]}
+    "steps":["Check both worktrees","Fetch origin/main","Merge worktree/fix into main","Push main"],
+    "supervisor":"supervisor-weather"}
    ```
 
-   It is refused for an agent outside a linked worktree, for a dirty
-   checkout, and when both are on the same branch.
+   `supervisor` is the project's running supervisor, absent when none runs.
+   It is refused for an agent outside a linked worktree. A merge Git
+   refuses before it starts (a dirty checkout, both on the same branch) is
+   still a `merge_form`, with `refused` saying why and the branches Git
+   could still tell: show the reason and offer `merge_handoff`; `merge`
+   refuses it.
 
 2. `merge` with `upstream` `check` (the default) runs it, with progress, and
    replies `merge_outcome`, `ok: true` whatever the outcome:
@@ -462,14 +516,19 @@ A merge is the dashboard's `m` dialog as three commands.
    | --- | --- | --- |
    | `succeeded` | `commit`, `message` | Done. The agent's merge tag is cleared and its supervisor is told. Offer `close_check`. |
    | `behind` | `commits` | The upstream has commits the target lacks; nothing merged. `merge` with `pull` brings them in first. |
-   | `fetch_failed` | `error` | Nothing merged. `merge` with `skip` merges without the upstream. |
+   | `fetch_failed` | `error`, `supervisor` | Nothing merged. `merge` with `skip` merges without the upstream; `merge_handoff` asks `supervisor` to fix the fetch. |
    | `conflicted` | `files`, `supervisor` | The primary checkout is mid-merge. `merge_handoff` aborts it and asks `supervisor` (when not `null`) to have the worker merge the base into its branch; `merge_dismiss` leaves it to resolve by hand. |
    | `push_failed` | `commit`, `error`, `supervisor` | Merged locally; the tag is cleared and the supervisor told. `merge_handoff` asks it to explain the error. |
-   | `failed` | `error` | |
+   | `failed` | `error`, `supervisor` | `merge_handoff` asks `supervisor` to fix it. |
 
-3. `merge_handoff` or `merge_dismiss` ends a conflicted or push-failed
-   merge. A succeeded or failed merge is forgotten by itself; `merge_check`
-   starts a new one.
+3. `merge_handoff` or `merge_dismiss` ends a merge that stopped: a refused,
+   fetch-failed, conflicted, push-failed or failed one. `merge_handoff`
+   asks the running supervisor to fix it and report back (a conflict is
+   aborted first, a failed push explained), and is refused while none
+   runs. Give `error` for a failure serve did not report (its own refusal
+   of a command, a lost connection): with no merge kept, the line is made
+   from the agent and that error. A succeeded merge is forgotten by itself;
+   `merge_check` starts a new one.
 
 ### Closing
 
@@ -481,7 +540,9 @@ A merge is the dashboard's `m` dialog as three commands.
 ```
 
 `target` is `worktree` (removes the checkout from disk; the branch stays),
-`tab` (its tab in the project's workspace) or `workspace`. `close` does it.
+`tab` (its tab in the project's workspace), `workspace` (one Corgi created)
+or `pane` (the agent's pane alone, in a workspace Corgi did not create).
+`close` does it.
 A worktree with uncommitted changes replies `close_dirty`; confirm again
 with `force: true` to discard them.
 
@@ -491,6 +552,48 @@ with `force: true` to discard them.
 merge as `corgi tag` does, with the same refusals (it works, has no commits
 ahead of the base, or its supervisor has questions open about it);
 `merge: false` clears the tag.
+
+### `resume`
+
+`{"command":"resume","pane_id":"w2:p2"}` starts the agent of an `exited`
+row again in the same pane: its last session, with the options Corgi
+launched it with and, for a supervisor, its role and memory, the same
+command Corgi gives Herdr for a restart. It refuses a running agent, a
+pane whose shell is busy or has left the agent's directory, and a pane
+where Corgi saw no session. Corgi never resumes an agent by itself.
+
+### `pause_check`, `pause_all` and `resume_all`
+
+`{"command":"pause_check"}` replies with what Pause all would stop now, and
+changes nothing; it refuses when there is no agent to stop:
+
+```json
+{"kind":"pause_form","agents":3,"working":1,
+ "projects":[{"project":"weather","supervisors":1,"workers":2,
+              "working":["supervisor-weather"]}],
+ "left":["w-old: Herdr does not know its state"]}
+```
+
+It counts every running Claude and Codex row with a session, in every
+project and the scratch sessions (`Scratch`), supervisors and workers.
+`working` names those working or waiting on a question: their current turn
+is lost. `left` names what is left running and why (a state Herdr does not
+know, no session Corgi could resume, another harness); left out when empty.
+`corgi_core::pause::confirmation` words it as both dashboards do.
+
+`{"command":"pause_all"}` marks every one paused in Corgi's launch record,
+presses Esc in each working one and waits for it to stop, then types its
+harness's own exit (`/exit`, `/quit`) and waits for it to leave. Its
+progress says which step runs; it replies `done` with `Paused N agents`,
+naming any it could not stop and why (it kept working, its input box held
+the user's text, it did not exit). Nothing is killed. While agents are
+paused their stops wake no supervisor and no supervisor is handed over,
+and after a Herdr restart they stay at their shell.
+
+`{"command":"resume_all"}` starts each paused row's agent again in its own
+pane, as `resume` does, and replies `done` with `Resumed N agents`, naming
+any that failed. Rows that exited some other way are left alone. It
+refuses when nothing is paused.
 
 ### `focus` and `edit` (touch focus)
 
@@ -524,3 +627,37 @@ What `corgi digest` prints, as `text`. `lookup.kind` is `summary` (the
 default; the whole digest), `search` and `decision` (with `words`), `show`
 (with `handle`, such as `decisions.md:12`), `ledger` and `brief` (with
 `id`).
+
+### Orphaned sessions
+
+`orphans` looks for the sessions Corgi gets wrong, only when asked, and
+replies with each candidate as `corgi orphans --json` prints it
+(`corgi_core::orphans::Candidate`, re-exported as `protocol::Orphan`):
+
+```json
+{"kind":"orphans","candidates":[{"key":"pane:wQ:p1","cause":"worker",
+ "confidence":"certain","pane_id":"wQ:p1","workspace_id":"wQ",
+ "workspace":"pay","harness":"claude","name":"restored-wq",
+ "cwd":"/repos/webshop/.claude/worktrees/pay",
+ "summary":"Worker its supervisor lost track of",
+ "evidence":["Ledger entry r-pay (w-pay, dispatched) names this checkout and branch pay"],
+ "actions":[{"kind":"worker","project":"webshop","project_root":"/repos/webshop",
+             "request_id":"r-pay","agent":"w-pay"},
+            {"kind":"leave"},{"kind":"close","target":"worktree"}],
+ "suggested":0,"fingerprint":"worker wQ:p1 6adb… r-pay"}]}
+```
+
+- `cause` is `hidden`, `not_detected`, `supervisor`, `worker`,
+  `no_project` or `duplicate`; `confidence` is `certain`, `likely` or
+  `guess`. `fix`, when present, is what the user can run outside Corgi
+  (`herdr integration install codex`).
+- `actions` are what the evidence allows, never empty; `suggested` is the
+  index of the one to preselect. An action's `kind` is `supervisor`,
+  `worker`, `close` (with the `target` the close dialog names) or `leave`.
+
+`orphan_apply` sends one candidate's `key` and `fingerprint` back with the
+chosen `action`, as `orphans` gave it. Serve looks again first and refuses a
+candidate that is gone, whose fingerprint changed (another session or
+process in its pane), or that no longer offers the action; else it replies
+`done`. `leave` is kept in Corgi's state directory, and the candidate is not
+listed again until its evidence changes.

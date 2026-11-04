@@ -19,6 +19,8 @@ Herdr session
        ├─ agent.prompt ────── prompt an existing agent, and wake a project's supervisor
        ├─ agent.focus ─────── focus an existing agent pane
        ├─ workspace.close ─── close a plain or unused Corgi project workspace
+       ├─ pane.close ──────── close an agent's pane alone in a workspace Corgi did not create
+       ├─ pane.process_info ─ admit a Codex without a session; find orphaned sessions
        ├─ tab.create/close ── open or close a shared-checkout agent's tab
        ├─ pane.current, pane.send_input ── open an agent's checkout in the editor
        ├─ worktree.remove ─── delete a worktree checkout and close its workspace
@@ -74,6 +76,9 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   │                        (`{"harness":"claude"}`), for the new-agent form to
   │                        preselect; replaced whole through a temporary file
   │                        and a rename; a missing or corrupt file is no record
+  ├─ orphans-left.json ─ the orphaned sessions the user chose to leave, by
+  │                        their evidence, so they are not offered again until
+  │                        it changes; the newest 200
   ├─ refresh.log ──────── the interactive dashboard's slow refreshes, errors and
   │                        changes in the number of agents (every refresh with
   │                        CORGI_REFRESH_LOG=all); refresh.log.old past 256 KB
@@ -81,7 +86,8 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
                           and by the supervisor: ROLE.md, launch.json,
                           decisions.md, ledger.jsonl, briefs/, handover.md
                           while one is under way, handovers/, notes/,
-                          questions/Q<n>.md while Q<n> is open; at
+                          questions/Q<n>.md while Q<n> is open,
+                          backlog.md (things to build later); at
                           launch Corgi moves superseded ledger lines to
                           ledger-archive.jsonl;
                           and by Corgi only (`inbox.rs`, under inbox.lock):
@@ -118,6 +124,7 @@ Headless launch and the supervisor
   ├─ corgi spawn ──── the new-agent form's launch sequence, task on stdin, result as JSON
   ├─ corgi supervisor the same launch into the project's root tab, as its supervisor
   ├─ corgi fleet ──── a project's agents as tab-separated rows
+  ├─ corgi orphans ── the sessions Corgi gets wrong, with their evidence; reads only
   ├─ corgi digest ─── the supervisor's memory, bounded, joined with the fleet
   ├─ corgi report ─── an agent's report: kept in an inbox, else its newest message
   ├─ corgi notify ─── add an item to a supervisor's inbox, text on stdin
@@ -335,7 +342,7 @@ dashboard, the command line and other frontends run the same code.
 - `refresh.rs` is the periodic refresh: Herdr's snapshot, the marks put back
   and the stale merge tags cleared, the project workspaces relabelled, each
   agent's row from its session file, its screen and, for an unidentified
-  scratch Codex, its pane's processes, the expanded transcript, the
+  Codex in a workspace Corgi created, its pane's processes, the expanded transcript, the
   state-directory warnings, and the supervisors' wakes: `refresh::run`, from
   its `Inputs` and the `RefreshState` the last one handed back. The
   interactive dashboard runs all of it as a background `Job`
@@ -379,6 +386,51 @@ dashboard, the command line and other frontends run the same code.
   finds the file through the client's marker record (`<state>/markers/...`),
   so a test client without one records nothing, and the core's own tests never
   read the real file.
+- `repo.rs` says which repository an agent works in: the one
+  `git rev-parse --git-common-dir` names for its cwd, whether Herdr opened
+  its workspace as a linked worktree or not (decision 2026-11-03). Herdr's
+  workspace provenance answers without Git where it settles it (a Herdr
+  linked worktree the agent runs in, or the top of the primary checkout);
+  anything else is one `git rev-parse` per directory, kept for a minute in
+  the `RefreshState`. So a plain `git worktree add` checkout (such as Claude
+  Code's `.claude/worktrees/*`), or an agent whose cwd left its workspace's
+  checkout, is grouped under its repository in the dashboard, `corgi fleet`
+  and the digest, and merged and closed as a worktree. A repository whose
+  primary checkout is the home directory (dotfiles) is not one for an agent
+  in a subdirectory.
+- `pause.rs` is Pause all and Resume all (see "Pause all" under "Herdr
+  restarts"): `plan` picks the agents from a refresh's rows and `Plan::form`
+  and `confirmation` say what will stop; `pause_all` marks them, presses
+  Esc in the working ones and types each harness's exit; `resume_all`
+  resumes the marked ones through `restart::resume`; `Holds` and `settle`
+  are what the pass holding the wake lock honours and clears.
+- `orphans.rs` is "Find orphaned sessions" (docs/orphaned-sessions.md):
+  `detect` reads the snapshot, the rows, the panes' foreground processes
+  (`pane.process_info`, which lists the pane's whole foreground group, an
+  MCP server beside the agent's CLI included, and leaves `argv` out of some
+  entries, so a process is matched by its program's file name,
+  `ForegroundProcess::program`), Git and the supervisors' files, and lists the
+  agents Corgi gets wrong (hidden: Herdr lists it, Corgi has no row; not
+  detected: an agent CLI Herdr does not list; a supervisor without its
+  mark; a worker its ledger names by checkout and branch but that lost its
+  request id; an agent in no repository) and empty duplicate project
+  workspaces, each with its evidence, how sure it is, and the choices it
+  allows, the suggested one first to show. It writes nothing; it runs only
+  when asked (the dashboard's `o`, the window's Sessions button,
+  `corgi orphans`, `serve`'s `orphans`). `apply` detects again and refuses
+  a candidate whose fingerprint changed (another session or process in the
+  pane), then marks the supervisor (`markers::mark_pane` with its
+  session), gives back the request id, closes (`close::close`, or the
+  duplicate workspace), or records a "leave" in `orphans-left.json`.
+  `retag_proven` is the part that needs no asking: the leading refresh
+  (a hook's or a dashboard's) runs it right after `restore_markers`, and it
+  puts back a supervisor's mark when the agent's process names its own
+  project's `ROLE.md` or state directory, the project has no running
+  supervisor and no other process names the same files; and a worker's
+  request id when exactly one unfinished ledger entry no live agent carries
+  has its cwd and branch and no other agent works there. The status line
+  names what it put back. `Choices` is the dialog's state both frontends
+  share.
 - `catalog.rs` holds the per-harness model catalogs behind the Model row, and
   the harness, model, and effort rows' choices; `src/app/catalog.rs` hands a
   catalog that arrives to an open model list. Codex uses its App Server;
@@ -454,9 +506,15 @@ dashboard, the command line and other frontends run the same code.
   supervisor runs in, in any tab, and otherwise takes the first in snapshot
   order; every lookup (launch, close, merge, cleanup) goes through it.
 - `close.rs` closes an agent: its worktree and checkout, its tab in a project
-  workspace, or its whole workspace (`close_form` says which, `close` does it,
-  and `src/app/close.rs` is the dialog), then retires the project workspace
-  when nothing is left in it. Before that, any other Corgi project workspace
+  workspace, its whole workspace when Corgi created it, or, in a workspace
+  Corgi did not create (no `corgi_workspace_role`), its pane alone with
+  `pane.close`, leaving the user's other tabs and shells (decision
+  2026-11-03); `close_form` says which, `close` does it, and
+  `src/app/close.rs` is the dialog. Then it retires the project workspace
+  when nothing is left in it. Herdr's own linked worktree goes with Herdr's
+  `worktree.remove`; a plain `git worktree add` checkout first has its
+  pane, tab or workspace closed as above, then `git worktree remove` in the
+  primary checkout, a dirty one refused once as Herdr refuses its own. Before that, any other Corgi project workspace
   of the same project that holds nothing — no agent in any pane, no dashboard,
   and only its recorded root tab with at most one pane — is closed as a
   duplicate, the way adopting Herdr's root workspace closes an idle older one.
@@ -465,7 +523,13 @@ dashboard, the command line and other frontends run the same code.
   described under "Herdr restarts" below. Every Corgi token write goes
   through its `mark_pane` and `mark_workspace`; nothing else calls
   `pane.report_metadata` or `workspace.report_metadata`.
-- `merge.rs` is the only Git command Corgi runs that writes: a confirmed
+- `restart.rs` is Corgi's record of how it launched each agent, the resume
+  command it reports to Herdr from it, the Resume action and the warning
+  for an agent running without its options, described under "Resume
+  commands" below. Nothing else calls `pane.report_agent_session` or
+  `pane.release_agent`.
+- `merge.rs` is one of the two places Corgi runs a Git command that writes
+  (the other is close's `git worktree remove` of a plain linked checkout): a confirmed
   merge of an agent's clean worktree branch into the branch already checked
   out in the repository's primary checkout, then a push through that branch's
   configured upstream, or, when the user hands a conflicted merge to the
@@ -474,10 +538,31 @@ dashboard, the command line and other frontends run the same code.
   performs the merge, and Corgi never changes the user's checked-out branch.
   The core has the Git steps and the supervisor's inbox lines; the dialog,
   its phases' keys and the job are `src/app/merge.rs`.
+  Every way a merge can fail offers to ask the project's running supervisor
+  to fix it, with one key in both frontends (`ASK_SUPERVISOR_KEY`, `s`; in
+  the window the default of the rebindable "Merge dialog" hotkey, whose
+  keycap its button shows). The ways are a refusal before the merge starts
+  (`MergePhase::Refused`, such as a dirty checkout or both checkouts on one
+  branch, built by `refused_form` from what Git can still tell, so the
+  dialog says why instead of only a status line), a failed fetch, any other
+  failure, a conflict and a failed push. `handoff` gives each its inbox line:
+  conflicts and failed pushes keep their own, and the rest get
+  `merge_failed_item`, which carries the error as the user saw it and asks
+  the supervisor to fix it and report back. An upstream that moved on is a
+  question rather than a failure, and an agent outside a linked worktree has
+  nothing to merge, so neither offers it. A refused merge's Enter only closes
+  the dialog, since the user never confirmed it. Without a running
+  supervisor the dialog says why nobody can be asked.
 - `waker.rs` is `SupervisorWaker`, which wakes supervisors through their inboxes,
   puts the merge and merge-conflict lines in them, and hands them over, as
   described below; `draft.rs` tells it whether a supervisor's input box holds
   the user's draft.
+- `backlog.rs` reads a supervisor's `backlog.md`, its things to build
+  later, which only the supervisor writes (the role gives the form): an
+  optional `# ` title and intro, then one entry per `## ` heading, its text
+  running to the next one (a `## ` inside a code fence starts none). It
+  reads a plain file only, at most 256 KB; missing, or with no `## `, it
+  is no backlog. `corgi serve` sends it with each project.
 - `setup.rs` is `corgi setup`. Herdr plugins cannot declare key bindings,
   so it appends one for the plugin's `open` action to the end of Herdr's
   `config.toml`, never rewriting what is there. It leaves a config that
@@ -528,6 +613,8 @@ Its submodules are split by flow, each adding methods to the one `App`.
   over its check stamp, then closes it by itself or at any key;
   without effects it closes at once, as the headless paths expect.
 - `prompt.rs` is the prompt typed for an existing agent.
+- `resume.rs` is the `R` key: Resume on a row for an agent that exited to
+  its shell, as a background job (`restart::resume`).
 - `form.rs` is the new-agent form: one task row over a short list of
   selector rows, each with an inline filterable list. The default agent kind
   is the harness of the last spawn, if it is still installed, else
@@ -541,6 +628,14 @@ Its submodules are split by flow, each adding methods to the one `App`.
   side of the core's flows of the same names: fetching catalogs as the form
   asks, the launch job and its panel, the merge dialog and its job, and the
   close dialog.
+- `pause.rs` is `P`: the Pause all confirmation (`src/ui/dialogs.rs`
+  draws it with the core's words) and its job, or Resume all's while a row
+  is paused. The footer names `P pause all` or `P resume all`.
+- `orphans.rs` is the `o` key's "Orphaned sessions" dialog and
+  `corgi orphans`: the core's `detect` and `apply` as one background job,
+  so keys never wait on Herdr's process lookups; the list keeps one choice
+  per candidate (preset to its suggestion), Enter applies the selected
+  one's, and the row goes once it is done. `src/ui/orphans.rs` draws it.
 - `cli.rs` is `corgi spawn`, `corgi supervisor`, `corgi fleet`,
   `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox`,
   `corgi tag` and `corgi role`. The
@@ -597,7 +692,8 @@ when stdin closes and no command is still running.
   dashboard's `project_runs` and `is_card`), each supervisor's open
   numbered questions from its ledger (`digest::all_open_questions`), each
   with its `questions/Q<n>.md` (a plain file, at most 64 KB; a file for a
-  question the ledger does not list open is never read), the usage cards, the watched transcript and the palette, whose roles it sends
+  question the ledger does not list open is never read), its backlog
+  (`backlog::read`, below), the usage cards, the watched transcript and the palette, whose roles it sends
   in RGB for light and dark (the Omarchy theme, else Catppuccin). It never
   calls `palette::resolve`, which queries the terminal over stdin and stdout,
   where the protocol runs. It also computes
@@ -624,16 +720,25 @@ when stdin closes and no command is still running.
   `launch_agent`, `dashboard_supervisor_plan`, `merge_form`/`run_merge`
   with the dashboard's follow-ups (clear the tag, tell the supervisor, hand
   a conflict or failed push over), `close_form`/`close`, `tag_agent`,
-  `go_to_agent`, `open_checkout` and the digest lookups. `close_question`
+  `go_to_agent`, `open_checkout` and the digest lookups, `orphans` and
+  `orphan_apply`, the core's `orphans::detect` and `apply`, and
+  `pause_check`, `pause_all` and `resume_all`, the core's `pause` flows. `close_question`
   has no dashboard key: it adds `supervisor::question_closed_message` to the
   supervisor's inbox, delivered like a wake, and the role says how to drop
   the question from the ledger and delete its file, which only the
-  supervisor writes. Quick
+  supervisor writes. `backlog_message` has no dashboard key either: it
+  queues `supervisor::backlog_message`, `[Corgi] The user wrote about
+  backlog entry "<heading>": <text>`, the same way, with no key, so two
+  messages about one entry both go out. Quick
   commands run on the loop's thread; those that wait on Herdr, Git or a
   harness run on one of their own and reply from there, a panic becoming an
   error reply.
   Merges in progress are kept by pane between `merge_check`, `merge` and
-  `merge_handoff`.
+  `merge_handoff`. A merge Git refuses is still a `MergeForm` reply,
+  carrying `refused` and the project's `supervisor`, and is kept so
+  `merge_handoff` can hand it over. `merge_handoff` takes the `error` the
+  window shows, for a failure serve kept no merge for (its own refusal, a
+  lost connection).
 - `focus` and `edit` are the commands that call Herdr's focus methods,
   which move every attached client; the hello marks them so a GUI never
   sends them. `select` writes `selection/<socket>.<pid>` as a dashboard
@@ -651,21 +756,46 @@ when stdin closes and no command is still running.
 into `corgi_core::protocol`'s types and keeps its copy of the state with
 `State::apply`. Its layout is fixed, plain GPUI with no dock: the header
 (the brand's pixel corgi, the HERD counts, a card per plan), a toolbar, the
-overview of project cards and rows, the selected agent's session under it,
-the side panel with the selected project's supervisor, its workers ready
-to merge, its numbered questions, its open merge requests (a click opens
-one in the browser) and its blocked workers, and a status bar. It opens with every
-project card collapsed and no row selected, the session pane empty, until
-a key or a click picks a row; from then on, a selected row that goes gives
+overview of project cards and rows, the selected row expandable into its
+session, the side panel with the selected project's held inbox items (when
+any), its numbered questions, its open merge requests (a click opens one in
+the browser) and its supervisor's backlog, and a status bar. The panel has
+no supervisor block: the supervisor is the card's first row, and the
+toolbar prompts or starts it. A backlog entry's card opens a dialog with
+the entry whole (rendered as a question is, below) and a field whose text
+`backlog_message` sends the supervisor. It opens with every
+project card collapsed and no row selected, until a key or a click picks a
+row; from then on, a selected row that goes gives
 way to the first. A card the window has not shown before, or any card after
 it connects again, starts collapsed too (and a hidden selected worker gives
-way to its supervisor); one the user expanded stays so across refreshes. The session and the
-side panel open and close, and the edges between them drag; their sizes, and
-the window's, are kept in `$STATE/gui-layout.json`. Enter or a double click
+way to its supervisor); one the user expanded stays so across refreshes. The side panel opens
+and closes and its edge drags; its size, and the window's, are kept in
+`$STATE/gui-layout.json` (fields an older build kept, such as the removed
+session pane's, are skipped). Space expands the selected row in place into
+its session's turns, as the dashboard's expanded session does (below).
+The selected row is drawn as a 2 px accent outline around a faint accent
+tint (`Colors::selected_row`); every row carries that outline's frame,
+transparent until selected, so moving the selection shifts no text, and
+the expanded row is outlined whole. Enter or a double click
 on a row opens the **focus view**: that agent's live Herdr terminal in place
 of the overview, beside a side panel of its own (open or closed and its
 width kept apart from the overview's). Cmd+Esc (Ctrl+Shift+Esc on Linux), or
 the bar's "← Overview", goes back; plain Esc stays the terminal program's.
+These are the default keys: the header's Hotkeys button opens a dialog
+(`hotkeys.rs`) that rebinds them, and `keymap.rs` is the one place every
+key is read from, by the key handling (the overview's, the focus view's,
+the terminal's two chords) and by everything that shows one (toolbar, focus
+bar, status bar, card frames, side panel), so a key shown is a key that
+works. It keeps the user's changes in `$STATE/hotkeys.json` (only those;
+a missing, unreadable or other-version file gives the defaults). The
+overview's keys and an expanded session's are one key space; a key another
+action has is swapped only when confirmed, and fixed keys (the digits,
+copy and paste, the window's own) are refused. Dialogs keep ↵ and Esc.
+The window's own keys are app-level GPUI bindings (`window::bind_app_keys`,
+from `keymap.rs`'s constants). In GPUI 0.3.6 a bound key's action runs
+before any `on_key_down` listener, so a binding beats the terminal's key
+handler, in the focus view too: a key a terminal program should receive
+must not be bound.
 
 - `link.rs` starts the child and reads its stdout on a thread of its own,
   each line a `ServerMessage`; a line it cannot read (a newer server's) is
@@ -685,11 +815,30 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   (`form.rs`, the dashboard's rows and keys over the lists `serve` sends,
   with its own filter so a project typed over SSH is not looked up on the
   wrong machine) points at the row a refused `spawn` names; the merge dialog
-  shows the steps, the outcome and the follow-ups the outcome allows; the
+  shows the steps, the outcome and the follow-ups the outcome allows, and for
+  every failure an "Ask supervisor to fix" button, greyed with the reason
+  while no supervisor runs (Enter presses the first button that can be
+  pressed); the
   close dialog asks again for a dirty worktree. `Dialogs::escape` is what
   Esc does to each, and a left click outside the dialog does the same: the
   form's open list closes before the form, a form creating its agent stays,
   and a merge stopped for the user is dismissed through `serve`.
+- `pause.rs` is the header's Pause all button, under Sessions, and the
+  confirmation it and the rebindable `⇧P` open (`pause_check`, then
+  `pause_all`). While any row is `paused` it reads Resume all and sends
+  `resume_all`, and while either runs it reads Pausing… or Resuming… and
+  takes no click (`Dialogs::all_running`). A paused row's badge reads
+  PAUSED.
+- `orphans.rs` is the header's Sessions button (under Hotkeys) and the
+  "Find sessions" dialog it and the rebindable `o` open: a card per
+  candidate with its evidence, chips for its cause and certainty, and its
+  choices as buttons, the chosen one marked; Enter or the Apply button
+  sends `orphan_apply` for the selected card. Its state is
+  `dialogs::Orphans` around the core's `orphans::Choices`, so the reply
+  handling is tested without a window. A key that moves the selection
+  scrolls the list just far enough to show that card whole
+  (`rows::revealed`), since GPUI's `scroll_to_item` leaves a tall card's
+  foot under the list's edge.
 - `question.rs` draws a question's full text in the answer dialog: it splits
   the supervisor's form (`supervisor/ROLE.md`) into the heading and its
   `[blocks: …]` tag, the labelled parts and the lettered options, and
@@ -728,8 +877,37 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   that adds up rem spacing (`gap_*`, `p_*`, `py_*`) scales those terms too
   (`rem_px()`), not only its lines of text; a height that depends on the
   header's, toolbar's or status bar's is measured (as the overview's
-  column is, for the transcript's split) rather than estimated, since they
+  scroll handle is, for the expanded row) rather than estimated, since they
   grow with the text and the header wraps.
+- The expanded row (`transcript.rs`, `rows.rs`): Space grows the selected
+  row into its session's latest turns, down to the overview's bottom, and
+  `serve` reads that session's transcript only while a row is expanded
+  (`watch`). The overview draws its cards down to that row and no further,
+  the cards in a column stretched to the view's height at the current
+  offset (`Rows::expand`, from the last frame's view, so a frame whose view
+  differs, as after a resize, draws again), and the row's card, its body,
+  the row and the turns grow into it (`flex_1` all the way down, `framed`'s
+  body a flex column for it): the row grows where it is. Only when that leaves the turns
+  less than six lines does the overview scroll, to its end, the rows above
+  going off the top, as the dashboard's do; a key onto a row above the view
+  shows its top. The turns are one custom element that lays out its own
+  lines (the text fields' `wrap`, per paragraph; an older turn folded to two
+  lines with an ellipsis) and keeps them, with its scroll and selection, in
+  a `Transcript` shared with the window, so a press is hit-tested against
+  the lines drawn under it (`ShapedLine::closest_index_for_x`, or
+  `index_for_x` for the character under a double click). A place is a turn
+  and a byte offset in its text: when new turns come in above, the
+  selection and the scroll move down with their text (`shift`). The
+  element stops every mouse press it gets, so a click there neither
+  reaches the row (whose double click opens the terminal) nor the card
+  (whose right click collapses it); a press anywhere else clears the
+  selection. A double click takes a word as the focus view's terminal
+  does (`selection::separates`). Copying uses the terminal's copy chord;
+  a folded turn the selection covers from its start to its ellipsis is
+  copied whole, part of one as shown, turns a blank line apart. While the
+  window is moved off screen to an AeroSpace workspace it is told it is
+  hidden and stops watching, so a capture script needs `show` after a key
+  that expands.
 - A click on a row never scrolls the overview, so a double click lands on
   the row the first click selected; other selections scroll just far
   enough to show their row. The overview's children are the project cards,
@@ -739,8 +917,21 @@ the bar's "← Overview", goes back; plain Esc stays the terminal program's.
   before `.id()`), and a reveal lands on the next prepaint.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
-  and asks `serve` to stop reading the transcript; messages are still
+  and asks `serve` to stop reading the expanded row's transcript; messages are still
   applied, so it is current when shown again.
+- On macOS the window draws no title bar strip (`main.rs`): a transparent
+  title bar lets the content, the header first, start at the top edge, and
+  GPUI keeps the close, minimize and zoom buttons 200 px left of the window,
+  out of sight, rather than hidden: AeroSpace floats a window whose full
+  screen button Accessibility does not report enabled, so hidden buttons
+  would untile it. In full screen GPUI puts them back where AppKit shows
+  them. The app owns the drag (`app_owns_titlebar_drag`): a press on the
+  header that moves 4 px calls `start_window_move`, so a click on its
+  buttons stays a click. Cmd+W (keeping the size, as the close button did),
+  Cmd+M and Ctrl+Cmd+F stand in for the buttons; they act on the active
+  window after the key's dispatch, which holds the window. The title is
+  still set, hidden, so the window keeps its name for window managers.
+  Linux ignores all of it.
 - On Linux it enables `gpui-pre-platform`'s `wayland` feature and sets the
   Wayland app id `corgi-gui`, and picks a monospace font that exists there
   (Menlo does not), and a proportional one for running text: GPUI's
@@ -780,7 +971,8 @@ says so.
   lifted with only its imports changed: cells, box drawing and powerline
   symbols as shapes, colour emoji, pane images, the IME composition.
 - `terminal/` is the interactive layer around it, Corgi's own: the GPUI view
-  and its connection, the keys the view keeps (`keys.rs`), the platform's
+  and its connection, the fixed keys the view keeps (`keys.rs`; its two
+  movable chords come from `keymap.rs`), the platform's
   input handler for text, dead keys and IMEs (`input.rs`), selection and
   copy (`selection.rs`, in Herdr's scrollback rows; the copied text is read
   back with `pane.selection.read`), links (`links.rs`: OSC 8 hyperlinks and
@@ -883,12 +1075,150 @@ role. So Corgi keeps its own record and puts the tokens back.
   confirm the pane still holds it. The hook Herdr runs when it detects the
   new agent (`pane.agent_detected`) records the session at once, and a
   dashboard's next refresh would too.
+- Two lost marks are put back from evidence Corgi wrote itself even when
+  the record cannot help (a `/clear` changed the supervisor's session, so
+  the record's mark was rightly dropped, or no pass saw the session before
+  a restart): `orphans::retag_proven` re-marks a supervisor whose process
+  was started with its own project's `ROLE.md` or state directory, and
+  gives a worker back the request id of the one ledger entry with its cwd
+  and branch, each only when nothing else could claim it. Anything less
+  certain waits in "Find orphaned sessions".
 - Herdr's plugin-pane records are Herdr's own and not part of this; the
   `open` action copes with losing them (`scripts/herdr-corgi-dashboard`).
 - The startup hook puts the marks back: Herdr runs it as its server starts
   and again after a live handoff, within about 50 ms, before any window is
   open. Panes whose agent Herdr detects only later are put back by the
   `pane.agent_detected` hook that follows.
+
+#### Resume commands
+
+Herdr restores a pane's native session ref, and with its default
+`resume_agents_on_restore = true` runs the agent again after a restart. Its
+built-in command is only `claude --resume <id>` (`codex resume <id>`): a
+supervisor would lose its role and memory access, a worker its model,
+effort and extra arguments. Herdr 0.9.2 and later run the command a client
+reported for the pane instead (`resume_argv`), so Corgi reports each of its
+agents' full command (`crates/corgi-core/src/restart.rs`):
+
+- **The launch record.** `launch::launch_agent` writes, right after
+  `agent.start`, how it launched the agent, by pane, to
+  `markers/<socket>.launches.json` beside the marker record (same lock and
+  rename): the harness (from the launch, since `agent.start`'s reply names
+  none), Herdr name, directory, launch options after the CLI's name (model,
+  effort, extra arguments), the folder-trust answer, and a supervisor's
+  role file and state directory. It also keeps the native session last seen
+  in the pane, the terminal id and foreground PIDs of the last check, what
+  the running process lacks, and the command last reported with Herdr's
+  version. A supervisor's replacement forgets the leaving one's entry before
+  it exits (`restart::forget`), and its successor's launch writes a new one.
+- **The pass.** The pass holding the wake lock, after putting the marks back,
+  runs `restart::reconcile`. A pane whose agent has a new session, a new
+  terminal (a Herdr restart) or no check yet is checked with
+  `pane.process_info`: the same foreground process with a new session (as
+  after `/clear`) is still Corgi's agent; a new process with another session,
+  or another harness in the pane, is not, and its command is released
+  (`pane.release_agent`) and its entry dropped. A new process has its
+  command reported again even when unchanged, since Herdr forgets a command
+  with the agent it was for (seen on 0.9.5: an agent resumed after an exit
+  otherwise came back from the next restart as `codex resume <id>`). The
+  command is reported (`pane.report_agent_session` with the session id and
+  `resume_argv`) whenever it differs from the one Herdr last took or Herdr's
+  version changed. A pane that is gone is forgotten; one back at its shell
+  keeps its entry, for Resume.
+- **Two things Herdr does that the record must allow for** (seen on 0.9.5).
+  The `agent.start` reply names no harness (its `agent` field is absent), so
+  the launch's own harness is recorded, not the reply's. For about 300 ms
+  after an agent exits, the snapshot still lists it with `agent: null` and
+  no session; that is the agent leaving, not another agent, so it neither
+  releases the command nor drops the entry.
+- **The command.** `recovery::native::restart_argv` builds it, CLI name
+  first as a plain word (`claude`, `codex`, never `CORGI_CLAUDE_BIN`'s path,
+  since Herdr runs it through the pane's shell): `--resume <id>` (`resume
+  <id> --cd <dir>`), the launch options, the trust answer, and for a Claude
+  supervisor `--append-system-prompt-file ROLE.md --add-dir <state>`. A Codex
+  supervisor's role is passed inline at launch and is far over Herdr's
+  limit, and `codex resume` keeps a launch's developer instructions only
+  until the first compaction (docs/restart-survival.md), so its command
+  carries its permission flags and a short developer instruction to read
+  `ROLE.md` first. Herdr refuses a command over 8 KiB, with an apostrophe or
+  a control character, or whose first word is a path; such a command is not
+  reported, and one reported before is released, so Herdr's own resume of the
+  live session is used rather than Corgi's of an old one.
+- **Source.** Reports and releases go out under Corgi's plugin source
+  `plugin:io.github.zyrre.corgi`. Under `herdr:claude` or `herdr:codex`
+  Herdr ignores the command, and `pane.report_agent` would take over the
+  pane's state; a session report from Corgi's source leaves the session ref
+  and the state to Herdr's integration. Herdr 0.9.0 and 0.9.1 take the
+  report and ignore the command (checked on a private 0.9.0), so no version
+  check is made.
+- **Agents launched before the record.** A pass takes in a running
+  supervisor without an entry from its saved launch (`launch.json`) and
+  `ROLE.md`, and a worker from its recovery profile
+  (`recovery/profiles/<harness>-<id>.json`, whose settings drop unknown
+  extra arguments).
+- **Resume.** An agent that exits or is killed while Herdr runs leaves a
+  shell, and Herdr resumes nothing there. A pane whose entry has a session
+  Corgi saw, and that holds no agent, is listed as a row with `exited`
+  (`restart::resumable`; `refresh.rs` adds the rows, which the waker never
+  sees). Resume (`R` in the dashboard, a button and `⇧R` in the window,
+  `resume` in `corgi serve`) checks that the pane is a plain shell in the
+  agent's directory (`recovery`'s shell check) and starts the same command
+  there with `agent.start`. Corgi never resumes by itself. Such a row takes
+  no prompt, tag or focus.
+- **The warning.** Each check compares the new process's command line with
+  the launch's options, role and memory access, order aside
+  (`Launched::lacks`); what it lacks shows on the row (`⚠ no role`, `⚠ no
+  launch options`) and in the status line, as for a supervisor an older
+  Herdr resumed without its role: exit it, then Resume.
+
+What each kind of agent keeps through a handoff, a server restart and a
+reboot, and how Corgi brings the rest back, are in
+[docs/restart-survival.md](docs/restart-survival.md).
+
+#### Pause all
+
+One action stops every agent, for when the user leaves the network, and
+one brings them back (`crates/corgi-core/src/pause.rs`; the dashboard's
+`P`, the window's Pause all button and `⇧P`, serve's `pause_check`,
+`pause_all` and `resume_all`):
+
+- **Which agents.** Every running Claude and Codex row with a native
+  session, in every project and the scratch sessions, supervisors and
+  workers. A row whose state Herdr does not know, one without a session
+  Resume could use, another harness's and an exited row are left, and the
+  confirmation names them. Those working or blocked on a question are
+  named as working: they lose their current turn.
+- **The mark.** The pause lives on each pane's entry in the launch record
+  (`restart::Paused`: when, the project, whether it is the supervisor, and
+  `resuming`), so it outlasts the frontend and a Herdr restart. An agent
+  Corgi did not launch gets an entry with its session and directory and
+  no options, so it resumes as Herdr would. Every pane is marked before
+  any key goes out.
+- **Stopping.** Esc in each busy agent, then a wait (10 s at most) for it
+  to rest; then, unless its input box holds the user's text
+  (`draft::holds_draft`), its harness's exit (`Harness::exit_command`,
+  `/exit` or `/quit`) typed in, and a wait (20 s) for it to leave. Its
+  resume command is released (Herdr forgets it with the agent anyway).
+  One that kept working, held a draft or did not exit loses its mark and
+  is named in the outcome. Nothing is killed.
+- **No wake storm.** The pass holding the wake lock reads the marks
+  (`pause::Holds`) with the recovery holds: a marked pane's stops are
+  followed (the baselines move on) but go in no inbox, a marked supervisor
+  is left out of handovers and deliveries, and its project keeps its
+  handover record while the supervisor is away. So the Esc, the exit and
+  the return wake nobody and start no handover.
+- **Restarts.** An agent that exited leaves a shell, which Herdr does not
+  resume after a restart (seen on 0.9.5: a stop and start of a private
+  server while paused started nothing), and its reported command is gone;
+  the startup pass keeps the entries of panes at their shell, marks and
+  all.
+- **Resume all** runs `restart::resume` for each marked pane at its shell,
+  which sets `resuming` before it starts the agent; rows that exited some
+  other way are not touched. A pass that sees the agent back in a marked
+  pane, after `observe` has recorded it, drops the mark (`pause::settle`),
+  so its return is no news and the next stop wakes as before. A mark on a
+  pane whose agent still runs is dropped too once it is older than
+  `STALE_SECS` (a pause that never got to stop it).
 
 ### Herdr's hooks
 
@@ -913,7 +1243,7 @@ status lines of its passes.
   event decides nothing: every hook makes the same pass, `refresh::run`
   with a `SupervisorWaker`, which reconciles from Herdr's snapshot and
   Corgi's records (the agents followed, the handovers, the marks, the
-  inboxes). A dropped event is caught by the next hook, whatever it is for,
+  launches and their resume commands, the inboxes). A dropped event is caught by the next hook, whatever it is for,
   or by the startup hook. Exits and closes need no work of their own: the
   pass drops what it followed of agents, panes and workspaces that are gone.
 - **One pass at a time.** A pass holds `wake/<socket>.lock` from before
@@ -1415,6 +1745,16 @@ status lines of its passes.
   `src/readme_shots.rs` draws the README images in a fixed Catppuccin Mocha,
   and its `theme_preview` test writes the dashboard and popups in several
   themes as ANSI text for `less -R`.
+- `assets/icon/` holds the macOS app icon, `AppIcon.png` (1024 px) and
+  `AppIcon.icns`, drawn by `src/app_icon.rs` from `corgi_core::art`'s corgi
+  on a Catppuccin Mocha plate; `cargo app-icon` draws them again (on macOS,
+  for `iconutil`), and a test fails while the PNG lags the corgi. They are
+  encoded as straight RGBA with `png`, since tiny-skia's `encode_png` works
+  from premultiplied pixels and shifts the plate's semi-transparent edge.
+  `iconutil` re-encodes the PNGs it stores, and `iconutil -c iconset`
+  lightens the edge of the 16 and 32 px slots (an artefact of extracting
+  them, not of the `.icns`), so check the icon by its decoded pixels, not
+  by bytes or by the small slots it extracts.
 - `crates/corgi-core/src/choices.rs` is the pure model behind every selector
   list in the new-agent form: the rows, the word filter typed over them, and
   how typed text that names no row is offered (as a value of its own for
@@ -1486,7 +1826,8 @@ Every project with an agent session gets a heading, its supervisor first. Within
 a state, agents Herdr reports no order between are alphabetical. Scratch
 sessions are ordered the same way under Scratch. A row moves only when its own
 agent changes state, and the selection stays on the same row. Agents in
-linked worktrees are named `repo/checkout` (`webshop/order-pages-2d5a`);
+linked worktrees, Herdr's or plain `git worktree add` ones, are named
+`repo/checkout` (`webshop/order-pages-2d5a`) under their repository's heading;
 other agents in the project's workspace, such as shared-checkout tabs, are
 named after the repository.
 
@@ -1525,8 +1866,9 @@ that is not done or idle, or whose checkout (its linked worktree, else its
 cwd) has no commits ahead of the branch checked out in the primary checkout,
 the branch `m` merges into. It also refuses while the supervisor still has
 questions open about the agent: when the newest line of the supervisor's
-`ledger.jsonl` (newest per `id`, as the digest reads it) whose `agent` is
-NAME has status `needs-answer` or a non-empty `questions` array
+`ledger.jsonl` (newest per `id`, as the digest reads it) about the agent
+(its `agent` is NAME, or, for a worker renamed since its spawn, the name
+the entry of its `corgi_request` id gives) has status `needs-answer` or a non-empty `questions` array
 (`digest::open_questions`), it names those questions. No ledger, no entry
 for NAME (an agent the user started), or a ledger it cannot read lets the
 tag through; `--clear` is never refused. It sets the pane token `corgi_merge` to
@@ -1664,7 +2006,9 @@ workspace, never a worktree or a supervisor.
 closes the workspace, and deletes the checkout. A checkout with uncommitted
 changes is refused once, then removed by force if asked again. The branch is
 never deleted, so committed work survives; prune stale `worktree/*` branches
-with `git branch -D`.
+with `git branch -D`. A plain `git worktree add` checkout closes the same
+way, but Git removes it after its pane (or tab, or Corgi's workspace) is
+closed. An agent in a workspace Corgi did not create closes its pane alone.
 
 ### Merging
 
@@ -1782,7 +2126,10 @@ branch and short HEAD; `handover.md` whole if it exists, else the "Open
 threads" section of the newest note in `handovers/`, labelled with its date
 as the previous session's; every ledger id whose
 newest line is not `merged`, `abandoned` or `done` (finished work with
-nothing to merge), joined by agent name with the running agents (a missing
+nothing to merge), joined with the running agents by agent name, else by
+the worker's `corgi_request` id, which is its brief's and first entry's id
+and survives a rename, so a renamed worker matches its entries under the
+name it was spawned with and reads `agent w-x (now <name>)` (a missing
 one shows `**NOT RUNNING**`, an id without an agent, such as a question
 about a plan, `no worker`); the last 10 finished ids; the newest
 decisions in full, whole entries up to 8 KB but at least 3; the titles of
@@ -1973,16 +2320,15 @@ different identity path. Record manual hook/API identity reports as a fixture
 boundary: a hook browser's trusted/active status does not prove idle resume
 emitted an identity report. Check native argv, history and task counts as well.
 
-Recovery acknowledgment hints accept either letter case. Manual setup also
-accepts Space to toggle its single acknowledgment; Confirm explains a missing
-acknowledgment in the fixed footer so scrolling cannot hide the feedback.
-Toggling, navigation and repeat events never substitute for explicit confirmation.
+Recovery acknowledgment hints accept either letter case. Toggling,
+navigation and repeat events never substitute for explicit confirmation.
 
-Manual setup has its own explicit confirmation and config check/backup/reload;
-startup, Save and browsing never edit Herdr configuration. Herdr 0.9.1 cannot
-report its loaded config path or an auto-resume barrier. Setup therefore needs
-user acknowledgment of the displayed path and a subsequent normal server start
-before new recovery launches; Corgi never restarts it. Layout restore remains on.
+Corgi never edits Herdr's configuration. The Manual recovery setup step,
+which turned Herdr's auto-resume off, was retired when automatic restarts
+shipped ("Resume commands" above): with auto-resume off Herdr would resume
+nothing, Corgi's commands included. Restore no longer requires it; an agent
+Herdr already resumed is listed as running (reuse), and the restore's own
+shell check keeps it from starting into a pane Herdr is starting.
 
 A committed Save arms next-boot supervisor holds; the waker checks them before
 its first observation/delivery/handover. Same-boot Save does not pause normal

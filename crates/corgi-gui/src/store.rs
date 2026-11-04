@@ -138,16 +138,6 @@ impl Store {
         self.project(&self.agent(pane_id)?.project_group)
     }
 
-    /// `project`'s workers tagged ready to merge, in the overview's order.
-    pub fn ready_to_merge(&self, project: &Project) -> Vec<&Agent> {
-        project
-            .agents
-            .iter()
-            .filter_map(|id| self.agent(id))
-            .filter(|agent| agent.ready_to_merge)
-            .collect()
-    }
-
     /// Whether `command` may be sent: never one that moves Herdr's focus,
     /// which would move every attached Herdr client. `focus` and `edit` are
     /// refused by name, and any other command the hello marks.
@@ -180,6 +170,8 @@ pub enum Purpose {
     Quiet,
     Prompt,
     Answer,
+    /// Writes the supervisor about a backlog entry.
+    BacklogMessage,
     /// Closes the question `question` (`Q3`) of `project_root`.
     CloseQuestion {
         project_root: String,
@@ -194,6 +186,17 @@ pub enum Purpose {
     CloseCheck,
     Close,
     Tag,
+    Resume,
+    /// What Pause all would stop, for its confirmation.
+    PauseCheck,
+    PauseAll,
+    ResumeAll,
+    /// Finds orphaned sessions for the dialog.
+    Orphans,
+    /// Applies the choice made for the orphan `key`.
+    OrphanApply {
+        key: String,
+    },
 }
 
 /// The requests sent and not yet answered.
@@ -355,31 +358,6 @@ mod tests {
             Some(Received::State)
         );
         assert!(store.connected());
-    }
-
-    #[test]
-    fn ready_to_merge_lists_tagged_workers_in_the_overview_s_order() {
-        let mut store = Store::default();
-        let tagged = |pane_id: &str| Agent {
-            ready_to_merge: true,
-            ..agent(pane_id)
-        };
-        store.state = State {
-            agents: vec![agent("a"), tagged("b"), agent("c"), tagged("d")],
-            projects: vec![Project {
-                group: "proj".into(),
-                agents: vec!["a".into(), "b".into(), "c".into(), "d".into()],
-                ..Project::default()
-            }],
-            ..State::default()
-        };
-        let project = store.project("proj").unwrap().clone();
-        let ids: Vec<&str> = store
-            .ready_to_merge(&project)
-            .iter()
-            .map(|agent| agent.pane_id.as_str())
-            .collect();
-        assert_eq!(ids, vec!["b", "d"]);
     }
 
     #[test]

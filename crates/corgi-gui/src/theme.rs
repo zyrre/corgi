@@ -135,6 +135,27 @@ impl Colors {
     pub fn secondary(&self, fill: Hsla) -> Hsla {
         readable(self.roles.muted, fill, &[self.roles.quiet])
     }
+
+    /// The selected row's fill, inside its accent outline: the accent laid
+    /// faintly over the background (8% in a light theme, 12% in a dark
+    /// one), opaque so text on it can be checked against it.
+    pub fn selected_row(&self) -> Hsla {
+        let amount = if self.light { 0.08 } else { 0.12 };
+        let (bg, accent) = (rgb(self.background), rgb(self.roles.accent));
+        let mix =
+            |b: u8, a: u8| (f32::from(b) + (f32::from(a) - f32::from(b)) * amount).round() as u8;
+        hsla((
+            mix(bg.0, accent.0),
+            mix(bg.1, accent.1),
+            mix(bg.2, accent.2),
+        ))
+    }
+
+    /// Selected text's tint: the accent, as translucent as the focus
+    /// view's terminal paints its selection, so the text reads through it.
+    pub fn selection(&self) -> Hsla {
+        self.roles.accent.opacity(0x59 as f32 / 255.0)
+    }
 }
 
 /// A contrast below which text all but vanishes on its fill.
@@ -478,6 +499,39 @@ mod tests {
             terminal_palette(&palette, false, true).ansi[1],
             (0xf7, 0x76, 0x8e)
         );
+    }
+
+    #[test]
+    fn the_selected_rows_tint_keeps_its_text_and_outline_readable() {
+        for light in [false, true] {
+            let colors = Colors::new(&PaletteSet::default(), light, false);
+            let flavor = if light { "Latte" } else { "Mocha" };
+            // At least as readable as on an unselected row's background or
+            // on the selection grey, the selected row's fill before.
+            let before = [colors.background, colors.roles.focus_bar];
+            let least = |color: fn(&Colors, Hsla) -> Hsla| {
+                before
+                    .iter()
+                    .map(|&fill| contrast(color(&colors, fill), fill))
+                    .fold(f32::MAX, f32::min)
+            };
+            let fill = colors.selected_row();
+            let text = contrast(colors.roles.text, fill);
+            let muted = contrast(colors.secondary(fill), fill);
+            assert!(
+                text >= least(|colors, _| colors.roles.text),
+                "{flavor} text {text}"
+            );
+            assert!(
+                muted >= least(|colors, fill| colors.secondary(fill)),
+                "{flavor} secondary {muted}"
+            );
+            for (on, name) in [(colors.background, "background"), (fill, "tint")] {
+                let outline = contrast(colors.roles.accent, on);
+                assert!(outline >= 2.0, "{flavor} outline on {name}: {outline}");
+            }
+            assert_ne!(fill, colors.background, "{flavor}: the tint shows");
+        }
     }
 
     #[test]
