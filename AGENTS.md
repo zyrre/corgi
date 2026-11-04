@@ -238,6 +238,14 @@ its first start. Exit it with Ctrl+C Ctrl+C: killed twice in fullscreen,
 it turns fullscreen off by itself (`"fullscreenAutoDisabled":{"strikes":2}`
 in its `.claude.json`), and wheel tests then silently scroll 0 lines until
 that key is deleted.
+To see the context window Claude Code itself gives a model or setting, run the
+real CLI that way with `--model <id>`, `ANTHROPIC_BASE_URL` at a small local
+fake of `/v1/messages` (streaming; it answers a canned turn with a chosen
+`usage`), and a `statusLine` command that saves its stdin: send one prompt, then
+read `context_window.context_window_size` from the saved JSON and
+`requestedModel` from the transcript. Do this when a new model ships:
+`claude_natively_long` in `crates/corgi-core/src/session/claude.rs` follows
+Claude Code's table by hand.
 The script steps `drag`, `wheel`, `link`, `ime`, `hide`, `show`,
 `deactivate` and `activate` drive the terminal (a scripted window is never
 really active, so `activate` stands in for the user coming back to it);

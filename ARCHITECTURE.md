@@ -280,10 +280,24 @@ All of this is in the core, `crates/corgi-core/src/`.
   pane's. A Codex pane without Herdr's identity has no file, for the same
   reason (Codex draws no status line). Nothing has to be installed
   into the agent CLIs, and a status-line bridge that reports `model` or `ctx`
-  as pane metadata is used only when the file cannot be read. Claude Code's
-  transcript records the model family but not its long-context variant, so the
-  window comes from the model configured in Claude Code's settings and from
-  any session that has already outgrown the default window.
+  as pane metadata is used only when the file cannot be read.
+  A Claude Code transcript does not record the window, so
+  `claude_context_window` works it out, first answer winning: a session past
+  200k tokens has the 1M window; `CLAUDE_CODE_DISABLE_1M_CONTEXT`, in Claude
+  Code's user settings or else Corgi's own environment, holds the rest to 200k
+  (a transcript shows no trace of it); a `[1m]` tag on the record's
+  `requestedModel` (`message.model` never has it) means 1M; a record without
+  `requestedModel`, from an older Claude Code, uses the tag on the configured
+  model of the same family instead; then the model's own window, from the table
+  inside Claude Code that `claude_natively_long` follows: 1M for Opus 4.7 and up,
+  Sonnet and Haiku 5 and up, Fable and Mythos, 200k for the rest and for any
+  model it does not know, as Claude Code assumes. So most sessions are on 1M
+  with no tag anywhere, and the `1M` on a model's name marks only a long window
+  that model does not have by default. Corgi cannot see that flag when it is set
+  only in the agent's own environment or project settings, or Claude Code's
+  fall back to 200k within a session when long-context credits run out; either
+  makes the percentage read low. It does not read
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, which sets the window of a gateway's model.
   The same transcript gives the prompt-cache countdown: every record carries a
   timestamp, and every usage record says whether the request wrote its cache
   with the five-minute or the one-hour lifetime. Anthropic re-warms a cache on
