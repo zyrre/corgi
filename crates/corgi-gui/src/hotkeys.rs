@@ -624,7 +624,7 @@ impl CorgiWindow {
                 "Press the new chord, with ⌘: plain keys go to the terminal. Esc cancels."
             }
             (Area::Focus, false) => {
-                "Press the new chord, with Ctrl+Shift: plain keys go to the terminal. Esc cancels."
+                "Press the new chord, with Ctrl+Shift or Super: plain keys go to the terminal. Esc cancels."
             }
             _ => "Press the new key. Esc cancels; Esc twice gives it Esc.",
         };
@@ -659,7 +659,9 @@ impl CorgiWindow {
             ),
             Refusal::Fixed(name) => format!("⚠ {pressed} is fixed: {name}."),
             Refusal::NeedsChord if mac => "⚠ It needs ⌘: plain keys go to the terminal.".into(),
-            Refusal::NeedsChord => "⚠ It needs Ctrl+Shift: plain keys go to the terminal.".into(),
+            Refusal::NeedsChord => {
+                "⚠ It needs Ctrl+Shift or Super: plain keys go to the terminal.".into()
+            }
         };
         let swap = match refusal {
             Refusal::Clash(other) => Some(self.text_button(

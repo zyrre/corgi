@@ -8,7 +8,7 @@
 //!
 //! The overview's and an expanded session's keys are one key space: both
 //! are live while a row is expanded. The focus view's two are chords no
-//! terminal program reads (Command on macOS, Ctrl+Shift elsewhere), as
+//! terminal program reads (Command on macOS; Super or Ctrl+Shift elsewhere), as
 //! every other key goes to the agent's terminal. Some keys are fixed: the
 //! digits that answer questions, copy and paste, and the window's own.
 
@@ -664,12 +664,15 @@ impl Keymap {
     pub fn check(&self, action: Action, key: &Key) -> Result<(), Refusal> {
         let area = action.area();
         if area == Area::Focus {
-            // The view's modifier and nothing else but Shift where it is
-            // part of it: any other key is the terminal program's.
+            // The view's modifier and nothing else but Shift: any other
+            // key is the terminal program's. Command on macOS; elsewhere
+            // Super (GPUI's platform modifier, which no terminal program
+            // reads) or exactly Ctrl+Shift.
             let chord = if self.mac {
                 key.cmd && !key.ctrl && !key.alt
             } else {
-                key.ctrl && key.shift && !key.alt && !key.cmd
+                (key.cmd && !key.ctrl && !key.alt)
+                    || (key.ctrl && key.shift && !key.alt && !key.cmd)
             };
             if !chord {
                 return Err(Refusal::NeedsChord);
@@ -977,6 +980,39 @@ mod tests {
             keymap.check(Action::Leave, &key("ctrl-shift-escape")),
             Err(Refusal::NeedsChord)
         );
+    }
+
+    #[test]
+    fn linux_takes_super_or_ctrl_shift_for_the_focus_view() {
+        let mut keymap = Keymap::defaults(false);
+        assert_eq!(keymap.check(Action::Leave, &key("cmd-d")), Ok(()));
+        assert_eq!(keymap.check(Action::Leave, &key("cmd-shift-d")), Ok(()));
+        assert_eq!(keymap.check(Action::Leave, &key("ctrl-shift-d")), Ok(()));
+        for refused in ["alt-d", "ctrl-d", "d", "shift-d", "cmd-alt-d", "cmd-ctrl-d"] {
+            assert_eq!(
+                keymap.check(Action::Leave, &key(refused)),
+                Err(Refusal::NeedsChord),
+                "{refused}"
+            );
+        }
+        assert!(keymap.assign(Action::Leave, key("cmd-d"), false));
+        assert_eq!(keymap.label(Action::Leave), "Super+D");
+        // GPUI reports Super as the platform modifier, and the focus view
+        // finds the action by it.
+        assert_eq!(keymap.focus_hit(&press("cmd-d")), Some(Action::Leave));
+        assert_eq!(keymap.focus_hit(&press("ctrl-shift-escape")), None);
+        // It survives hotkeys.json.
+        let dir = std::env::temp_dir().join(format!("corgi-keymap-super-{}", std::process::id()));
+        let path = dir.join("hotkeys.json");
+        keymap.save(Some(&path));
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"leave\": \"cmd-d\""), "{text}");
+        assert_eq!(Keymap::load(Some(&path), false), keymap);
+        let _ = fs::remove_dir_all(&dir);
+        // A clash with the other focus action swaps.
+        assert!(keymap.assign(Action::FocusSide, key("cmd-d"), true));
+        assert_eq!(*keymap.key(Action::FocusSide), key("cmd-d"));
+        assert_eq!(keymap.label(Action::Leave), "Ctrl+Shift+\\");
     }
 
     #[test]
