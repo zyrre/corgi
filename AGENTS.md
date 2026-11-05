@@ -249,6 +249,16 @@ status bar, or `--ssh`) still reads the real `~/.ssh`, since it takes the
 home directory from the password database: the user's keys and
 `known_hosts` work without copying them.
 
+To try the focus view on another machine (`src/tunnel.rs`), run with
+`--ssh HOST` and reach the scratch pane with the script steps
+`open:PANE`, `leave` and `machine:N`, never with `key:j`/Enter, which can
+open one of the user's agents. That machine may run a corgi-gui of its
+own whose park workspace (`corgi-gui (parked terminal)`) this window finds
+by its label and uses; it closes only a park it made itself. Check what a
+run leaves with `pgrep -P <window pid> -lf` (the tunnel's `ssh -L`) and
+`ls /tmp/corgi-gui-$(id -u)` (or under `$TMPDIR`), and list that Herdr's
+workspaces before and after.
+
 The focus view's terminal connects to the throwaway session's
 `herdr-client.sock` itself. After changing `src/endpoint/`, run
 `cargo test -p corgi-gui -- --ignored live_herdr`, which drives the adapter

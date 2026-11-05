@@ -988,8 +988,26 @@ of the tab's surface; the window paints them, with no terminal emulator of
 its own, and sends keys, text, paste and the mouse as semantic events,
 which Herdr encodes for the program's modes (kitty keyboard,
 modifyOtherKeys, bracketed paste), so Shift+Enter, Alt+Enter and Ctrl+J do
-what they do in Herdr. Terminals are local only: while another machine is
-shown, the focus view says so.
+what they do in Herdr.
+
+On a machine reached over ssh, the terminal reaches that machine's Herdr
+through a **tunnel** (`src/tunnel.rs`): one `ssh -L … -L …` (BatchMode,
+`ExitOnForwardFailure`) forwards the `herdr.sock` that machine's serve
+names in its hello, and the `herdr-client.sock` beside it, to two sockets
+of the same names in a private directory here (`corgi-gui-<uid>/<pid>.<n>`
+under `$XDG_RUNTIME_DIR` or `$TMPDIR`, else `/tmp` when that path would be
+too long for a socket), so the endpoint connection and the park tab's JSON
+calls run as they do locally. The remote side, run by `sh`, first checks
+that both sockets exist, so a Herdr without the endpoint is told apart
+(the focus view says it needs a newer Herdr there), then waits on its
+stdin: when the window's process ends, however it ends, ssh sees the pipe
+close and exits. The tunnel starts when a terminal is first wanted, stays
+while that machine is shown, and is started again with the link's backoff
+when it drops. Switching machines, removing or editing the one shown, and
+quitting close the park tab on the old Herdr, then end the tunnel and
+remove its directory; a directory left by a process that died is removed
+by the next window's first tunnel. The park tab is made there without a
+directory, since this machine's home is not that machine's.
 
 - `endpoint/` is the one place that knows that protocol, so a Herdr upgrade
   that breaks it breaks it there. It was written and tested against **Herdr
@@ -1028,7 +1046,9 @@ The connection's rules, which follow from how Herdr 0.9.0 sizes tabs:
   inactive. So the window keeps one empty **park tab**, the only tab of a
   workspace labelled `corgi-gui (parked terminal)`, made with the JSON
   API's `workspace.create` (no focus) when needed, found again by its label,
-  and closed when the window quits. The connection moves there before it is
+  and closed when the window quits or leaves that Herdr, but only if this
+  window made it: one found by its label may be another window's (a
+  corgi-gui running on that machine, say), which goes on using it. The connection moves there before it is
   deactivated, and is activated there with `surface.set` and `tab.focus`
   sent together.
 - A connection is opened only to show a terminal. It starts on Herdr's

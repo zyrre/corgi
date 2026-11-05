@@ -623,19 +623,17 @@ impl CorgiWindow {
     }
 
     /// Gives the terminal the Herdr session `corgi serve` reads, from its
-    /// hello: terminals are local only, so none over ssh.
+    /// hello, and the host it runs on over ssh, whose Herdr the terminal
+    /// reaches through a tunnel.
     pub(crate) fn sync_terminal_socket(&mut self, cx: &mut Context<Self>) {
-        let remote = self.machine().options.ssh.is_some();
-        let Some(hello) = self.store().hello.as_ref().filter(|_| !remote) else {
-            if remote {
-                self.terminal
-                    .update(cx, |terminal, cx| terminal.set_socket(None, true, cx));
-            }
-            return;
-        };
-        let socket = Some(PathBuf::from(&hello.socket));
+        let host = self.machine().options.ssh.clone();
+        let socket = self
+            .store()
+            .hello
+            .as_ref()
+            .map(|hello| PathBuf::from(&hello.socket));
         self.terminal
-            .update(cx, |terminal, cx| terminal.set_socket(socket, false, cx));
+            .update(cx, |terminal, cx| terminal.set_socket(socket, host, cx));
     }
 
     /// Whether to paint light, and whether the header's toggle chose it.
