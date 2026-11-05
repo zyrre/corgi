@@ -918,7 +918,14 @@ must not be bound.
 - The expanded row (`transcript.rs`, `rows.rs`): Space grows the selected
   row into its session's latest turns, down to the overview's bottom, and
   `serve` reads that session's transcript only while a row is expanded
-  (`watch`). The overview draws its cards down to that row and no further,
+  (`watch`), at once when asked, with a `SessionReader` of its own apart
+  from the refresh's, and again after every refresh. Space holds the row
+  back until its turns are in the state, at most 300 ms (`Expanding`,
+  `held_back` in `window.rs`), so the row grows once, with them, rather
+  than first with its activity lines and "Reading the session…"; that
+  placeholder, shown past the wait or when j/k moves the expansion, is as
+  tall at least as the turns, so they replace it without the row growing.
+  The overview draws its cards down to that row and no further,
   the cards in a column stretched to the view's height at the current
   offset (`Rows::expand`, from the last frame's view, so a frame whose view
   differs, as after a resize, draws again), and the row's card, its body,
@@ -929,7 +936,14 @@ must not be bound.
   shows its top. The turns are one custom element that lays out its own
   lines (the text fields' `wrap`, per paragraph; an older turn folded to two
   lines with an ellipsis) and keeps them, with its scroll and selection, in
-  a `Transcript` shared with the window, so a press is hit-tested against
+  a `Transcript` shared with the window. Each turn's wrapped and shaped
+  lines are kept from one frame to the next (`LayoutCache`, keyed by the
+  turn's text, fold and colour, emptied when the width or font changes),
+  so a frame lays out only the turns new to it, and a fresh expansion lays
+  out those in view first and the rest on the next frame. GPUI's
+  `ShapedLine::x_for_index` walks the glyphs from the start, which made
+  wrapping a paragraph quadratic in its length; `GlyphXs` answers it by a
+  binary search. A press is hit-tested against
   the lines drawn under it (`ShapedLine::closest_index_for_x`, or
   `index_for_x` for the character under a double click). A place is a turn
   and a byte offset in its text: when new turns come in above, the
@@ -948,9 +962,13 @@ must not be bound.
   the row the first click selected; other selections scroll just far
   enough to show their row. The overview's children are the project cards,
   so `ScrollHandle::scroll_to_item` can target only a whole card. Row
-  positions come from `rows.rs`: each card records its rows' bounds with
-  `on_children_prepainted` (which exists only on `Div` and must be called
-  before `.id()`), and a reveal lands on the next prepaint.
+  positions come from `rows.rs`: each row records its `LayoutId` as it is
+  laid out (`Rows::slot`), and the scrolled list, wrapped in an `Overview`
+  element, reads their bounds (`Window::layout_bounds`, which does not
+  count the scroll yet) and moves the offset after the frame's layout and
+  before the list is prepainted. A reveal, or the expanded row's growth,
+  is drawn at its new offset in the same frame, never first at the old
+  one.
 - While the window is hidden (GPUI's `WindowVisibility`: macOS's occlusion,
   Wayland's suspended state), it stops drawing, stops its one-second tick
   and asks `serve` to stop reading the expanded row's transcript; messages are still

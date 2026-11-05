@@ -10,6 +10,7 @@ mod format;
 mod herdr_ui;
 mod hotkeys;
 mod keymap;
+mod latency;
 mod layout;
 mod link;
 mod machine_bar;

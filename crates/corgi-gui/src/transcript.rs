@@ -13,7 +13,7 @@
 use std::{cell::RefCell, ops::Range, rc::Rc};
 
 use gpui::{
-    App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, FocusHandle,
+    App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, FocusHandle, Font,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, IntoElement, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent,
     ShapedLine, SharedString, Style, TextAlign, TextRun, Window, fill, point, px, relative,
@@ -120,6 +120,116 @@ struct State {
     selection: Option<Selection>,
     /// The left button went down in the turns and is still down.
     selecting: bool,
+    /// The last frame's turns as laid out, kept through a [`reset`]
+    /// (Transcript::reset), so a frame lays out only the turns new to it.
+    cache: LayoutCache,
+    /// The last frame left the turns below the view to this one.
+    deferred: bool,
+}
+
+/// What lays a turn's lines out besides the turn itself: a change to any
+/// of them lays every turn out again.
+#[derive(Clone, PartialEq)]
+struct Measure {
+    width: Pixels,
+    font: Font,
+    font_size: Pixels,
+}
+
+/// What a turn's lines are laid out from.
+#[derive(Clone, PartialEq)]
+struct TurnKey {
+    text: SharedString,
+    fold: Option<usize>,
+    color: Hsla,
+}
+
+/// One turn's lines, wrapped and shaped: each line's bytes of the turn's
+/// text and its shaped glyphs, whether the fold cut the turn, and where
+/// the text shown ends.
+struct TurnLayout {
+    lines: Vec<(Range<usize>, ShapedLine)>,
+    folded: bool,
+    shown: usize,
+}
+
+/// The turns of the last frame, laid out, and what they were laid out at.
+/// Wrapping and shaping are the bulk of a frame's work on the turns, and a
+/// turn's text does not change: new turns come in above the old ones.
+#[derive(Default)]
+struct LayoutCache {
+    measure: Option<Measure>,
+    turns: Vec<(TurnKey, Rc<TurnLayout>)>,
+}
+
+impl LayoutCache {
+    /// Whether `key` is laid out, by the last frame or this one (`kept`).
+    fn contains(&self, kept: &[(TurnKey, Rc<TurnLayout>)], key: &TurnKey) -> bool {
+        self.turns
+            .iter()
+            .chain(kept.iter())
+            .any(|(cached, _)| cached == key)
+    }
+
+    /// The layout of `key` at `measure`: the last frame's, else `lay_out`'s.
+    /// Keeps only what this frame asks for, in `kept`.
+    fn get(
+        &self,
+        kept: &mut Vec<(TurnKey, Rc<TurnLayout>)>,
+        key: TurnKey,
+        lay_out: impl FnOnce() -> TurnLayout,
+    ) -> Rc<TurnLayout> {
+        let layout = self
+            .turns
+            .iter()
+            .chain(kept.iter())
+            .find(|(cached, _)| *cached == key)
+            .map(|(_, layout)| layout.clone())
+            .unwrap_or_else(|| Rc::new(lay_out()));
+        kept.push((key, layout.clone()));
+        layout
+    }
+}
+
+/// `ShapedLine::x_for_index` in O(log n): GPUI's walks every glyph before
+/// the index, so wrapping a long paragraph, which asks for an x for each of
+/// its characters, took time quadratic in its length. The x of an index is
+/// that of the first glyph, in drawing order, whose index is at least it,
+/// else the line's width; `reach` is the largest index up to each glyph,
+/// so the first glyph whose reach is at least the index is that glyph.
+struct GlyphXs {
+    reach: Vec<usize>,
+    xs: Vec<Pixels>,
+    width: Pixels,
+}
+
+impl GlyphXs {
+    fn of(line: &ShapedLine) -> Self {
+        Self::new(
+            line.runs
+                .iter()
+                .flat_map(|run| &run.glyphs)
+                .map(|glyph| (glyph.index, glyph.position.x)),
+            line.width,
+        )
+    }
+
+    /// From each glyph's index and x, in drawing order.
+    fn new(glyphs: impl Iterator<Item = (usize, Pixels)>, width: Pixels) -> Self {
+        let (mut reach, mut xs) = (Vec::new(), Vec::new());
+        let mut most = 0;
+        for (index, x) in glyphs {
+            most = most.max(index);
+            reach.push(most);
+            xs.push(x);
+        }
+        Self { reach, xs, width }
+    }
+
+    fn x(&self, index: usize) -> Pixels {
+        let at = self.reach.partition_point(|&reach| reach < index);
+        self.xs.get(at).copied().unwrap_or(self.width)
+    }
 }
 
 /// The expanded row's scroll, selection and last layout, shared between the
@@ -131,7 +241,12 @@ impl Transcript {
     /// Starts afresh, for another row or a new expansion: at the newest
     /// turn, nothing selected.
     pub fn reset(&self) {
-        *self.0.borrow_mut() = State::default();
+        let mut state = self.0.borrow_mut();
+        let cache = std::mem::take(&mut state.cache);
+        *state = State {
+            cache,
+            ..State::default()
+        };
     }
 
     /// Drops the selection; true when there was one.
@@ -442,6 +557,57 @@ fn ellipsis_cut(
     range.start + text[range.start..end].trim_end().len()
 }
 
+/// One turn's lines at `width`: each paragraph wrapped, and a turn longer
+/// than its fold cut there, its last line ending in the ellipsis, which is
+/// `ellipsis` wide. `shape` shapes text in runs that `run` makes.
+fn lay_out_turn(
+    turn: &Turn,
+    width: Pixels,
+    ellipsis: Pixels,
+    shape: &impl Fn(SharedString, &[TextRun]) -> ShapedLine,
+    run: &impl Fn(usize, Hsla) -> TextRun,
+) -> TurnLayout {
+    let text = &turn.text;
+    let (ranges, folded) = turn_lines(text, turn.fold, |paragraph| {
+        let whole = shape(
+            paragraph.to_string().into(),
+            &[run(paragraph.len(), turn.color)],
+        );
+        let xs = GlyphXs::of(&whole);
+        wrap(paragraph, width, |index| xs.x(index))
+    });
+    let last = ranges.len().saturating_sub(1);
+    let mut shown = text.len();
+    let mut lines = Vec::with_capacity(ranges.len());
+    for (row, range) in ranges.into_iter().enumerate() {
+        let shaped_range = |range: Range<usize>| {
+            shape(
+                text[range.clone()].to_string().into(),
+                &[run(range.len(), turn.color)],
+            )
+        };
+        if folded && row == last {
+            let xs = GlyphXs::of(&shaped_range(range.clone()));
+            let start = range.start;
+            let cut = ellipsis_cut(text, range, width, ellipsis, |offset| xs.x(offset - start));
+            shown = cut;
+            let painted = format!("{}{ELLIPSIS}", &text[start..cut]);
+            let runs = [
+                run(cut - start, turn.color),
+                run(ELLIPSIS.len(), turn.color),
+            ];
+            lines.push((start..cut, shape(painted.into(), &runs)));
+        } else {
+            lines.push((range.clone(), shaped_range(range)));
+        }
+    }
+    TurnLayout {
+        lines,
+        folded,
+        shown,
+    }
+}
+
 /// Draws the turns of the expanded row, below its status line, filling the
 /// row down to the bottom of the overview.
 pub struct TranscriptElement {
@@ -536,6 +702,7 @@ impl Element for TranscriptElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
+        let started = std::time::Instant::now();
         let style = window.text_style();
         let font = style.font();
         let font_size = style.font_size.to_pixels(window.rem_size());
@@ -554,6 +721,36 @@ impl Element for TranscriptElement {
             text_system.shape_line(text, font_size, runs, None)
         };
         let ellipsis = shape(ELLIPSIS.into(), &[run(ELLIPSIS.len(), self.selection)]).width;
+        let measure = Measure {
+            width,
+            font: font.clone(),
+            font_size,
+        };
+        // The last frame's layouts, while they were made at this measure.
+        let cache = {
+            let mut state = self.state.0.borrow_mut();
+            let mut cache = std::mem::take(&mut state.cache);
+            if cache.measure.as_ref() != Some(&measure) {
+                cache = LayoutCache {
+                    measure: Some(measure),
+                    turns: Vec::new(),
+                };
+            }
+            cache
+        };
+        let mut kept = Vec::with_capacity(self.turns.len());
+        let mut laid_out = 0;
+        // A fresh expansion, not scrolled and with nothing selected, lays
+        // out the turns it shows and leaves those below the view to the
+        // next frame, so its first frame comes sooner; nothing drawn moves
+        // when they come. That frame lays out the rest, whatever it is.
+        let fresh = {
+            let mut state = self.state.0.borrow_mut();
+            let fresh = state.scroll == px(0.) && state.selection.is_none() && !state.deferred;
+            state.deferred = false;
+            fresh
+        };
+        let mut deferred = false;
 
         let mut turns = Vec::with_capacity(self.turns.len());
         let mut lines: Vec<Line> = Vec::new();
@@ -563,53 +760,33 @@ impl Element for TranscriptElement {
             if index > 0 {
                 top += self.gap;
             }
-            let text = &turn.text;
-            let (ranges, folded) = turn_lines(text, turn.fold, |paragraph| {
-                let whole = shape(
-                    paragraph.to_string().into(),
-                    &[run(paragraph.len(), turn.color)],
-                );
-                wrap(paragraph, width, |index| whole.x_for_index(index))
+            let key = TurnKey {
+                text: turn.text.clone(),
+                fold: turn.fold,
+                color: turn.color,
+            };
+            if fresh && top >= bounds.size.height && !cache.contains(&kept, &key) {
+                deferred = true;
+                break;
+            }
+            let layout = cache.get(&mut kept, key, || {
+                laid_out += 1;
+                lay_out_turn(turn, width, ellipsis, &shape, &run)
             });
             let first = lines.len();
-            let last = ranges.len().saturating_sub(1);
-            let mut shown = text.len();
-            for (row, range) in ranges.into_iter().enumerate() {
-                let (range, shaped) = if folded && row == last {
-                    let line = shape(
-                        text[range.clone()].to_string().into(),
-                        &[run(range.len(), turn.color)],
-                    );
-                    let start = range.start;
-                    let cut = ellipsis_cut(text, range, width, ellipsis, |offset| {
-                        line.x_for_index(offset - start)
-                    });
-                    shown = cut;
-                    let painted = format!("{}{ELLIPSIS}", &text[start..cut]);
-                    let runs = [
-                        run(cut - start, turn.color),
-                        run(ELLIPSIS.len(), turn.color),
-                    ];
-                    (start..cut, shape(painted.into(), &runs))
-                } else {
-                    let shaped = shape(
-                        text[range.clone()].to_string().into(),
-                        &[run(range.len(), turn.color)],
-                    );
-                    (range, shaped)
-                };
+            for (range, shaped) in &layout.lines {
                 lines.push(Line {
                     turn: index,
-                    range,
+                    range: range.clone(),
                     top,
-                    shaped,
+                    shaped: shaped.clone(),
                 });
                 top += line_height;
             }
             turns.push(Placed {
-                text: text.clone(),
-                shown,
-                folded,
+                text: turn.text.clone(),
+                shown: layout.shown,
+                folded: layout.folded,
                 lines: first..lines.len(),
             });
             markers.push(shape(
@@ -618,8 +795,16 @@ impl Element for TranscriptElement {
             ));
         }
         let content = top;
+        if deferred {
+            window.on_next_frame(|window, _| window.refresh());
+        }
 
         let mut state = self.state.0.borrow_mut();
+        state.cache = LayoutCache {
+            measure: cache.measure,
+            turns: kept,
+        };
+        state.deferred = deferred;
         // New turns came in: the selection and the scroll stay on the text
         // they were on, which moved down.
         let old: Vec<SharedString> = state.laid.turns.iter().map(|t| t.text.clone()).collect();
@@ -700,6 +885,18 @@ impl Element for TranscriptElement {
             })
             .unwrap_or_default();
 
+        crate::latency::expansion(|| {
+            format!(
+                "turns laid out in {:.2} ms: {} of {} turns ({} new to the frame), {} lines, bounds y {:.0}..{:.0}",
+                started.elapsed().as_secs_f64() * 1000.0,
+                turns.len(),
+                self.turns.len(),
+                laid_out,
+                lines.len(),
+                f32::from(bounds.top()),
+                f32::from(bounds.bottom()),
+            )
+        });
         state.laid = Laid {
             turns,
             lines,
@@ -1069,5 +1266,70 @@ mod tests {
         // A repeated turn does not fool it: the newer ones must match too.
         let old = texts(&["ok", "run", "ok"]);
         assert_eq!(shift(&old, &texts(&["ok", "ok", "run", "ok"]), 2), Some(1));
+    }
+
+    #[test]
+    fn a_glyphs_x_is_found_as_gpui_finds_it_however_the_glyphs_are_ordered() {
+        // `ShapedLine::x_for_index`: the first glyph, in drawing order, whose
+        // index is at least the one asked for, else the line's width.
+        let linear = |glyphs: &[(usize, f32)], index: usize| {
+            glyphs
+                .iter()
+                .find(|(at, _)| *at >= index)
+                .map_or(40., |(_, x)| *x)
+        };
+        for glyphs in [
+            // A character of three bytes.
+            vec![(0, 0.), (1, 10.), (2, 20.), (5, 30.)],
+            // Out of byte order, as right-to-left text is drawn.
+            vec![(0, 0.), (4, 10.), (2, 20.), (6, 30.)],
+            vec![(3, 0.), (2, 10.), (1, 20.), (0, 30.)],
+            vec![],
+        ] {
+            let xs = GlyphXs::new(glyphs.iter().map(|(at, x)| (*at, px(*x))), px(40.));
+            for index in 0..9 {
+                assert_eq!(
+                    xs.x(index),
+                    px(linear(&glyphs, index)),
+                    "{glyphs:?} at {index}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_lays_out_only_the_turns_the_last_one_did_not() {
+        let key = |text: &str, fold| TurnKey {
+            text: text.to_string().into(),
+            fold,
+            color: gpui::black(),
+        };
+        let mut laid = Vec::new();
+        let mut frame = |cache: &mut LayoutCache, turns: &[(&str, Option<usize>)]| {
+            let mut kept = Vec::new();
+            for (text, fold) in turns {
+                cache.get(&mut kept, key(text, *fold), || {
+                    laid.push(text.to_string());
+                    TurnLayout {
+                        lines: Vec::new(),
+                        folded: false,
+                        shown: text.len(),
+                    }
+                });
+            }
+            cache.turns = kept;
+        };
+        let mut cache = LayoutCache::default();
+        frame(&mut cache, &[("b", None), ("a", Some(2))]);
+        // A turn came in above: it is new, and the one that was newest is
+        // folded now, so it is laid out again.
+        frame(&mut cache, &[("c", None), ("b", Some(2)), ("a", Some(2))]);
+        // The same turns again cost nothing, and one that went is forgotten.
+        frame(&mut cache, &[("c", None), ("b", Some(2))]);
+        assert_eq!(cache.turns.len(), 2);
+        // Two turns saying the same are laid out once.
+        frame(&mut cache, &[("ok", Some(2)), ("c", None), ("ok", Some(2))]);
+        assert_eq!(laid, ["b", "a", "c", "b", "ok"]);
+        assert_eq!(cache.turns.len(), 3);
     }
 }
