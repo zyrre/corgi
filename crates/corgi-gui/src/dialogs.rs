@@ -13,9 +13,12 @@ use corgi_core::{
     },
 };
 
+use gpui::{Pixels, Point};
+
 use crate::{
     form::{self, NewAgent},
     keymap::{ENTER, ESCAPE},
+    machines::{FormEffect, MachineForm},
     store::Purpose,
 };
 
@@ -75,6 +78,28 @@ pub enum Dialog {
     Orphans(Box<Orphans>),
     /// The confirmation before Pause all, and the pause while it runs.
     Pause(PauseAll),
+    /// The status bar's "Add machine" form, or the same to edit one.
+    Machine(Box<MachineForm>),
+    /// A machine's menu, opened by a right click on it in the status bar.
+    MachineMenu(MachineMenu),
+    /// The confirmation before a machine leaves the list.
+    RemoveMachine {
+        host: String,
+        name: String,
+    },
+}
+
+/// A machine's menu: Edit and Remove, by the machine's host, drawn above
+/// where it was clicked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineMenu {
+    pub host: String,
+    pub at: Point<Pixels>,
+    pub cursor: usize,
+}
+
+impl MachineMenu {
+    pub const ITEMS: [&str; 2] = ["Edit…", "Remove…"];
 }
 
 impl Dialog {
@@ -349,6 +374,12 @@ impl Dialogs {
             }
             Some(Dialog::Merge(merge)) if merge.offers(MergeAction::Dismiss) => {
                 return Some(MergeAction::Dismiss);
+            }
+            // The host's open list closes first.
+            Some(Dialog::Machine(machine)) => {
+                if machine.key(form::Key::Escape) == FormEffect::Cancel {
+                    self.open = None;
+                }
             }
             Some(_) => self.open = None,
         }

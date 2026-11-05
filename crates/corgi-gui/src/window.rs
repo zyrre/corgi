@@ -4,7 +4,7 @@
 
 use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
 
-use corgi_core::protocol::{Agent, BacklogEntry, Command, Project, Question};
+use corgi_core::protocol::{Agent, BacklogEntry, Command, Project, Question, Reply};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent,
@@ -12,15 +12,16 @@ use gpui::{
 };
 
 use crate::{
-    dialogs::{Dialog, Dialogs, Followup, MergeAction, MergeStage, Orphans},
+    dialogs::{Dialog, Dialogs, Followup, MachineMenu, MergeAction, MergeStage, Orphans},
     form::{self, Key},
     hotkeys::HotkeysDialog,
     keymap::{self, Action, Hit, Key as KeymapKey, Keymap},
     layout::{Layout, Split},
-    link::{Backoff, Link, LinkEvent},
+    link::{Link, LinkEvent},
+    machines::{self, FormEffect, Machine, SavedMachines},
     options::Options,
     rows::{Pick, Rows},
-    store::{Closing, Connection, Outbox, Purpose, Received, Store},
+    store::{Connection, Purpose, Received, Store},
     terminal::{
         Target, TerminalEvent, TerminalView,
         keys::{self, Chord},
@@ -38,38 +39,21 @@ pub struct Drag {
 }
 
 pub struct CorgiWindow {
-    pub options: Options,
-    pub store: Store,
-    outbox: Outbox,
+    /// This machine and the ones added (`machines.rs`), each with its own
+    /// connection to `corgi serve`, all kept open.
+    pub machines: Vec<Machine>,
+    /// The machine the window shows and every action goes to.
+    pub active: usize,
+    pub(crate) machines_path: Option<PathBuf>,
     pub dialogs: Dialogs,
     pub layout: Layout,
     layout_path: Option<PathBuf>,
-    link: Option<Arc<Link>>,
+    /// Connections started, for numbering the next.
     links_started: u64,
-    backoff: Backoff,
     events: mpsc::UnboundedSender<(u64, LinkEvent)>,
-    /// The agent the keys act on: none at start, until a key or a click
-    /// picks one.
-    pub selected: Option<String>,
-    /// A row has been picked since the window opened: from then on, when
-    /// the selected row goes, another is selected in its place.
-    picked: bool,
-    /// The selected row is expanded into its session's latest turns
-    /// (Space), down to the window's bottom; the expansion follows the
-    /// selection.
-    pub expanded: bool,
     /// The expanded session's scroll, its text selection and its lines as
     /// last drawn.
     pub transcript: Transcript,
-    /// The session `corgi serve` was asked to read the transcript of.
-    watching: Option<String>,
-    /// The project groups whose cards show only their supervisor.
-    pub collapsed: HashSet<String>,
-    /// The card groups this connection to `corgi serve` has shown: a card
-    /// not among them starts collapsed, and one the user expanded stays so.
-    seen: HashSet<String>,
-    /// The questions closed with ×, until the ledger drops them.
-    pub closing: Closing,
     /// The window is on screen; while it is not, nothing is drawn and the
     /// expanded session is not read.
     pub visible: bool,
@@ -104,6 +88,8 @@ pub struct CorgiWindow {
     pub focus_view: Option<String>,
     /// The keyboard should move to where the open dialog wants it.
     refocus: bool,
+    /// The window's title as last set: the machine shown.
+    title: String,
     /// Which key does what (`keymap.rs`), and where it is kept.
     pub keymap: Keymap,
     keymap_path: Option<PathBuf>,
@@ -115,7 +101,7 @@ pub struct CorgiWindow {
 
 impl CorgiWindow {
     pub fn new(
-        options: Options,
+        options: &Options,
         font: Font,
         ui_font: SharedString,
         window: &mut Window,
@@ -127,9 +113,11 @@ impl CorgiWindow {
         let layout = Layout::load(layout_path.as_deref());
         let keymap_path = Keymap::path();
         let keymap = Keymap::load(keymap_path.as_deref(), cfg!(target_os = "macos"));
-        let store = Store::default();
+        let machines_path = SavedMachines::path();
+        let (machines, active) =
+            machines::machines_of_run(options, &SavedMachines::load(machines_path.as_deref()));
         let (light, chosen) = theme::appearance(forced_light, None, system_light);
-        let colors = Colors::new(&store.state.palette, light, chosen);
+        let colors = Colors::new(&machines[active].store.state.palette, light, chosen);
         let field = field_colors(&colors);
         let prompt_input = cx.new(|cx| TextInput::new("Type a prompt", field, cx));
         let terminal = cx.new(|cx| TerminalView::new(font.family.clone(), cx));
@@ -168,7 +156,7 @@ impl CorgiWindow {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
-                    let now = this.store.now();
+                    let now = this.store().now();
                     let due =
                         this.focus_view.is_none() || now / 60 != minute || this.counts_seconds(now);
                     if this.visible && due {
@@ -215,24 +203,15 @@ impl CorgiWindow {
         ];
 
         let mut this = Self {
-            options,
-            store,
-            outbox: Outbox::default(),
+            machines,
+            active,
+            machines_path,
             dialogs: Dialogs::default(),
             layout,
             layout_path,
-            link: None,
             links_started: 0,
-            backoff: Backoff::default(),
             events,
-            selected: None,
-            picked: false,
-            expanded: false,
             transcript: Transcript::default(),
-            watching: None,
-            collapsed: HashSet::new(),
-            seen: HashSet::new(),
-            closing: Closing::default(),
             visible: window.is_visible(),
             system_light,
             forced_light,
@@ -252,6 +231,7 @@ impl CorgiWindow {
             terminal,
             focus_view: None,
             refocus: false,
+            title: String::new(),
             keymap,
             keymap_path,
             hotkeys: None,
@@ -264,24 +244,43 @@ impl CorgiWindow {
         let scale = this.layout.text_scale();
         this.terminal
             .update(cx, |terminal, cx| terminal.set_text_scale(scale, cx));
-        this.connect(cx);
+        for index in 0..this.machines.len() {
+            this.connect(index, cx);
+        }
         window.focus(&this.focus, cx);
         this
     }
 
     // ---- The connection ----
 
-    fn connect(&mut self, cx: &mut Context<Self>) {
+    /// The machine shown.
+    pub fn machine(&self) -> &Machine {
+        &self.machines[self.active]
+    }
+
+    pub fn machine_mut(&mut self) -> &mut Machine {
+        &mut self.machines[self.active]
+    }
+
+    /// The state the shown machine's `corgi serve` sent.
+    pub fn store(&self) -> &Store {
+        &self.machine().store
+    }
+
+    /// Starts machine `index`'s `corgi serve`.
+    pub fn connect(&mut self, index: usize, cx: &mut Context<Self>) {
         self.links_started += 1;
         let number = self.links_started;
-        self.store.connecting();
-        let (program, args) = self.options.command();
+        let machine = &mut self.machines[index];
+        machine.link_number = number;
+        machine.store.connecting();
+        let (program, args) = machine.options.command();
         let events = self.events.clone();
         let sender = Box::new(move |number, event| {
             let _ = events.unbounded_send((number, event));
         });
         match Link::start(number, &program, &args, sender) {
-            Ok(link) => self.link = Some(Arc::new(link)),
+            Ok(link) => machine.link = Some(Arc::new(link)),
             Err(error) => {
                 let _ = self
                     .events
@@ -291,51 +290,80 @@ impl CorgiWindow {
         cx.notify();
     }
 
+    /// The machine whose latest connection is `number`.
+    fn machine_of_link(&self, number: u64) -> Option<usize> {
+        self.machines
+            .iter()
+            .position(|machine| machine.link_number == number)
+    }
+
     /// Handles one event of connection `number`; true when the window
-    /// should draw again.
+    /// should draw again. A machine not shown keeps its state and its dot;
+    /// what it replies is only said.
     fn link_event(&mut self, number: u64, event: LinkEvent, cx: &mut Context<Self>) -> bool {
-        if number != self.links_started {
+        let Some(index) = self.machine_of_link(number) else {
             return false;
-        }
+        };
+        let shown = index == self.active;
         match event {
             LinkEvent::Message(message) => {
                 let hello = matches!(*message, corgi_core::protocol::ServerMessage::Hello(_));
+                let machine = &mut self.machines[index];
                 if hello {
-                    self.backoff.reset();
+                    machine.backoff.reset();
                 }
-                let received = self.store.receive(*message);
-                if hello {
+                let received = machine.store.receive(*message);
+                if hello && shown {
                     self.sync_terminal_socket(cx);
                 }
                 match received {
                     None => false,
                     Some(Received::State) => {
-                        let projects = &self.store.state.projects;
-                        let selected = self.selected.as_deref();
-                        if let Some(supervisor) =
-                            collapse_new(&mut self.collapsed, &mut self.seen, projects, selected)
-                        {
-                            self.selected = Some(supervisor);
+                        let machine = &mut self.machines[index];
+                        let projects = &machine.store.state.projects;
+                        let selected = machine.selected.as_deref();
+                        if let Some(supervisor) = collapse_new(
+                            &mut machine.collapsed,
+                            &mut machine.seen,
+                            projects,
+                            selected,
+                        ) {
+                            machine.selected = Some(supervisor);
                         }
-                        self.reconcile(cx);
+                        if shown {
+                            self.reconcile(cx);
+                        } else {
+                            let machine = &mut self.machines[index];
+                            machine.closing.prune(&machine.store.state);
+                        }
+                        // The bar counts every machine's agents.
                         true
                     }
                     Some(Received::Resync) => {
-                        self.send(Command::Resync, Purpose::Quiet);
+                        self.send_to(index, Command::Resync, Purpose::Quiet);
                         false
                     }
                     Some(Received::Progress(progress)) => {
-                        if let Some(purpose) = self.outbox.purpose(progress.id).cloned() {
+                        if !shown {
+                            return false;
+                        }
+                        if let Some(purpose) = self.machine().outbox.purpose(progress.id).cloned() {
                             self.dialogs.progress(&purpose, &progress);
                         }
                         true
                     }
                     Some(Received::Reply(reply)) => {
-                        if let Some(purpose) = self.outbox.answered(&reply) {
-                            self.closing.replied(&purpose, &reply);
-                            if let Some(followup) = self.dialogs.reply(purpose, reply) {
-                                self.follow(followup, cx);
-                            }
+                        let machine = &mut self.machines[index];
+                        let Some(purpose) = machine.outbox.answered(&reply) else {
+                            return false;
+                        };
+                        machine.closing.replied(&purpose, &reply);
+                        if !shown {
+                            self.background_reply(index, purpose, reply);
+                            return true;
+                        }
+                        if let Some(followup) = self.dialogs.reply(purpose, reply) {
+                            self.follow(followup, cx);
                         }
                         self.focus_dialog(cx);
                         true
@@ -343,20 +371,39 @@ impl CorgiWindow {
                 }
             }
             LinkEvent::Ended(why) => {
-                self.link = None;
+                let machine = &mut self.machines[index];
+                machine.link = None;
                 // The next connection's state is fresh: every card collapses.
-                self.seen.clear();
-                self.watching = None;
-                let delay = self.backoff.next_delay();
-                self.store.lost(why, delay);
-                let unanswered = self.outbox.lost();
-                self.dialogs.lost(&unanswered);
-                self.closing.clear();
+                machine.seen.clear();
+                machine.watching = None;
+                let delay = machine.backoff.next_delay();
+                machine.store.lost(why.clone(), delay);
+                let unanswered = machine.outbox.lost();
+                machine.closing.clear();
+                if shown {
+                    self.dialogs.lost(&unanswered);
+                } else {
+                    let machine = &mut self.machines[index];
+                    if unanswered
+                        .iter()
+                        .any(|p| matches!(p, Purpose::PauseAll | Purpose::ResumeAll))
+                    {
+                        machine.all_running = None;
+                    }
+                    // Said as it goes, or first fails, not at each retry.
+                    if machine.backoff.failures() == 1 {
+                        let line = why.lines().last().unwrap_or_default();
+                        let name = machine.name.clone();
+                        self.dialogs.say(format!("{name}: {line}"), true);
+                    }
+                }
                 let retry = cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(delay).await;
                     let _ = this.update(cx, |this, cx| {
-                        if this.link.is_none() && this.links_started == number {
-                            this.connect(cx);
+                        if let Some(index) = this.machine_of_link(number)
+                            && this.machines[index].link.is_none()
+                        {
+                            this.connect(index, cx);
                         }
                     });
                 });
@@ -367,16 +414,39 @@ impl CorgiWindow {
         }
     }
 
-    /// Connects again now rather than when the wait ends.
-    pub fn retry_now(&mut self, cx: &mut Context<Self>) {
-        if self.link.is_none() {
-            self.connect(cx);
+    /// A reply from a machine not shown: its dialog, if any, is gone with
+    /// the switch, so only what it says is said, with the machine's name.
+    fn background_reply(&mut self, index: usize, purpose: Purpose, reply: Reply) {
+        let machine = &mut self.machines[index];
+        if matches!(purpose, Purpose::PauseAll | Purpose::ResumeAll) {
+            machine.all_running = None;
+        }
+        let quiet = purpose == Purpose::Quiet && reply.ok;
+        let mut aside = Dialogs::default();
+        aside.reply(purpose, reply);
+        if let Some(flash) = aside.flash.filter(|_| !quiet) {
+            let name = machine.name.clone();
+            self.dialogs
+                .say(format!("{name}: {}", flash.text), flash.error);
         }
     }
 
-    /// Sends `command`; false when it could not be.
+    /// Connects the shown machine again now rather than when the wait ends.
+    pub fn retry_now(&mut self, cx: &mut Context<Self>) {
+        if self.machine().link.is_none() {
+            self.connect(self.active, cx);
+        }
+    }
+
+    /// Sends `command` to the shown machine; false when it could not be.
     pub fn send(&mut self, command: Command, purpose: Purpose) -> bool {
-        let Some(link) = self.link.clone().filter(|_| self.store.connected()) else {
+        self.send_to(self.active, command, purpose)
+    }
+
+    /// Sends `command` to machine `index`.
+    fn send_to(&mut self, index: usize, command: Command, purpose: Purpose) -> bool {
+        let machine = &mut self.machines[index];
+        let Some(link) = machine.link.clone().filter(|_| machine.store.connected()) else {
             if purpose != Purpose::Quiet {
                 self.dialogs.say(
                     "Not connected to corgi serve; try again once it reconnects",
@@ -385,7 +455,7 @@ impl CorgiWindow {
             }
             return false;
         };
-        let Some(request) = self.outbox.request(&self.store, command, purpose) else {
+        let Some(request) = machine.outbox.request(&machine.store, command, purpose) else {
             self.dialogs.say(
                 "That command would move every Herdr client's view, so the window never sends it",
                 true,
@@ -393,7 +463,7 @@ impl CorgiWindow {
             return false;
         };
         if let Err(error) = link.send(&request) {
-            self.outbox.unsent(request.id);
+            machine.outbox.unsent(request.id);
             self.dialogs
                 .say(format!("Could not reach corgi serve: {error}"), true);
             return false;
@@ -406,15 +476,15 @@ impl CorgiWindow {
     /// The agents the keys step through, in the overview's order: every
     /// row but the workers of a collapsed card.
     pub fn visible_agents(&self) -> Vec<&Agent> {
-        let state = &self.store.state;
+        let state = &self.store().state;
         let mut agents = Vec::new();
         for project in &state.projects {
-            let collapsed = project.card && self.collapsed.contains(&project.group);
+            let collapsed = project.card && self.machine().collapsed.contains(&project.group);
             for pane_id in &project.agents {
                 if collapsed && project.supervisor.as_deref() != Some(pane_id.as_str()) {
                     continue;
                 }
-                if let Some(agent) = self.store.agent(pane_id) {
+                if let Some(agent) = self.store().agent(pane_id) {
                     agents.push(agent);
                 }
             }
@@ -436,8 +506,8 @@ impl CorgiWindow {
     /// Whether a clock the window shows counts seconds now: a prompt cache
     /// in its last minute, or the wait before connecting again.
     fn counts_seconds(&self, now: u64) -> bool {
-        !self.store.connected()
-            || self.store.state.agents.iter().any(|agent| {
+        !self.store().connected()
+            || self.store().state.agents.iter().any(|agent| {
                 agent
                     .cache
                     .as_ref()
@@ -446,7 +516,7 @@ impl CorgiWindow {
     }
 
     pub fn selected_agent(&self) -> Option<&Agent> {
-        self.store.agent(self.selected.as_deref()?)
+        self.store().agent(self.machine().selected.as_deref()?)
     }
 
     /// Keeps the selection on a row that exists, and the transcript read
@@ -457,14 +527,16 @@ impl CorgiWindow {
             .iter()
             .map(|agent| agent.pane_id.clone())
             .collect();
-        let before = self.selected.clone();
-        self.selected = reconciled(self.selected.take(), self.picked, &visible);
-        if self.selected != before {
+        let machine = self.machine_mut();
+        let before = machine.selected.clone();
+        machine.selected = reconciled(machine.selected.take(), machine.picked, &visible);
+        let changed = machine.selected != before;
+        machine.expanded &= machine.selected.is_some();
+        machine.closing.prune(&machine.store.state);
+        if changed {
             // Another session's turns start at its newest.
             self.transcript.reset();
         }
-        self.expanded &= self.selected.is_some();
-        self.closing.prune(&self.store.state);
         self.recolor(cx);
         self.sync_watch();
     }
@@ -474,11 +546,12 @@ impl CorgiWindow {
     /// enough to show the row in full.
     pub fn select(&mut self, pane_id: String, pick: Pick, cx: &mut Context<Self>) {
         self.rows.pick(&pane_id, pick);
-        if self.selected.as_deref() != Some(pane_id.as_str()) {
+        if self.machine().selected.as_deref() != Some(pane_id.as_str()) {
             self.transcript.reset();
         }
-        self.selected = Some(pane_id);
-        self.picked = true;
+        let machine = self.machine_mut();
+        machine.selected = Some(pane_id);
+        machine.picked = true;
         self.sync_watch();
         cx.notify();
     }
@@ -492,6 +565,7 @@ impl CorgiWindow {
         // step up the last.
         let before = if delta > 0 { -1 } else { agents.len() as isize };
         let at = self
+            .machine()
             .selected
             .as_ref()
             .and_then(|selected| agents.iter().position(|agent| &agent.pane_id == selected))
@@ -503,17 +577,26 @@ impl CorgiWindow {
 
     /// Asks `corgi serve` to read the selected agent's transcript while its
     /// row is expanded and the window is on screen, and to stop otherwise.
-    fn sync_watch(&mut self) {
-        if !self.store.connected() {
+    pub(crate) fn sync_watch(&mut self) {
+        let index = self.active;
+        self.sync_watch_of(index);
+    }
+
+    /// Machine `index`'s watch: only the shown machine's expanded row is
+    /// read.
+    pub(crate) fn sync_watch_of(&mut self, index: usize) {
+        let reading = index == self.active && self.visible && self.focus_view.is_none();
+        let machine = &mut self.machines[index];
+        if !machine.store.connected() {
             return;
         }
-        let wanted = self
+        let wanted = machine
             .selected
             .clone()
-            .filter(|_| self.visible && self.expanded && self.focus_view.is_none());
-        if wanted != self.watching {
-            self.watching = wanted.clone();
-            self.send(Command::Watch { pane_id: wanted }, Purpose::Quiet);
+            .filter(|_| reading && machine.expanded);
+        if wanted != machine.watching {
+            machine.watching = wanted.clone();
+            self.send_to(index, Command::Watch { pane_id: wanted }, Purpose::Quiet);
         }
     }
 
@@ -541,9 +624,9 @@ impl CorgiWindow {
 
     /// Gives the terminal the Herdr session `corgi serve` reads, from its
     /// hello: terminals are local only, so none over ssh.
-    fn sync_terminal_socket(&mut self, cx: &mut Context<Self>) {
-        let remote = self.options.ssh.is_some();
-        let Some(hello) = self.store.hello.as_ref().filter(|_| !remote) else {
+    pub(crate) fn sync_terminal_socket(&mut self, cx: &mut Context<Self>) {
+        let remote = self.machine().options.ssh.is_some();
+        let Some(hello) = self.store().hello.as_ref().filter(|_| !remote) else {
             if remote {
                 self.terminal
                     .update(cx, |terminal, cx| terminal.set_socket(None, true, cx));
@@ -562,7 +645,7 @@ impl CorgiWindow {
 
     fn color_terminal(&self, cx: &mut Context<Self>) {
         let (light, chosen) = self.appearance();
-        let palette = theme::terminal_palette(&self.store.state.palette, light, chosen);
+        let palette = theme::terminal_palette(&self.store().state.palette, light, chosen);
         let roles = &self.colors.roles;
         let (accent, muted, light) = (
             theme::rgb(roles.accent),
@@ -575,9 +658,9 @@ impl CorgiWindow {
         });
     }
 
-    fn recolor(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn recolor(&mut self, cx: &mut Context<Self>) {
         let (light, chosen) = self.appearance();
-        let colors = Colors::new(&self.store.state.palette, light, chosen);
+        let colors = Colors::new(&self.store().state.palette, light, chosen);
         if colors != self.colors {
             self.colors = colors;
             let field = field_colors(&self.colors);
@@ -669,10 +752,11 @@ impl CorgiWindow {
     /// to the window's bottom, or back. With no row selected there is
     /// nothing to grow.
     pub fn toggle_expanded(&mut self, cx: &mut Context<Self>) {
-        let Some(pane_id) = self.selected.clone() else {
+        let Some(pane_id) = self.machine().selected.clone() else {
             return;
         };
-        self.expanded = !self.expanded;
+        let machine = self.machine_mut();
+        machine.expanded = !machine.expanded;
         self.transcript.reset();
         self.rows.pick(&pane_id, Pick::Reveal);
         self.sync_watch();
@@ -682,7 +766,7 @@ impl CorgiWindow {
     /// Puts the expanded session's selected text on the clipboard; false
     /// when nothing is selected.
     fn copy_selection(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(text) = self.transcript.copied().filter(|_| self.expanded) else {
+        let Some(text) = self.transcript.copied().filter(|_| self.machine().expanded) else {
             return false;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -693,10 +777,11 @@ impl CorgiWindow {
     /// click on its top edge, a right click anywhere in its frame. The
     /// selection stays, unless collapsing hides it.
     pub fn toggle_card(&mut self, group: &str, cx: &mut Context<Self>) {
-        let Some(project) = self.store.project(group) else {
+        let machine = self.machine_mut();
+        let Some(project) = machine.store.project(group) else {
             return;
         };
-        let moved = flip_card(&mut self.collapsed, project, self.selected.as_deref());
+        let moved = flip_card(&mut machine.collapsed, project, machine.selected.as_deref());
         if let Some(supervisor) = moved {
             self.select(supervisor, Pick::Reveal, cx);
         }
@@ -726,12 +811,12 @@ impl CorgiWindow {
     /// What a double click on an agent's row, or Enter on it, does: opens
     /// the focus view on the agent's live terminal.
     pub fn open_agent(&mut self, pane_id: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(agent) = self.store.agent(&pane_id).cloned() else {
+        let Some(agent) = self.store().agent(&pane_id).cloned() else {
             return;
         };
         // A double click selected the row with its first click, and Enter
         // acts on the selected row: neither moves the overview.
-        if self.selected.as_deref() != Some(pane_id.as_str()) {
+        if self.machine().selected.as_deref() != Some(pane_id.as_str()) {
             self.select(pane_id.clone(), Pick::Reveal, cx);
         }
         self.focus_view = Some(pane_id);
@@ -769,9 +854,10 @@ impl CorgiWindow {
     /// Opens the prompt box for the selected agent.
     pub fn open_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(agent) = self
+            .machine()
             .selected
             .as_deref()
-            .and_then(|id| self.store.agent(id))
+            .and_then(|id| self.store().agent(id))
             .cloned()
         else {
             return;
@@ -856,7 +942,7 @@ impl CorgiWindow {
         question: String,
         cx: &mut Context<Self>,
     ) {
-        if self.closing.contains(&project_root, &question) {
+        if self.machine().closing.contains(&project_root, &question) {
             return;
         }
         let command = Command::CloseQuestion {
@@ -868,7 +954,7 @@ impl CorgiWindow {
             question: question.clone(),
         };
         if self.send(command, purpose) {
-            self.closing.start(&project_root, &question);
+            self.machine_mut().closing.start(&project_root, &question);
         }
         cx.notify();
     }
@@ -876,9 +962,10 @@ impl CorgiWindow {
     /// Answers the `index`th open question of the selected agent's project.
     pub fn answer_nth(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(project) = self
+            .machine()
             .selected
             .as_deref()
-            .and_then(|id| self.store.project_of(id))
+            .and_then(|id| self.store().project_of(id))
         else {
             return;
         };
@@ -894,7 +981,7 @@ impl CorgiWindow {
 
     pub fn new_agent(&mut self, cx: &mut Context<Self>) {
         self.task_input.update(cx, |input, cx| input.clear(cx));
-        let pane_id = self.selected.clone();
+        let pane_id = self.machine().selected.clone();
         let sent = self.send(
             Command::NewAgentForm {
                 pane_id,
@@ -950,7 +1037,7 @@ impl CorgiWindow {
     }
 
     pub fn close_check(&mut self, pane_id: Option<String>, cx: &mut Context<Self>) {
-        let Some(pane_id) = pane_id.or(self.selected.clone()) else {
+        let Some(pane_id) = pane_id.or(self.machine().selected.clone()) else {
             return;
         };
         self.send(Command::CloseCheck { pane_id }, Purpose::CloseCheck);
@@ -1195,9 +1282,9 @@ impl CorgiWindow {
             Followup::ShowSupervisor(pane_id) => {
                 self.layout.side_open = true;
                 self.save_layout();
-                if let Some(agent) = self.store.agent(&pane_id).cloned() {
+                if let Some(agent) = self.store().agent(&pane_id).cloned() {
                     // A card collapsed still shows its supervisor.
-                    self.collapsed.remove(&agent.project_group);
+                    self.machine_mut().collapsed.remove(&agent.project_group);
                 }
                 self.select(pane_id, Pick::Reveal, cx);
             }
@@ -1225,7 +1312,7 @@ impl CorgiWindow {
         let selected_group = self
             .selected_agent()
             .map(|agent| agent.project_group.clone());
-        let Some(hit) = self.keymap.overview_hit(keystroke, self.expanded) else {
+        let Some(hit) = self.keymap.overview_hit(keystroke, self.machine().expanded) else {
             return;
         };
         let action = match hit {
@@ -1242,7 +1329,7 @@ impl CorgiWindow {
             Action::First => self.step(-10_000, cx),
             Action::Last => self.step(10_000, cx),
             Action::Open => {
-                if let Some(pane_id) = self.selected.clone() {
+                if let Some(pane_id) = self.machine().selected.clone() {
                     self.open_agent(pane_id, window, cx);
                 }
             }
@@ -1264,7 +1351,7 @@ impl CorgiWindow {
             Action::CollapseCard | Action::ExpandCard => {
                 let Some(group) = selected_group else { return };
                 let collapse = action == Action::CollapseCard;
-                if collapse != self.collapsed.contains(&group) {
+                if collapse != self.machine().collapsed.contains(&group) {
                     self.toggle_card(&group, cx);
                 }
             }
@@ -1323,6 +1410,17 @@ impl CorgiWindow {
                 self.merge_action(MergeAction::Handoff, cx);
             }
             cx.stop_propagation();
+            return;
+        }
+        // The machine form's rows take a paste, its first line.
+        if let Some(Dialog::Machine(form)) = &mut self.dialogs.open
+            && keys::chord(keystroke, cfg!(target_os = "macos")) == Some(Chord::Paste)
+        {
+            if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                form.type_text(text.lines().next().unwrap_or_default());
+            }
+            cx.stop_propagation();
+            cx.notify();
             return;
         }
         let modifiers = keystroke.modifiers;
@@ -1402,6 +1500,40 @@ impl CorgiWindow {
                     }
                 }
             }
+            Some(Dialog::Machine(form)) => {
+                let Some(form_key) = form_key(event) else {
+                    return;
+                };
+                match form.key(form_key) {
+                    FormEffect::None => {}
+                    FormEffect::Submit => self.submit_machine(cx),
+                    FormEffect::Cancel => self.dialogs.open = None,
+                }
+                true
+            }
+            Some(Dialog::MachineMenu(menu)) => match key {
+                "up" | "k" => {
+                    menu.cursor = menu.cursor.saturating_sub(1);
+                    true
+                }
+                "down" | "j" | "tab" => {
+                    menu.cursor = (menu.cursor + 1).min(MachineMenu::ITEMS.len() - 1);
+                    true
+                }
+                "enter" => {
+                    let item = menu.cursor;
+                    self.choose_machine_menu(item, cx);
+                    true
+                }
+                _ => false,
+            },
+            Some(Dialog::RemoveMachine { .. }) => match key {
+                "enter" => {
+                    self.remove_machine(cx);
+                    true
+                }
+                _ => false,
+            },
             Some(Dialog::NewAgent(new)) => {
                 let Some(form_key) = form_key(event) else {
                     return;
@@ -1451,9 +1583,18 @@ impl CorgiWindow {
     }
 
     /// Puts the keyboard where the open dialog wants it, at the next frame.
-    fn focus_dialog(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn focus_dialog(&mut self, cx: &mut Context<Self>) {
         self.refocus = true;
         cx.notify();
+    }
+
+    /// Names the machine shown in the window's title, when it changed.
+    pub fn sync_title(&mut self, window: &mut Window) {
+        let title = format!("Corgi — {}", self.machine().options.place());
+        if title != self.title {
+            window.set_window_title(&title);
+            self.title = title;
+        }
     }
 
     pub fn take_refocus(&mut self) -> bool {
@@ -1482,7 +1623,7 @@ impl CorgiWindow {
     }
 
     pub fn connection(&self) -> &Connection {
-        &self.store.connection
+        &self.store().connection
     }
 }
 
