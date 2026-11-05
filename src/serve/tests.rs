@@ -29,6 +29,7 @@ use corgi_core::{
         BacklogEntry, Change, Command as Wire, MergeOutcome, PaletteSet, Question, Reply,
         ReplyResult, ServerMessage, State, ThemeColors,
     },
+    session::SessionReader,
     test_support::{ScratchDir, fake_herdr},
     waker::SupervisorWaker,
 };
@@ -259,6 +260,7 @@ impl Session {
             log: None,
             refresh_interval: Duration::from_secs(3600),
             forge,
+            transcripts: SessionReader::in_home(&scratch.join("home")),
         };
         let (events, receiver) = mpsc::channel();
         let (sender, output) = mpsc::channel();
@@ -858,6 +860,81 @@ fn select_watch_and_bad_lines_are_answered_in_place() {
     assert!(reply.error.unwrap().contains("unreadable request"));
     let reply = session.refused(json!({"command": "prompt", "pane_id": "w9:p9", "text": "x"}));
     assert_eq!(reply.error.unwrap(), "no agent in pane w9:p9");
+    session.close();
+}
+
+#[test]
+fn a_watch_carries_the_turns_at_once_without_waiting_for_a_refresh() {
+    let scratch = ScratchDir::new("serve-watch");
+    let (repo, worktree) = repository(&scratch);
+    // The supervisor's session file, where Claude Code would write it.
+    let slug: String = repo
+        .to_str()
+        .unwrap()
+        .chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect();
+    let dir = scratch.join("home/.claude/projects").join(slug);
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("s-sup.jsonl");
+    let said = |text: &str| {
+        format!(
+            "{}\n",
+            json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+        )
+    };
+    fs::write(&file, said("First.")).unwrap();
+    let herdr = FakeHerdr::start("serve-watch", herd(&repo, &worktree, "idle"));
+    let mut session = Session::start(&herdr, &scratch);
+    opening(&session);
+    let refreshes = herdr.calls("session.snapshot").len();
+    let texts = |changes: &[Change]| -> Option<Vec<String>> {
+        changes.iter().find_map(|change| match change {
+            Change::Transcript {
+                transcript: Some(transcript),
+            } if transcript.pane_id == "w1:p1" => Some(
+                transcript
+                    .entries
+                    .iter()
+                    .map(|entry| entry.text.clone())
+                    .collect(),
+            ),
+            _ => None,
+        })
+    };
+
+    // The turns come in the delta right after the reply, read from the
+    // last refresh's rows: no refresh runs for them.
+    session.ok(json!({"command": "watch", "pane_id": "w1:p1"}));
+    let ServerMessage::Delta(delta) = session.next() else {
+        panic!("no delta after the reply")
+    };
+    assert_eq!(texts(&delta.changes), Some(vec!["First.".to_string()]));
+    assert_eq!(herdr.calls("session.snapshot").len(), refreshes);
+
+    // Every refresh reads it again, newest first.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&file)
+        .unwrap()
+        .write_all(said("Second.").as_bytes())
+        .unwrap();
+    let changes = session.refresh().expect("a delta");
+    assert_eq!(
+        texts(&changes),
+        Some(vec!["Second.".to_string(), "First.".to_string()])
+    );
+
+    // Watching nothing drops it at once.
+    session.ok(json!({"command": "watch", "pane_id": null}));
+    let ServerMessage::Delta(delta) = session.next() else {
+        panic!("no delta after the reply")
+    };
+    assert!(
+        delta
+            .changes
+            .contains(&Change::Transcript { transcript: None })
+    );
     session.close();
 }
 

@@ -109,16 +109,15 @@ impl Server {
                 self.done(id, "Selected");
             }
             Command::Watch { pane_id } => {
-                if self
-                    .transcript
-                    .as_ref()
-                    .map(|transcript| &transcript.pane_id)
-                    != pane_id.as_ref()
-                {
-                    self.transcript = None;
-                }
+                // Read now, from the last refresh's rows: the delta after
+                // the reply carries the turns, with no refresh to wait for.
                 self.watch = pane_id;
-                self.refresh_requested = true;
+                self.read_transcript();
+                // An agent the last refresh did not list yet is read by
+                // the next, which goes now.
+                if self.watch.is_some() && self.transcript.is_none() {
+                    self.refresh_requested = true;
+                }
                 self.done(id, "Watching");
             }
             Command::Prompt { pane_id, text } => self.prompt(id, pane_id, text),
