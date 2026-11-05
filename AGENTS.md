@@ -238,6 +238,17 @@ and remove it before committing; compare the numbers with and without a
 row expanded, since a screenshot only shows a difference of a few pixels
 to the eye.
 
+In gpui-pre 0.3.6 `flex_shrink` takes a factor, and min-content sizing
+wins: a row whose other children keep their width cannot shrink just one
+text child, however it is styled. Fit such text in code from the
+monospace cell width (`monospace_cell_width`), as the status bar's
+machine names are (`fit_names` in `src/machine_bar.rs`).
+
+Run with `env -i` and a private `HOME`, a real `ssh` (a machine of the
+status bar, or `--ssh`) still reads the real `~/.ssh`, since it takes the
+home directory from the password database: the user's keys and
+`known_hosts` work without copying them.
+
 The focus view's terminal connects to the throwaway session's
 `herdr-client.sock` itself. After changing `src/endpoint/`, run
 `cargo test -p corgi-gui -- --ignored live_herdr`, which drives the adapter
