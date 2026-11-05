@@ -766,9 +766,27 @@ when stdin closes and no command is still running.
 `corgi-gui` is a GPUI window on `corgi serve`, which it runs as its child:
 `corgi serve` beside its own binary (a release build's
 `target/release/corgi`, or the one packaged with it), else on `PATH`, or
-`ssh -T -o BatchMode=yes HOST corgi serve` with `--ssh`. It deserializes
-into `corgi_core::protocol`'s types and keeps its copy of the state with
-`State::apply`. Its layout is fixed, plain GPUI with no dock: the header
+`ssh -T -o BatchMode=yes HOST corgi serve` for another machine. It
+deserializes into `corgi_core::protocol`'s types and keeps its copy of the
+state with `State::apply`.
+
+It shows one machine at a time but keeps a `corgi serve` open on each it
+knows (`machines.rs`): this machine, always first, and those added with the
+status bar's `+`, kept in `$STATE/gui-machines.json` (each a display name,
+an ssh host and the path to `corgi` there) with the one last shown. Every
+machine has its own link, backoff, store, outbox, selection, expanded row
+and collapsed cards (`Machine`), so its dot (green connected, amber
+connecting, red lost) and agent count in the status bar stay live, and a
+click there switches the whole window, every action included, to it; its
+view comes back as it was left. Events carry their link's number, which
+names the machine. A machine not shown has no dialog: its replies are only
+said in the status line, with its name, and a Pause all running there is
+parked with it. A right click on a machine opens its menu (Edit, Remove);
+`--ssh HOST` shows HOST for that run without saving it (a saved machine of
+that host, with the command line's options). The add form lists the
+`Host`s of `~/.ssh/config` (its `Include`s followed, patterns skipped).
+None of this changes `corgi serve` or wakes anything: the hooks are the
+backend, and each serve is only a window's data source. Its layout is fixed, plain GPUI with no dock: the header
 (the brand's pixel corgi, the HERD counts, a card per plan), a toolbar, the
 overview of project cards and rows, the selected row expandable into its
 session, the side panel with the selected project's held inbox items (when
@@ -970,8 +988,8 @@ of the tab's surface; the window paints them, with no terminal emulator of
 its own, and sends keys, text, paste and the mouse as semantic events,
 which Herdr encodes for the program's modes (kitty keyboard,
 modifyOtherKeys, bracketed paste), so Shift+Enter, Alt+Enter and Ctrl+J do
-what they do in Herdr. Terminals are local only: over `--ssh` the focus view
-says so.
+what they do in Herdr. Terminals are local only: while another machine is
+shown, the focus view says so.
 
 - `endpoint/` is the one place that knows that protocol, so a Herdr upgrade
   that breaks it breaks it there. It was written and tested against **Herdr

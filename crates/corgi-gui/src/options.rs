@@ -6,10 +6,10 @@ use std::{env, path::PathBuf};
 pub const USAGE: &str = "\
 Usage: corgi-gui [--ssh HOST] [--session NAME | --socket PATH] [--corgi PATH]
 
-Opens Corgi's desktop window on `corgi serve`, run on this machine or, with
---ssh, as `ssh HOST corgi serve` on another one.
+Opens Corgi's desktop window on `corgi serve`, run on this machine and, as
+`ssh HOST corgi serve`, on each machine added with the status bar's +.
 
-  --ssh HOST       run `corgi serve` on HOST over ssh
+  --ssh HOST       show HOST for this run, without adding it
   --session NAME   the Herdr session's socket (~/.config/herdr/sessions/NAME)
   --socket PATH    a Herdr socket by path
   --corgi PATH     the corgi to run: by default the one next to corgi-gui,
@@ -108,13 +108,19 @@ impl Options {
         }
     }
 
-    /// Where the window's data comes from, for its title.
-    pub fn place(&self) -> String {
-        let herdr = match (&self.session, &self.socket) {
+    /// The Herdr asked for, ` · session NAME` or ` · SOCKET`; empty for
+    /// the default one.
+    pub fn herdr(&self) -> String {
+        match (&self.session, &self.socket) {
             (Some(session), _) => format!(" · session {session}"),
             (None, Some(socket)) => format!(" · {socket}"),
             (None, None) => String::new(),
-        };
+        }
+    }
+
+    /// Where the window's data comes from, for its title.
+    pub fn place(&self) -> String {
+        let herdr = self.herdr();
         match &self.ssh {
             Some(host) => format!("{host}{herdr}"),
             None => format!("this machine{herdr}"),

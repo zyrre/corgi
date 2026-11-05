@@ -65,9 +65,10 @@ impl Render for CorgiWindow {
         if self.take_refocus() {
             self.focus_dialog_now(window, cx);
         }
+        self.sync_title(window);
         let colors = self.colors.clone();
-        let connected = self.store.connected();
-        let has_state = self.store.seq.is_some() || !self.store.state.agents.is_empty();
+        let connected = self.store().connected();
+        let has_state = self.store().seq.is_some() || !self.store().state.agents.is_empty();
         let dialog = self.dialogs.open.is_some();
         let focus_view = self.focus_view.is_some();
         // Spacing given in rems grows and shrinks with the text, as a page
@@ -169,8 +170,14 @@ impl Render for CorgiWindow {
                 root.child(self.connection_banner(has_state, cx))
             })
             .child(body)
-            .child(self.status_bar(cx))
-            .when(dialog, |root| root.child(self.dialog_layer(window, cx)))
+            .child(self.status_bar(window, cx))
+            .map(|root| match &self.dialogs.open {
+                Some(Dialog::MachineMenu(menu)) => {
+                    root.child(self.machine_menu_layer(menu, window, cx))
+                }
+                _ if dialog => root.child(self.dialog_layer(window, cx)),
+                _ => root,
+            })
             .children(self.hotkeys_layer(window, cx))
     }
 }
@@ -204,7 +211,7 @@ impl CorgiWindow {
     /// so a fixed count of character cells (a usage card's content width)
     /// can be laid out in real pixels, as the terminal's grid measures its
     /// own.
-    fn monospace_cell_width(&self, window: &Window) -> f32 {
+    pub(crate) fn monospace_cell_width(&self, window: &Window) -> f32 {
         window
             .text_system()
             .shape_line(
@@ -232,8 +239,8 @@ impl CorgiWindow {
     /// window too narrow for them all wraps the cards under the letters.
     fn header(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
-        let now = self.store.now();
-        let state = &self.store.state;
+        let now = self.store().now();
+        let state = &self.store().state;
         // A card's lines follow the text; its title row, height and least
         // width keep the corgi's measures until larger text needs more.
         let scale = self.layout.text_scale();
@@ -515,7 +522,7 @@ impl CorgiWindow {
             false,
             cx,
             |this, window, cx| {
-                if let Some(pane_id) = this.selected.clone() {
+                if let Some(pane_id) = this.machine().selected.clone() {
                     this.open_agent(pane_id, window, cx);
                 }
             },
@@ -541,7 +548,7 @@ impl CorgiWindow {
         let agent = self
             .focus_view
             .as_deref()
-            .and_then(|id| self.store.agent(id));
+            .and_then(|id| self.store().agent(id));
         let badge = agent.map(|agent| {
             let (badge, tone) = format::badge(agent);
             let fill = self.tone(tone, None);
@@ -660,7 +667,10 @@ impl CorgiWindow {
         let colors = &self.colors;
         let (text, retry) = match self.connection() {
             Connection::Connecting => (
-                format!("Connecting to corgi serve on {}…", self.options.place()),
+                format!(
+                    "Connecting to corgi serve on {}…",
+                    self.machine().options.place()
+                ),
                 false,
             ),
             Connection::Connected => (String::new(), false),
@@ -717,7 +727,11 @@ impl CorgiWindow {
 
     /// The selected row, while it is expanded and shows.
     fn expanded_row(&self) -> Option<&str> {
-        let selected = self.selected.as_deref().filter(|_| self.expanded)?;
+        let selected = self
+            .machine()
+            .selected
+            .as_deref()
+            .filter(|_| self.machine().expanded)?;
         self.visible_agents()
             .iter()
             .any(|agent| agent.pane_id == selected)
@@ -725,7 +739,7 @@ impl CorgiWindow {
     }
 
     fn overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let state = &self.store.state;
+        let state = &self.store().state;
         let expanded = self.expanded_row();
         let fill = self.rows.expand(expanded, &self.overview_scroll);
         // Prepainted after its cards, which record where their rows are.
@@ -749,7 +763,7 @@ impl CorgiWindow {
             .p_3()
             .when_some(fill, |content, fill| content.min_h(fill));
         if state.agents.is_empty() {
-            let text = if self.store.seq.is_none() {
+            let text = if self.store().seq.is_none() {
                 "Waiting for corgi serve…"
             } else {
                 "No agents. Press n to start one."
@@ -776,12 +790,12 @@ impl CorgiWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = &self.colors;
-        let collapsed = project.card && self.collapsed.contains(&project.group);
+        let collapsed = project.card && self.machine().collapsed.contains(&project.group);
         let mut agents: Vec<&Agent> = project
             .agents
             .iter()
             .filter(|id| !collapsed || project.supervisor.as_deref() == Some(id.as_str()))
-            .filter_map(|id| self.store.agent(id))
+            .filter_map(|id| self.store().agent(id))
             .collect();
         if let Some(at) = expanded.and_then(|id| agents.iter().position(|a| a.pane_id == id)) {
             agents.truncate(at + 1);
@@ -923,7 +937,7 @@ impl CorgiWindow {
     }
 
     fn agent_row(&self, agent: &Agent, cx: &mut Context<Self>) -> AnyElement {
-        let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
+        let selected = self.machine().selected.as_deref() == Some(agent.pane_id.as_str());
         let row = self
             .row_frame(agent, cx)
             .child(self.activity_line(&agent.message, 2, selected))
@@ -948,7 +962,7 @@ impl CorgiWindow {
     /// (`Colors::selected_row`), the expanded row whole.
     fn row_outline(&self, agent: &Agent, row: gpui::Stateful<Div>, grows: bool) -> AnyElement {
         let colors = &self.colors;
-        let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
+        let selected = self.machine().selected.as_deref() == Some(agent.pane_id.as_str());
         div()
             .flex()
             .flex_col()
@@ -968,8 +982,8 @@ impl CorgiWindow {
     /// A row's bar, its click and its status line, for its body to follow.
     fn row_frame(&self, agent: &Agent, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let colors = &self.colors;
-        let now = self.store.now();
-        let selected = self.selected.as_deref() == Some(agent.pane_id.as_str());
+        let now = self.store().now();
+        let selected = self.machine().selected.as_deref() == Some(agent.pane_id.as_str());
         let (badge, badge_tone) = format::badge(agent);
         let badge_color = self.tone(badge_tone, None);
         let secondary = colors.secondary(if selected {
@@ -1126,7 +1140,7 @@ impl CorgiWindow {
     fn session(&self, agent: &Agent) -> AnyElement {
         let colors = &self.colors;
         let transcript = self
-            .store
+            .store()
             .state
             .transcript
             .as_ref()
@@ -1203,9 +1217,10 @@ impl CorgiWindow {
         let _ = window;
         let colors = &self.colors;
         let project = self
+            .machine()
             .selected
             .as_deref()
-            .and_then(|id| self.store.project_of(id));
+            .and_then(|id| self.store().project_of(id));
         let mut panel = div()
             .id("side")
             .flex()
@@ -1280,7 +1295,8 @@ impl CorgiWindow {
             };
             let (root, asked) = (root.clone(), question.clone());
             // Closed with × and still in the ledger: greyed, nothing to click.
-            let closing = !question.id.is_empty() && self.closing.contains(&root, &question.id);
+            let closing =
+                !question.id.is_empty() && self.machine().closing.contains(&root, &question.id);
             let close = (!question.id.is_empty() && !closing).then(|| {
                 let (root, handle) = (root.clone(), question.id.clone());
                 div()
@@ -1468,15 +1484,10 @@ impl CorgiWindow {
         }
     }
 
-    fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
-        let state = &self.store.state;
-        let (dot, dot_color, place) = match self.connection() {
-            Connection::Connected => ("●", colors.roles.success, self.options.place()),
-            Connection::Connecting => ("○", colors.roles.warning, "connecting".into()),
-            Connection::Lost { .. } => ("○", colors.roles.danger, "disconnected".into()),
-        };
-        let herdr = (!state.herdr.connected && self.store.seq.is_some()).then(|| {
+        let state = &self.store().state;
+        let herdr = (!state.herdr.connected && self.store().seq.is_some()).then(|| {
             div().text_color(colors.roles.danger).child(format!(
                 "Herdr not answering: {}",
                 state.herdr.error.clone().unwrap_or_default()
@@ -1517,7 +1528,6 @@ impl CorgiWindow {
                     .child(status)
             })
         });
-        let count = state.agents.len();
         div()
             .flex()
             .flex_row()
@@ -1527,18 +1537,15 @@ impl CorgiWindow {
             .py_1()
             .border_t_1()
             .border_color(colors.roles.rule)
-            .child(div().text_color(dot_color).child(dot))
-            .child(div().text_color(colors.roles.muted).child(place))
-            .child(div().text_color(colors.roles.text).child(format!(
-                "{count} agent{}",
-                if count == 1 { "" } else { "s" }
-            )))
-            .children(herdr)
-            .children(flash.or(status))
+            // The machines keep their room; what follows gives way first.
+            .overflow_hidden()
+            .child(self.machine_list(window, cx))
+            .children(herdr.map(give_way))
+            .children(flash.or(status).map(give_way))
             .child(div().flex_1())
             .child(
                 // The keys give way to what the status says.
-                div()
+                give_way(div())
                     .min_w_0()
                     .truncate()
                     .text_color(colors.roles.muted)
@@ -1610,7 +1617,12 @@ impl CorgiWindow {
             Some(Dialog::Close(close)) => self.close_dialog(close, cx),
             Some(Dialog::Orphans(orphans)) => self.orphans_dialog(orphans, window, cx),
             Some(Dialog::Pause(pause)) => self.pause_dialog(pause, cx),
-            None => div().into_any_element(),
+            Some(Dialog::Machine(form)) => self.machine_dialog(form, cx),
+            Some(Dialog::RemoveMachine { host, name }) => {
+                self.remove_machine_dialog(host, name, cx)
+            }
+            // Drawn where it was opened, by `machine_menu_layer`.
+            Some(Dialog::MachineMenu(_)) | None => div().into_any_element(),
         };
         // A refused prompt keeps the keyboard; its frame says so.
         let frame = if self.dialogs.open.as_ref().is_some_and(Dialog::refused) {
@@ -1713,7 +1725,7 @@ impl CorgiWindow {
             .child(field)
     }
 
-    fn hints(&self, hints: &[(&str, &str)]) -> impl IntoElement {
+    pub(crate) fn hints(&self, hints: &[(&str, &str)]) -> impl IntoElement {
         let colors = &self.colors;
         div()
             .flex()
@@ -1942,10 +1954,21 @@ impl CorgiWindow {
 
     /// The focused row's list, inline under it.
     fn picker(&self, new: &crate::form::NewAgent) -> AnyElement {
-        let colors = &self.colors;
         let picker = new.picker.as_ref().expect("an open list");
-        let rows = new.picker_rows();
-        let cursor = picker.cursor.min(rows.len().saturating_sub(1));
+        let filter = format!("filter: {}▏", picker.filter);
+        self.choice_list(Some(filter), &new.picker_rows(), picker.cursor)
+    }
+
+    /// A form's open list, under its row: the filter typed, when it is not
+    /// the row's own value, and the first rows, `cursor`'s highlighted.
+    pub(crate) fn choice_list(
+        &self,
+        filter: Option<String>,
+        rows: &[corgi_core::protocol::Choice],
+        cursor: usize,
+    ) -> AnyElement {
+        let colors = &self.colors;
+        let cursor = cursor.min(rows.len().saturating_sub(1));
         div()
             .flex()
             .flex_col()
@@ -1956,11 +1979,7 @@ impl CorgiWindow {
             .border_1()
             .border_color(colors.roles.accent)
             .bg(colors.background)
-            .child(
-                div()
-                    .text_color(colors.roles.muted)
-                    .child(format!("filter: {}▏", picker.filter)),
-            )
+            .children(filter.map(|filter| div().text_color(colors.roles.muted).child(filter)))
             .when(rows.is_empty(), |list| {
                 list.child(
                     div()
@@ -2241,6 +2260,11 @@ impl CorgiWindow {
     }
 }
 
+/// A status bar item that shrinks long before the machines do.
+fn give_way(item: Div) -> Div {
+    item.flex_shrink(1000.).min_w_0()
+}
+
 /// How tall a dialog's content may be: what the window leaves below the
 /// dialog's top margin, its padding and frame and a bottom margin, with the
 /// text `scale` times its default size.
@@ -2282,7 +2306,7 @@ fn section_title(text: String, color: Hsla) -> impl IntoElement {
         .child(text)
 }
 
-fn keycap(key: &str, fill: Hsla, text: Hsla) -> AnyElement {
+pub(crate) fn keycap(key: &str, fill: Hsla, text: Hsla) -> AnyElement {
     if key.is_empty() {
         return div().into_any_element();
     }

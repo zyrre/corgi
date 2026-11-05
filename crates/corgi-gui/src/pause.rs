@@ -20,7 +20,7 @@ use crate::{
 impl CorgiWindow {
     /// Whether any agent is paused, so the button resumes them all.
     pub fn any_paused(&self) -> bool {
-        self.store.state.agents.iter().any(|agent| agent.paused)
+        self.store().state.agents.iter().any(|agent| agent.paused)
     }
 
     pub fn pause_button(&self, cx: &mut Context<Self>) -> impl IntoElement {

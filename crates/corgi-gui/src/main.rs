@@ -12,6 +12,8 @@ mod hotkeys;
 mod keymap;
 mod layout;
 mod link;
+mod machine_bar;
+mod machines;
 mod options;
 mod orphans;
 mod pause;
@@ -105,7 +107,7 @@ fn main() -> ExitCode {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let view = cx.new(|cx| CorgiWindow::new(options, font, ui_font, window, cx));
+                    let view = cx.new(|cx| CorgiWindow::new(&options, font, ui_font, window, cx));
                     let kept = view.downgrade();
                     // Keep the window's size for the next run.
                     window.on_window_should_close(cx, move |window, cx| {

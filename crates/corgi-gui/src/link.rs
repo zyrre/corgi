@@ -181,6 +181,11 @@ impl Backoff {
     pub fn reset(&mut self) {
         self.failures = 0;
     }
+
+    /// The failures since the last hello.
+    pub fn failures(&self) -> u32 {
+        self.failures
+    }
 }
 
 #[cfg(test)]

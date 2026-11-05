@@ -269,7 +269,7 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                             eprintln!(
                                 "capture: overview offset {}, selected {:?}, focus view {:?}",
                                 f32::from(root.overview_scroll.offset().y),
-                                root.selected,
+                                root.machine().selected,
                                 root.focus_view,
                             );
                         }
