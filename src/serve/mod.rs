@@ -46,6 +46,7 @@ use corgi_core::{
     },
     refresh::{self, Inputs, RefreshLog, RefreshState, Refreshed},
     rows::codex_thread_id,
+    session::SessionReader,
     time::unix_now,
     usage::{Provider, installed_providers, read_codex_thread_titles},
     usage_cache::{CachedUsage, shared_plan_usage},
@@ -140,6 +141,9 @@ pub(crate) struct Options {
     /// Asks each project's forge for its open merge requests; `None` never
     /// does.
     pub(crate) forge: Option<ForgeCli>,
+    /// Reads the watched session's transcript, apart from the refresh, so
+    /// a `watch` is answered at once rather than after a whole refresh.
+    pub(crate) transcripts: SessionReader,
 }
 
 impl Options {
@@ -160,6 +164,7 @@ impl Options {
             log: RefreshLog::from_env(),
             refresh_interval: refresh::REFRESH_INTERVAL,
             forge: Some(ForgeCli::live()),
+            transcripts: SessionReader::default(),
             client,
         }
     }
@@ -569,7 +574,7 @@ impl Server {
     fn refresh_inputs(&self) -> Inputs {
         let mut inputs = Inputs::new(self.options.client.clone());
         inputs.codex_task_titles = self.codex_titles.clone();
-        inputs.transcript_pane = self.watch.clone();
+        // The server reads the watched transcript itself (`read_transcript`).
         inputs
     }
 
@@ -603,16 +608,10 @@ impl Server {
                     .collect();
                 self.codex_titles
                     .retain(|thread, _| live.contains(&thread.as_str()));
-                self.transcript = match (&self.watch, view.transcript) {
-                    (Some(watch), Some((pane_id, entries))) if *watch == pane_id => {
-                        Some(Transcript {
-                            pane_id,
-                            entries: state::transcript_entries(&entries),
-                        })
-                    }
-                    // The watched agent is gone.
-                    _ => None,
-                };
+                self.options
+                    .transcripts
+                    .retain(self.agents.iter().map(|agent| &agent.info));
+                self.read_transcript();
             }
             Err(error) => {
                 self.herdr = HerdrStatus {
@@ -621,6 +620,23 @@ impl Server {
                 };
             }
         }
+    }
+
+    /// Reads the watched session's turns again: at once for a new `watch`,
+    /// and after every refresh. A read parses only what the file gained
+    /// since the last one, so it takes microseconds, and a few milliseconds
+    /// the first time. `None` when nothing is watched or the watched agent
+    /// is gone.
+    fn read_transcript(&mut self) {
+        let agent = self.watch.as_ref().and_then(|watch| {
+            self.agents
+                .iter()
+                .find(|agent| agent.info.pane_id == *watch)
+        });
+        self.transcript = agent.map(|agent| Transcript {
+            pane_id: agent.info.pane_id.clone(),
+            entries: state::transcript_entries(&self.options.transcripts.transcript(&agent.info)),
+        });
     }
 
     /// Sends what changed since the frontend's state, or the whole state the

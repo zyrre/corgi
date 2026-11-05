@@ -2,9 +2,16 @@
 //! the actions, and the focus view around an agent's terminal
 //! (`crate::terminal`). What it draws is in `view.rs`.
 
-use std::{collections::HashSet, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use corgi_core::protocol::{Agent, BacklogEntry, Command, Project, Question, Reply};
+use corgi_core::protocol::{
+    Agent, BacklogEntry, Command, Project, Question, Reply, Transcript as Turns,
+};
 use futures::{StreamExt, channel::mpsc};
 use gpui::{
     App, AppContext, ClipboardItem, Context, Entity, FocusHandle, Focusable, Font, KeyDownEvent,
@@ -30,6 +37,36 @@ use crate::{
     theme::{self, Colors, forced_light, is_light},
     transcript::Transcript,
 };
+
+/// How long Space holds a row back while its turns are on their way: a
+/// server of this version sends them in a few milliseconds (over `ssh`,
+/// a round trip more), an older one after its next refresh, which takes
+/// 0.1 to 0.3 s. Past it the row grows with its activity lines and
+/// "Reading the session…" until they come.
+const EXPANSION_WAIT: Duration = Duration::from_millis(300);
+
+/// A Space whose row waits for its turns before it grows, so that it grows
+/// once, with them, rather than first with a placeholder and then again.
+#[derive(Debug, Clone)]
+pub struct Expanding {
+    pane_id: String,
+    until: Instant,
+}
+
+/// Whether `expanding` still holds back `selected`'s row: until the
+/// state's `transcript` is that row's, and at most until its time is up.
+fn held_back(
+    expanding: Option<&Expanding>,
+    selected: Option<&str>,
+    transcript: Option<&Turns>,
+    now: Instant,
+) -> bool {
+    expanding.is_some_and(|expanding| {
+        selected == Some(expanding.pane_id.as_str())
+            && now < expanding.until
+            && transcript.is_none_or(|transcript| transcript.pane_id != expanding.pane_id)
+    })
+}
 
 /// A split being dragged, and where the pointer was last.
 #[derive(Debug, Clone, Copy)]
@@ -95,6 +132,8 @@ pub struct CorgiWindow {
     keymap_path: Option<PathBuf>,
     /// The hotkeys dialog, while it is open (`hotkeys.rs`).
     pub hotkeys: Option<HotkeysDialog>,
+    /// A Space waiting for its row's turns.
+    expanding: Option<Expanding>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -235,6 +274,7 @@ impl CorgiWindow {
             keymap,
             keymap_path,
             hotkeys: None,
+            expanding: None,
             _tasks: vec![pump, tick],
             _subscriptions: subscriptions,
         };
@@ -313,12 +353,28 @@ impl CorgiWindow {
                     machine.backoff.reset();
                 }
                 let received = machine.store.receive(*message);
+                crate::latency::expansion(|| {
+                    let transcript = machine.store.state.transcript.as_ref();
+                    format!(
+                        "message: {}, transcript {:?}",
+                        match &received {
+                            Some(Received::State) => "state",
+                            Some(Received::Reply(_)) => "reply",
+                            Some(_) => "other",
+                            None => "none",
+                        },
+                        transcript.map(|t| (&t.pane_id, t.entries.len()))
+                    )
+                });
                 if hello && shown {
                     self.sync_terminal_socket(cx);
                 }
                 match received {
                     None => false,
                     Some(Received::State) => {
+                        if shown && self.expanding.is_some() && !self.expansion_held() {
+                            self.expanding = None;
+                        }
                         let machine = &mut self.machines[index];
                         let projects = &machine.store.state.projects;
                         let selected = machine.selected.as_deref();
@@ -548,6 +604,7 @@ impl CorgiWindow {
         self.rows.pick(&pane_id, pick);
         if self.machine().selected.as_deref() != Some(pane_id.as_str()) {
             self.transcript.reset();
+            self.expanding = None;
         }
         let machine = self.machine_mut();
         machine.selected = Some(pane_id);
@@ -755,10 +812,58 @@ impl CorgiWindow {
         };
         let machine = self.machine_mut();
         machine.expanded = !machine.expanded;
+        let expanded = machine.expanded;
+        let has_turns = machine
+            .store
+            .state
+            .transcript
+            .as_ref()
+            .is_some_and(|transcript| transcript.pane_id == pane_id);
+        self.expanding = None;
+        if expanded {
+            crate::latency::expanded();
+        }
+        if expanded && !has_turns {
+            self.expanding = Some(Expanding {
+                pane_id: pane_id.clone(),
+                until: Instant::now() + EXPANSION_WAIT,
+            });
+            let wait = cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(EXPANSION_WAIT).await;
+                let _ = this.update(cx, |this, cx| {
+                    let due = this
+                        .expanding
+                        .as_ref()
+                        .is_some_and(|expanding| expanding.until <= Instant::now());
+                    if due {
+                        this.expanding = None;
+                        cx.notify();
+                    }
+                });
+            });
+            self._tasks.retain(|task| !task.is_ready());
+            self._tasks.push(wait);
+        }
         self.transcript.reset();
         self.rows.pick(&pane_id, Pick::Reveal);
         self.sync_watch();
-        cx.notify();
+        // A row held back looks as it did: the frame that grows it comes
+        // with its turns, and drawing one now would only keep the window
+        // busy when they arrive.
+        if !self.expansion_held() {
+            cx.notify();
+        }
+    }
+
+    /// Whether the selected row waits for its turns before it grows.
+    pub(crate) fn expansion_held(&self) -> bool {
+        let machine = self.machine();
+        held_back(
+            self.expanding.as_ref(),
+            machine.selected.as_deref(),
+            machine.store.state.transcript.as_ref(),
+            Instant::now(),
+        )
     }
 
     /// Puts the expanded session's selected text on the clipboard; false
@@ -1772,6 +1877,31 @@ fn flip_card(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn space_holds_its_row_back_until_its_turns_come_or_the_wait_is_up() {
+        let now = Instant::now();
+        let expanding = Expanding {
+            pane_id: "w1:p1".into(),
+            until: now + EXPANSION_WAIT,
+        };
+        let turns = |pane_id: &str| Turns {
+            pane_id: pane_id.into(),
+            entries: Vec::new(),
+        };
+        let held = |selected, transcript: Option<&Turns>, at| {
+            held_back(Some(&expanding), Some(selected), transcript, at)
+        };
+        assert!(held("w1:p1", None, now));
+        // The last row's turns are no use.
+        assert!(held("w1:p1", Some(&turns("w2:p1")), now));
+        // Its own end the wait, even with no turns written yet.
+        assert!(!held("w1:p1", Some(&turns("w1:p1")), now));
+        // So do the time and another row's selection.
+        assert!(!held("w1:p1", None, now + EXPANSION_WAIT));
+        assert!(!held("w2:p1", None, now));
+        assert!(!held_back(None, Some("w1:p1"), None, now));
+    }
 
     fn card(group: &str) -> Project {
         Project {

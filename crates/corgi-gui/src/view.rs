@@ -26,7 +26,7 @@ use crate::{
     store::Connection,
     terminal::open_url,
     theme,
-    transcript::{FOLDED_LINES, TranscriptElement, Turn},
+    transcript::{FOLDED_LINES, MIN_LINES, TranscriptElement, Turn},
     window::{CorgiWindow, Drag},
 };
 
@@ -725,13 +725,14 @@ impl CorgiWindow {
             .child(self.overview(cx))
     }
 
-    /// The selected row, while it is expanded and shows.
+    /// The selected row, while it is expanded and shows: once its turns
+    /// are in, or the wait for them is up (`expansion_held`).
     fn expanded_row(&self) -> Option<&str> {
         let selected = self
             .machine()
             .selected
             .as_deref()
-            .filter(|_| self.machine().expanded)?;
+            .filter(|_| self.machine().expanded && !self.expansion_held())?;
         self.visible_agents()
             .iter()
             .any(|agent| agent.pane_id == selected)
@@ -742,10 +743,7 @@ impl CorgiWindow {
         let state = &self.store().state;
         let expanded = self.expanded_row();
         let fill = self.rows.expand(expanded, &self.overview_scroll);
-        // Prepainted after its cards, which record where their rows are.
-        let (rows, scroll) = (self.rows.clone(), self.overview_scroll.clone());
         let list = div()
-            .on_children_prepainted(move |_, window, _| rows.apply(&scroll, window))
             .id("overview")
             .flex()
             .flex_col()
@@ -768,8 +766,12 @@ impl CorgiWindow {
             } else {
                 "No agents. Press n to start one."
             };
-            return list
-                .child(content.child(div().text_color(self.colors.roles.muted).child(text)));
+            let content = content.child(div().text_color(self.colors.roles.muted).child(text));
+            return self.rows.overview(
+                list.child(self.rows.content(content.into_any_element()))
+                    .into_any_element(),
+                &self.overview_scroll,
+            );
         }
         for project in &state.projects {
             let holds = expanded.is_some_and(|id| project.agents.iter().any(|a| a == id));
@@ -778,7 +780,12 @@ impl CorgiWindow {
                 break;
             }
         }
-        list.child(content)
+        // Settled before it is prepainted, once its rows are laid out.
+        self.rows.overview(
+            list.child(self.rows.content(content.into_any_element()))
+                .into_any_element(),
+            &self.overview_scroll,
+        )
     }
 
     /// A project's card, or its heading and rows; with `expanded`, one of
@@ -800,18 +807,17 @@ impl CorgiWindow {
         if let Some(at) = expanded.and_then(|id| agents.iter().position(|a| a.pane_id == id)) {
             agents.truncate(at + 1);
         }
-        let ids: Vec<String> = agents.iter().map(|agent| agent.pane_id.clone()).collect();
         let rows: Vec<AnyElement> = agents
             .into_iter()
             .map(|agent| {
-                if expanded == Some(agent.pane_id.as_str()) {
+                let row = if expanded == Some(agent.pane_id.as_str()) {
                     self.expanded_agent_row(agent, cx)
                 } else {
                     self.agent_row(agent, cx)
-                }
+                };
+                self.rows.slot(&agent.pane_id, row)
             })
             .collect();
-        let places = self.rows.clone();
         let title_color = if project.card {
             colors.supervisor()
         } else {
@@ -920,8 +926,7 @@ impl CorgiWindow {
                 .pb_2()
                 .when(expanded.is_some(), |body| body.flex_1())
                 .children(rows)
-                .children(footer)
-                .on_children_prepainted(move |bounds, _, _| places.record(&ids, &bounds)),
+                .children(footer),
         )
         .when(expanded.is_some(), |card| card.flex_1())
         .id(SharedString::from(format!("project-{}", project.group)))
@@ -1145,6 +1150,15 @@ impl CorgiWindow {
             .transcript
             .as_ref()
             .filter(|transcript| transcript.pane_id == agent.pane_id);
+        crate::latency::expansion(|| {
+            format!(
+                "render: expanded row with {}",
+                match transcript {
+                    Some(t) if !t.entries.is_empty() => "its turns",
+                    _ => "the placeholder",
+                }
+            )
+        });
         let Some(transcript) = transcript.filter(|t| !t.entries.is_empty()) else {
             let why = match transcript {
                 None => "Reading the session…",
@@ -1159,10 +1173,13 @@ impl CorgiWindow {
                     "Corgi reads transcripts from the session files Claude Code and Codex write"
                 }
             };
+            // As tall at least as the turns will be, so that they replace it
+            // without the row growing and the overview moving again.
             return div()
                 .flex()
                 .flex_col()
                 .flex_1()
+                .min_h(self.scaled(TEXT_SIZE * LINE_HEIGHT * MIN_LINES))
                 .child(self.activity_line(&agent.message, 2, true))
                 .child(self.activity_line(&agent.tool, 1, true))
                 .child(

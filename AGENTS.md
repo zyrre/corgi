@@ -220,9 +220,10 @@ offset alone, and a key scroll it only as far as the row's edge
 prepainted, so read it with `scroll`, not straight after a `key`.
 Told it is hidden on workspace 4, the window also stops watching the
 transcript, so a row expanded with Space shows "Reading the session…": put
-a `show` after the key that expands it. A scroll the expanded row settles
-on is drawn only by the next frame, so the shot after it may still show
-the old offset; read offsets with `scroll`.
+a `show` after the key that expands it. The overview settles its offset
+before it is prepainted (`Overview` in `src/rows.rs`), so a frame draws
+its rows at the offset it chose; a shot may still be one frame behind a
+key, so read offsets with `scroll`.
 Kill the window's own process, not a wrapper shell function's subshell,
 and check that its `corgi serve` child is gone afterwards.
 
@@ -286,7 +287,10 @@ Claude Code's table by hand.
 The script steps `drag`, `wheel`, `link`, `ime`, `hide`, `show`,
 `deactivate` and `activate` drive the terminal (a scripted window is never
 really active, so `activate` stands in for the user coming back to it);
-`CORGI_GUI_LATENCY=1` logs key-to-surface and key-to-frame times,
+`CORGI_GUI_LATENCY=1` logs key-to-surface and key-to-frame times, and for
+three seconds after a Space that expands a row, every message, render,
+layout of the turns (how long, and how many turns were new to the frame)
+and overview move, timed from the key (`src/latency.rs`);
 `CORGI_GUI_DEBUG_ENDPOINT=1` each snapshot, request and answer, and
 `CORGI_GUI_URL_LOG=<file>` writes a clicked link there instead of opening a
 browser. Copy and paste use the real clipboard: keep the user's text and put

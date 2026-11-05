@@ -312,8 +312,8 @@ newest fetch failed. A `resets_at` of 0 means no reset time was reported.
 
 The newest turns of the session `watch` named, **newest first**, the
 agent's reasoning left out: what the dashboard's expanded view shows. Empty
-for a harness whose session file Corgi cannot read. Read again at every
-refresh.
+for a harness whose session file Corgi cannot read. Read at once for a
+`watch`, then again at every refresh, and sent whole whenever it changed.
 
 ### `PaletteSet`: the theme's colors
 
@@ -618,8 +618,13 @@ removed when the server exits.
 ### `watch`
 
 `{"command":"watch","pane_id":"w2:p1"}` puts that session's transcript in
-the state from the next refresh (asked for at once), and keeps it read at
-every refresh; `null` stops.
+the state at once: the delta right after the reply carries it, read from
+the last refresh's rows, and every refresh reads it again; `null` stops.
+An agent the last refresh did not list yet gets its transcript from the
+next refresh, which goes at once. In Corgi 0.2.3 and older a `watch` asked
+for a refresh and the transcript came with it, a refresh later (about 0.1
+to 0.3 s); the messages are the same, so a frontend needs nothing different
+for an older server.
 
 ### `digest`
 

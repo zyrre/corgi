@@ -220,8 +220,8 @@ impl SessionReader {
 
     /// A reader that looks for session files under `home` in place of
     /// `$HOME`, which holds no Claude Code settings.
-    #[cfg(test)]
-    pub(crate) fn in_home(home: &Path) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn in_home(home: &Path) -> Self {
         Self {
             home: Some(home.to_path_buf()),
             ..Self::default()

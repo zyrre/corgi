@@ -1,14 +1,17 @@
-//! Where the overview's agent rows were drawn, so that a selection made
-//! without clicking its row (the keyboard, the side panel's "Select it")
-//! scrolls the overview just enough to show that row, and a click on a row
-//! scrolls nothing: the row stays under the mouse for a double click.
+//! Where the overview's agent rows are, so that a selection made without
+//! clicking its row (the keyboard, the side panel's "Select it") scrolls the
+//! overview just enough to show that row, and a click on a row scrolls
+//! nothing: the row stays under the mouse for a double click.
 //!
 //! The rows sit in project cards, not directly in the scrolled list, so
 //! GPUI's `ScrollHandle::scroll_to_item`, which knows only the list's
 //! children, can show only a whole card (and one taller than the window
-//! not at all). Instead each card records its rows' bounds as it is
-//! prepainted, and the list, prepainted after its cards, moves its offset
-//! once they are known.
+//! not at all). Instead each row records its layout as it is laid out
+//! ([`Rows::slot`]), and the list, wrapped in an [`Overview`], moves its
+//! offset after the frame's layout and before the list is prepainted, so
+//! the rows are drawn at the new offset in the same frame: a row that
+//! grows, or one brought into view, never shows a frame at the old offset
+//! first.
 //!
 //! The expanded row (Space) fills the overview down to its bottom: the list
 //! is drawn down to that row and no further, and stretched to the view's
@@ -18,7 +21,10 @@
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use gpui::{Bounds, Pixels, ScrollHandle, Window, point, px};
+use gpui::{
+    AnyElement, App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement,
+    LayoutId, Pixels, ScrollHandle, Window, point, px,
+};
 
 /// How a selection came about, which decides whether the overview scrolls
 /// to it.
@@ -37,6 +43,9 @@ pub struct Rows(Rc<RefCell<Places>>);
 
 #[derive(Default)]
 struct Places {
+    /// This frame's rows, by pane ID, as laid out, and the list's content.
+    layouts: HashMap<String, LayoutId>,
+    content: Option<LayoutId>,
     /// This frame's rows, by pane ID: their top and bottom, in window
     /// coordinates at the overview's current offset.
     drawn: HashMap<String, (Pixels, Pixels)>,
@@ -46,6 +55,13 @@ struct Places {
     /// and the height the content was stretched to for it this frame.
     expanded: Option<String>,
     filled: Option<Pixels>,
+}
+
+/// Which of the overview's elements a [`Slot`] records.
+#[derive(Clone)]
+enum Part {
+    Row(String),
+    Content,
 }
 
 impl Rows {
@@ -58,17 +74,41 @@ impl Rows {
     /// The row expanded into its session this frame, if any, and the
     /// height the overview's content is stretched to for it: down to the
     /// view's bottom at the offset it has, so the expanded row grows to it
-    /// without the overview moving. It is the last frame's view; `apply`
-    /// draws again when this frame's differs, as after a resize.
+    /// without the overview moving. It is the last frame's view; the
+    /// [`Overview`] draws again when this frame's differs, as after a
+    /// resize. Called as the overview is rendered, it starts the frame's
+    /// record of where the rows are.
     pub fn expand(&self, pane_id: Option<&str>, scroll: &ScrollHandle) -> Option<Pixels> {
         let mut places = self.0.borrow_mut();
+        places.layouts.clear();
+        places.content = None;
         places.expanded = pane_id.map(str::to_string);
-        places.filled = pane_id.map(|_| fill(scroll));
+        places.filled = pane_id.map(|_| fill(scroll.bounds().size.height, scroll.offset().y));
         places.filled
     }
 
-    /// A card's rows, `ids` in the order drawn, and the bounds of its row
-    /// list's children (which may end with a footer that is not a row).
+    /// `row`, `pane_id`'s, recording where it is laid out.
+    pub fn slot(&self, pane_id: &str, row: AnyElement) -> AnyElement {
+        Slot {
+            child: row,
+            part: Part::Row(pane_id.to_string()),
+            rows: self.clone(),
+        }
+        .into_any_element()
+    }
+
+    /// The overview list's one child, recording where it is laid out.
+    pub fn content(&self, content: AnyElement) -> AnyElement {
+        Slot {
+            child: content,
+            part: Part::Content,
+            rows: self.clone(),
+        }
+        .into_any_element()
+    }
+
+    /// The rows drawn this frame, `ids` with their bounds, in window
+    /// coordinates at the overview's offset.
     pub fn record(&self, ids: &[String], bounds: &[Bounds<Pixels>]) {
         let mut places = self.0.borrow_mut();
         for (id, bounds) in ids.iter().zip(bounds) {
@@ -90,6 +130,16 @@ impl Rows {
         let moved = match places.expanded.as_deref() {
             Some(expanded) => {
                 let row = *drawn.get(expanded)?;
+                crate::latency::expansion(|| {
+                    format!(
+                        "overview offset {:.0}, expanded row y {:.0}..{:.0}, view {:.0}..{:.0}",
+                        f32::from(offset),
+                        f32::from(row.0),
+                        f32::from(row.1),
+                        f32::from(view.0),
+                        f32::from(view.1),
+                    )
+                });
                 grown(offset, end, view, row, reveal.as_deref() == Some(expanded))
             }
             None => revealed(offset, view, *drawn.get(reveal?.as_str())?),
@@ -97,22 +147,63 @@ impl Rows {
         (moved != offset).then_some(moved)
     }
 
-    /// The overview's part, once its cards are prepainted: scrolls to the
-    /// row asked for, and draws again at the new offset.
-    pub fn apply(&self, scroll: &ScrollHandle, window: &mut Window) {
+    /// Settles the overview, laid out in `viewport`, before it is
+    /// prepainted: records where this frame's rows are drawn at the offset
+    /// `scroll` has, and moves it to show the row asked for. Draws again
+    /// when the expanded row's stretch was made for another offset.
+    fn apply(&self, viewport: Bounds<Pixels>, scroll: &ScrollHandle, window: &mut Window) {
         let offset = scroll.offset();
-        let end = -scroll.max_offset().y;
-        let moved = self.settle(scroll.bounds(), offset.y, end);
+        let (layouts, content) = {
+            let places = self.0.borrow();
+            let layouts: Vec<(String, LayoutId)> = places
+                .layouts
+                .iter()
+                .map(|(id, layout)| (id.clone(), *layout))
+                .collect();
+            (layouts, places.content)
+        };
+        // Laid out, a row's bounds do not count the scroll yet: the list
+        // offsets its children by it as it prepaints them.
+        let (ids, bounds): (Vec<String>, Vec<Bounds<Pixels>>) = layouts
+            .into_iter()
+            .map(|(id, layout)| {
+                let mut bounds = window.layout_bounds(layout);
+                bounds.origin.y += offset.y;
+                (id, bounds)
+            })
+            .unzip();
+        self.record(&ids, &bounds);
+        let height = content.map_or(viewport.size.height, |content| {
+            window.layout_bounds(content).size.height
+        });
+        let end = -(height - viewport.size.height).max(px(0.));
+        let moved = self.settle(viewport, offset.y, end);
         if let Some(y) = moved {
             scroll.set_offset(point(offset.x, y));
         }
+        let now = moved.unwrap_or(offset.y);
         let stale = self
             .0
             .borrow()
             .filled
-            .is_some_and(|filled| (filled - fill(scroll)).abs() >= px(0.5));
+            .is_some_and(|filled| (filled - fill(viewport.size.height, now)).abs() >= px(0.5));
         if moved.is_some() || stale {
+            crate::latency::expansion(|| {
+                format!("overview moves to {moved:?} before it is drawn (stale fill: {stale})")
+            });
+        }
+        if stale {
             window.on_next_frame(|window, _| window.refresh());
+        }
+    }
+
+    /// `list`, the overview's scrolled list tracking `scroll`, settled
+    /// before it is prepainted.
+    pub fn overview(&self, list: AnyElement, scroll: &ScrollHandle) -> Overview {
+        Overview {
+            list,
+            scroll: scroll.clone(),
+            rows: self.clone(),
         }
     }
 }
@@ -133,10 +224,10 @@ pub(crate) fn revealed(offset: Pixels, view: (Pixels, Pixels), row: (Pixels, Pix
     }
 }
 
-/// The height that stretches the overview's content down to the view's
-/// bottom at its offset.
-fn fill(scroll: &ScrollHandle) -> Pixels {
-    scroll.bounds().size.height - scroll.offset().y
+/// The height that stretches the overview's content down to the bottom of
+/// a view `height` high at `offset`.
+fn fill(height: Pixels, offset: Pixels) -> Pixels {
+    height - offset
 }
 
 /// The offset for the expanded row spanning `row` in a `view`, both at
@@ -166,6 +257,142 @@ fn grown(
         }
     } else {
         offset
+    }
+}
+
+/// An element of the overview that records its layout in [`Rows`].
+struct Slot {
+    child: AnyElement,
+    part: Part,
+    rows: Rows,
+}
+
+impl IntoElement for Slot {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Slot {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let layout = self.child.request_layout(window, cx);
+        let mut places = self.rows.0.borrow_mut();
+        match &self.part {
+            Part::Row(id) => {
+                places.layouts.insert(id.clone(), layout);
+            }
+            Part::Content => places.content = Some(layout),
+        }
+        (layout, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.child.paint(window, cx);
+    }
+}
+
+/// The overview's scrolled list, its offset settled between the frame's
+/// layout and the list's prepaint (see the module's notes).
+pub struct Overview {
+    list: AnyElement,
+    scroll: ScrollHandle,
+    rows: Rows,
+}
+
+impl IntoElement for Overview {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl Element for Overview {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (self.list.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.rows.apply(bounds, &self.scroll, window);
+        self.list.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.list.paint(window, cx);
     }
 }
 
