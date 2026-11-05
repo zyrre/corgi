@@ -24,6 +24,7 @@ mod terminal;
 mod text_input;
 mod theme;
 mod transcript;
+mod tunnel;
 mod view;
 mod window;
 

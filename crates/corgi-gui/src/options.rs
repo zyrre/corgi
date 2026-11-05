@@ -144,7 +144,7 @@ fn local_corgi(asked: Option<&str>) -> String {
 }
 
 /// `word` as one word for a POSIX shell.
-fn shell_quote(word: &str) -> String {
+pub(crate) fn shell_quote(word: &str) -> String {
     if !word.is_empty()
         && word
             .chars()

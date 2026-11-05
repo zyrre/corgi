@@ -8,7 +8,8 @@
 //! handler (`input.rs`), paste, selection and copy (`selection.rs`), the
 //! wheel, links (`links.rs`), resizing, and the view's own chords
 //! (`keys.rs`). It shows a terminal only while the window is on screen; the
-//! connection parks otherwise.
+//! connection parks otherwise. Another machine's Herdr is reached through a
+//! tunnel (`crate::tunnel`), whose local sockets stand in for its own.
 
 mod input;
 pub mod keys;
@@ -53,6 +54,8 @@ use crate::herdr_ui::{
     terminal_painter::{Ground, Highlight, ImageTarget, PlacedImages, TerminalPainter, Tint},
 };
 use crate::keymap::{Action, Keymap};
+use crate::link::Backoff;
+use crate::tunnel::{Ended, Tunnel, TunnelEvent};
 use keys::Chord;
 use links::Link;
 use selection::{Region, Selection};
@@ -93,10 +96,14 @@ pub struct TerminalView {
     /// The window's keys, for the focus view's two: back to the overview,
     /// and the side panel.
     pub keymap: Keymap,
-    /// The session's `herdr.sock`, from `corgi serve`'s hello; `None`
-    /// before it, and over ssh, where terminals are not offered yet.
+    /// The session's `herdr.sock`, from `corgi serve`'s hello (on the
+    /// machine it runs on); `None` before it.
     json_socket: Option<PathBuf>,
-    pub remote: bool,
+    /// A machine reached over ssh, whose Herdr comes through a tunnel.
+    remote: Option<Remote>,
+    /// Which tunnel an event came from; older ones' are dropped.
+    tunnel_generation: u64,
+    tunnel_events: mpsc::UnboundedSender<(u64, TunnelEvent)>,
     connection: Option<Connection>,
     /// Which connection an event came from; older ones' are dropped.
     generation: u64,
@@ -132,6 +139,14 @@ pub struct TerminalView {
     /// A copy waiting for Herdr's text, with the painted text to fall back on.
     copying: Option<(String, Option<String>)>,
     making_park: bool,
+    /// The park tab this window made in the session, the one it closes
+    /// when it lets the session go. A park found by its label may be
+    /// another window's (say, a corgi-gui on the machine itself), which
+    /// that window closes.
+    made_park: Option<String>,
+    /// Counts the sessions `set_socket` was given, so a park made for the
+    /// last one is not taken for this one's.
+    session: u64,
     /// Why the last connection ended, while the next one waits.
     ended: Option<String>,
     backoff: Duration,
@@ -151,6 +166,32 @@ pub struct TerminalView {
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
+/// The machine of a session read over ssh, and its tunnel.
+struct Remote {
+    host: String,
+    tunnel: Option<Tunnel>,
+    /// The tunnel forwards both sockets.
+    ready: bool,
+    /// Why the last tunnel ended, until another is ready.
+    ended: Option<Ended>,
+    /// The next tunnel waits for the backoff.
+    waiting: bool,
+    backoff: Backoff,
+}
+
+impl Remote {
+    fn new(host: String) -> Self {
+        Self {
+            host,
+            tunnel: None,
+            ready: false,
+            ended: None,
+            waiting: false,
+            backoff: Backoff::default(),
+        }
+    }
+}
+
 impl TerminalView {
     pub fn new(font: SharedString, cx: &mut Context<Self>) -> Self {
         let (events, mut receiver) = mpsc::unbounded::<(u64, Event)>();
@@ -168,6 +209,17 @@ impl TerminalView {
                     }
                 });
                 if alive.is_err() {
+                    break;
+                }
+            }
+        });
+        let (tunnel_events, mut tunnel_receiver) = mpsc::unbounded::<(u64, TunnelEvent)>();
+        let tunnels = cx.spawn(async move |this, cx| {
+            while let Some((generation, event)) = tunnel_receiver.next().await {
+                if this
+                    .update(cx, |this, cx| this.tunnel_event(generation, event, cx))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -214,7 +266,9 @@ impl TerminalView {
             keymap: Keymap::defaults(cfg!(target_os = "macos")),
             focus: cx.focus_handle(),
             json_socket: None,
-            remote: false,
+            remote: None,
+            tunnel_generation: 0,
+            tunnel_events,
             connection: None,
             generation: 0,
             viewer: Viewer::new(false),
@@ -244,6 +298,8 @@ impl TerminalView {
             pointer: None,
             copying: None,
             making_park: false,
+            made_park: None,
+            session: 0,
             ended: None,
             backoff: FIRST_BACKOFF,
             events,
@@ -252,7 +308,7 @@ impl TerminalView {
             reported_focus: None,
             #[cfg(feature = "capture")]
             scripted_active: None,
-            _tasks: vec![pump, fonts],
+            _tasks: vec![pump, tunnels, fonts],
         }
     }
 
@@ -264,20 +320,31 @@ impl TerminalView {
         &self.font
     }
 
-    /// The Herdr session `corgi serve` reads; `None` over ssh. A different
-    /// session drops the connection to the old one.
+    /// The Herdr session `corgi serve` reads, and the host it reads it on
+    /// over ssh (`None` for this machine). Another session, or another
+    /// host, lets the old one go: its park tab is closed and its tunnel
+    /// ended, off the UI thread.
     pub fn set_socket(
         &mut self,
         json_socket: Option<PathBuf>,
-        remote: bool,
+        host: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.remote = remote;
-        if self.json_socket == json_socket {
+        if self.json_socket == json_socket
+            && self.remote.as_ref().map(|remote| &remote.host) == host.as_ref()
+        {
             return;
         }
+        let release = self.release(cx);
+        cx.background_spawn(release).detach();
         self.json_socket = json_socket;
-        self.disconnect();
+        self.remote = host.map(Remote::new);
+        self.session += 1;
+        self.made_park = None;
+        self.making_park = false;
+        self.tunnel_generation += 1;
+        self.ended = None;
+        self.backoff = FIRST_BACKOFF;
         self.viewer = Viewer::new(false);
         self.ensure_connection(cx);
         self.drive(cx);
@@ -410,11 +477,11 @@ impl TerminalView {
             .target
             .as_ref()
             .map_or("the agent", |t| t.name.as_str());
-        if self.remote {
-            return "Terminals are local only for now: this window reads Corgi over ssh".into();
-        }
         if self.json_socket.is_none() {
             return "Waiting for corgi serve to name its Herdr session…".into();
+        }
+        if let Some(remote) = self.remote.as_ref().filter(|remote| !remote.ready) {
+            return tunnel_status(&remote.host, remote.ended.as_ref());
         }
         if let Some(why) = &self.ended {
             return format!("Lost Herdr's endpoint ({why}); connecting again…");
@@ -443,20 +510,36 @@ impl TerminalView {
     /// the connection, which releases whatever it still held, and the park
     /// tab's workspace.
     pub fn shut_down(&mut self, cx: &mut Context<Self>) -> impl Future<Output = ()> + use<> {
-        let busy = self.connection.is_some() && !self.viewer.at_rest();
         self.target = None;
         self.viewer.show(None);
         self.drive(cx);
+        self.release(cx)
+    }
+
+    /// Lets the session go: gives Herdr `PARK_ON_QUIT` to take a park and
+    /// deactivation in flight, then closes the connection, which releases
+    /// whatever it still held, and the park tab's workspace, and last ends
+    /// the tunnel that reached them. Blocks on Herdr, so a caller off the
+    /// quit runs it on the background executor.
+    fn release(&mut self, cx: &mut Context<Self>) -> impl Future<Output = ()> + Send + use<> {
+        let busy = self.connection.is_some() && !self.viewer.at_rest();
         let park = self.park_workspace();
         debug(|| {
             format!(
-                "quitting: park tab {:?} in {park:?}",
+                "letting go: park tab {:?} in {park:?}",
                 self.viewer.park_tab()
             )
         });
-        let socket = self.json_socket.clone();
+        let socket = self.reach();
         let connection = self.connection.take();
+        let tunnel = self.remote.as_mut().and_then(|remote| {
+            remote.ready = false;
+            remote.tunnel.take()
+        });
         self.generation += 1;
+        self.viewer.reset();
+        self.snapshot = None;
+        self.surface = None;
         let wait = cx
             .background_executor()
             .timer(if busy { PARK_ON_QUIT } else { Duration::ZERO });
@@ -468,12 +551,17 @@ impl TerminalView {
             if let (Some(socket), Some(workspace)) = (socket, park) {
                 let _ = HerdrClient::from_socket_path(socket).close_workspace(&workspace);
             }
+            drop(tunnel);
         }
     }
 
-    /// The workspace of the park tab, to close with the window.
+    /// The workspace of the park tab, to close with the window: only one
+    /// this window made.
     fn park_workspace(&self) -> Option<String> {
-        let park = self.viewer.park_tab()?;
+        let park = self
+            .viewer
+            .park_tab()
+            .filter(|park| self.made_park.as_deref() == Some(*park))?;
         self.snapshot
             .as_ref()?
             .tabs
@@ -491,11 +579,28 @@ impl TerminalView {
             .map(|target| target.tab_id.clone())
     }
 
+    /// The JSON socket that reaches the session from here: its own on
+    /// this machine, over ssh the tunnel's once it is ready.
+    fn reach(&self) -> Option<PathBuf> {
+        match &self.remote {
+            None => self.json_socket.clone(),
+            Some(remote) => remote
+                .tunnel
+                .as_ref()
+                .filter(|_| remote.ready)
+                .map(Tunnel::json_socket),
+        }
+    }
+
     fn ensure_connection(&mut self, cx: &mut Context<Self>) {
-        if self.connection.is_some() || self.target.is_none() || !self.visible || self.remote {
+        if self.connection.is_some() || self.target.is_none() || !self.visible {
             return;
         }
-        let (Some(socket), Some(geometry)) = (self.json_socket.clone(), self.grid) else {
+        let Some(geometry) = self.grid else {
+            return;
+        };
+        let Some(socket) = self.reach() else {
+            self.ensure_tunnel(cx);
             return;
         };
         self.generation += 1;
@@ -519,14 +624,80 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn disconnect(&mut self) {
-        if let Some(connection) = self.connection.take() {
-            connection.close();
+    /// Starts the remote machine's tunnel, unless one runs or the next
+    /// waits for the backoff.
+    fn ensure_tunnel(&mut self, cx: &mut Context<Self>) {
+        let Some(remote_json) = self.json_socket.clone() else {
+            return;
+        };
+        let Some(remote) = self
+            .remote
+            .as_mut()
+            .filter(|remote| remote.tunnel.is_none() && !remote.waiting)
+        else {
+            return;
+        };
+        self.tunnel_generation += 1;
+        let generation = self.tunnel_generation;
+        let events = self.tunnel_events.clone();
+        let started = Tunnel::start(&remote.host, &remote_json.to_string_lossy(), move |event| {
+            let _ = events.unbounded_send((generation, event));
+        });
+        match started {
+            Ok(tunnel) => remote.tunnel = Some(tunnel),
+            Err(error) => {
+                let _ = self.tunnel_events.unbounded_send((
+                    generation,
+                    TunnelEvent::Ended(Ended::Failed(error.to_string())),
+                ));
+            }
         }
-        self.generation += 1;
-        self.viewer.reset();
-        self.snapshot = None;
-        self.surface = None;
+        cx.notify();
+    }
+
+    fn tunnel_event(&mut self, generation: u64, event: TunnelEvent, cx: &mut Context<Self>) {
+        if generation != self.tunnel_generation {
+            return;
+        }
+        let Some(remote) = self.remote.as_mut() else {
+            return;
+        };
+        match event {
+            TunnelEvent::Ready => {
+                eprintln!("corgi-gui: forwarding {}'s Herdr over ssh", remote.host);
+                remote.ready = true;
+                remote.ended = None;
+                remote.backoff.reset();
+                self.ensure_connection(cx);
+                self.drive(cx);
+            }
+            TunnelEvent::Ended(why) => {
+                eprintln!("corgi-gui: the tunnel to {} ended: {why:?}", remote.host);
+                // A connection through it ends by itself, and connects
+                // again through the next one.
+                remote.tunnel = None;
+                remote.ready = false;
+                remote.ended = Some(why);
+                remote.waiting = true;
+                let delay = remote.backoff.next_delay();
+                let task = cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(delay).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.tunnel_generation != generation {
+                            return;
+                        }
+                        if let Some(remote) = this.remote.as_mut() {
+                            remote.waiting = false;
+                        }
+                        this.ensure_connection(cx);
+                        this.drive(cx);
+                    });
+                });
+                self._tasks.push(task);
+                self._tasks.retain(|task| !task.is_ready());
+                cx.notify();
+            }
+        }
     }
 
     /// Sends what the viewer wants sent now, and makes a park tab when it
@@ -549,24 +720,36 @@ impl TerminalView {
     /// The park tab: one empty tab in a workspace of its own, made with the
     /// JSON API's `workspace.create`, which never moves anyone's focus.
     fn make_park(&mut self, cx: &mut Context<Self>) {
-        let Some(socket) = self.json_socket.clone().filter(|_| !self.making_park) else {
+        let Some(socket) = self.reach().filter(|_| !self.making_park) else {
             return;
         };
         self.making_park = true;
+        let session = self.session;
+        // This machine's home; another machine's Herdr picks its own.
+        let home = self
+            .remote
+            .is_none()
+            .then(corgi_core::paths::home)
+            .flatten();
         let task = cx.spawn(async move |this, cx| {
             let made = cx
                 .background_spawn(async move {
                     let herdr = HerdrClient::from_socket_path(socket);
-                    let home = corgi_core::paths::home();
                     herdr
                         .create_workspace(home.as_deref(), Some(PARK_LABEL))
                         .map(|created| created.tab_id)
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if this.session != session {
+                    return;
+                }
                 this.making_park = false;
                 match made {
-                    Ok(tab_id) => this.viewer.set_park(tab_id),
+                    Ok(tab_id) => {
+                        this.made_park = Some(tab_id.clone());
+                        this.viewer.set_park(tab_id);
+                    }
                     Err(error) => {
                         this.ended = Some(format!("cannot make its park tab: {error:#}"));
                     }
@@ -1133,6 +1316,24 @@ fn focus_change(reported: &mut Option<bool>, focused: bool) -> Option<bool> {
 
 /// Writes what the connection does to stderr, with
 /// `CORGI_GUI_DEBUG_ENDPOINT` set.
+/// What the status line says while a machine's tunnel is not ready.
+fn tunnel_status(host: &str, ended: Option<&Ended>) -> String {
+    match ended {
+        None => format!("Forwarding {host}'s Herdr over ssh…"),
+        Some(Ended::NoEndpoint) => format!(
+            "{host}'s Herdr has no terminal endpoint (herdr-client.sock): \
+             the terminal needs Herdr {} or newer there",
+            endpoint::TESTED_HERDR
+        ),
+        Some(Ended::NoHerdr) => {
+            format!("No Herdr runs on {host} where its corgi serve reads; trying again…")
+        }
+        Some(Ended::Failed(why)) => {
+            format!("Cannot forward {host}'s Herdr over ssh ({why}); trying again…")
+        }
+    }
+}
+
 fn debug(line: impl FnOnce() -> String) {
     if std::env::var_os("CORGI_GUI_DEBUG_ENDPOINT").is_some() {
         eprintln!("corgi-gui: endpoint {}", line());
@@ -1286,7 +1487,23 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::focus_change;
+    use super::{Ended, focus_change, tunnel_status};
+
+    #[test]
+    fn a_tunnel_not_ready_says_what_it_waits_for_or_what_the_host_lacks() {
+        assert_eq!(
+            tunnel_status("box", None),
+            "Forwarding box's Herdr over ssh…"
+        );
+        let old = tunnel_status("box", Some(&Ended::NoEndpoint));
+        assert!(old.contains("herdr-client.sock"), "{old}");
+        assert!(old.contains("Herdr 0.9.0 or newer"), "{old}");
+        let lost = tunnel_status("box", Some(&Ended::Failed("Connection refused".into())));
+        assert_eq!(
+            lost,
+            "Cannot forward box's Herdr over ssh (Connection refused); trying again…"
+        );
+    }
 
     #[test]
     fn coming_back_to_the_window_reports_the_focus_again() {

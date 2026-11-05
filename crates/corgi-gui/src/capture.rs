@@ -25,6 +25,11 @@
 //! - `glyphs:TEXT` logs the font each character of TEXT draws from in the
 //!   focus view's terminal: its own font, a fallback, or one the system
 //!   picked;
+//! - `open:PANE` opens the focus view on the agent of Herdr pane PANE, and
+//!   `leave` goes back to the overview, without a key or a click that could
+//!   reach another row;
+//! - `machine:N` switches to the status bar's machine N, from 0 (this
+//!   machine);
 //! - `scroll` draws a frame and logs the overview's scroll offset, the
 //!   selected row and the focus view's agent;
 //! - `shot:NAME` writes `NAME.png`, the window as last drawn;
@@ -273,6 +278,25 @@ pub fn start(window: WindowHandle<CorgiWindow>, cx: &mut App) {
                                 root.focus_view,
                             );
                         }
+                    });
+                }
+                "open" | "leave" | "machine" => {
+                    let pane = argument.to_string();
+                    let _ = cx.update_window(any, |root, window, cx| {
+                        let Ok(root) = root.downcast::<CorgiWindow>() else {
+                            return;
+                        };
+                        root.update(cx, |root, cx| match verb {
+                            "open" if root.store().agent(&pane).is_none() => {
+                                eprintln!("capture: no agent in pane {pane}");
+                            }
+                            "open" => root.open_agent(pane, window, cx),
+                            "leave" => root.leave_focus(cx),
+                            _ => match pane.parse() {
+                                Ok(index) => root.switch_machine(index, cx),
+                                Err(_) => eprintln!("capture: bad machine {pane}"),
+                            },
+                        });
                     });
                 }
                 "hide" | "show" => {
