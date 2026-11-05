@@ -795,6 +795,10 @@ on a row opens the **focus view**: that agent's live Herdr terminal in place
 of the overview, beside a side panel of its own (open or closed and its
 width kept apart from the overview's). Cmd+Esc (Ctrl+Shift+Esc on Linux), or
 the bar's "← Overview", goes back; plain Esc stays the terminal program's.
+A rebound focus key takes Cmd on macOS, and on Linux Super (GPUI's platform
+modifier; `modifiers_from_xkb` sets it from the Logo modifier) or Ctrl+Shift;
+Alt, Ctrl alone and plain keys stay the terminal's. These keys are read in
+`on_key_down` handlers, not bound, so `bind_app_keys` is not involved.
 These are the default keys: the header's Hotkeys button opens a dialog
 (`hotkeys.rs`) that rebinds them, and `keymap.rs` is the one place every
 key is read from, by the key handling (the overview's, the focus view's,
