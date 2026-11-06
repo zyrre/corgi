@@ -243,7 +243,10 @@ In gpui-pre 0.3.6 `flex_shrink` takes a factor, and min-content sizing
 wins: a row whose other children keep their width cannot shrink just one
 text child, however it is styled. Fit such text in code from the
 monospace cell width (`monospace_cell_width`), as the status bar's
-machine names are (`fit_names` in `src/machine_bar.rs`).
+machine names are (`fit_names` in `src/machine_bar.rs`) and its texts
+(`fit_status` in `src/view.rs`). `whitespace_nowrap` does not stop a `\n`
+in the text from starting a second line (`shape_text` splits on it), so
+join a text's lines before showing it on one.
 
 Run with `env -i` and a private `HOME`, a real `ssh` (a machine of the
 status bar, or `--ssh`) still reads the real `~/.ssh`, since it takes the

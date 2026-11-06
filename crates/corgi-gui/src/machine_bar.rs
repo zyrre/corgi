@@ -276,14 +276,11 @@ impl CorgiWindow {
 
     // ---- Drawing ----
 
-    /// The machines, as `● name · N agents │ … │ +`.
-    pub fn machine_list(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The machines, as `● name · N agents │ … │ +`, with the `names`
+    /// `fitted_machines` gave.
+    pub fn machine_list(&self, names: Vec<String>, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         let rule = || div().flex_none().text_color(colors.roles.rule).child("│");
-        // It keeps its room; what follows it gives way (`status_bar`). When
-        // even the bar is too narrow, the names of the machines not shown
-        // are cut short, the longest first, so `+` still shows.
-        let names = self.fitted_names(window);
         let mut list = div()
             .id("machines")
             .flex()
@@ -314,8 +311,12 @@ impl CorgiWindow {
         list.child(rule()).child(add)
     }
 
-    /// Each machine's label as the bar has room for it.
-    fn fitted_names(&self, window: &Window) -> Vec<String> {
+    /// Each machine's label as the bar has room for it, and how wide the
+    /// machines then are, the bar's padding included. They keep their room;
+    /// what follows them gives way (`status_bar`). When even the bar is too
+    /// narrow, the names of the machines not shown are cut short, the
+    /// longest first, so `+` still shows.
+    pub fn fitted_machines(&self, window: &Window) -> (Vec<String>, f32) {
         let cell = self.monospace_cell_width(window);
         let scale = self.layout.text_scale();
         let labels: Vec<String> = self.machines.iter().map(Machine::label).collect();
@@ -337,11 +338,13 @@ impl CorgiWindow {
         let room = f32::from(window.viewport_size().width);
         let lengths: Vec<usize> = labels.iter().map(|label| label.chars().count()).collect();
         let fitted = fit_names(&lengths, self.active, fixed, cell, room);
-        labels
+        let width = fixed + fitted.iter().sum::<usize>() as f32 * cell;
+        let names = labels
             .into_iter()
             .zip(fitted)
             .map(|(label, most)| shortened(&label, most))
-            .collect()
+            .collect();
+        (names, width)
     }
 
     fn machine_chip(
@@ -671,7 +674,7 @@ fn fit_names(lengths: &[usize], shown: usize, fixed: f32, cell: f32, room: f32) 
 }
 
 /// `label` in at most `most` characters, its end an ellipsis when cut.
-fn shortened(label: &str, most: usize) -> String {
+pub(crate) fn shortened(label: &str, most: usize) -> String {
     if label.chars().count() <= most {
         return label.to_string();
     }
