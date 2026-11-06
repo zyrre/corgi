@@ -22,7 +22,9 @@
 //!
 //! Each check of a new process compares its command line with the options
 //! Corgi launched it with; what it lacks ([`Launched::missing`]) is shown as
-//! a warning on the agent's row, as for an agent an older Herdr resumed.
+//! a warning on the agent's row, as for an agent an older Herdr resumed. The
+//! command line is the agent's own process's, never a child's, and an agent
+//! flagged, or whose process could not be told, is checked again each pass.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -88,9 +90,15 @@ pub struct Launched {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub processes: Vec<u32>,
     /// What the running process lacks of its launch options, at the last
-    /// check: `role`, `memory`, `model`, `effort` or a flag.
+    /// check: `role`, `memory`, `model`, `effort` or a flag. While it lacks
+    /// any, every pass checks again, so a wrong reading clears itself.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
+    /// The last check found no process that is surely the agent's own (only
+    /// its children, say), so it warned of nothing and the next pass checks
+    /// again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unidentified: bool,
     /// The command last reported to Herdr, and that Herdr's version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported: Option<Reported>,
@@ -535,7 +543,15 @@ fn reconcile_record(
             continue;
         };
         let same_session = entry.session.as_deref() == Some(live);
-        if !same_session || entry.terminal != agent.terminal_id || entry.processes.is_empty() {
+        // A warning, or a check that could not tell the agent's process,
+        // is checked again each pass: a child picked or read too early must
+        // not leave a false warning until the agent restarts.
+        let unsettled = !entry.missing.is_empty() || entry.unidentified;
+        if !same_session
+            || entry.terminal != agent.terminal_id
+            || entry.processes.is_empty()
+            || unsettled
+        {
             let Ok(info) = herdr.process_info(&pane) else {
                 continue;
             };
@@ -559,9 +575,13 @@ fn reconcile_record(
             if !pids.iter().any(|pid| entry.processes.contains(pid)) {
                 entry.reported = None;
             }
-            entry.missing = agent_argv(&info, &entry.kind)
-                .map(|argv| entry.lacks(&argv))
+            // No guess: without the agent's own command line, no warning.
+            let argv = agent_argv(&info, &entry.kind);
+            entry.missing = argv
+                .as_deref()
+                .map(|argv| entry.lacks(argv))
                 .unwrap_or_default();
+            entry.unidentified = argv.is_none();
             entry.session = Some(live.to_string());
             entry.terminal = agent.terminal_id.clone();
             entry.processes = pids;
@@ -615,18 +635,23 @@ pub(crate) fn is_agent(agent: &AgentInfo) -> bool {
     agent.agent.as_deref().is_some_and(|kind| !kind.is_empty())
 }
 
-/// The command line of the agent in a pane: the foreground process named
-/// after its harness, else the first one that is not the shell.
+/// The command line of the agent's own process in a pane, never one of its
+/// children (MCP servers, hooks, `caffeinate`), which Herdr lists with it,
+/// newest first: the foreground group's leader, which the shell started,
+/// else the oldest process running the harness's CLI by name. `None` when
+/// neither is there with a readable command line.
 fn agent_argv(info: &PaneProcesses, kind: &str) -> Option<Vec<String>> {
-    let agents: Vec<_> = info
-        .foreground_processes
-        .iter()
-        .filter(|process| Some(process.pid) != info.shell_pid)
-        .collect();
-    agents
-        .iter()
-        .find(|process| process.name == kind)
-        .or_else(|| agents.first())
+    let readable = || {
+        info.foreground_processes
+            .iter()
+            .filter(|process| Some(process.pid) != info.shell_pid && process.argv.is_some())
+    };
+    let leader = info
+        .foreground_process_group_id
+        .filter(|pid| Some(*pid) != info.shell_pid);
+    readable()
+        .find(|process| Some(process.pid) == leader)
+        .or_else(|| readable().rfind(|process| process.runs(kind)))
         .and_then(|process| process.argv.clone())
 }
 

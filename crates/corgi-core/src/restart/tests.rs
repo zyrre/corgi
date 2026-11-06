@@ -289,8 +289,22 @@ impl Fake {
                         pid: *pid,
                         name: argv[0].into(),
                         argv: Some(strings(argv)),
+                        argv0: Some(argv[0].into()),
                     })
                     .collect(),
+            },
+        );
+    }
+
+    /// The pane's processes as Herdr lists them, newest first, with the
+    /// foreground group's leader if Herdr names one.
+    fn listing(&self, pane: &str, leader: Option<u32>, processes: Vec<PaneProcess>) {
+        self.processes.borrow_mut().insert(
+            pane.into(),
+            PaneProcesses {
+                shell_pid: Some(10),
+                foreground_process_group_id: leader,
+                foreground_processes: processes,
             },
         );
     }
@@ -544,7 +558,165 @@ fn an_agent_at_its_shell_keeps_its_record_and_whatever_comes_next_is_checked() {
     );
     assert_eq!(record.panes["w1:p1"].missing, ["--search"]);
     assert_eq!(record.panes["w1:p1"].processes, [400]);
-    // The same process seen again asks nothing.
+    // While it is flagged, each pass looks again, and tells Herdr nothing
+    // new.
+    reconcile_record(&herdr, &mut record, &live);
+    assert_eq!(herdr.take(), ["process_info w1:p1"]);
+    assert_eq!(record.panes["w1:p1"].missing, ["--search"]);
+}
+
+/// A process in a pane's listing; `argv: None` where Herdr cannot read it.
+fn process(pid: u32, name: &str, argv0: &str, argv: Option<&[&str]>) -> PaneProcess {
+    PaneProcess {
+        pid,
+        name: name.into(),
+        argv: argv.map(strings),
+        argv0: Some(argv0.into()),
+    }
+}
+
+/// A supervisor's pane as Herdr lists it: an MCP server and a `node`
+/// without a command line, newest first, ahead of the agent itself.
+fn supervisor_pane(claude: &[&str]) -> Vec<PaneProcess> {
+    vec![
+        process(
+            39905,
+            "node",
+            "node",
+            Some(&["node", "/npx/.bin/playwright-mcp", "--browser", "chromium"]),
+        ),
+        process(39755, "node", "playwright-profile", None),
+        process(
+            39737,
+            "caffeinate",
+            "caffeinate",
+            Some(&["caffeinate", "-i"]),
+        ),
+        process(39606, "2.1.30", "claude", Some(claude)),
+    ]
+}
+
+fn supervisor_argv() -> Vec<String> {
+    let launched = supervisor_of("claude");
+    let role = launched.supervisor.as_ref().unwrap();
+    vec![
+        "claude".into(),
+        "--model".into(),
+        "opus".into(),
+        "--append-system-prompt-file".into(),
+        role.role_file.to_string_lossy().into_owned(),
+        "--add-dir".into(),
+        role.state_dir.to_string_lossy().into_owned(),
+    ]
+}
+
+fn live_supervisor() -> SessionSnapshot {
+    snapshot(
+        "0.9.5",
+        vec![agent("w1:p1", "claude", Some(OLD), "t1")],
+        &["w1:p1"],
+    )
+}
+
+#[test]
+fn the_agents_own_process_is_checked_not_a_child_listed_ahead_of_it() {
+    let argv = supervisor_argv();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    // By the foreground group's leader, and without one by the name it was
+    // started under (Claude Code's own name is its version).
+    for leader in [Some(39606), None] {
+        let herdr = Fake::default();
+        let mut record = launched_in("w1:p1", supervisor_of("claude"));
+        herdr.listing("w1:p1", leader, supervisor_pane(&argv));
+        reconcile_record(&herdr, &mut record, &live_supervisor());
+        let entry = &record.panes["w1:p1"];
+        assert!(entry.missing.is_empty(), "{leader:?}: {:?}", entry.missing);
+        assert!(!entry.unidentified);
+        assert_eq!(entry.processes, [39905, 39755, 39737, 39606]);
+    }
+}
+
+#[test]
+fn the_agents_own_process_without_its_flags_is_still_flagged() {
+    for leader in [Some(39606), None] {
+        let herdr = Fake::default();
+        let mut record = launched_in("w1:p1", supervisor_of("claude"));
+        herdr.listing(
+            "w1:p1",
+            leader,
+            supervisor_pane(&["claude", "--resume", OLD, "--model", "opus"]),
+        );
+        reconcile_record(&herdr, &mut record, &live_supervisor());
+        let entry = &record.panes["w1:p1"];
+        assert_eq!(entry.missing, strings(&["role", "memory"]), "{leader:?}");
+        assert!(!entry.unidentified);
+    }
+}
+
+#[test]
+fn a_pane_without_a_process_that_is_surely_the_agent_warns_of_nothing_and_is_checked_again() {
+    let herdr = Fake::default();
+    let mut record = launched_in("w1:p1", supervisor_of("claude"));
+    // Only children (the agent's own process not listed, or listed without
+    // a readable command line), and no leader but the shell.
+    let mut processes = supervisor_pane(&[]);
+    processes.pop();
+    processes.push(process(39606, "2.1.30", "claude", None));
+    herdr.listing("w1:p1", Some(10), processes);
+    reconcile_record(&herdr, &mut record, &live_supervisor());
+    herdr.take();
+    let entry = &record.panes["w1:p1"];
+    assert!(entry.missing.is_empty());
+    assert!(entry.unidentified);
+    assert_eq!(missing(&record, &live_supervisor().agents[0]), None);
+
+    // The next pass looks again and, the agent now readable, settles.
+    let argv = supervisor_argv();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    herdr.listing("w1:p1", Some(39606), supervisor_pane(&argv));
+    reconcile_record(&herdr, &mut record, &live_supervisor());
+    assert_eq!(herdr.take()[0], "process_info w1:p1");
+    let entry = &record.panes["w1:p1"];
+    assert!(entry.missing.is_empty());
+    assert!(!entry.unidentified);
+    // Settled: no more requests.
+    reconcile_record(&herdr, &mut record, &live_supervisor());
+    assert!(herdr.take().is_empty());
+}
+
+#[test]
+fn a_wrongly_flagged_agent_is_cleared_on_the_next_pass_without_a_restart() {
+    // As recorded by a check that read a child: flagged, its processes
+    // and session set, its command already given to Herdr.
+    let launched = supervisor_of("claude");
+    let wanted = Reported {
+        argv: launched.argv(OLD).unwrap(),
+        herdr: "0.9.5".into(),
+    };
+    let mut record = launched_in(
+        "w1:p1",
+        Launched {
+            session: Some(OLD.into()),
+            terminal: Some("t1".into()),
+            processes: vec![39755, 39737, 39606],
+            missing: strings(&["role", "memory"]),
+            reported: Some(wanted.clone()),
+            ..launched
+        },
+    );
+    let live = live_supervisor();
+    assert!(missing(&record, &live.agents[0]).is_some());
+    let herdr = Fake::default();
+    let argv = supervisor_argv();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    herdr.listing("w1:p1", Some(39606), supervisor_pane(&argv));
+    assert_eq!(reconcile_record(&herdr, &mut record, &live), None);
+    // One look, and the same process's command is not reported again.
+    assert_eq!(herdr.take(), ["process_info w1:p1"]);
+    let entry = &record.panes["w1:p1"];
+    assert!(entry.missing.is_empty());
+    assert_eq!(entry.reported.as_ref(), Some(&wanted));
+    assert_eq!(missing(&record, &live.agents[0]), None);
     reconcile_record(&herdr, &mut record, &live);
     assert!(herdr.take().is_empty());
 }

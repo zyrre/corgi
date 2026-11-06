@@ -1187,7 +1187,7 @@ agents' full command (`crates/corgi-core/src/restart.rs`):
   it exits (`restart::forget`), and its successor's launch writes a new one.
 - **The pass.** The pass holding the wake lock, after putting the marks back,
   runs `restart::reconcile`. A pane whose agent has a new session, a new
-  terminal (a Herdr restart) or no check yet is checked with
+  terminal (a Herdr restart), no check yet or a warning is checked with
   `pane.process_info`: the same foreground process with a new session (as
   after `/clear`) is still Corgi's agent; a new process with another session,
   or another harness in the pane, is not, and its command is released
@@ -1243,7 +1243,15 @@ agents' full command (`crates/corgi-core/src/restart.rs`):
   the launch's options, role and memory access, order aside
   (`Launched::lacks`); what it lacks shows on the row (`⚠ no role`, `⚠ no
   launch options`) and in the status line, as for a supervisor an older
-  Herdr resumed without its role: exit it, then Resume.
+  Herdr resumed without its role: exit it, then Resume. `pane.process_info`
+  lists the agent's children too (MCP servers, hooks, `caffeinate`), newest
+  first, so the command line read is the foreground group leader's
+  (`foreground_process_group_id`, when it is not the shell), else the oldest
+  process whose name, `argv0` or first argument is the CLI's (Claude Code's
+  own `name` can be its version), never another child; with neither
+  readable nothing is flagged and the entry is marked `unidentified`. A
+  flagged or unidentified entry is checked again each pass, so a wrong
+  reading clears without a restart.
 
 What each kind of agent keeps through a handoff, a server restart and a
 reboot, and how Corgi brings the rest back, are in

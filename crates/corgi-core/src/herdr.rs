@@ -859,6 +859,31 @@ pub struct PaneProcess {
     /// Absent where Herdr cannot read it.
     #[serde(default)]
     pub argv: Option<Vec<String>>,
+    /// The name the process was started under. Claude Code renames its
+    /// process (its `name` can be its version), so this, or the first
+    /// argument, tells it better.
+    #[serde(default)]
+    pub argv0: Option<String>,
+}
+
+impl PaneProcess {
+    /// Whether the process runs the program `program` (a harness's CLI),
+    /// by its name, the name it was started under or its first argument,
+    /// any directory aside.
+    pub fn runs(&self, program: &str) -> bool {
+        let base = |word: &str| {
+            Path::new(word)
+                .file_name()
+                .is_some_and(|name| name == program)
+        };
+        self.name == program
+            || self.argv0.as_deref().is_some_and(base)
+            || self
+                .argv
+                .as_ref()
+                .and_then(|argv| argv.first())
+                .is_some_and(|first| base(first))
+    }
 }
 
 impl PaneProcesses {
