@@ -22,6 +22,7 @@ use crate::{
         CARD_GAP, CARD_HEIGHT, CARD_LINE, CARD_TITLE_ROW, CORGI_GAP, FONT_SIZE, HEADER_HEIGHT,
         HEADER_PADDING, PIXEL, Split, WORDMARK_CARD_GAP, WORDMARK_TOP,
     },
+    machine_bar,
     rows::Pick,
     store::Connection,
     terminal::open_url,
@@ -45,6 +46,15 @@ const FIELD_BORDER: f32 = 2.0;
 /// A dialog's padding (`p_4`, in rems) and its border, above and below it.
 const DIALOG_PADDING: f32 = 32.0;
 const DIALOG_BORDER: f32 = 2.0;
+/// The space between the status bar's pieces (`gap_3`, in rems).
+const STATUS_GAP: f32 = 12.0;
+/// The status bar's padding (`py_1`, in rems) and its top border, above
+/// and below its one line.
+const STATUS_PADDING: f32 = 8.0;
+const STATUS_BORDER: f32 = 1.0;
+/// The fewest characters a status bar text is cut to; with less room it
+/// is left out.
+const STATUS_LEAST: usize = 4;
 /// The body text's line height, in text sizes.
 const LINE_HEIGHT: f32 = 1.45;
 /// How far a press on the header moves before it drags the window, so a
@@ -1501,14 +1511,23 @@ impl CorgiWindow {
         }
     }
 
+    /// The bar at the window's foot: the machines, then Herdr's trouble,
+    /// a command's result or the selected agent's or refresh's status, and
+    /// the keys at the right end. It is one line at any width: the texts
+    /// are cut to the room the machines leave, the keys first, and
+    /// whatever still passes the edge is clipped, never wrapped.
     fn status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = &self.colors;
         let state = &self.store().state;
         let herdr = (!state.herdr.connected && self.store().seq.is_some()).then(|| {
-            div().text_color(colors.roles.danger).child(format!(
-                "Herdr not answering: {}",
-                state.herdr.error.clone().unwrap_or_default()
-            ))
+            (
+                format!(
+                    "Herdr not answering: {}",
+                    state.herdr.error.clone().unwrap_or_default()
+                ),
+                colors.roles.danger,
+                false,
+            )
         });
         let flash = self
             .dialogs
@@ -1516,58 +1535,67 @@ impl CorgiWindow {
             .as_ref()
             .filter(|flash| flash.at.elapsed().as_secs() < 8)
             .map(|flash| {
-                div()
-                    .text_color(if flash.error {
-                        colors.roles.danger
-                    } else {
-                        colors.roles.success
-                    })
-                    .truncate()
-                    .child(flash.text.clone())
+                let color = if flash.error {
+                    colors.roles.danger
+                } else {
+                    colors.roles.success
+                };
+                (flash.text.clone(), color, false)
             });
         // The selected agent's own trouble, an exit or missing options,
         // comes before the refresh's status line.
         let hint = self
             .selected_agent()
             .and_then(|agent| format::selected_hint(agent, &self.keymap.label(Hotkey::Resume)))
-            .map(|(text, tone)| {
+            .map(|(text, tone)| (text, self.tone(tone, None), true));
+        let status = hint.or_else(|| {
+            state
+                .status
+                .clone()
+                .map(|status| (status, colors.roles.muted, false))
+        });
+        let said = flash.or(status);
+        let keys = self.status_hints();
+
+        let (names, machines) = self.fitted_machines(window);
+        let [herdr_text, said_text, keys_text] = fit_status(
+            [
+                herdr.as_ref().map(|(text, ..)| text.as_str()),
+                said.as_ref().map(|(text, ..)| text.as_str()),
+                Some(keys.as_str()),
+            ],
+            f32::from(window.viewport_size().width) - machines,
+            self.rem_px(STATUS_GAP),
+            self.monospace_cell_width(window),
+        );
+        let piece = |text: Option<String>, color: Hsla, bold: bool| {
+            text.map(|text| {
                 div()
                     .flex_none()
-                    .text_color(self.tone(tone, None))
-                    .font_weight(FontWeight::BOLD)
+                    .text_color(color)
+                    .when(bold, |d| d.font_weight(FontWeight::BOLD))
                     .child(text)
-            });
-        let status = hint.or_else(|| {
-            state.status.clone().map(|status| {
-                div()
-                    .text_color(colors.roles.muted)
-                    .truncate()
-                    .child(status)
             })
-        });
+        };
         div()
             .flex()
             .flex_row()
+            .flex_none()
+            .flex_nowrap()
+            .whitespace_nowrap()
+            .overflow_hidden()
+            .h(px(status_bar_height(self.layout.text_scale())))
             .items_center()
             .gap_3()
             .px_4()
             .py_1()
             .border_t_1()
             .border_color(colors.roles.rule)
-            // The machines keep their room; what follows gives way first.
-            .overflow_hidden()
-            .child(self.machine_list(window, cx))
-            .children(herdr.map(give_way))
-            .children(flash.or(status).map(give_way))
+            .child(self.machine_list(names, cx))
+            .children(herdr.and_then(|(_, color, bold)| piece(herdr_text, color, bold)))
+            .children(said.and_then(|(_, color, bold)| piece(said_text, color, bold)))
             .child(div().flex_1())
-            .child(
-                // The keys give way to what the status says.
-                give_way(div())
-                    .min_w_0()
-                    .truncate()
-                    .text_color(colors.roles.muted)
-                    .child(self.status_hints()),
-            )
+            .children(piece(keys_text, colors.roles.muted, false))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -2277,9 +2305,46 @@ impl CorgiWindow {
     }
 }
 
-/// A status bar item that shrinks long before the machines do.
-fn give_way(item: Div) -> Div {
-    item.flex_shrink(1000.).min_w_0()
+/// The status bar's height at text `scale` times its default size: one
+/// line, whatever the window's width.
+fn status_bar_height(scale: f32) -> f32 {
+    text_line(scale) + STATUS_PADDING * scale + STATUS_BORDER
+}
+
+/// The status bar's `texts`, in the order they keep their room (Herdr's
+/// trouble, what the status says, the keys), cut to the `room` pixels the
+/// machines leave at `cell` pixels a character. Each text shown takes a
+/// `gap` before it, and the spacer before the keys one more. A text with
+/// room for fewer than `STATUS_LEAST` characters is left out, and every
+/// one after it gets the room left. A text of several lines is joined
+/// into one.
+///
+/// GPUI cannot shrink one text of a row whose others keep their width
+/// (AGENTS.md), so the cut is made here and the line never wraps.
+fn fit_status<const N: usize>(
+    texts: [Option<&str>; N],
+    room: f32,
+    gap: f32,
+    cell: f32,
+) -> [Option<String>; N] {
+    let mut room = room - gap;
+    texts.map(|text| {
+        // GPUI breaks a line at a line break even when it does not wrap.
+        let text = text?.lines().map(str::trim).collect::<Vec<_>>().join(" ");
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        let length = text.chars().count();
+        // A hair of slack, so a width the cells fill exactly fits.
+        let most = ((room - gap) / cell + 1e-3).floor().max(0.0) as usize;
+        if most < length.min(STATUS_LEAST) {
+            return None;
+        }
+        let fitted = machine_bar::shortened(text, most);
+        room -= gap + fitted.chars().count() as f32 * cell;
+        Some(fitted)
+    })
 }
 
 /// How tall a dialog's content may be: what the window leaves below the
@@ -2553,5 +2618,77 @@ mod tests {
         assert!(field_height(fewer, large) <= room - 100.0);
         // A window too short for any line still gives the field one.
         assert_eq!(field_lines(50.0, 100.0, large), 1.0);
+    }
+
+    /// How wide the status bar's fitted texts draw at `cell` a character,
+    /// with a `gap` before each and before the spacer.
+    fn status_width(fitted: &[Option<String>], gap: f32, cell: f32) -> f32 {
+        gap + fitted
+            .iter()
+            .flatten()
+            .map(|text| gap + text.chars().count() as f32 * cell)
+            .sum::<f32>()
+    }
+
+    #[test]
+    fn the_status_bar_cuts_its_texts_to_one_line_keys_first() {
+        let (gap, cell) = (12.0, 10.0);
+        let said = "Fix the rain forecast exited to its shell · R resumes it";
+        let keys = "j/k select · Space expand · ↵ terminal";
+        let texts = [None, Some(said), Some(keys)];
+        // Room for everything: nothing is cut.
+        let wide = fit_status(texts, 2000.0, gap, cell);
+        assert_eq!(wide, [None, Some(said.into()), Some(keys.into())]);
+        // A narrower window cuts the keys, then leaves them out, before
+        // what the status says gives a character.
+        let room = gap * 3.0 + 56.0 * cell + 10.0 * cell;
+        let fitted = fit_status(texts, room, gap, cell);
+        assert_eq!(fitted[1].as_deref(), Some(said));
+        assert_eq!(fitted[2].as_deref(), Some("j/k selec…"));
+        let fitted = fit_status(texts, gap * 3.0 + 56.0 * cell + 3.0 * cell, gap, cell);
+        assert_eq!(fitted, [None, Some(said.into()), None]);
+        // Narrower still, the status is cut too, its end an ellipsis.
+        let fitted = fit_status(texts, gap * 2.0 + 20.0 * cell, gap, cell);
+        assert_eq!(fitted, [None, Some("Fix the rain foreca…".into()), None]);
+        // At any width the texts fit the room the machines leave, so the
+        // line never wraps; with too little room they are left out.
+        for room in (0..1000).map(|room| room as f32 * 0.7 - 30.0) {
+            let herdr = Some("Herdr not answering: connection refused");
+            let fitted = fit_status([herdr, Some(said), Some(keys)], room, gap, cell);
+            let width = status_width(&fitted, gap, cell);
+            assert!(
+                fitted.iter().all(Option::is_none) || width <= room + 1e-3,
+                "{fitted:?} is {width} wide in {room}"
+            );
+            assert!(
+                fitted
+                    .iter()
+                    .flatten()
+                    .all(|text| text.chars().count() >= STATUS_LEAST && !text.contains('\n'))
+            );
+        }
+        // A text of several lines, an ssh error say, becomes one line.
+        assert_eq!(
+            fit_status([Some("ssh: no route\r\n  to host\n")], 2000.0, gap, cell),
+            [Some("ssh: no route to host".into())]
+        );
+        // A short text that fits whole is kept, however few its characters.
+        assert_eq!(
+            fit_status([Some("ok")], gap * 2.0 + 2.0 * cell, gap, cell),
+            [Some("ok".into())]
+        );
+    }
+
+    #[test]
+    fn the_status_bar_is_one_line_tall_at_every_text_size() {
+        let (small, large) = (FONT_SIZE_MIN / FONT_SIZE, FONT_SIZE_MAX / FONT_SIZE);
+        for scale in [small, 1.0, large] {
+            assert_eq!(
+                status_bar_height(scale),
+                text_line(scale) + 8.0 * scale + 1.0
+            );
+        }
+        // What the bar measured, one line, before a long status wrapped it.
+        assert_eq!(status_bar_height(1.0), 28.0);
     }
 }
