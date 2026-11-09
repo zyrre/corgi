@@ -1,9 +1,11 @@
 # Corgi
 
-A panel that shows how each of your Corgi projects is doing: one block per
-project with its supervisor's state, its workers by state, the open
-questions waiting for you, the work ready to merge and the inbox items not
-yet delivered; projects that need you stand out. Click a project for its
+A panel that shows how each of your Corgi projects on herdr-core (`hc`), the
+Herdr app's backend, is doing: one block per project with its supervisor's
+state, its workers by state, the open questions waiting for you, the work
+ready to merge and the inbox items not yet delivered; projects that need you
+stand out. Above them, whether `corgi daemon`, which wakes the supervisors,
+is running. Click a project for its
 supervisor and workers (state, task, model, context, prompt cache, MERGE
 tag), its open questions with their full text, and a Merge button on each
 worker tagged ready to merge. It needs the `corgi` command-line tool, which
@@ -18,12 +20,19 @@ The panel docks on the right, 420 px wide (`mod.json`: `"place": "right"`),
 on the theme's `surface`, text 13 px.
 
 - **Header** (one line, a `border` rule below): `Corgi` in 14 px semibold,
-  `Herdr not reachable` in `blocked` when Corgi cannot reach the Herdr TUI,
-  and the time of the last reading (`HH:MM:SS`, UTC) in `dim` 11 px, or `…`
-  while one is being read.
-- **Overview** (the main view): a scrolling column of project blocks, 10 px
-  apart. Each block is a card (radius 8, padding 10, `background`, a
-  `border` outline, or `blocked` when the project needs you):
+  `herdr-core not running` in `blocked` when the core is not running (or
+  `herdr-core not answering` when `hc` failed), and the time of the last
+  reading (`HH:MM:SS`, UTC) in `dim` 11 px, or `…` while one is being read.
+- **Overview** (the main view): a scrolling column, 10 px apart, that starts
+  with the daemon: while it runs, a `dim` 12 px line `Corgi daemon running ·
+  pid 4242`; when it does not, a card with a `blocked` outline: `Corgi daemon
+  not running: supervisors on the Herdr app won't be woken or handed over`
+  (semibold, `blocked`), then `To start it, run:` (or, when its service is
+  installed, `Its service is installed but not running. To restart it, run:`)
+  in `muted`, and `corgi daemon install` in a monospace box. It always shows.
+  When `hc` failed, its error follows in `blocked`. Then the project blocks.
+  Each block is a card (radius 8, padding 10, `background`, a `border`
+  outline, or `blocked` when the project needs you):
   - the project's name (15 px semibold), its base branch (`dim`), and on the
     right, when it needs you, a `blocked` badge such as
     `needs you · 2 questions, 1 blocked, 1 to merge`;
@@ -55,6 +64,11 @@ on the theme's `surface`, text 13 px.
   and `exited`, each in the theme color of that name (`unknown` for the
   last two). A project needs you when its supervisor has open questions, an
   agent is blocked, or a worker is tagged MERGE.
+- Agents are those Corgi started on herdr-core (`corgi supervisor`,
+  `corgi spawn` there); `terminal` is the hc terminal's address. Agents on
+  the old Herdr TUI are not shown. A project stays listed from its
+  supervisor's state folder when none of its agents runs, and when the core
+  is not running.
 - It reads `corgi status --json` when it starts, every 5 seconds, when a file
   under the supervisors' state folder changes, and when the app's live
   agents change (compared once a second).
@@ -64,7 +78,9 @@ on the theme's `surface`, text 13 px.
 - `Merge` asks inline, `Merge worktree/x into main and push?` with `Cancel`
   and `Merge + push`, then shows `Merging…` and runs
   `corgi merge NAME --project DIR --json`: the merge Corgi's dashboard runs
-  with `m`, which also tells the supervisor. The result shows in a card at
+  with `m`, on the worker's hc checkout and branch, which also tells the
+  supervisor and clears the worker's MERGE tag. With the core not running it
+  is refused, and nothing is started. The result shows in a card at
   the top of the project view, green-ish (`working`) for merged, `done` for
   a failed push, `blocked` otherwise. When the base branch's upstream has
   new commits it offers `Pull, merge + push` (`--pull`); after a failed
@@ -77,7 +93,8 @@ on the theme's `surface`, text 13 px.
   supervisors, delivering their inboxes and handing them over is
   `corgi daemon`'s, a service `herdr-app/install.sh` installs, so it goes on
   with the window closed; `corgi status --json` says whether it runs
-  (`daemon.running`).
+  (`daemon.running`, `daemon.pid`) and whether its service is installed
+  (`daemon.installed`), and the overview shows it.
 
 ## Built from
 
@@ -93,8 +110,9 @@ on the theme's `surface`, text 13 px.
   `herdr-app/install.sh`), each question's file (`questions/Q<n>.md` in the
   supervisor's state folder, named by `corgi status`), and a watch on the
   folder holding the supervisors' state folders.
-- `corgi status --json` prints `{version: 1, generated, herdr: {connected,
-  status}, projects: [{name, dir, state_dir, base, supervisor, agents:
+- `corgi status --json` prints `{version: 2, generated, hc: {running,
+  error}, daemon: {running, pid, installed}, projects: [{name, dir,
+  state_dir, base, supervisor, agents:
   [{name, role, state, task, model, harness, ctx_pct, cache: {state,
   minutes_left, tokens, estimated}, cwd, branch, worktree, tag, request_id,
   terminal}], questions: [{id, title, blocks, file}], inbox_pending,
@@ -124,9 +142,12 @@ on the theme's `surface`, text 13 px.
   tag that does not match it); a tag older than the mod's first release has
   no `herdr-app/install.sh`, so an unreleased mod's own install fails.
 - A `corgi` newer than the mod is used as it is, never downgraded.
-- `corgi status` reads the Herdr TUI's socket (`$HERDR_SOCKET_PATH`, else
-  `~/.config/herdr/herdr.sock`) for running agents; without it the projects
-  still show from the state folders, with no agents.
+- `corgi status` reads herdr-core for running agents, and only when its
+  socket accepts a connection: any `hc` call starts a stopped core, with the
+  caller's environment, and the mod must never be the one that starts it.
+  Without it the projects still show from the state folders, with no
+  agents. A `corgi` older than the mod's own version prints version 1, with
+  `herdr` in place of `hc` and no daemon fields; the mod reads both.
 - `herdr-app check` renders only the first frame ("Reading Corgi's
   status…"), so it does not prove the overview or project view work. A
   `.when()` callback must return the element it got, and text for one line
@@ -137,8 +158,10 @@ on the theme's `surface`, text 13 px.
 ## Done when
 
 - `herdr-app check mods/corgi` passes.
-- With `corgi` installed and supervisors running, the overview lists each
-  project with its supervisor's state, worker counts by state, open
+- The overview shows `Corgi daemon running · pid N` while `corgi daemon`
+  runs, and the warning with `corgi daemon install` when it does not.
+- With `corgi` installed and supervisors running on herdr-core, the overview
+  lists each project with its supervisor's state, worker counts by state, open
   questions and counts, and a project with a question, a blocked agent or a
   MERGE tag has the `needs you` badge and border.
 - Clicking a project shows its agents with state, task, model, ctx, cache

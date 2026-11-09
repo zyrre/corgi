@@ -1,6 +1,7 @@
 // Corgi for the Herdr app (io.github.zyrre.corgi): each project's supervisor,
-// workers and open questions, from `corgi status --json`. It only reads, and
-// merges a worker's branch when asked; it never wakes or types into an agent.
+// workers and open questions on herdr-core, and whether `corgi daemon` runs,
+// from `corgi status --json`. It only reads, and merges a worker's branch when
+// asked; it never wakes or types into an agent.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, exec, home, appHome, readTextFile, watchFolder, theme } from "herdr";
@@ -86,6 +87,9 @@ function lastLines(text, n) {
 const oneLine = (text) => (text ?? "").replace(/\s+/g, " ").trim();
 
 const RANK = { blocked: 5, working: 4, done: 3, idle: 2, unknown: 1, exited: 0 };
+
+// What starts the daemon, shown when it is not running.
+const DAEMON_COMMAND = "corgi daemon install";
 
 // The supervisor's state in the words the overview uses.
 function supervisorWord(s) {
@@ -359,7 +363,8 @@ export default class Corgi extends View {
         ),
       )
       .child(div().flex_1().font_semibold().text_size(14).child(title))
-      .when(!s.herdr.connected, (el) => el.child(div().text_color(t.blocked).text_size(11).child("Herdr not reachable")))
+      .when(s.hc?.running === false, (el) => el.child(div().text_color(t.blocked).text_size(11).child("herdr-core not running")))
+      .when(Boolean(s.hc?.error), (el) => el.child(div().text_color(t.blocked).text_size(11).child("herdr-core not answering")))
       .child(div().text_color(t.dim).text_size(11).child(this.loading ? "…" : s.generated.slice(11, 19)));
   }
 
@@ -376,9 +381,29 @@ export default class Corgi extends View {
           .overflow_y_scrollbar()
           .p(10)
           .gap(10)
+          .when(Boolean(this.status.daemon), (el) => el.child(this.daemonLine(t, this.status.daemon)))
+          .when(Boolean(this.status.hc?.error), (el) => el.child(div().text_color(t.blocked).text_size(12).child(oneLine(`herdr-core did not answer: ${this.status.hc.error}`))))
           .when(projects.length === 0, (el) => el.child(div().text_color(t.muted).child("No projects with a supervisor or a Corgi agent.")))
           .children(projects.map((p) => this.projectBlock(cx, t, p))),
       );
+  }
+
+  // Whether `corgi daemon` runs: a quiet line when it does, else a warning
+  // with the command that starts it.
+  daemonLine(t, d) {
+    if (d.running) {
+      return div().text_color(t.dim).text_size(12).child(`Corgi daemon running${d.pid ? ` · pid ${d.pid}` : ""}`);
+    }
+    return v_flex()
+      .p(10)
+      .gap(6)
+      .rounded(8)
+      .border_1()
+      .border_color(t.blocked)
+      .bg(t.background)
+      .child(div().text_color(t.blocked).font_semibold().whitespace_normal().child("Corgi daemon not running: supervisors on the Herdr app won't be woken or handed over"))
+      .child(div().text_color(t.muted).text_size(12).child(d.installed ? "Its service is installed but not running. To restart it, run:" : "To start it, run:"))
+      .child(div().p(6).rounded(6).bg(t.raised).text_size(12).font_family("JetBrains Mono").child(DAEMON_COMMAND));
   }
 
   projectBlock(cx, t, p) {

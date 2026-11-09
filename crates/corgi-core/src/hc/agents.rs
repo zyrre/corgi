@@ -240,11 +240,28 @@ pub fn tag(
     options: &TagOptions,
 ) -> Result<String> {
     tag_agent_with(agents, root, options, |agent, at| {
-        let address = agent.info.pane_id.as_str();
-        let labels = match at {
-            Some(at) => [(TAG_LABEL, MERGE_TAG), (TAG_AT_LABEL, at)],
-            None => [(TAG_LABEL, ""), (TAG_AT_LABEL, "")],
-        };
-        client.label(address, &labels).map(drop)
+        write_tag(client, &agent.info.pane_id, at)
     })
+}
+
+/// Clears the merge tag of `agent` once its branch is merged, as
+/// `corgi tag --clear` does, and drops it from the row too. An agent without
+/// one is left alone.
+pub fn clear_merge_tag(client: &HcClient, agent: &mut DashboardAgent) -> Result<()> {
+    if !agent.info.tokens.contains_key(MERGE_TOKEN) {
+        return Ok(());
+    }
+    write_tag(client, &agent.info.pane_id, None)?;
+    agent.info.tokens.remove(MERGE_TOKEN);
+    Ok(())
+}
+
+/// Tags the terminal at `address` for merging, `at` the state and turn it
+/// was tagged at, or clears its tag with `None`.
+fn write_tag(client: &HcClient, address: &str, at: Option<&str>) -> Result<()> {
+    let labels = match at {
+        Some(at) => [(TAG_LABEL, MERGE_TAG), (TAG_AT_LABEL, at)],
+        None => [(TAG_LABEL, ""), (TAG_AT_LABEL, "")],
+    };
+    client.label(address, &labels).map(drop)
 }

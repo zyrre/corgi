@@ -29,6 +29,7 @@ use corgi_core::{
     },
     progress::Progress,
     project_main::{project_root_digest, project_root_of},
+    projects::ProjectMemory,
     time::unix_now,
 };
 
@@ -174,6 +175,7 @@ pub(super) fn supervisor(
             &exited.info.pane_id,
             &mut Said,
         )?;
+        remember_project(&root);
         return Ok(launched_json(&plan, &launched));
     }
     let project_name = dir_name(&root).unwrap_or(supervisor::UNNAMED_PROJECT);
@@ -182,7 +184,15 @@ pub(super) fn supervisor(
         None => free_name(&client, &format!("{project_name}-supervisor"), false)?,
     };
     let launched = hc::launch::launch_supervisor(&client, &plan, &corgi_bin, &mut Said)?;
+    remember_project(&root);
     Ok(launched_json(&plan, &launched))
+}
+
+/// Writes `root` down among the projects Corgi used, as a launch on the
+/// Herdr TUI does, so that `corgi status` still lists the project, with its
+/// supervisor's state, once no agent of it runs.
+fn remember_project(root: &str) {
+    ProjectMemory::load().remember(root);
 }
 
 /// What `corgi spawn` and `corgi supervisor` print of an agent started on
