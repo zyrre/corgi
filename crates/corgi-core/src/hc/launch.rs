@@ -39,7 +39,7 @@ use crate::{
 use super::{
     BASELINE_LABEL, HANDOVER_LABEL, HARNESS_LABEL, HcClient, PID_LABEL, PROJECT_LABEL,
     REQUEST_LABEL, RESUME_LABEL, ROLE_LABEL, SESSION_LABEL, SPACE_LABEL, SUPERVISOR_ROLE,
-    TASK_LABEL, Terminal, WORKER_ROLE, agents::shell_in_front, calling_terminal,
+    TASK_LABEL, Terminal, WORKER_ROLE, agents::shell_in_front,
 };
 
 /// The variables Corgi removes from every agent it starts on hc: the ones a
@@ -264,13 +264,7 @@ fn start_supervisor(
             address
         }
         None => {
-            let space = space_for(
-                client,
-                &root,
-                Role::Supervisor {
-                    handover_pane: None,
-                },
-            );
+            let space = project_space(&root);
             let mut labels = agent_labels(plan, &root, SUPERVISOR_NAME, &space, session.as_deref());
             if let Some(resume) = &resume {
                 labels.push((RESUME_LABEL.into(), resume.clone()));
@@ -416,7 +410,7 @@ pub fn launch_worker(
     };
     let session = session_id_for(&plan.harness)?;
     let command = harness_command(plan, session.as_deref(), &[], Start::Task(&plan.prompt));
-    let space = space_for(client, root, Role::Worker);
+    let space = worker_space(root, &space_nonce()?);
     let mut labels = agent_labels(
         plan,
         root,
@@ -610,29 +604,34 @@ pub fn task_title(prompt: &str) -> String {
     title
 }
 
-/// The Herdr app's space for an agent of the project at `root`: the calling
-/// terminal's when it is in one, else (for a worker) its supervisor's,
-/// else one of the project's own, which the app creates when it first sees
+/// A new space of the Herdr app for a worker of the project at `root`, one
+/// per worker: the project's own ([`project_space`]) with `nonce` after it.
+/// The app makes a space for an id it does not know, unnamed, so it is
+/// called after where the worker's terminal is; its `spaces` sidebar nests
+/// a space whose first terminal is in a linked worktree under the space of
+/// the repository's main checkout, the supervisor's, by `git
+/// rev-parse --git-common-dir`, whoever made either space and whatever
+/// they are called. Never the caller's or the supervisor's space: a worker
+/// there would be one more tab of the project's space, not a space beside
 /// it.
-fn space_for(client: &HcClient, root: &str, role: Role) -> String {
-    let caller_space = calling_terminal()
-        .and_then(|address| client.find(&address).ok().flatten())
-        .and_then(|terminal| terminal.label(SPACE_LABEL).map(str::to_string));
-    let supervisor_space = || {
-        client
-            .list(&[(PROJECT_LABEL, root), (ROLE_LABEL, SUPERVISOR_ROLE)])
-            .ok()?
-            .into_iter()
-            .find_map(|terminal| terminal.label(SPACE_LABEL).map(str::to_string))
-    };
-    caller_space
-        .or_else(|| (role == Role::Worker).then(supervisor_space).flatten())
-        .unwrap_or_else(|| project_space(root))
+pub fn worker_space(root: &str, nonce: &str) -> String {
+    format!("{}-{nonce}", project_space(root))
 }
 
-/// The space of the project at `root` when nothing chose one: `corgi-` and
-/// its directory name, with a few characters of a hash of the whole path so
-/// that two projects of the same name get two spaces.
+/// Eight random hexadecimal digits for [`worker_space`].
+fn space_nonce() -> Result<String> {
+    let mut bytes = [0u8; 4];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut random| random.read_exact(&mut bytes))
+        .context("read /dev/urandom for a space id")?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// The Herdr app's space of the project at `root`, its supervisor's: `corgi-`
+/// and its directory name, with a few characters of a hash of the whole path
+/// so that two projects of the same name get two spaces. The supervisor's
+/// terminal is on the primary checkout, so the app calls the space after the
+/// repository; Corgi never names it.
 pub fn project_space(root: &str) -> String {
     let name =
         crate::launch::sanitize_agent_name(dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT));

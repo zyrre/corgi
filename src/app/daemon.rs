@@ -119,15 +119,10 @@ fn run() -> Result<()> {
     let client = HcClient::from_env()?;
     let socket = hc::expected_socket().context("no HOME, so there is no hc socket to wait for")?;
     let corgi_bin = supervisor::corgi_bin(None)?;
-    let name_spaces = daemon::names_spaces(
-        env::var("HC_SESSION").ok().as_deref(),
-        env::var("HC_SOCKET").ok().as_deref(),
-    );
     daemon::run(Options {
         client,
         socket,
         corgi_bin,
-        name_spaces,
     })
 }
 

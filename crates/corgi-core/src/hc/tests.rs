@@ -14,7 +14,7 @@ use super::{
     launch::{
         SESSION_VARIABLES, Start, agent_argv, agent_script, answer_folder_trust,
         create_worktree_in, harness_command, harness_refusal, launch_worker, new_session_id,
-        project_space, shell_line, task_title,
+        project_space, shell_line, task_title, worker_space,
     },
     *,
 };
@@ -649,7 +649,13 @@ fn a_worker_starts_in_its_checkout_with_corgis_labels() {
     let session = launched.session.unwrap();
     let calls = hc.calls();
     let run = calls.iter().find(|call| call.starts_with("run|")).unwrap();
-    let space = project_space(&root_text);
+    let space = space_label(run);
+    // A space of its own, beside the project's (its supervisor's), even on
+    // the primary checkout.
+    assert!(
+        space.starts_with(&format!("{}-", project_space(&root_text))),
+        "{space}"
+    );
     for part in [
         format!("|--cwd|{root_text}|"),
         format!("|--label|corgi.project={root_text}|"),
@@ -678,6 +684,71 @@ fn a_worker_starts_in_its_checkout_with_corgis_labels() {
         run.contains(&format!(" --resume {session} --model haiku|")),
         "{run}"
     );
+}
+
+/// The `herdr.space` label a recorded `hc run` call gives its terminal.
+fn space_label(run: &str) -> String {
+    run.split('|')
+        .find_map(|part| part.strip_prefix("herdr.space="))
+        .unwrap_or_else(|| panic!("no herdr.space label in {run}"))
+        .to_string()
+}
+
+#[test]
+fn every_worker_gets_a_space_of_its_own_beside_the_projects() {
+    let project = project_space("/repos/weather");
+    let first = worker_space("/repos/weather", "1a2b3c4d");
+    assert_eq!(first, format!("{project}-1a2b3c4d"));
+    assert_ne!(first, project);
+    assert_ne!(first, worker_space("/repos/weather", "5e6f7a8b"));
+    // Another project's worker never lands in this project's spaces.
+    assert!(!worker_space("/other/weather", "1a2b3c4d").starts_with(&project));
+}
+
+#[test]
+fn two_workers_get_two_new_spaces_not_their_supervisors() {
+    let scratch = ScratchDir::new("hc-worker-spaces");
+    let root = git_repo(&scratch.join("weather"));
+    let root_text = root.to_string_lossy().into_owned();
+    let hc = FakeHc::new();
+    hc.answer(
+        "run",
+        r#"{"address":"t5","name":"weather","state":"live","turn":0}"#,
+    );
+    // The supervisor, in a space of its own, is there to be found; a worker
+    // no longer joins it.
+    let supervisor = terminal_json(
+        "t1",
+        "weather-supervisor",
+        &[
+            (PROJECT_LABEL, &root_text),
+            (ROLE_LABEL, SUPERVISOR_ROLE),
+            (SPACE_LABEL, "s1"),
+        ],
+        "idle",
+    );
+    hc.answer("ls", &format!(r#"{{"terminals":[{supervisor}]}}"#));
+    hc.answer("get.t1", &supervisor);
+    hc.answer("get.t5", &terminal_json("t5", "weather", &[], "idle"));
+    let plan = worker_plan(&root, Harness::Claude, Checkout::ProjectRoot);
+    launch_worker(&hc.client(), &plan, &root_text, &mut Silent).unwrap();
+    launch_worker(&hc.client(), &plan, &root_text, &mut Silent).unwrap();
+    let spaces: Vec<String> = hc
+        .calls()
+        .iter()
+        .filter(|call| call.starts_with("run|"))
+        .map(|run| space_label(run))
+        .collect();
+    assert_eq!(spaces.len(), 2, "{spaces:?}");
+    assert_ne!(spaces[0], spaces[1]);
+    for space in &spaces {
+        assert_ne!(space, "s1");
+        assert_ne!(*space, project_space(&root_text));
+        assert!(
+            space.starts_with(&format!("{}-", project_space(&root_text))),
+            "{space}"
+        );
+    }
 }
 
 #[test]

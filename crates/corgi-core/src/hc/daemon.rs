@@ -13,9 +13,10 @@
 //! 1. gives each kept terminal whose program the core replaced with a shell
 //!    (a core stop, a reboot) its resume line, once ([`needs_resume`]);
 //! 2. adds the wakes, moves the handovers on, and types each supervisor's
-//!    inbox in when it may be typed into ([`SupervisorWaker::tick_hc`]);
-//! 3. names the Herdr app's space of each project Corgi made one for, when a
-//!    window is open and nobody named it ([`SpaceNamer`]).
+//!    inbox in when it may be typed into ([`SupervisorWaker::tick_hc`]).
+//!
+//! It never names or makes a space of the Herdr app: the app calls a space
+//! nobody named after where its first terminal is.
 //!
 //! Passes also run on a timer: every few seconds while an inbox waits for a
 //! supervisor that rests (a draft in its box gives no event when it is
@@ -28,31 +29,26 @@
 //! with the caller's environment.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     fs,
     io::{Read as _, Seek, Write as _},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    process::Command,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
-use serde_json::Value;
 
 use super::{
-    HcClient, PID_LABEL, PROJECT_LABEL, RESUME_LABEL, SPACE_LABEL, Terminal,
+    HcClient, PID_LABEL, RESUME_LABEL, Terminal,
     agents::{corgi_terminals, dashboard_agents, shell_in_front},
     events::{EventStream, Message, concerns_corgi},
-    launch::project_space,
 };
 use crate::{
-    harness::find_executable,
     model::AgentState,
-    paths::{corgi_state_dir, dir_name, socket_state_file},
-    supervisor,
+    paths::{corgi_state_dir, socket_state_file},
     time::{LocalTime, unix_now},
     waker::{SupervisorWaker, hc::HcCore},
 };
@@ -67,8 +63,6 @@ const BUSY_PASS: Duration = Duration::from_secs(3);
 const IDLE_PASS: Duration = Duration::from_secs(60);
 /// How often the daemon looks for the core's socket while it is gone.
 const CORE_POLL: Duration = Duration::from_secs(2);
-/// How often, at most, the daemon asks the Herdr app's window for its spaces.
-const SPACE_LOOK: Duration = Duration::from_secs(60);
 
 /// What the daemon is started with.
 pub struct Options {
@@ -78,9 +72,6 @@ pub struct Options {
     pub socket: PathBuf,
     /// The Corgi binary the wakes' lines name and the handovers start.
     pub corgi_bin: PathBuf,
-    /// Whether to name the Herdr app's spaces: only for the core the app's
-    /// window shows, the user's default one.
-    pub name_spaces: bool,
 }
 
 /// The daemon's lock for the core at `socket`, held for its whole life:
@@ -236,7 +227,6 @@ pub fn run(options: Options) -> Result<()> {
         waker,
         known: HashSet::new(),
         resumed: HashSet::new(),
-        spaces: SpaceNamer::default(),
         last_said: Vec::new(),
         busy: false,
         last_pass: Instant::now(),
@@ -336,7 +326,6 @@ struct Daemon {
     known: HashSet<String>,
     /// The terminals given their resume line, with the program's pid then.
     resumed: HashSet<(String, u64)>,
-    spaces: SpaceNamer,
     /// The last pass's lines, so a state that lasts is logged once.
     last_said: Vec<String>,
     /// Whether something waits that no event will announce.
@@ -360,7 +349,7 @@ impl Daemon {
         }
     }
 
-    /// One pass: resumes, wakes, handovers, deliveries, space names.
+    /// One pass: resumes, wakes, handovers, deliveries.
     fn pass(&mut self) {
         self.last_pass = Instant::now();
         // A core that went since the stream last spoke is not started by
@@ -385,9 +374,6 @@ impl Daemon {
             unix_now(),
         ));
         said.append(&mut self.core.notes);
-        if self.options.name_spaces {
-            said.extend(self.spaces.name(&terminals));
-        }
         self.busy = self.waker.handing_over_any()
             || agents.iter().any(|agent| {
                 agent.supervisor
@@ -465,136 +451,6 @@ pub fn needs_resume(terminal: &Terminal) -> Option<&str> {
     let marked = terminal.label(PID_LABEL)?;
     let pid = terminal.pid?;
     (terminal.is_live() && shell_in_front(terminal) && marked != pid.to_string()).then_some(resume)
-}
-
-/// Names the Herdr app's space of each project Corgi made one for
-/// (`corgi-<project>-<hash>`, which the app creates unnamed when it first
-/// sees the label) after the project, once, through the open window: never
-/// a space the user named, and never when no window is open, which it does
-/// not open.
-#[derive(Debug, Default)]
-pub struct SpaceNamer {
-    /// The spaces it named or found named, which it leaves alone after.
-    done: HashSet<String>,
-    last_look: Option<Instant>,
-}
-
-impl SpaceNamer {
-    fn name(&mut self, terminals: &[Terminal]) -> Vec<String> {
-        let wanted: BTreeMap<String, String> = project_spaces(terminals)
-            .into_iter()
-            .filter(|(space, _)| !self.done.contains(space))
-            .collect();
-        if wanted.is_empty() || self.last_look.is_some_and(|at| at.elapsed() < SPACE_LOOK) {
-            return Vec::new();
-        }
-        self.last_look = Some(Instant::now());
-        let Some(app) = herdr_app() else {
-            return Vec::new();
-        };
-        if !app_window_open() {
-            return Vec::new();
-        }
-        let listed = Command::new(&app).arg("ls").output();
-        let spaces = match listed {
-            Ok(output) if output.status.success() => app_spaces(&output.stdout),
-            _ => return Vec::new(),
-        };
-        let mut said = Vec::new();
-        for (id, project) in wanted {
-            let Some(named) = spaces.get(&id) else {
-                continue;
-            };
-            self.done.insert(id.clone());
-            if *named {
-                continue;
-            }
-            let renamed = Command::new(&app)
-                .args(["do", "space.rename", "--id", &id, "--name", &project])
-                .output();
-            said.push(match renamed {
-                Ok(output) if output.status.success() => {
-                    format!("named the Herdr app's space {id} {project}")
-                }
-                _ => format!("could not name the Herdr app's space {id}"),
-            });
-        }
-        said
-    }
-}
-
-/// The spaces Corgi made for projects among `terminals`' labels, with the
-/// project's name: those whose [`SPACE_LABEL`] is the one
-/// [`project_space`] gives the terminal's project. A space a terminal took
-/// from its caller or its supervisor is someone else's to name.
-pub fn project_spaces(terminals: &[Terminal]) -> BTreeMap<String, String> {
-    terminals
-        .iter()
-        .filter_map(|terminal| {
-            let root = terminal.label(PROJECT_LABEL)?;
-            let space = terminal.label(SPACE_LABEL)?;
-            (space == project_space(root)).then(|| {
-                (
-                    space.to_string(),
-                    dir_name(root)
-                        .unwrap_or(supervisor::UNNAMED_PROJECT)
-                        .to_string(),
-                )
-            })
-        })
-        .collect()
-}
-
-/// The spaces `herdr-app ls` printed, by id, with whether someone named
-/// each: every JSON object in it with a string `id` and a boolean `named`,
-/// as the app describes a space. Anything else gives none.
-pub fn app_spaces(listed: &[u8]) -> BTreeMap<String, bool> {
-    fn walk(value: &Value, found: &mut BTreeMap<String, bool>) {
-        match value {
-            Value::Object(object) => {
-                if let (Some(Value::String(id)), Some(Value::Bool(named))) =
-                    (object.get("id"), object.get("named"))
-                {
-                    found.insert(id.clone(), *named);
-                }
-                object.values().for_each(|value| walk(value, found));
-            }
-            Value::Array(values) => values.iter().for_each(|value| walk(value, found)),
-            _ => {}
-        }
-    }
-    let mut found = BTreeMap::new();
-    if let Ok(value) = serde_json::from_slice::<Value>(listed) {
-        walk(&value, &mut found);
-    }
-    found
-}
-
-/// The Herdr app's command-line tool: `HERDR_APP_BIN`, else `herdr-app`.
-fn herdr_app() -> Option<PathBuf> {
-    std::env::var_os("HERDR_APP_BIN")
-        .filter(|bin| !bin.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| find_executable("herdr-app"))
-}
-
-/// Whether a Herdr app window listens on its socket, found without asking
-/// the app (`herdr-app` with no window open says so and does nothing, but a
-/// look at the socket costs no process).
-fn app_window_open() -> bool {
-    let home = std::env::var_os("HERDR_APP_HOME")
-        .filter(|home| !home.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| crate::paths::home().map(|home| home.join(".config/herdr-app")));
-    home.is_some_and(|home| UnixStream::connect(home.join("herdr-app.sock")).is_ok())
-}
-
-/// Whether the daemon for the core of this environment should name the
-/// Herdr app's spaces: only for the user's default core, the one the app's
-/// window shows. `session` is `HC_SESSION`, `socket` `HC_SOCKET`.
-pub fn names_spaces(session: Option<&str>, socket: Option<&str>) -> bool {
-    socket.is_none_or(str::is_empty)
-        && session.is_none_or(|session| session.is_empty() || session == "default")
 }
 
 #[cfg(test)]
