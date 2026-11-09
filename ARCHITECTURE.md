@@ -2367,12 +2367,14 @@ unchanged). A worker is a terminal of its own, `--no-parent --no-notify`,
 in a worktree made with `git worktree add` where Herdr makes them
 (`~/.herdr/worktrees/<repo>/worktree-<name>`, branch `worktree/<name>`).
 A request id is found again by its label under a lock file in
-`~/.local/state/corgi/hc/`. Every agent starts through `AGENT_SCRIPT`
-(`/bin/sh -c`), which unsets `CLAUDECODE`, `CLAUDE_PID`, `CLAUDE_EFFORT`
-and every `CLAUDE_CODE_*` and `HERDR_*` variable before it runs the agent:
-the user's core may have been started from a Claude Code session in a
-Herdr pane, and a Claude Code that inherits that session's marker saves no
-transcript. Claude Code is given its session id (`--session-id`), so it is
+`~/.local/state/corgi/hc/`. Every agent starts through `agent_script()`
+(`/bin/sh -c`), which unsets the variables `SESSION_VARIABLES` lists before
+it runs the agent: a Claude Code session's own marks (`CLAUDECODE`,
+`CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_CHILD_SESSION`,
+`CLAUDE_CODE_SESSION_ID` and the like) and every `HERDR_*`. The user's core
+may have been started from a Claude Code session in a Herdr pane, and a
+Claude Code that inherits that session's marker saves no transcript. A
+user's own `CLAUDE_CODE_*` settings (Bedrock, Vertex, limits) pass through. Claude Code is given its session id (`--session-id`), so it is
 labelled before it starts; its first prompt comes after `--`, past
 `--add-dir`, which takes several values. Codex always gets `--no-daemon`;
 OpenCode runs by full path with `--prompt`. Claude Code's folder-trust

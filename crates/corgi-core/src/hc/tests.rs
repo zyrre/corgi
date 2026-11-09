@@ -12,8 +12,9 @@ use std::{
 use super::{
     agents::{agent_state, dashboard_agents, shell_in_front, tag},
     launch::{
-        AGENT_SCRIPT, Start, agent_argv, answer_folder_trust, create_worktree_in, harness_command,
-        harness_refusal, launch_worker, new_session_id, project_space, shell_line, task_title,
+        SESSION_VARIABLES, Start, agent_argv, agent_script, answer_folder_trust,
+        create_worktree_in, harness_command, harness_refusal, launch_worker, new_session_id,
+        project_space, shell_line, task_title,
     },
     *,
 };
@@ -518,7 +519,7 @@ fn each_harness_starts_with_its_first_prompt_and_resumes_by_its_session() {
 }
 
 #[test]
-fn the_agent_script_drops_claude_code_and_herdr_variables_and_runs_in_its_folder() {
+fn the_agent_script_drops_session_markers_and_keeps_the_users_settings() {
     let scratch = ScratchDir::new("hc-script");
     let dir = scratch.canonicalize().unwrap();
     let argv = agent_argv(
@@ -526,35 +527,55 @@ fn the_agent_script_drops_claude_code_and_herdr_variables_and_runs_in_its_folder
         None,
         &["/bin/sh".into(), "-c".into(), "pwd; env".into()],
     );
-    let output = Command::new(&argv[0])
-        .args(&argv[1..])
-        .env("CLAUDE_CODE_CHILD_SESSION", "1")
-        .env("CLAUDE_CODE_SESSION_ID", "s")
-        .env("CLAUDECODE", "1")
-        .env("CLAUDE_PID", "1")
-        .env("HERDR_PANE_ID", "w1:p1")
-        .env("HERDR_SOCKET_PATH", "/x.sock")
-        .env("CORGI_KEPT", "yes")
-        .env("CLAUDE_CONFIG_DIR_KEPT", "yes")
-        .output()
-        .unwrap();
+    let dropped = [
+        "CLAUDECODE",
+        "CLAUDE_PID",
+        "CLAUDE_EFFORT",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        "HERDR_PANE_ID",
+        "HERDR_SOCKET_PATH",
+        "HERDR_ENV",
+    ];
+    // A user's own settings, which look alike.
+    let kept = [
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+        "CLAUDE_CODE_SESSION_IDX",
+        "CLAUDE_CONFIG_DIR",
+        "ANTHROPIC_MODEL",
+        "XHERDR_PANE_ID",
+    ];
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]);
+    for name in dropped.iter().chain(&kept) {
+        command.env(name, "1");
+    }
+    let output = command.output().unwrap();
     let text = String::from_utf8(output.stdout).unwrap();
     let mut lines = text.lines();
     assert_eq!(lines.next(), Some(dir.to_string_lossy().as_ref()));
     let names: Vec<&str> = lines.filter_map(|line| line.split('=').next()).collect();
-    for gone in [
-        "CLAUDE_CODE_CHILD_SESSION",
-        "CLAUDE_CODE_SESSION_ID",
-        "CLAUDECODE",
-        "CLAUDE_PID",
-        "HERDR_PANE_ID",
-        "HERDR_SOCKET_PATH",
-    ] {
-        assert!(!names.contains(&gone), "{gone} was kept");
+    for name in dropped {
+        assert!(!names.contains(&name), "{name} was kept");
     }
-    assert!(names.contains(&"CORGI_KEPT"));
-    assert!(names.contains(&"CLAUDE_CONFIG_DIR_KEPT"));
-    assert!(AGENT_SCRIPT.starts_with("for v in"));
+    for name in kept {
+        assert!(names.contains(&name), "{name} was dropped");
+    }
+    // Every name the list gives is one the script drops.
+    for name in SESSION_VARIABLES {
+        let name = name.trim_end_matches('*');
+        assert!(
+            dropped.iter().any(|dropped| dropped.starts_with(name)),
+            "{name} is not tested"
+        );
+    }
 }
 
 #[test]
@@ -638,7 +659,10 @@ fn a_worker_starts_in_its_checkout_with_corgis_labels() {
         format!("|--label|herdr.space={space}|"),
         format!("|--label|corgi.session={session}|"),
         "|--label|corgi.request=20261109-cache|".into(),
-        format!("|--json|--|/bin/sh|-c|{AGENT_SCRIPT}|corgi-agent|{root_text}||"),
+        format!(
+            "|--json|--|/bin/sh|-c|{}|corgi-agent|{root_text}||",
+            agent_script()
+        ),
         format!("|--session-id|{session}|--model|haiku|--|# Fix the cache\n"),
     ] {
         assert!(run.contains(&part), "{part} not in {run}");
@@ -646,7 +670,7 @@ fn a_worker_starts_in_its_checkout_with_corgis_labels() {
     assert!(
         run.contains(&format!(
             "|--label|corgi.resume=/bin/sh -c '{}' corgi-agent {root_text} '' ",
-            AGENT_SCRIPT.replace('\'', r"'\''")
+            agent_script().replace('\'', r"'\''")
         )),
         "{run}"
     );

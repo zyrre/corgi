@@ -6,7 +6,7 @@
 //! start its successor in the same terminal, which keeps its address, its
 //! labels and the workers hc counts as its children (`docs/herdr-app-port.md`).
 //!
-//! Every agent starts through [`AGENT_SCRIPT`], which removes the variables
+//! Every agent starts through [`agent_script`], which removes the variables
 //! a Claude Code session and a Herdr pane hand their children: a core
 //! started from inside one passes them to every terminal, and a Claude Code
 //! that inherits them saves no transcript, which Corgi reads for reports,
@@ -41,13 +41,48 @@ use super::{
     calling_terminal,
 };
 
+/// The variables Corgi removes from every agent it starts on hc: the ones a
+/// Claude Code session and a Herdr pane hand to the processes they start,
+/// which describe that session or pane, not the user's setup. A core
+/// started from inside such a session passes them to every terminal, and a
+/// Claude Code that inherits `CLAUDE_CODE_CHILD_SESSION` saves no
+/// transcript, which Corgi reads for reports, context and cache. Only these
+/// go: a user's own settings, such as `CLAUDE_CODE_USE_BEDROCK` or a
+/// limit, still reach the agent. A name ending in `*` stands for every name
+/// it starts with.
+pub const SESSION_VARIABLES: [&str; 10] = [
+    // Claude Code's marks on the processes of one of its sessions.
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_*",
+    // The pane and session of a Herdr TUI, which would point Corgi there.
+    "HERDR_*",
+];
+
 /// The script every agent starts through, run by `/bin/sh -c` with the
 /// agent's folder as `$1`, a file whose text is the agent's last argument
 /// (or an empty word) as `$2`, and the agent's command after them. It
-/// removes the variables of a Claude Code session (`CLAUDECODE`,
-/// `CLAUDE_PID`, `CLAUDE_EFFORT` and every `CLAUDE_CODE_*`) and of a Herdr
-/// pane (`HERDR_*`), then runs the agent in the folder in its place.
-pub const AGENT_SCRIPT: &str = r#"for v in $(env | sed -nE 's/^((CLAUDE_CODE|HERDR)_[A-Za-z0-9_]*|CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT)=.*/\1/p'); do unset "$v"; done; cd "$1" || exit 1; p=$2; shift 2; if [ -n "$p" ]; then exec "$@" "$(cat "$p")"; fi; exec "$@""#;
+/// unsets [`SESSION_VARIABLES`], then runs the agent in the folder in its
+/// place.
+pub fn agent_script() -> String {
+    let names: Vec<String> = SESSION_VARIABLES
+        .iter()
+        .map(|name| match name.strip_suffix('*') {
+            Some(prefix) => format!("{prefix}[A-Za-z0-9_]*"),
+            None => name.to_string(),
+        })
+        .collect();
+    format!(
+        r#"for v in $(env | sed -nE 's/^({})=.*/\1/p'); do unset "$v"; done; cd "$1" || exit 1; p=$2; shift 2; if [ -n "$p" ]; then exec "$@" "$(cat "$p")"; fi; exec "$@""#,
+        names.join("|")
+    )
+}
 
 /// The name the script runs as (its `$0`), which `ps` shows until the agent
 /// replaces it.
@@ -387,13 +422,13 @@ pub fn harness_command(
     command
 }
 
-/// The argv that runs `command` through [`AGENT_SCRIPT`] in `dir`, with the
+/// The argv that runs `command` through [`agent_script`] in `dir`, with the
 /// text of `prompt_file` as its last argument when there is one.
 pub fn agent_argv(dir: &Path, prompt_file: Option<&Path>, command: &[String]) -> Vec<String> {
     let mut argv = vec![
         "/bin/sh".to_string(),
         "-c".to_string(),
-        AGENT_SCRIPT.to_string(),
+        agent_script(),
         SCRIPT_NAME.to_string(),
         dir.to_string_lossy().into_owned(),
         prompt_file
