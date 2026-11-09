@@ -414,7 +414,11 @@ shellcheck scripts/herdr-corgi-dashboard scripts/test-herdr-corgi-dashboard
 
 Before handing off changes to `scripts/install.sh`, `scripts/link-command.sh`
 or `herdr-app/install.sh`, run their shell test, which serves a fake release
-from a local directory and uses a fake `cargo` and a fake `herdr-app`:
+from a local directory and uses a fake `cargo` and a fake `herdr-app`. In a git
+checkout the installers build from source unless HEAD is the tag `v<version>`
+(Herdr's own `.tmp-install-*/checkout` and `CORGI_BUILD=release` download
+regardless; `CORGI_BUILD=source` always builds). Never run the real install
+against your own checkout or `~/.config/herdr-app`; the tests use temp homes:
 
 ```bash
 bash scripts/test-install

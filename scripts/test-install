@@ -202,8 +202,17 @@ test_downloads_release_binary() {
   check_stderr "download: says what it installed" "installed the prebuilt $asset v$version" "$state"
 }
 
-# --- test: a clean git checkout past the release commit still downloads ----
-test_clean_checkout_past_tag_downloads() {
+# Like make_git_checkout, without the commit past the release tag.
+make_git_checkout_on_tag() {
+  local checkout="$1/checkout"
+  git -C "$checkout" init -q
+  git -C "$checkout" add .
+  git -C "$checkout" -c user.name=test -c user.email=test@example.com commit -q -m release
+  git -C "$checkout" tag "v$version"
+}
+
+# --- test: a clean checkout past the release tag builds from source --------
+test_checkout_past_tag_builds_from_source() {
   local state status=0
   state="$(new_state past-tag)"
   publish_release "$state" "corgi $version"
@@ -211,8 +220,82 @@ test_clean_checkout_past_tag_downloads() {
 
   run_install "$state" || status=$?
   check "past tag: exit status" "0" "$status"
-  check "past tag: installs the release binary" "corgi $version" "$(installed "$state")"
-  check "past tag: cargo not run" "0" "$(count_cargo "$state")"
+  check "past tag: builds from source" "corgi built from source" "$(installed "$state")"
+  check "past tag: cargo run once" "1" "$(count_cargo "$state")"
+  check_stderr "past tag: says why" "this checkout is not on the release tag v$version" "$state"
+}
+
+# --- test: a checkout on the release tag downloads -------------------------
+test_checkout_on_tag_downloads() {
+  local state status=0
+  state="$(new_state on-tag)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout_on_tag "$state"
+
+  run_install "$state" || status=$?
+  check "on tag: exit status" "0" "$status"
+  check "on tag: installs the release binary" "corgi $version" "$(installed "$state")"
+  check "on tag: cargo not run" "0" "$(count_cargo "$state")"
+
+  # A checkout with no tag at all (a shallow clone) is not on the release.
+  status=0
+  state="$(new_state no-tag)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout_on_tag "$state"
+  git -C "$state/checkout" tag -d "v$version" >/dev/null
+  run_install "$state" || status=$?
+  check "no tag: builds from source" "corgi built from source" "$(installed "$state")"
+}
+
+# --- test: CORGI_BUILD overrides the choice both ways ----------------------
+test_build_override() {
+  local state status=0
+  state="$(new_state override-release)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout "$state"
+  CORGI_BUILD=release run_install "$state" || status=$?
+  check "release override, past tag: exit status" "0" "$status"
+  check "release override, past tag: downloads" "corgi $version" "$(installed "$state")"
+  check "release override, past tag: cargo not run" "0" "$(count_cargo "$state")"
+
+  status=0
+  state="$(new_state override-source)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout_on_tag "$state"
+  CORGI_BUILD=source run_install "$state" || status=$?
+  check "source override, on tag: exit status" "0" "$status"
+  check "source override, on tag: builds" "corgi built from source" "$(installed "$state")"
+  check "source override, on tag: cargo run once" "1" "$(count_cargo "$state")"
+
+  # Forcing the download does not trust a dirty tree, and an unknown value is ignored.
+  status=0
+  state="$(new_state override-dirty)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout_on_tag "$state"
+  echo "# local edit" >>"$state/checkout/scripts/install.sh"
+  CORGI_BUILD=release run_install "$state" || status=$?
+  check "release override, dirty: builds" "corgi built from source" "$(installed "$state")"
+
+  status=0
+  state="$(new_state override-unknown)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout "$state"
+  CORGI_BUILD=nonsense run_install "$state" || status=$?
+  check "unknown override: builds like the default" "corgi built from source" "$(installed "$state")"
+  check_stderr "unknown override: says it is ignored" "ignoring CORGI_BUILD=nonsense" "$state"
+}
+
+# --- test: Herdr's own plugin install downloads whatever its HEAD ----------
+test_herdr_checkout_past_tag_downloads() {
+  local state status=0
+  state="$(new_herdr_state herdr-past-tag)"
+  publish_release "$state" "corgi $version"
+  make_git_checkout "$state"
+
+  run_install "$state" || status=$?
+  check "herdr past tag: exit status" "0" "$status"
+  check "herdr past tag: installs the release binary" "corgi $version" "$(installed "$state")"
+  check "herdr past tag: cargo not run" "0" "$(count_cargo "$state")"
 }
 
 # --- test: uncommitted changes build from source ---------------------------
@@ -895,6 +978,19 @@ test_app_install_piped() {
   check "piped again: exit status" "0" "$status"
   check_stderr "piped again: updates the checkout" "updating $checkout" "$state"
 
+  # Without --version it installs the main branch, past the tag, and still
+  # takes the pinned download.
+  status=0
+  echo "# after the release" >>"$repo/herdr-plugin.toml"
+  git -C "$repo" -c user.name=test -c user.email=test@example.com commit -q -am "past the release"
+  : >"$state/calls.log"
+  FAKE_STATE="$state" HOME="$state/home" CORGI_DOWNLOAD_URL="file://$state/release" \
+    CORGI_REPO_URL="$repo" PATH="$state/bin:$PATH" \
+    sh -s -- --cli-only <"$repo/herdr-app/install.sh" 2>"$state/stderr.log" || status=$?
+  check "piped main: exit status" "0" "$status"
+  check "piped main: downloads, cargo not run" "0" "$(count_cargo "$state")"
+  check_stderr "piped main: installs the prebuilt binary" "installed the prebuilt $asset v$version" "$state"
+
   status=0
   FAKE_STATE="$state" HOME="$state/home" CORGI_REPO_URL="$repo" PATH="$state/bin:$PATH" \
     sh -s -- --version 9.9.9 <"$repo/herdr-app/install.sh" 2>"$state/stderr.log" || status=$?
@@ -906,7 +1002,10 @@ test_replaced_remote_artifacts
 test_invalid_pins
 test_remote_sums_not_required
 test_downloads_release_binary
-test_clean_checkout_past_tag_downloads
+test_checkout_past_tag_builds_from_source
+test_checkout_on_tag_downloads
+test_build_override
+test_herdr_checkout_past_tag_downloads
 test_dirty_checkout_builds_from_source
 test_forced_source_build
 test_checksum_mismatch_builds_from_source
