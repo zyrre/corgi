@@ -501,6 +501,35 @@ build; delete the session afterwards and check `herdr session list`. Then:
   worktree's `target/` (check its SHA-256 against GitHub's) and run only as
   a private server.
 
+## Testing on hc (herdr-core)
+
+`crates/corgi-core/src/hc/tests.rs` drives the hc client against a fake
+`hc` script (canned output per command, or per call with `CMD.N.out`). To
+try the commands live, use the user's core, which must never be stopped or
+restarted, and only terminals you start; remove each by address
+(`hc kill t7; hc rm t7`), never by name pattern. Things that bit:
+
+- `hc ls --json` gives `status` as a bare word and no labels; `hc get` gives
+  a record and the labels. hc's options after the program are the
+  program's (`hc run … sleep 60 --json` passes `--json` to `sleep`), so put
+  `--json` before `--`.
+- A Herdr TUI pane's variables reach this shell, so to act as a plain
+  terminal outside Herdr unset `HERDR_*` and `CLAUDE_CODE_*` (with `env -u`)
+  and pass `--backend hc`; to act inside hc, run the command as
+  `hc run --name <probe> --cwd <dir> -- <corgi> …` and `hc rm` it after.
+- A Claude Code started under hc answers in the user's own permission
+  mode (auto mode here) and may draft a `/feedback` report about what it
+  saw; such a draft goes away with its terminal, and is never sent unless
+  someone presses its key.
+- `--model haiku` keeps a test cheap. A scratch project's folder-trust
+  question is answered by Corgi when `CORGI_CREATED_PROJECTS_FILE` names a
+  file listing the project's real path (`/private/tmp/…` on macOS).
+- Afterwards remove the worktree with `git worktree remove`, and the
+  state directory under `~/.local/state/corgi/supervisors/<project>`, the
+  transcripts under `~/.claude/projects/`, OpenCode's sessions
+  (`opencode session delete`, run in the project) and the lock under
+  `~/.local/state/corgi/hc/` that the test created.
+
 ## Session recovery checks
 
 `cargo test recovery` uses isolated native-store/config fixtures and fake Herdr

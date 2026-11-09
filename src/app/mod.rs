@@ -59,6 +59,7 @@ pub(crate) use prompt::PromptForm;
 mod bar;
 mod cards;
 mod cli;
+mod hc_cli;
 mod navigate;
 pub(crate) mod orphans;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};

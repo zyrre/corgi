@@ -7,6 +7,7 @@
 
 pub mod activity;
 pub mod art;
+pub mod backend;
 pub mod backlog;
 pub mod catalog;
 pub mod choices;
@@ -17,6 +18,7 @@ pub mod draft;
 pub mod first_prompt;
 pub mod git;
 pub mod harness;
+pub mod hc;
 pub mod herdr;
 pub mod hook;
 pub mod inbox;

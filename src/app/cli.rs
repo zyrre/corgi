@@ -16,19 +16,22 @@ use crate::{
     },
     git::{git_current_branch, git_output, trust_root},
     harness::Harness,
-    herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS, ReadSource},
+    herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS},
     inbox::{self, Inbox, Item, Kind},
     model::{PromptCache, PromptCacheKind, cache_countdown, compact_tokens},
     paths::{corgi_state_dir, expand_home, is_home},
     session::SessionReader,
     supervisor::{OLD_WAKE_PREFIX, WAKE_PREFIX},
-    tag::{TagOptions, tag_agent},
+    tag::TagOptions,
     time::unix_now,
 };
+
+use corgi_core::backend::Backend;
 
 use super::{
     App,
     catalog::{EFFORT_LEVELS, default_harness},
+    hc_cli,
     launch::{
         CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL,
         calling_supervisor_harness, launch_agent, sanitize_agent_name, supervisor_harness_error,
@@ -66,6 +69,9 @@ Options:
                      and start nothing. ID is 1 to 80 ASCII letters, digits,
                      '.', '_' or '-', such as a brief id; a retry made while
                      the first spawn still runs waits for it
+  --backend B        herdr (a Herdr TUI pane) or hc (a herdr-core terminal,
+                     for the Herdr app). Default: the one spawn runs in, else
+                     hc unless a Herdr TUI is running
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
@@ -76,16 +82,18 @@ const REQUEST_ID_PUNCTUATION: [char; 3] = ['.', '_', '-'];
 /// What `corgi spawn` was asked for, before anything is resolved against
 /// Herdr or the file system.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct SpawnOptions {
-    project: Option<String>,
-    harness: Option<Harness>,
-    model: String,
-    effort: String,
-    checkout: Checkout,
-    name: Option<String>,
-    task_file: Option<String>,
-    request_id: Option<String>,
-    agent_args: Vec<String>,
+pub(super) struct SpawnOptions {
+    pub(super) project: Option<String>,
+    pub(super) harness: Option<Harness>,
+    pub(super) model: String,
+    pub(super) effort: String,
+    pub(super) checkout: Checkout,
+    pub(super) name: Option<String>,
+    pub(super) task_file: Option<String>,
+    pub(super) request_id: Option<String>,
+    pub(super) agent_args: Vec<String>,
+    /// Where to start the agent, when `--backend` says.
+    pub(super) backend: Option<Backend>,
 }
 
 fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
@@ -111,6 +119,13 @@ fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
             "--name" => options.name = Some(value()?),
             "--task-file" => options.task_file = Some(value()?),
             "--request-id" => options.request_id = Some(valid_request_id(value()?)?),
+            "--backend" => {
+                let name = value()?;
+                options.backend = Some(
+                    Backend::from_name(&name)
+                        .with_context(|| format!("--backend must be herdr or hc, not {name:?}"))?,
+                );
+            }
             "--" => {
                 options.agent_args = args.by_ref().cloned().collect();
                 break;
@@ -170,6 +185,9 @@ pub fn spawn(args: &[String]) -> Result<()> {
     }
     let prompt = read_task(options.task_file.as_deref(), true)?;
     anyhow::ensure!(!prompt.is_empty(), "the task is empty\n\n{SPAWN_USAGE}");
+    if hc_cli::launch_backend(options.backend) == Backend::Hc {
+        return print_launch(&hc_cli::spawn(options, project, prompt)?);
+    }
 
     let client = HerdrClient::from_env()?;
     // With a request id, the project's spawn lock is held until this spawn
@@ -311,7 +329,7 @@ pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_j
 
 /// The harness `corgi spawn` starts: the one asked for, else the calling
 /// supervisor's own, else the default the new-agent form would preset.
-fn spawn_harness(
+pub(super) fn spawn_harness(
     requested: Option<Harness>,
     supervisor: Option<Harness>,
     default: impl FnOnce() -> Harness,
@@ -343,8 +361,12 @@ Options:
   --harness KIND     claude (default) or codex
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max
-  --name NAME        Agent name (default: supervisor-<project>)
+  --name NAME        Agent name (default: supervisor-<project>, and on hc
+                     <project>-supervisor)
   --task-file PATH   Read the first request from PATH
+  --backend B        herdr (a Herdr TUI pane) or hc (a kept herdr-core shell
+                     terminal, for the Herdr app). Default: the one this
+                     runs in, else hc unless a Herdr TUI is running
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
@@ -362,6 +384,7 @@ pub fn supervisor_command(args: &[String]) -> Result<()> {
     );
     let harness = options
         .harness
+        .clone()
         .unwrap_or_else(|| Harness::SUPERVISOR_HARNESSES[0].clone());
     anyhow::ensure!(
         harness.supports_supervisor(),
@@ -370,6 +393,9 @@ pub fn supervisor_command(args: &[String]) -> Result<()> {
     let project = existing_project_dir(positional.or(options.project.as_deref()))?;
     anyhow::ensure!(!is_home(&project), SUPERVISOR_HOME_REFUSAL);
     let task = read_task(options.task_file.as_deref(), false)?;
+    if hc_cli::launch_backend(options.backend) == Backend::Hc {
+        return print_launch(&hc_cli::supervisor(&options, harness, &project, task)?);
+    }
 
     let (client, app) = connected_app()?;
     let root = project_root_of(&client, &project)?;
@@ -407,10 +433,10 @@ refuses to type into it, a line on stderr says so.";
 pub fn fleet(args: &[String]) -> Result<()> {
     anyhow::ensure!(args.len() <= 1, "Usage: corgi fleet [PROJECT]");
     let project = existing_project_dir(args.first().map(String::as_str))?;
-    let (client, app) = connected_app()?;
-    let root = project_root_of(&client, &project)?;
+    let seen = hc_cli::seen()?;
+    let root = seen.root(&project)?;
     println!("NAME\tROLE\tSTATE\tTASK\tMODEL\tCTX\tCACHE\tCWD\tTAG");
-    for row in fleet_rows(&app, &root) {
+    for row in fleet_rows_of(&seen.agents(), &root) {
         println!("{row}");
     }
     print_inbox_footer(&root);
@@ -418,10 +444,17 @@ pub fn fleet(args: &[String]) -> Result<()> {
 }
 
 /// The rows `corgi fleet` prints for the agents of the project at `root`.
+#[cfg(test)]
 pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
+    fleet_rows_of(&app.agents, root)
+}
+
+/// The rows `corgi fleet` prints for those of `agents` in the project at
+/// `root`.
+pub(super) fn fleet_rows_of(agents: &[crate::model::DashboardAgent], root: &str) -> Vec<String> {
     let field = |text: &str| text.replace(['\t', '\n'], " ");
     let now = unix_now();
-    app.agents
+    agents
         .iter()
         .filter(|agent| agent.project_root == root)
         .map(|agent| {
@@ -515,9 +548,9 @@ fn parse_tag_options(args: &[String]) -> Result<TagOptions> {
 pub fn tag_command(args: &[String]) -> Result<()> {
     let options = parse_tag_options(args)?;
     let project = existing_project_dir(options.project.as_deref())?;
-    let (client, app) = connected_app()?;
-    let root = project_root_of(&client, &project)?;
-    println!("{}", tag_agent(&client, &app.agents, &root, &options)?);
+    let seen = hc_cli::seen()?;
+    let root = seen.root(&project)?;
+    println!("{}", seen.tag(&root, &options)?);
     Ok(())
 }
 
@@ -594,15 +627,15 @@ pub fn digest(args: &[String]) -> Result<()> {
         lookup = Some(make(value.clone()));
     }
     let project = existing_project_dir(project)?;
-    let (client, app) = connected_app()?;
-    let root = project_root_of(&client, &project)?;
+    let seen = hc_cli::seen()?;
+    let root = seen.root(&project)?;
     let state_dir = crate::supervisor::state_dir(&root)?;
     if let Some(lookup) = lookup {
         print!("{}", digest_lookup(&state_dir, &root, lookup)?);
         return Ok(());
     }
 
-    print!("{}", digest_summary(&root, &state_dir, &app.agents));
+    print!("{}", digest_summary(&root, &state_dir, &seen.agents()));
     print_inbox_footer(&root);
     Ok(())
 }
@@ -676,17 +709,12 @@ pub fn report(args: &[String]) -> Result<()> {
     let [target] = args else {
         bail!("Usage: corgi report NAME");
     };
-    let connected = connected_app().ok();
-    let running = connected.as_ref().and_then(|(_, app)| {
-        app.agents
-            .iter()
-            .find(|agent| {
-                agent.info.name.as_deref() == Some(target.as_str()) || agent.info.pane_id == *target
-            })
-            .cloned()
-    });
-    let printed = match (&connected, running) {
-        (Some((client, app)), Some(agent)) => print_running_report(client, app, &agent, target),
+    let seen = hc_cli::seen().ok();
+    let running = seen.as_ref().and_then(|seen| seen.find(target));
+    let printed = match (&seen, running) {
+        (Some(seen), Some((agent, screen))) => {
+            print_running_report(&seen.agents(), &screen, &agent, target)
+        }
         _ => inbox_report(target)?
             .with_context(|| format!("no running agent named {target}, and no report kept for it"))
             .and_then(|(dir, item)| print_kept_report(target, &dir, &item)),
@@ -702,8 +730,8 @@ pub fn report(args: &[String]) -> Result<()> {
 /// so it is never another agent's of the same name or one it has since
 /// said more than; else the newest thing it said, or its screen.
 fn print_running_report(
-    client: &HerdrClient,
-    app: &App,
+    agents: &[crate::model::DashboardAgent],
+    screen: &hc_cli::Screen,
     agent: &crate::model::DashboardAgent,
     target: &str,
 ) -> Result<()> {
@@ -716,15 +744,14 @@ fn print_running_report(
         .map(|item| (dir, item));
     if let Some((dir, item)) = kept {
         print_kept_report(name, &dir, &item)?;
-    } else if let Some(entry) = SessionReader::among(app.agents.iter().map(|agent| &agent.info))
+    } else if let Some(entry) = SessionReader::among(agents.iter().map(|agent| &agent.info))
         .facts(info)
         .report
     {
         println!("{}", entry.text);
     } else {
         eprintln!("(no readable transcript for {target}; showing its screen)");
-        let read = client.read_agent(&info.pane_id, ReadSource::RecentUnwrapped, Some(120))?;
-        println!("{}", read.text.trim_end());
+        println!("{}", screen.read(&info.pane_id, 120)?.trim_end());
     }
     Ok(())
 }
@@ -1220,13 +1247,13 @@ fn existing_project_dir(project: Option<&str>) -> Result<PathBuf> {
 /// A client for the injected Herdr socket and an app that has read one
 /// snapshot. The caller is an agent pane, not a dashboard, so its own agent
 /// is listed like any other and its name counts as taken.
-fn connected_app() -> Result<(HerdrClient, App)> {
+pub(super) fn connected_app() -> Result<(HerdrClient, App)> {
     let client = HerdrClient::from_env()?;
     Ok((client.clone(), refreshed_app(client)?))
 }
 
 /// An app on `client` that has read one snapshot.
-fn refreshed_app(client: HerdrClient) -> Result<App> {
+pub(super) fn refreshed_app(client: HerdrClient) -> Result<App> {
     let mut app = App::headless(client);
     app.refresh();
     anyhow::ensure!(app.connected, "Herdr is unavailable: {}", app.status);
@@ -1520,7 +1547,7 @@ mod tests {
         let options = parse_spawn_options(&args(
             "--project ~/repos/corgi --harness Claude --model opus --effort HIGH \
              --checkout directory --name fix-cache --task-file brief.md \
-             --request-id 20261002-fix-cache \
+             --request-id 20261002-fix-cache --backend hc \
              -- --append-system-prompt-file role.md --name x",
         ))
         .unwrap();
@@ -1536,6 +1563,7 @@ mod tests {
                 task_file: Some("brief.md".into()),
                 request_id: Some("20261002-fix-cache".into()),
                 agent_args: args("--append-system-prompt-file role.md --name x"),
+                backend: Some(Backend::Hc),
             }
         );
         assert_eq!(
@@ -1552,6 +1580,8 @@ mod tests {
             "--harness gemini --effort high",
             "--task write-it",
             "--request-id",
+            "--backend tmux",
+            "--backend",
         ] {
             assert!(
                 parse_spawn_options(&args(bad)).is_err(),
