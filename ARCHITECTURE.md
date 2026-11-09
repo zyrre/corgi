@@ -2327,6 +2327,63 @@ says so instead of opening the dashboard (0.1.0 opened it for any word, so
 supervisor`, `corgi start`, `corgi handler` and `corgi steward`, were dropped
 in 0.2.0 and are unknown commands now.
 
+### On herdr-core (`hc`), the Herdr app's backend
+
+The port to the Herdr app (`docs/herdr-app-port.md`) starts with the
+command-line tools. `crates/corgi-core/src/hc/` is the client: `hc/mod.rs`
+shells out to `hc … --json` (an `HcError` keeps hc's `kind` and exit code),
+`hc/agents.rs` turns the terminals Corgi labelled into the same
+`DashboardAgent` rows the Herdr TUI's snapshot gives, and `hc/launch.rs`
+starts agents. `crates/corgi-core/src/backend.rs` chooses the backend:
+
+- inside an hc terminal (`HC_TERMINAL_ID`), hc, even with a Herdr pane's
+  variables leaked into it;
+- inside a Herdr TUI pane (`HERDR_SOCKET_PATH`), the TUI, exactly as before;
+- anywhere else, `fleet`, `report`, `digest` and `tag` see the agents of
+  both (hc only when its core already runs: any `hc` call starts a stopped
+  core, with the caller's environment), and `supervisor` and `spawn` start
+  on hc unless a Herdr TUI is running. `--backend herdr|hc` chooses for
+  those two anywhere.
+
+The command-line side is `src/app/hc_cli.rs`; `cli.rs` only dispatches.
+
+Labels replace pane tokens: `corgi.project` (the primary checkout,
+without symlinks), `corgi.role` (`supervisor` or `worker`), `corgi.request`,
+`corgi.task`, `corgi.harness`, `corgi.session` and `corgi.resume` (the
+command line that resumes the session, typed into a POSIX-quoting shell),
+`corgi.tag=merge` with `corgi.tag.at` (the state and hc `turn` it was tagged
+at, so a tag the agent has worked past stops showing), and `herdr.space`
+(the calling terminal's, else the project supervisor's, else
+`corgi-<project>-<hash>`, which the app creates when it first sees it). A
+row's `pane_id` is the terminal's address and its `state_change_seq` hc's
+`turn`; `done` and `idle` both rest, `error` reads as blocked.
+
+A supervisor is a `--keep` shell terminal named `<project>-supervisor`
+with the agent's command line typed into it, so that a handover can `/exit`
+and start its successor in the same terminal. Its role names `hc send`,
+`hc read` and `hc keys` where the TUI's names `herdr agent prompt`, `read`
+and `send-keys` (`STEERING` in `supervisor.rs`; the TUI's text is
+unchanged). A worker is a terminal of its own, `--no-parent --no-notify`,
+in a worktree made with `git worktree add` where Herdr makes them
+(`~/.herdr/worktrees/<repo>/worktree-<name>`, branch `worktree/<name>`).
+A request id is found again by its label under a lock file in
+`~/.local/state/corgi/hc/`. Every agent starts through `agent_script()`
+(`/bin/sh -c`), which unsets the variables `SESSION_VARIABLES` lists before
+it runs the agent: a Claude Code session's own marks (`CLAUDECODE`,
+`CLAUDE_PID`, `CLAUDE_EFFORT`, `CLAUDE_CODE_CHILD_SESSION`,
+`CLAUDE_CODE_SESSION_ID` and the like) and every `HERDR_*`. The user's core
+may have been started from a Claude Code session in a Herdr pane, and a
+Claude Code that inherits that session's marker saves no transcript. A
+user's own `CLAUDE_CODE_*` settings (Bedrock, Vertex, limits) pass through. Claude Code is given its session id (`--session-id`), so it is
+labelled before it starts; its first prompt comes after `--`, past
+`--add-dir`, which takes several values. Codex always gets `--no-daemon`;
+OpenCode runs by full path with `--prompt`. Claude Code's folder-trust
+question is answered as on the TUI, only in a project Corgi created, with
+Enter pressed only once Yes shows highlighted.
+
+Wakes, inbox delivery, handovers and resuming after a core stop are not on
+hc yet: they are the daemon's (`docs/herdr-app-port.md`, Design A).
+
 ### Plan usage
 
 A card shows the plan, the reading's age, and the 5-hour and weekly usage

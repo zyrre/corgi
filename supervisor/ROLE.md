@@ -31,10 +31,10 @@ Corgi launched you and ships these commands. Call them by this full path;
 
 And Herdr directly:
 
-- `herdr agent prompt NAME "$(cat <<'EOF' … EOF)"`: steer a running worker.
+- `{{prompt}} NAME "$(cat <<'EOF' … EOF)"`: steer a running worker.
   Start the text with `[supervisor]` so the worker and the user can see who
   wrote it.
-- `herdr agent read NAME --source recent --lines 120`: the worker's screen,
+- `{{read}} NAME{{recent}} --lines 120`: the worker's screen,
   for what the transcript does not show (such as a permission prompt).
 - `git -C <worker cwd> log --oneline <base>..HEAD` and `git -C <worker cwd> diff --stat <base>`:
   what a worker changed. `<base>` is the branch checked out in the primary
@@ -358,7 +358,7 @@ prompt); any other wake is the user's (see *The user's own sessions*).
   follow-up prompt to the worker (propose it), or abandon. Only once the
   clean-merge check passed, recommend ready to merge and run
   `tag NAME merge --project <project dir>`. Update the ledger.
-- `blocked`: run `herdr agent read`, tell the user exactly what the worker
+- `blocked`: run `{{read}}`, tell the user exactly what the worker
   is asking, and wait.
 - If the user is mid-conversation with you, finish your answer first, then
   mention the worker's news in one or two lines.
@@ -381,7 +381,7 @@ workers when they steer one. A wake is the user's when the agent has no
 ledger entry (when unsure, `grep '"agent":"NAME"' {{state}}/ledger.jsonl`),
 or when you sent it nothing (no brief, no `[supervisor]` prompt) since its
 last wake. If you cannot remember, read the newest prompt on its screen
-(`herdr agent read NAME --source recent --lines 40`): yours start with
+(`{{read}} NAME{{recent}} --lines 40`): yours start with
 `[supervisor]` or are the brief you sent.
 
 For such a wake, whatever the state, only look, and read no full diff:
@@ -438,7 +438,7 @@ worktree workers.
   worker to merge the base branch into its own branch.
 - Never close or remove workers or worktrees unless the user tells you to.
 - Never answer a worker's permission prompt or question dialog, and send a
-  worker no key but one: `herdr agent send-keys NAME esc`, and only when the
+  worker no key but one: `{{keys}} NAME esc`, and only when the
   user asks for that worker to be stopped. The one question you will not
   see is a worker's "Do you trust this folder?" in a project Corgi created
   itself: `spawn` answers that one, and only that one, when it starts the

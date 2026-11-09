@@ -23,6 +23,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub use crate::backend::Backend;
 use crate::{
     harness::Harness,
     model::{AgentInfo, AgentState},
@@ -31,7 +32,8 @@ use crate::{
 };
 
 /// The role, with `{{corgi}}` and `{{state}}` standing for the Corgi binary
-/// and the project's state directory.
+/// and the project's state directory, and the placeholders of [`STEERING`]
+/// for the commands that steer workers on the backend they run on.
 const ROLE: &str = include_str!("../../../supervisor/ROLE.md");
 
 /// How to hand over to a fresh session, which `corgi role handover` prints
@@ -243,19 +245,35 @@ pub fn corgi_bin(installed_plugin_root: Option<&Path>) -> Result<PathBuf> {
 /// It also compacts the ledger (see [`compact_ledger`]), for the same reason:
 /// no session of the project is running to append to it meanwhile.
 pub fn prepare(project_root: &str, corgi_bin: &Path) -> Result<Prepared> {
-    prepare_at(&state_base()?, project_root, corgi_bin)
+    prepare_for(project_root, corgi_bin, Backend::Herdr)
 }
 
-/// [`prepare`] under the Corgi state directory `base`.
-fn prepare_at(base: &Path, project_root: &str, corgi_bin: &Path) -> Result<Prepared> {
+/// [`prepare`] for a supervisor whose workers run on `backend`, which its
+/// role's commands steer them through.
+pub fn prepare_for(project_root: &str, corgi_bin: &Path, backend: Backend) -> Result<Prepared> {
+    prepare_at(&state_base()?, project_root, corgi_bin, backend)
+}
+
+/// [`prepare_for`] under the Corgi state directory `base`.
+fn prepare_at(
+    base: &Path,
+    project_root: &str,
+    corgi_bin: &Path,
+    backend: Backend,
+) -> Result<Prepared> {
     let (dir, old) = state_dirs_in(base, project_root);
     let (state_dir, warning) = migrate_state_dir(dir, &old)?;
-    let mut prepared = prepare_in(state_dir, project_root, corgi_bin)?;
+    let mut prepared = prepare_in(state_dir, project_root, corgi_bin, backend)?;
     prepared.warning = joined(warning.into_iter().chain(prepared.warning.take()));
     Ok(prepared)
 }
 
-fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Result<Prepared> {
+fn prepare_in(
+    state_dir: PathBuf,
+    project_root: &str,
+    corgi_bin: &Path,
+    backend: Backend,
+) -> Result<Prepared> {
     crate::inbox_privacy::state_dir(&state_dir)?;
     for dir in ["briefs", HANDOVERS_DIR] {
         fs::create_dir_all(state_dir.join(dir))
@@ -281,7 +299,7 @@ fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Resul
         .err()
         .map(|error| format!("The ledger was not compacted: {error:#}"));
     let role_file = state_dir.join(ROLE_FILE);
-    let role = role(corgi_bin, &state_dir);
+    let role = role_for(corgi_bin, &state_dir, backend);
     fs::write(&role_file, &role).with_context(|| format!("write {}", role_file.display()))?;
     Ok(Prepared {
         state_dir,
@@ -372,19 +390,42 @@ pub fn launch_of(state_dir: &Path, harness: &Harness) -> Launch {
         })
 }
 
+#[cfg(test)]
 fn role(corgi_bin: &Path, state_dir: &Path) -> String {
-    filled(ROLE, corgi_bin, state_dir)
+    role_for(corgi_bin, state_dir, Backend::Herdr)
+}
+
+fn role_for(corgi_bin: &Path, state_dir: &Path, backend: Backend) -> String {
+    filled(ROLE, corgi_bin, state_dir, backend)
 }
 
 /// The role's section on handing over, for the supervisor in `state_dir`
 /// whose commands call `corgi_bin`.
 pub fn handover_instructions(corgi_bin: &Path, state_dir: &Path) -> String {
-    filled(HANDOVER, corgi_bin, state_dir)
+    filled(HANDOVER, corgi_bin, state_dir, Backend::Herdr)
 }
 
-fn filled(text: &str, corgi_bin: &Path, state_dir: &Path) -> String {
-    text.replace("{{corgi}}", &corgi_bin.to_string_lossy())
-        .replace("{{state}}", &state_dir.to_string_lossy())
+/// The commands the role names for steering a worker, reading its screen
+/// and pressing a key in it, by placeholder: on the Herdr TUI, and on hc.
+const STEERING: [(&str, &str, &str); 4] = [
+    ("{{prompt}}", "herdr agent prompt", "hc send"),
+    ("{{read}}", "herdr agent read", "hc read"),
+    ("{{recent}}", " --source recent", ""),
+    ("{{keys}}", "herdr agent send-keys", "hc keys"),
+];
+
+fn filled(text: &str, corgi_bin: &Path, state_dir: &Path, backend: Backend) -> String {
+    let mut text = text
+        .replace("{{corgi}}", &corgi_bin.to_string_lossy())
+        .replace("{{state}}", &state_dir.to_string_lossy());
+    for (placeholder, herdr, hc) in STEERING {
+        let command = match backend {
+            Backend::Herdr => herdr,
+            Backend::Hc => hc,
+        };
+        text = text.replace(placeholder, command);
+    }
+    text
 }
 
 /// The supervisor's first prompt. With a task from the user, the supervisor
@@ -1396,8 +1437,13 @@ mod tests {
         let state = parent.join("project");
         fs::create_dir(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
-        let prepared =
-            prepare_in(state.clone(), "/repos/private", Path::new("/bin/corgi")).unwrap();
+        let prepared = prepare_in(
+            state.clone(),
+            "/repos/private",
+            Path::new("/bin/corgi"),
+            Backend::Herdr,
+        )
+        .unwrap();
         assert!(prepared.role_file.is_file());
         assert!(state.join("briefs").is_dir());
         assert_eq!(
@@ -1624,7 +1670,13 @@ mod tests {
         )
         .unwrap();
 
-        let prepared = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+        let prepared = prepare_at(
+            &base.0,
+            "/repos/weather",
+            Path::new("/opt/corgi"),
+            Backend::Herdr,
+        )
+        .unwrap();
         assert_eq!(prepared.warning, None);
         let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap();
         assert_eq!(read("ledger.jsonl"), format!("{b1}\n{bad}\n{a2}\n"));
@@ -1637,7 +1689,13 @@ mod tests {
 
         // A second launch finds nothing to move and leaves both as they are.
         let before = files(&dir);
-        prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+        prepare_at(
+            &base.0,
+            "/repos/weather",
+            Path::new("/opt/corgi"),
+            Backend::Herdr,
+        )
+        .unwrap();
         assert_eq!(files(&dir), before);
     }
 
@@ -1680,8 +1738,13 @@ mod tests {
                 assert!(note_written_since(real, 0));
                 assert_eq!(launch_of(real, &Harness::Claude).model, "opus");
 
-                let prepared =
-                    prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+                let prepared = prepare_at(
+                    &base.0,
+                    "/repos/weather",
+                    Path::new("/opt/corgi"),
+                    Backend::Herdr,
+                )
+                .unwrap();
                 assert_eq!(prepared.state_dir, dir);
                 assert_eq!(prepared.warning, None, "{left:?}");
                 assert!(!fs::symlink_metadata(&dir).unwrap().file_type().is_symlink());
@@ -1740,7 +1803,13 @@ mod tests {
                 assert!(prepared.role.contains(&dir.display().to_string()));
 
                 // Starting again finds it migrated and leaves the links alone.
-                let again = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
+                let again = prepare_at(
+                    &base.0,
+                    "/repos/weather",
+                    Path::new("/opt/corgi"),
+                    Backend::Herdr,
+                )
+                .unwrap();
                 assert_eq!((again.state_dir, again.warning), (dir.clone(), None));
                 assert_eq!(real.canonicalize().unwrap(), dir);
             }
@@ -1755,7 +1824,7 @@ mod tests {
 
         // Neither: a session starts in a new directory, with no link left.
         let (dir, old) = state_dirs_in(&base.0, "/repos/fresh");
-        let prepared = prepare_at(&base.0, "/repos/fresh", corgi_bin).unwrap();
+        let prepared = prepare_at(&base.0, "/repos/fresh", corgi_bin, Backend::Herdr).unwrap();
         assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
         assert!(dir.join("decisions.md").is_file() && dir.join("briefs").is_dir());
         assert!(old.iter().all(|old| fs::symlink_metadata(old).is_err()));
@@ -1774,7 +1843,7 @@ mod tests {
                 current_state_dir(dir.clone(), std::slice::from_ref(old)),
                 dir
             );
-            let prepared = prepare_at(&base.0, &project, corgi_bin).unwrap();
+            let prepared = prepare_at(&base.0, &project, corgi_bin, Backend::Herdr).unwrap();
             assert_eq!(prepared.state_dir, dir);
             let warning = prepared.warning.expect("a warning");
             assert!(warning.contains(&dir.display().to_string()), "{warning}");
@@ -1802,7 +1871,7 @@ mod tests {
             fs::write(path.join("decisions.md"), text).unwrap();
         }
         assert_eq!(current_state_dir(dir.clone(), &old), *corgis);
-        let prepared = prepare_at(&base.0, "/repos/both", corgi_bin).unwrap();
+        let prepared = prepare_at(&base.0, "/repos/both", corgi_bin, Backend::Herdr).unwrap();
         assert_eq!(prepared.state_dir, dir);
         let warning = prepared.warning.expect("a warning");
         assert_eq!(conflict(&dir, handler), Some(warning));
@@ -1824,7 +1893,7 @@ mod tests {
         fs::create_dir_all(corgis.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&dir, corgis).unwrap();
         assert_eq!(current_state_dir(dir.clone(), &old), dir);
-        let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin).unwrap();
+        let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin, Backend::Herdr).unwrap();
         assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
         assert!(link(corgis) && corgis.canonicalize().unwrap() == dir);
 
@@ -1832,7 +1901,7 @@ mod tests {
         // a fresh start, and the link, kept, resolves again.
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(current_state_dir(dir.clone(), &old), dir);
-        let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin).unwrap();
+        let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin, Backend::Herdr).unwrap();
         assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
         assert!(link(corgis) && corgis.canonicalize().unwrap() == dir);
 
@@ -1847,7 +1916,7 @@ mod tests {
             fs::create_dir_all(old[n].parent().unwrap()).unwrap();
             std::os::unix::fs::symlink(&elsewhere, &old[n]).unwrap();
             assert_eq!(current_state_dir(dir.clone(), &old), old[n]);
-            let prepared = prepare_at(&base.0, &project, corgi_bin).unwrap();
+            let prepared = prepare_at(&base.0, &project, corgi_bin, Backend::Herdr).unwrap();
             assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
             assert!(link(&old[n]) && link(&dir));
             assert_eq!(dir.canonicalize().unwrap(), elsewhere);
@@ -2195,6 +2264,36 @@ mod tests {
         ] {
             assert!(line.contains(rule), "{rule}");
         }
+    }
+
+    #[test]
+    fn the_role_steers_workers_with_the_commands_of_their_backend() {
+        let bin = Path::new("/opt/corgi/corgi");
+        let state = Path::new("/state");
+        let herdr = role_for(bin, state, Backend::Herdr);
+        for command in [
+            "- `herdr agent prompt NAME \"$(cat <<'EOF' … EOF)\"`: steer a running worker.",
+            "- `herdr agent read NAME --source recent --lines 120`: the worker's screen,",
+            "- `blocked`: run `herdr agent read`, tell",
+            "(`herdr agent read NAME --source recent --lines 40`)",
+            "`herdr agent send-keys NAME esc`",
+        ] {
+            assert!(herdr.contains(command), "{command}");
+        }
+        let hc = role_for(bin, state, Backend::Hc);
+        for command in [
+            "- `hc send NAME \"$(cat <<'EOF' … EOF)\"`: steer a running worker.",
+            "- `hc read NAME --lines 120`: the worker's screen,",
+            "- `blocked`: run `hc read`, tell",
+            "(`hc read NAME --lines 40`)",
+            "`hc keys NAME esc`",
+        ] {
+            assert!(hc.contains(command), "{command}");
+        }
+        for role in [&herdr, &hc] {
+            assert!(!role.contains("{{"), "a placeholder is left");
+        }
+        assert!(!hc.contains("herdr agent"));
     }
 
     #[test]

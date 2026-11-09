@@ -32,6 +32,28 @@ pub fn tag_agent(
     root: &str,
     options: &TagOptions,
 ) -> Result<String> {
+    tag_agent_with(agents, root, options, |agent, value| {
+        let info = &agent.info;
+        let name = info.name.as_deref().unwrap_or(options.name.as_str());
+        markers::tag_pane(
+            client,
+            &info.pane_id,
+            name,
+            markers::session_of(info),
+            value,
+        )
+    })
+}
+
+/// [`tag_agent`] with the tag written by `write`: given the agent, and the
+/// [`supervisor::MERGE_TOKEN`] value to tag it with, or `None` to clear its
+/// tag. Every check is made before `write` is called.
+pub fn tag_agent_with(
+    agents: &[DashboardAgent],
+    root: &str,
+    options: &TagOptions,
+    write: impl FnOnce(&DashboardAgent, Option<&str>) -> Result<()>,
+) -> Result<String> {
     let name = options.name.as_str();
     let agent = agents
         .iter()
@@ -42,10 +64,9 @@ pub fn tag_agent(
         .with_context(|| format!("no agent named {name} in {root}"))?;
     let info = &agent.info;
     let agent_name = info.name.as_deref().unwrap_or(name);
-    let session = markers::session_of(info);
     if !options.merge {
         let had = info.tokens.contains_key(supervisor::MERGE_TOKEN);
-        markers::tag_pane(client, &info.pane_id, agent_name, session, None)?;
+        write(agent, None)?;
         return Ok(if had {
             format!("Cleared the merge tag of {agent_name}")
         } else {
@@ -82,7 +103,7 @@ pub fn tag_agent(
         "{agent_name} has no commits ahead of {base} in {checkout}; there is nothing to merge"
     );
     let value = supervisor::merge_tag_value(state, info.state_change_seq);
-    markers::tag_pane(client, &info.pane_id, agent_name, session, Some(&value))?;
+    write(agent, Some(&value))?;
     Ok(format!(
         "Tagged {agent_name} ready to merge: {ahead} commit{} ahead of {base}",
         if ahead == 1 { "" } else { "s" }

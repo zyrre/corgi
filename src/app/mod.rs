@@ -59,6 +59,7 @@ pub(crate) use prompt::PromptForm;
 mod bar;
 mod cards;
 mod cli;
+mod hc_cli;
 mod navigate;
 mod status;
 pub use status::{MERGE_USAGE, STATUS_USAGE, merge_command, status_command};
