@@ -25,20 +25,21 @@ use anyhow::{Context, Result, bail};
 use crate::{
     activity::folder_trust_dialog,
     git::{git_output, trust_root},
-    harness::Harness,
+    harness::{CODEX_DEVELOPER_INSTRUCTIONS, Harness},
     launch::{Checkout, LaunchPlan, Role, launch_args},
     paths::{dir_name, home, is_home},
     progress::Progress,
     project_main::project_root_digest,
     projects::is_created_project,
     rows::SUPERVISOR_NAME,
-    supervisor::{self, Backend},
+    supervisor::{self, Backend, Prepared},
+    time::unix_now,
 };
 
 use super::{
-    HARNESS_LABEL, HcClient, PROJECT_LABEL, REQUEST_LABEL, RESUME_LABEL, ROLE_LABEL, SESSION_LABEL,
-    SPACE_LABEL, SUPERVISOR_ROLE, TASK_LABEL, Terminal, WORKER_ROLE, agents::shell_in_front,
-    calling_terminal,
+    BASELINE_LABEL, HANDOVER_LABEL, HARNESS_LABEL, HcClient, PID_LABEL, PROJECT_LABEL,
+    REQUEST_LABEL, RESUME_LABEL, ROLE_LABEL, SESSION_LABEL, SPACE_LABEL, SUPERVISOR_ROLE,
+    TASK_LABEL, Terminal, WORKER_ROLE, agents::shell_in_front, calling_terminal,
 };
 
 /// The variables Corgi removes from every agent it starts on hc: the ones a
@@ -68,8 +69,9 @@ pub const SESSION_VARIABLES: [&str; 10] = [
 /// The script every agent starts through, run by `/bin/sh -c` with the
 /// agent's folder as `$1`, a file whose text is the agent's last argument
 /// (or an empty word) as `$2`, and the agent's command after them. It
-/// unsets [`SESSION_VARIABLES`], then runs the agent in the folder in its
-/// place.
+/// unsets [`SESSION_VARIABLES`], puts the text of the file each
+/// [`ARG_FILE_PREFIX`] argument names in its place, then runs the agent in
+/// the folder in its place.
 pub fn agent_script() -> String {
     let names: Vec<String> = SESSION_VARIABLES
         .iter()
@@ -79,10 +81,20 @@ pub fn agent_script() -> String {
         })
         .collect();
     format!(
-        r#"for v in $(env | sed -nE 's/^({})=.*/\1/p'); do unset "$v"; done; cd "$1" || exit 1; p=$2; shift 2; if [ -n "$p" ]; then exec "$@" "$(cat "$p")"; fi; exec "$@""#,
+        r#"for v in $(env | sed -nE 's/^({})=.*/\1/p'); do unset "$v"; done; cd "$1" || exit 1; p=$2; shift 2; for a do shift; case $a in {ARG_FILE_PREFIX}*) a=$(cat "${{a#{ARG_FILE_PREFIX}}}") || exit 1;; esac; set -- "$@" "$a"; done; if [ -n "$p" ]; then exec "$@" "$(cat "$p")"; fi; exec "$@""#,
         names.join("|")
     )
 }
+
+/// An argument of an agent's command that [`agent_script`] replaces with the
+/// text of the file named after it, so a long argument (Codex's role as its
+/// developer instructions, some 25 KB) reaches the agent without being
+/// typed into a shell.
+pub const ARG_FILE_PREFIX: &str = "@corgi-arg-file:";
+
+/// Where a Codex supervisor's developer instructions are kept for
+/// [`ARG_FILE_PREFIX`], in its state directory.
+pub const CODEX_ROLE_ARG_FILE: &str = "codex-developer-instructions.arg";
 
 /// The name the script runs as (its `$0`), which `ps` shows until the agent
 /// replaces it.
@@ -151,6 +163,33 @@ pub fn launch_supervisor(
     corgi_bin: &Path,
     progress: &mut dyn Progress,
 ) -> Result<Launched> {
+    start_supervisor(client, plan, corgi_bin, None, progress)
+}
+
+/// Starts `plan`, a project's supervisor, in the kept shell terminal
+/// `address` whose agent has exited (the user's `/exit`, or a handover's),
+/// as [`launch_supervisor`] would in a new one: the terminal keeps its
+/// address, its name, its space, and the workers that report to the
+/// project. Its session labels are replaced before the agent starts. A
+/// `plan` whose role names a handover pane starts with the takeover prompt,
+/// which has the new session read the note its predecessor left.
+pub fn relaunch_supervisor(
+    client: &HcClient,
+    plan: &LaunchPlan,
+    corgi_bin: &Path,
+    address: &str,
+    progress: &mut dyn Progress,
+) -> Result<Launched> {
+    start_supervisor(client, plan, corgi_bin, Some(address), progress)
+}
+
+fn start_supervisor(
+    client: &HcClient,
+    plan: &LaunchPlan,
+    corgi_bin: &Path,
+    place: Option<&str>,
+    progress: &mut dyn Progress,
+) -> Result<Launched> {
     if let Some(refusal) = harness_refusal(&plan.harness) {
         bail!(refusal);
     }
@@ -158,6 +197,18 @@ pub fn launch_supervisor(
         plan.harness.supports_supervisor(),
         crate::launch::supervisor_harness_error(&plan.harness)
     );
+    let existing = match place {
+        Some(address) => {
+            let terminal = client.get(address)?;
+            anyhow::ensure!(
+                terminal.is_live() && shell_in_front(&terminal),
+                "{address} has no shell in front for a supervisor to start in (its agent still \
+                 runs, or the terminal ended)"
+            );
+            Some(terminal)
+        }
+        None => None,
+    };
     let root = plan.project.to_string_lossy().into_owned();
     let prepared = supervisor::prepare_for(&root, corgi_bin, Backend::Hc)?;
     if let Some(warning) = &prepared.warning {
@@ -173,41 +224,71 @@ pub fn launch_supervisor(
         },
     )?;
     let prompt_file = prepared.state_dir.join(FIRST_PROMPT_FILE);
-    let prompt = supervisor::first_prompt(&root, &prepared.state_dir, &plan.prompt);
+    let prompt = match &plan.role {
+        Role::Supervisor {
+            handover_pane: Some(_),
+        } => {
+            let archive = supervisor::handover_archive(&prepared.state_dir, unix_now());
+            supervisor::takeover_prompt(&root, &prepared.state_dir, &archive)
+        }
+        _ => supervisor::first_prompt(&root, &prepared.state_dir, &plan.prompt),
+    };
     fs::write(&prompt_file, &prompt).with_context(|| format!("write {}", prompt_file.display()))?;
-    let role_args =
-        plan.harness
-            .supervisor_args(&prepared.role_file, &prepared.role, &prepared.state_dir);
+    let role_args = supervisor_role_args(&plan.harness, &prepared)?;
     let session = session_id_for(&plan.harness)?;
     let command = harness_command(plan, session.as_deref(), &role_args, Start::Fresh);
     let line = shell_line(&agent_argv(&plan.project, Some(&prompt_file), &command));
-    let space = space_for(
-        client,
-        &root,
-        Role::Supervisor {
-            handover_pane: None,
-        },
-    );
-    let mut labels = agent_labels(plan, &root, SUPERVISOR_NAME, &space, session.as_deref());
-    if let Some(session) = &session {
+    let resume = session.as_ref().map(|session| {
         let resume = harness_command(plan, None, &role_args, Start::Resume(session));
-        labels.push((
-            RESUME_LABEL.into(),
-            shell_line(&agent_argv(&plan.project, None, &resume)),
-        ));
-    }
+        shell_line(&agent_argv(&plan.project, None, &resume))
+    });
 
     progress.step(0);
-    progress.report(format!("Starting a kept shell terminal {}…", plan.name));
-    let started = client.run(&super::RunSpec {
-        name: plan.name.clone(),
-        cwd: plan.project.clone(),
-        labels,
-        keep: true,
-        argv: Vec::new(),
-    })?;
-    let address = started.address.clone();
-    wait_for_shell(client, &address);
+    let address = match &existing {
+        Some(terminal) => {
+            let address = terminal.address.clone();
+            progress.report(format!("Taking over {} ({address})…", plan.name));
+            // The new session's labels, and none of the old one's.
+            let pid = terminal.pid.map(|pid| pid.to_string()).unwrap_or_default();
+            client.label(
+                &address,
+                &[
+                    (HARNESS_LABEL, plan.harness.kind()),
+                    (SESSION_LABEL, session.as_deref().unwrap_or_default()),
+                    (RESUME_LABEL, resume.as_deref().unwrap_or_default()),
+                    (HANDOVER_LABEL, ""),
+                    (BASELINE_LABEL, ""),
+                    (PID_LABEL, &pid),
+                ],
+            )?;
+            address
+        }
+        None => {
+            let space = space_for(
+                client,
+                &root,
+                Role::Supervisor {
+                    handover_pane: None,
+                },
+            );
+            let mut labels = agent_labels(plan, &root, SUPERVISOR_NAME, &space, session.as_deref());
+            if let Some(resume) = &resume {
+                labels.push((RESUME_LABEL.into(), resume.clone()));
+            }
+            progress.report(format!("Starting a kept shell terminal {}…", plan.name));
+            let started = client.run(&super::RunSpec {
+                name: plan.name.clone(),
+                cwd: plan.project.clone(),
+                labels,
+                keep: true,
+                argv: Vec::new(),
+            })?;
+            let address = started.address.clone();
+            wait_for_shell(client, &address);
+            mark_pid(client, &address);
+            address
+        }
+    };
     progress.step(1);
     progress.report(format!(
         "Starting {} in {address} as {}…",
@@ -238,6 +319,56 @@ pub fn launch_supervisor(
         location: format!("in hc terminal {address}, a kept shell in {root}"),
         session,
     })
+}
+
+/// The arguments that make `harness`'s session the supervisor prepared in
+/// `prepared`, for a command line typed into a shell: Codex's developer
+/// instructions, the whole role inline, are written to
+/// [`CODEX_ROLE_ARG_FILE`] and passed through [`ARG_FILE_PREFIX`].
+///
+/// Codex has no file form of `developer_instructions`. Its
+/// `model_instructions_file` would replace Codex's own base instructions,
+/// which a supervisor still needs, rather than add to them; a project's
+/// `.codex/config.toml` would land in the user's repository and apply to
+/// every Codex session there; and `CODEX_HOME` would replace the user's
+/// whole Codex home, login included. So the argument stays what the Herdr
+/// TUI passes, and only the typed line names a file.
+pub fn supervisor_role_args(harness: &Harness, prepared: &Prepared) -> Result<Vec<String>> {
+    let mut args =
+        harness.supervisor_args(&prepared.role_file, &prepared.role, &prepared.state_dir);
+    if *harness == Harness::Codex {
+        let file = prepared.state_dir.join(CODEX_ROLE_ARG_FILE);
+        for arg in &mut args {
+            if arg.starts_with(CODEX_DEVELOPER_INSTRUCTIONS) {
+                write_private(&file, arg)?;
+                *arg = format!("{ARG_FILE_PREFIX}{}", file.display());
+            }
+        }
+    }
+    Ok(args)
+}
+
+/// Writes `text` to `path`, readable by its owner alone.
+fn write_private(path: &Path, text: &str) -> Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("write {}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .with_context(|| format!("write {}", path.display()))
+}
+
+/// Labels `address` with the process id of its program as it is now
+/// ([`PID_LABEL`]), so that a program the core later replaces with a shell
+/// is told apart from it. A terminal hc cannot describe keeps no label.
+pub fn mark_pid(client: &HcClient, address: &str) {
+    if let Ok(Some(pid)) = client.find(address).map(|t| t.and_then(|t| t.pid)) {
+        let _ = client.label(address, &[(PID_LABEL, &pid.to_string())]);
+    }
 }
 
 /// Starts `plan`, a worker of the project whose primary checkout is `root`,
@@ -305,13 +436,16 @@ pub fn launch_worker(
     }
     progress.step(1);
     progress.report(format!("Starting {} as {}…", plan.harness, plan.name));
+    // Kept, so that a core stop or a reboot leaves a shell in its place,
+    // which the daemon gives the resume line.
     let terminal = client.run(&super::RunSpec {
         name: plan.name.clone(),
         cwd: cwd.clone(),
         labels,
-        keep: false,
+        keep: true,
         argv: agent_argv(&cwd, None, &command),
     })?;
+    mark_pid(client, &terminal.address);
     progress.step(2);
     // Only Claude Code asks on screen; Codex takes its answer on the
     // command line.

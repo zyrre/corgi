@@ -1062,11 +1062,15 @@ fn inbox_entry(item: &Item, corgi_bin: &str, budget: Option<&mut usize>) -> Stri
 
 /// Prints, on stderr, that the supervisor of the project at `root` has missed
 /// inbox items, if it does: any undelivered while neither Herdr's hooks nor
-/// a dashboard deliver, else those that have waited minutes, not just for
-/// the supervisor's turn.
+/// a dashboard deliver (in an hc terminal, while no `corgi daemon` runs for
+/// its core), else those that have waited minutes, not just for the
+/// supervisor's turn.
 fn print_inbox_footer(root: &str) {
     let client = HerdrClient::from_env().ok();
-    let delivering = client.as_ref().is_some_and(super::waker::inboxes_delivered);
+    let delivering = client.as_ref().is_some_and(super::waker::inboxes_delivered)
+        || (corgi_core::backend::Caller::from_env() == corgi_core::backend::Caller::Hc
+            && corgi_core::hc::expected_socket()
+                .is_some_and(|socket| corgi_core::hc::daemon::running(&socket).running));
     for note in client
         .iter()
         .flat_map(|client| [held_note(client, root), refused_note(client, root)])

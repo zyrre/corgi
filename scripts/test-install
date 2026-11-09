@@ -13,8 +13,13 @@
 # the real ~/.local/bin. A test that installs the way Herdr does puts the
 # checkout at plugins/.tmp-install-*/checkout and afterwards moves it to
 # plugins/github/<id>-<hash>, as Herdr does once the build passes.
+#
+# The fake release binary records every call but --version in calls.log, so
+# `corgi daemon install` never reaches launchd or systemd, and the Herdr app
+# installer finds OpenCode only where a test puts a fake one.
 set -euo pipefail
-unset XDG_BIN_HOME CORGI_BIN_DIR CORGI_LINK CORGI_BUILD
+unset XDG_BIN_HOME CORGI_BIN_DIR CORGI_LINK CORGI_BUILD XDG_CONFIG_HOME XDG_STATE_HOME \
+  CORGI_OPENCODE_PLUGIN CORGI_OPENCODE_BIN
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install_script="$script_dir/install.sh"
@@ -79,7 +84,13 @@ FAKE_CARGO
 publish_release() {
   local state="$1" reports="$2" dir="$1/release/v$version"
   mkdir -p "$dir"
-  printf '#!/bin/sh\necho "%s"\n' "$reports" >"$dir/$asset"
+  cat >"$dir/$asset" <<'FAKE_CORGI'
+#!/bin/sh
+if [ "${1:-}" != --version ] && [ -n "${FAKE_STATE:-}" ]; then
+  printf 'corgi %s\n' "$*" >>"$FAKE_STATE/calls.log"
+fi
+FAKE_CORGI
+  printf 'echo "%s"\n' "$reports" >>"$dir/$asset"
   printf '#!/bin/sh\necho "corgi %s"\n' "$version" >"$dir/corgi-other-target"
   {
     printf '%s  %s\n' "$(sha256 "$dir/corgi-other-target")" corgi-other-target
@@ -560,6 +571,8 @@ new_app_state() {
   mkdir -p "$state/checkout/herdr-app/mods/corgi"
   cp "$app_dir/install.sh" "$state/checkout/herdr-app/install.sh"
   cp "$app_dir/mods/corgi/main.js" "$app_dir/mods/corgi/mod.json" "$state/checkout/herdr-app/mods/corgi/"
+  mkdir -p "$state/checkout/herdr-app/opencode"
+  cp "$app_dir/opencode/corgi-hc-status.js" "$state/checkout/herdr-app/opencode/"
   cat >"$state/bin/herdr-app" <<'FAKE_APP'
 #!/bin/sh
 case $1 in
@@ -584,9 +597,13 @@ run_app_install() {
   FAKE_STATE="$state" \
   HOME="$state/home" \
   CORGI_DOWNLOAD_URL="file://$state/release" \
+  CORGI_OPENCODE_BIN="${CORGI_OPENCODE_BIN:-$state/bin/opencode}" \
   PATH="$state/bin:$PATH" \
   sh "$state/checkout/herdr-app/install.sh" "$@" 2>"$state/stderr.log"
 }
+
+# How many times the installed corgi ran `daemon $2`.
+count_daemon() { grep -c "^corgi daemon $2\$" "$1/calls.log" || true; }
 
 app_mod() { echo "$1/home/.config/herdr-app/mods/corgi"; }
 real_checkout() { (cd "$1/checkout" && pwd -P); }
@@ -612,12 +629,17 @@ test_app_install() {
   check "app: leaves what check writes out" "no" "$([[ -e "$mod/jsconfig.json" || -e "$mod/gpui-kit.d.ts" ]] && echo yes || echo no)"
   check "app: no staging folder left" "no" "$([[ -e "$state/home/.config/herdr-app/mods/.corgi-install" ]] && echo yes || echo no)"
   check_stderr "app: says it installed the mod" "installed the Corgi mod in $mod" "$state"
+  check "app: installs the daemon with the new binary" "1" "$(count_daemon "$state" install)"
+  check_stderr "app: says the daemon runs" "the corgi daemon runs as a service" "$state"
+  check "app: no OpenCode, no question and no plugin" "no" \
+    "$([[ -e "$state/home/.config/opencode" || -e "$state/home/.local/state/corgi/opencode-plugin" ]] && echo yes || echo no)"
 
   # Run again: an unchanged mod is not touched, so the app does not reload it.
   : >"$mod/.marker"
   status=0
   run_app_install "$state" || status=$?
   check "app again: exit status" "0" "$status"
+  check "app again: the daemon is installed again, to restart it" "2" "$(count_daemon "$state" install)"
   check "app again: unchanged mod left in place" "yes" "$([[ -e "$mod/.marker" ]] && echo yes || echo no)"
   check_stderr "app again: says so" "is up to date" "$state"
 
@@ -686,6 +708,14 @@ test_app_install_options() {
   check "--cli-only: installs the CLI" "corgi $version" "$(installed "$state")"
   check "--cli-only: no mod" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
   check "--cli-only: herdr-app check not run" "0" "$(count_checks "$state")"
+  check "--cli-only: installs the daemon" "1" "$(count_daemon "$state" install)"
+
+  status=0
+  state="$(new_app_state app-no-daemon)"
+  publish_release "$state" "corgi $version"
+  run_app_install "$state" --no-daemon || status=$?
+  check "--no-daemon: exit status" "0" "$status"
+  check "--no-daemon: leaves the daemon alone" "0" "$(count_daemon "$state" install)"
 
   status=0
   state="$(new_app_state app-mod-only)"
@@ -693,6 +723,7 @@ test_app_install_options() {
   run_app_install "$state" --mod-only || status=$?
   check "--mod-only: exit status" "0" "$status"
   check "--mod-only: installs no CLI" "nothing installed" "$(installed "$state")"
+  check "--mod-only: and no daemon" "0" "$(count_daemon "$state" install)"
   check "--mod-only: the mod without config.json" "yes no" \
     "$([[ -f "$(app_mod "$state")/main.js" ]] && echo yes || echo no) $([[ -e "$(app_mod "$state")/config.json" ]] && echo yes || echo no)"
 
@@ -723,12 +754,85 @@ test_app_uninstall() {
   run_app_install "$state" --uninstall || status=$?
   check "uninstall: exit status" "0" "$status"
   check "uninstall: mod removed" "no" "$([[ -e "$mod" ]] && echo yes || echo no)"
+  check "uninstall: daemon removed" "1" "$(count_daemon "$state" uninstall)"
   check "uninstall: CLI link kept" "yes" "$([[ -L "$link" ]] && echo yes || echo no)"
   check "uninstall: CLI kept" "corgi $version" "$(installed "$state")"
 
   run_app_install "$state" --uninstall --cli || status=$?
   check "uninstall --cli: exit status" "0" "$status"
   check "uninstall --cli: link removed" "no" "$([[ -L "$link" ]] && echo yes || echo no)"
+}
+
+# --- test: OpenCode's status plugin, asked once, never forced ------------------
+test_app_opencode_plugin() {
+  local state status=0 plugin answer src
+  state="$(new_app_state app-opencode)"
+  publish_release "$state" "corgi $version"
+  plugin="$state/home/.config/opencode/plugin/corgi-hc-status.js"
+  answer="$state/home/.local/state/corgi/opencode-plugin"
+  src="$state/checkout/herdr-app/opencode/corgi-hc-status.js"
+  printf '#!/bin/sh\necho opencode 1.18.33\n' >"$state/bin/opencode"
+  chmod 755 "$state/bin/opencode"
+
+  # Nobody to ask: skipped, said, and nothing remembered.
+  run_app_install "$state" || status=$?
+  check "opencode unasked: exit status" "0" "$status"
+  check "opencode unasked: no plugin" "no" "$([[ -e "$plugin" ]] && echo yes || echo no)"
+  check "opencode unasked: no answer kept" "no" "$([[ -e "$answer" ]] && echo yes || echo no)"
+  check_stderr "opencode unasked: says so" "skipped OpenCode's status plugin: no terminal to ask in" "$state"
+
+  # Answered yes: installed, and the answer kept for the next run.
+  status=0
+  CORGI_OPENCODE_PLUGIN=yes run_app_install "$state" || status=$?
+  check "opencode yes: exit status" "0" "$status"
+  check "opencode yes: the plugin" "same" "$(cmp -s "$src" "$plugin" && echo same || echo differs)"
+  check "opencode yes: the answer kept" "yes" "$(cat "$answer" 2>/dev/null)"
+  echo "// changed" >>"$src"
+  status=0
+  run_app_install "$state" || status=$?
+  check "opencode again: updated without asking" "same" "$(cmp -s "$src" "$plugin" && echo same || echo differs)"
+  check "opencode again: nothing skipped" "0" "$(grep -c 'skipped OpenCode' "$state/stderr.log" || true)"
+
+  # Answered no later: Corgi's plugin goes.
+  status=0
+  CORGI_OPENCODE_PLUGIN=no run_app_install "$state" || status=$?
+  check "opencode no: exit status" "0" "$status"
+  check "opencode no: plugin removed" "no" "$([[ -e "$plugin" ]] && echo yes || echo no)"
+  check "opencode no: the answer kept" "no" "$(cat "$answer" 2>/dev/null)"
+
+  # Someone else's file is never replaced.
+  mkdir -p "$(dirname "$plugin")"
+  echo "// my own plugin" >"$plugin"
+  status=0
+  CORGI_OPENCODE_PLUGIN=yes run_app_install "$state" || status=$?
+  check "opencode not ours: kept" "// my own plugin" "$(cat "$plugin")"
+  check_stderr "opencode not ours: says so" "left $plugin alone: it is not Corgi's" "$state"
+  rm "$plugin"
+
+  # An OpenCode that reports by itself needs none: Corgi's goes.
+  CORGI_OPENCODE_PLUGIN=yes run_app_install "$state" || status=$?
+  check "opencode reinstalled" "yes" "$([[ -f "$plugin" ]] && echo yes || echo no)"
+  printf '#!/bin/sh\nprintf "\\033]7501;state=idle:app=opencode\\033\\\\"\n' >"$state/bin/opencode"
+  status=0
+  run_app_install "$state" || status=$?
+  check "opencode native: exit status" "0" "$status"
+  check "opencode native: plugin removed" "no" "$([[ -e "$plugin" ]] && echo yes || echo no)"
+  check_stderr "opencode native: says why" "OpenCode reports its status to herdr-core itself" "$state"
+
+  # --uninstall takes the plugin and the answer away.
+  printf '#!/bin/sh\necho opencode 1.18.33\n' >"$state/bin/opencode"
+  CORGI_OPENCODE_PLUGIN=yes run_app_install "$state" || status=$?
+  status=0
+  run_app_install "$state" --uninstall || status=$?
+  check "opencode uninstall: exit status" "0" "$status"
+  check "opencode uninstall: plugin and answer removed" "no no" \
+    "$([[ -e "$plugin" ]] && echo yes || echo no) $([[ -e "$answer" ]] && echo yes || echo no)"
+
+  # A plugin install (--mod-only) never asks or installs it.
+  rm -rf "$state/home/.local/state/corgi"
+  status=0
+  CORGI_OPENCODE_PLUGIN=yes run_app_install "$state" --mod-only || status=$?
+  check "opencode --mod-only: no plugin" "no" "$([[ -e "$plugin" ]] && echo yes || echo no)"
 }
 
 # --- test: a plugin install adds the mod when the Herdr app is installed -----
@@ -824,6 +928,7 @@ test_app_install
 test_app_install_refusals
 test_app_install_options
 test_app_uninstall
+test_app_opencode_plugin
 test_plugin_install_adds_app_mod
 test_app_install_piped
 

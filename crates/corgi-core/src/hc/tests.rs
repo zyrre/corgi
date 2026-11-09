@@ -746,6 +746,14 @@ fn the_cores_socket_is_looked_for_where_hc_puts_it() {
         socket_candidates(&env(&[("HC_SOCKET", "/x.sock")]), home),
         [PathBuf::from("/x.sock")]
     );
+    // In one of its terminals, the terminal's core.
+    assert_eq!(
+        socket_candidates(
+            &env(&[("HC_TERMINAL_SOCKET", "/s/x/x.sock"), ("HC_SESSION", "x")]),
+            home
+        ),
+        [PathBuf::from("/s/x/x.sock")]
+    );
 }
 
 /// Claude Code's folder-trust question about `folder`, with Yes or No
@@ -814,4 +822,218 @@ fn a_trust_question_corgi_did_not_create_the_project_for_stays_with_the_user() {
     hc.answer("read", &trust_screen("/elsewhere", true));
     answer_folder_trust(&hc.client(), "t5", &folder, "w", &mut progress, &|_| true);
     assert!(hc.calls().iter().all(|call| !call.starts_with("keys|")));
+}
+
+#[test]
+fn the_agent_script_puts_an_argument_files_text_in_its_place() {
+    let scratch = ScratchDir::new("hc-arg-file");
+    let file = scratch.join("role.arg");
+    fs::write(
+        &file,
+        "developer_instructions=\"It's $(not run) \\\"quoted\\\"\"",
+    )
+    .unwrap();
+    let argv = agent_argv(
+        &scratch,
+        None,
+        &[
+            "/bin/sh".into(),
+            "-c".into(),
+            r#"printf '%s|' "$@""#.into(),
+            "sh".into(),
+            "-c".into(),
+            format!("{}{}", super::launch::ARG_FILE_PREFIX, file.display()),
+            "--model".into(),
+            "gpt".into(),
+        ],
+    );
+    let line = shell_line(&argv);
+    assert!(!line.contains("developer_instructions"), "{line}");
+    let output = Command::new("/bin/sh")
+        .args(["-c", &line])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "-c|developer_instructions=\"It's $(not run) \\\"quoted\\\"\"|--model|gpt|"
+    );
+    // A file that is gone stops the agent rather than pass the name on.
+    fs::remove_file(&file).unwrap();
+    let output = Command::new("/bin/sh")
+        .args(["-c", &line])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn a_codex_supervisors_role_reaches_it_through_a_file_not_the_typed_line() {
+    use crate::supervisor::Prepared;
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = ScratchDir::new("hc-codex-role");
+    let role = "# You are the supervisor\nRun `corgi \"fleet\"`.\n".to_string();
+    let prepared = Prepared {
+        state_dir: scratch.to_path_buf(),
+        role_file: scratch.join("ROLE.md"),
+        role: role.clone(),
+        warning: None,
+    };
+    let args = super::launch::supervisor_role_args(&Harness::Codex, &prepared).unwrap();
+    let file = scratch.join(super::launch::CODEX_ROLE_ARG_FILE);
+    let inline = Harness::Codex.supervisor_args(&prepared.role_file, &role, &scratch);
+    let marked = format!("{}{}", super::launch::ARG_FILE_PREFIX, file.display());
+    assert_eq!(args.len(), inline.len());
+    assert!(args.contains(&marked), "{args:?}");
+    let instructions = inline
+        .iter()
+        .find(|arg| arg.starts_with(crate::harness::CODEX_DEVELOPER_INSTRUCTIONS))
+        .unwrap();
+    assert_eq!(&fs::read_to_string(&file).unwrap(), instructions);
+    assert_eq!(
+        fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    // The typed line names the file; the agent gets the same arguments as
+    // on the Herdr TUI.
+    let line = shell_line(&agent_argv(&scratch, None, &{
+        let mut command = vec![
+            "/bin/sh".to_string(),
+            "-c".into(),
+            r#"printf '%s\n' "$@""#.into(),
+            "sh".into(),
+        ];
+        command.extend(args.clone());
+        command
+    }));
+    assert!(line.len() < 2_000, "{} bytes", line.len());
+    let output = Command::new("/bin/sh")
+        .args(["-c", &line])
+        .output()
+        .unwrap();
+    let passed: Vec<String> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    assert!(passed.contains(instructions), "{passed:?}");
+    // Claude Code takes its role from a file already: nothing changes.
+    let claude = super::launch::supervisor_role_args(&Harness::Claude, &prepared).unwrap();
+    assert_eq!(
+        claude,
+        Harness::Claude.supervisor_args(&prepared.role_file, &role, &scratch)
+    );
+}
+
+#[test]
+fn a_worker_is_kept_and_marked_with_its_programs_pid() {
+    let scratch = ScratchDir::new("hc-worker-pid");
+    let root = git_repo(&scratch.join("weather"));
+    let hc = FakeHc::new();
+    hc.answer(
+        "run",
+        r#"{"address":"t5","name":"weather","state":"live","turn":0}"#,
+    );
+    hc.answer("ls", r#"{"terminals":[]}"#);
+    let mut terminal: serde_json::Value =
+        serde_json::from_str(&terminal_json("t5", "weather", &[], "idle")).unwrap();
+    terminal["pid"] = 4242.into();
+    hc.answer("get.t5", &terminal.to_string());
+    hc.answer("label", &terminal.to_string());
+    let plan = worker_plan(&root, Harness::Claude, Checkout::ProjectRoot);
+    let root_text = root.to_string_lossy().into_owned();
+    launch_worker(&hc.client(), &plan, &root_text, &mut Silent).unwrap();
+    let calls = hc.calls();
+    let run = calls.iter().find(|call| call.starts_with("run|")).unwrap();
+    assert!(run.contains("|--keep|"), "{run}");
+    assert!(
+        calls.contains(&format!("label|t5|{PID_LABEL}=4242|--json")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_supervisor_starts_again_only_in_a_terminal_with_its_shell_in_front() {
+    let hc = FakeHc::new();
+    let mut terminal: serde_json::Value =
+        serde_json::from_str(&terminal_json("t3", "weather-supervisor", &[], "idle")).unwrap();
+    terminal["foreground"] =
+        serde_json::json!({"name": "claude", "pid": 9, "argv": [], "cwd": "/"});
+    hc.answer("get.t3", &terminal.to_string());
+    let mut plan = worker_plan(
+        Path::new("/repos/weather"),
+        Harness::Claude,
+        Checkout::ProjectRoot,
+    );
+    plan.role = Role::Supervisor {
+        handover_pane: Some("t3".into()),
+    };
+    let error = super::launch::relaunch_supervisor(
+        &hc.client(),
+        &plan,
+        Path::new("/opt/corgi"),
+        "t3",
+        &mut Silent,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("has no shell in front"), "{error}");
+    // Nothing was typed, labelled or prepared.
+    assert_eq!(hc.calls(), ["get|t3|--json"]);
+}
+
+#[test]
+fn an_observers_first_paint_is_read_through_a_terminal_of_its_own() {
+    let hc = FakeHc::new();
+    // Questions to the viewer's terminal, half a second for answers that
+    // never come, the paint, then live updates that are not waited for.
+    fs::write(
+        hc.dir.join("hc"),
+        r#"#!/bin/sh
+printf '%s\n' "$*" > "$(dirname "$0")/args"
+[ -t 0 ] && [ -t 1 ] && echo tty > "$(dirname "$0")/tty"
+printf '\033]10;?\033\\\033[c'
+sleep 0.6
+printf '\033[H\033[2J\033[0m\033[38;5;7m────────\r\n❯\302\240half typed\r\n\033[0m\033[38;5;7m────────\r\n'
+sleep 30
+"#,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let paint = hc.client().observe_paint("t3", 80, 24).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert!(paint.starts_with("\x1b[2J"), "{paint:?}");
+    assert!(!paint.contains("\x1b]10;?"), "the questions are left out");
+    assert_eq!(
+        crate::draft::holds_draft(&Harness::Claude, &paint),
+        Some(true)
+    );
+    assert_eq!(
+        fs::read_to_string(hc.dir.join("args")).unwrap(),
+        "attach --observe t3\n"
+    );
+    assert!(hc.dir.join("tty").exists(), "it ran in a terminal");
+}
+
+#[test]
+fn the_paint_of_claude_codes_box_on_hc_shows_a_draft_and_an_empty_box() {
+    let fixture = |name: &str| {
+        fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/fixtures/input_box")
+                .join(name),
+        )
+        .unwrap()
+    };
+    let draft = fixture("hc-observe-claude-draft.ansi");
+    let empty = fixture("hc-observe-claude-empty.ansi");
+    assert_eq!(super::observe::paint_start(draft.as_bytes()), Some(0));
+    assert_eq!(
+        crate::draft::holds_draft(&Harness::Claude, &draft),
+        Some(true)
+    );
+    assert_eq!(
+        crate::draft::holds_draft(&Harness::Claude, &empty),
+        Some(false)
+    );
 }

@@ -26,8 +26,9 @@ use crate::{
 };
 
 use super::{
-    HARNESS_LABEL, HcClient, MERGE_TAG, PROJECT_LABEL, REQUEST_LABEL, ROLE_LABEL, SESSION_LABEL,
-    SPACE_LABEL, SUPERVISOR_ROLE, TAG_AT_LABEL, TAG_LABEL, TASK_LABEL, Terminal, WORKER_ROLE,
+    BASELINE_LABEL, HANDOVER_LABEL, HARNESS_LABEL, HcClient, MERGE_TAG, PROJECT_LABEL,
+    REQUEST_LABEL, ROLE_LABEL, SESSION_LABEL, SPACE_LABEL, SUPERVISOR_ROLE, TAG_AT_LABEL,
+    TAG_LABEL, TASK_LABEL, Terminal, WORKER_ROLE,
 };
 
 /// The source an hc agent's session identity is recorded under.
@@ -93,6 +94,15 @@ pub fn agent_info(terminal: &Terminal) -> AgentInfo {
     }
     if let Some(task) = terminal.label(TASK_LABEL) {
         tokens.insert("task".to_string(), task.to_string());
+    }
+    // A supervisor's handover request and baseline, as the daemon keeps them.
+    for (label, token) in [
+        (HANDOVER_LABEL, supervisor::HANDOVER_TOKEN),
+        (BASELINE_LABEL, supervisor::BASELINE_TOKEN),
+    ] {
+        if let Some(value) = terminal.label(label) {
+            tokens.insert(token.to_string(), value.to_string());
+        }
     }
     let state = agent_state(terminal);
     if terminal.label(TAG_LABEL) == Some(MERGE_TAG) {
