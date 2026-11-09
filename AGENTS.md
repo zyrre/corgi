@@ -418,7 +418,11 @@ from a local directory and uses a fake `cargo` and a fake `herdr-app`. In a git
 checkout the installers build from source unless HEAD is the tag `v<version>`
 (Herdr's own `.tmp-install-*/checkout` and `CORGI_BUILD=release` download
 regardless; `CORGI_BUILD=source` always builds). Never run the real install
-against your own checkout or `~/.config/herdr-app`; the tests use temp homes:
+against your own checkout or `~/.config/herdr-app`; the tests use temp homes.
+When a brief does ask for a live install, never set `CORGI_OPENCODE_PLUGIN`:
+it is a stored answer, not a way past the question, and `no` deletes the
+user's OpenCode plugin and keeps that answer (with no terminal to ask in,
+the question is skipped anyway):
 
 ```bash
 bash scripts/test-install
@@ -450,7 +454,12 @@ that test's daemon, then its core, for the daemon warning and the
 command) from an agent; it takes over the user's screen. In a mod, a
 `.when(cond, fn)` callback must return the element it was given, and text
 for one line goes through the mod's `oneLine`, since a `\n` starts a second
-line even in a truncated element.
+line even in a truncated element. A click goes to every element under the
+pointer, up to the row: a button inside a clickable row calls
+`cx.stop_propagation()` in its `on_click`, or the row's click runs too.
+`herdr-app` exits 2 (`no Herdr window`) when the app is closed, and a closed
+app can leave its `herdr-app.sock` behind: to tell whether the window is
+open, test whether the socket accepts a connection, not whether it exists.
 
 `corgi status --json` only reads, and asks `hc` nothing unless its core's
 socket accepts a connection, so it may be run on the user's real core and
