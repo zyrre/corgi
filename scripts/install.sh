@@ -12,13 +12,17 @@
 # commit: `main` may move ahead of the newest tag between releases.
 #
 # Either way it then links ~/.local/bin/corgi to the binary (see
-# scripts/link-command.sh), which only warns when it cannot.
+# scripts/link-command.sh), which only warns when it cannot, and, when the
+# Herdr app is installed (herdr-app on PATH), adds the app's Corgi mod with
+# herdr-app/install.sh --mod-only, which also only warns when it cannot.
 #
 #   CORGI_BUILD=source         always build from source
 #   CORGI_DOWNLOAD_URL=<url>   download from <url>/v<version>/ instead of the
 #                              GitHub release of `origin`
 #   CORGI_LINK=0               do not link ~/.local/bin/corgi
 #   CORGI_BIN_DIR=<dir>        link <dir>/corgi instead
+#   CORGI_APP_MOD=0            do not add the Herdr app's mod (herdr-app/install.sh
+#                              sets it, as it installs the mod itself)
 set -u
 
 cd "$(dirname "$0")/.." || exit 1
@@ -27,6 +31,16 @@ say() { printf 'corgi install: %s\n' "$*" >&2; }
 
 link_command() {
   sh scripts/link-command.sh "$PWD" || say "could not link the corgi command"
+  install_app_mod
+}
+
+# The Herdr app's Corgi mod, when the app is installed.
+install_app_mod() {
+  [ "${CORGI_APP_MOD:-1}" != 0 ] || return 0
+  [ -f herdr-app/install.sh ] || return 0
+  command -v herdr-app >/dev/null 2>&1 || return 0
+  say "the Herdr app is installed: adding its Corgi mod"
+  sh herdr-app/install.sh --mod-only || say "could not add the Herdr app's Corgi mod"
 }
 
 tmp=

@@ -18,6 +18,7 @@ unset XDG_BIN_HOME CORGI_BIN_DIR CORGI_LINK CORGI_BUILD
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install_script="$script_dir/install.sh"
+app_dir="$script_dir/../herdr-app"
 
 failures=0
 tests_run=0
@@ -548,6 +549,255 @@ test_no_link_outside_herdr() {
   check "outside Herdr: nothing linked" "no" "$([[ -e "$state/home/.local" ]] && echo yes || echo no)"
 }
 
+# --- the Herdr app: herdr-app/install.sh -------------------------------------
+
+# Like new_state, with the Herdr app's installer and mod in the checkout and a
+# fake herdr-app in bin/ whose `check` logs the folder, writes what the real
+# one writes into it, and fails when FAKE_CHECK_FAIL is set.
+new_app_state() {
+  local state
+  state="$(new_state "$1")"
+  mkdir -p "$state/checkout/herdr-app/mods/corgi"
+  cp "$app_dir/install.sh" "$state/checkout/herdr-app/install.sh"
+  cp "$app_dir/mods/corgi/main.js" "$app_dir/mods/corgi/mod.json" "$state/checkout/herdr-app/mods/corgi/"
+  cat >"$state/bin/herdr-app" <<'FAKE_APP'
+#!/bin/sh
+case $1 in
+  --version) echo "herdr-app 0.1.14" ;;
+  check)
+    printf 'herdr-app check %s\n' "$2" >>"$FAKE_STATE/calls.log"
+    : >"$2/jsconfig.json"
+    : >"$2/gpui-kit.d.ts"
+    [ -z "${FAKE_CHECK_FAIL:-}" ] || { echo "main.js: SyntaxError" >&2; exit 1; }
+    echo "check passed: $2"
+    ;;
+  *) exit 2 ;;
+esac
+FAKE_APP
+  chmod 755 "$state/bin/herdr-app"
+  echo "$state"
+}
+
+run_app_install() {
+  local state="$1"
+  shift
+  FAKE_STATE="$state" \
+  HOME="$state/home" \
+  CORGI_DOWNLOAD_URL="file://$state/release" \
+  PATH="$state/bin:$PATH" \
+  sh "$state/checkout/herdr-app/install.sh" "$@" 2>"$state/stderr.log"
+}
+
+app_mod() { echo "$1/home/.config/herdr-app/mods/corgi"; }
+real_checkout() { (cd "$1/checkout" && pwd -P); }
+count_checks() { grep -c '^herdr-app check ' "$1/calls.log" || true; }
+
+# --- test: the CLI from the pinned release, linked, and the mod checked in --
+test_app_install() {
+  local state status=0 mod bin
+  state="$(new_app_state app)"
+  publish_release "$state" "corgi $version"
+  mod="$(app_mod "$state")"
+  bin="$(real_checkout "$state")/target/release/corgi"
+
+  run_app_install "$state" || status=$?
+  check "app: exit status" "0" "$status"
+  check "app: installs the release binary" "corgi $version" "$(installed "$state")"
+  check "app: cargo not run" "0" "$(count_cargo "$state")"
+  check "app: links the command" "$bin" "$(link_of "$state/home/.local/bin/corgi")"
+  check "app: copies the mod" "yes" "$([[ -f "$mod/main.js" && -f "$mod/mod.json" ]] && echo yes || echo no)"
+  check "app: names the CLI for the mod" "{ \"corgi\": \"$bin\" }" "$(cat "$mod/config.json" 2>/dev/null)"
+  check "app: checks the mod before it goes in" \
+    "herdr-app check $state/home/.config/herdr-app/mods/.corgi-install/corgi" "$(grep '^herdr-app check' "$state/calls.log")"
+  check "app: leaves what check writes out" "no" "$([[ -e "$mod/jsconfig.json" || -e "$mod/gpui-kit.d.ts" ]] && echo yes || echo no)"
+  check "app: no staging folder left" "no" "$([[ -e "$state/home/.config/herdr-app/mods/.corgi-install" ]] && echo yes || echo no)"
+  check_stderr "app: says it installed the mod" "installed the Corgi mod in $mod" "$state"
+
+  # Run again: an unchanged mod is not touched, so the app does not reload it.
+  : >"$mod/.marker"
+  status=0
+  run_app_install "$state" || status=$?
+  check "app again: exit status" "0" "$status"
+  check "app again: unchanged mod left in place" "yes" "$([[ -e "$mod/.marker" ]] && echo yes || echo no)"
+  check_stderr "app again: says so" "is up to date" "$state"
+
+  # A changed mod is swapped in whole.
+  echo "// changed" >>"$state/checkout/herdr-app/mods/corgi/main.js"
+  status=0
+  run_app_install "$state" || status=$?
+  check "app update: exit status" "0" "$status"
+  check "app update: new mod in place" "// changed" "$(tail -n 1 "$mod/main.js")"
+  check "app update: the old folder is gone" "no" "$([[ -e "$mod/.marker" ]] && echo yes || echo no)"
+}
+
+# --- test: a failing check, a folder that is not ours, another version ----------
+test_app_install_refusals() {
+  local state status=0 mod
+  state="$(new_app_state app-check-fails)"
+  publish_release "$state" "corgi $version"
+  mod="$(app_mod "$state")"
+
+  FAKE_CHECK_FAIL=1 run_app_install "$state" || status=$?
+  check "check fails: exit status" "1" "$status"
+  check "check fails: no mod installed" "no" "$([[ -e "$mod" ]] && echo yes || echo no)"
+  check_stderr "check fails: shows the error" "main.js: SyntaxError" "$state"
+
+  status=0
+  state="$(new_app_state app-not-ours)"
+  publish_release "$state" "corgi $version"
+  mod="$(app_mod "$state")"
+  mkdir -p "$mod"
+  echo "someone else's" >"$mod/main.js"
+  run_app_install "$state" || status=$?
+  check "not ours: exit status" "1" "$status"
+  check "not ours: kept" "someone else's" "$(cat "$mod/main.js")"
+
+  status=0
+  state="$(new_app_state app-other-version)"
+  publish_release "$state" "corgi $version"
+  run_app_install "$state" --version 9.9.9 || status=$?
+  check "other version: exit status" "1" "$status"
+  check "other version: installs nothing" "nothing installed" "$(installed "$state")"
+  check_stderr "other version: says why" "this checkout is Corgi $version, not 9.9.9" "$state"
+
+  status=0
+  state="$(new_app_state app-same-version)"
+  publish_release "$state" "corgi $version"
+  run_app_install "$state" --version "v$version" || status=$?
+  check "own version: exit status" "0" "$status"
+}
+
+# --- test: --home, --cli-only, --mod-only, and a link left alone -------------
+test_app_install_options() {
+  local state status=0 home bin
+  state="$(new_app_state app-home)"
+  publish_release "$state" "corgi $version"
+  home="$state/elsewhere"
+  run_app_install "$state" --home "$home" || status=$?
+  check "--home: exit status" "0" "$status"
+  check "--home: the mod goes there" "yes" "$([[ -f "$home/mods/corgi/main.js" ]] && echo yes || echo no)"
+  check "--home: not in the default home" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
+
+  status=0
+  state="$(new_app_state app-cli-only)"
+  publish_release "$state" "corgi $version"
+  run_app_install "$state" --cli-only || status=$?
+  check "--cli-only: exit status" "0" "$status"
+  check "--cli-only: installs the CLI" "corgi $version" "$(installed "$state")"
+  check "--cli-only: no mod" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
+  check "--cli-only: herdr-app check not run" "0" "$(count_checks "$state")"
+
+  status=0
+  state="$(new_app_state app-mod-only)"
+  publish_release "$state" "corgi $version"
+  run_app_install "$state" --mod-only || status=$?
+  check "--mod-only: exit status" "0" "$status"
+  check "--mod-only: installs no CLI" "nothing installed" "$(installed "$state")"
+  check "--mod-only: the mod without config.json" "yes no" \
+    "$([[ -f "$(app_mod "$state")/main.js" ]] && echo yes || echo no) $([[ -e "$(app_mod "$state")/config.json" ]] && echo yes || echo no)"
+
+  status=0
+  state="$(new_app_state app-link-elsewhere)"
+  publish_release "$state" "corgi $version"
+  bin="$state/home/.local/bin"
+  mkdir -p "$bin"
+  printf '#!/bin/sh\necho "corgi from the plugin"\n' >"$state/plugin-corgi"
+  chmod 755 "$state/plugin-corgi"
+  ln -s "$state/plugin-corgi" "$bin/corgi"
+  run_app_install "$state" || status=$?
+  check "link elsewhere: exit status" "0" "$status"
+  check "link elsewhere: kept" "$state/plugin-corgi" "$(link_of "$bin/corgi")"
+  check_stderr "link elsewhere: says the mod runs its own" \
+    "left $bin/corgi alone: it links $state/plugin-corgi; the mod runs $(real_checkout "$state")/target/release/corgi" "$state"
+}
+
+# --- test: --uninstall removes the mod, and the link only with --cli -----------
+test_app_uninstall() {
+  local state status=0 mod link
+  state="$(new_app_state app-uninstall)"
+  publish_release "$state" "corgi $version"
+  mod="$(app_mod "$state")"
+  link="$state/home/.local/bin/corgi"
+  run_app_install "$state" || status=$?
+
+  run_app_install "$state" --uninstall || status=$?
+  check "uninstall: exit status" "0" "$status"
+  check "uninstall: mod removed" "no" "$([[ -e "$mod" ]] && echo yes || echo no)"
+  check "uninstall: CLI link kept" "yes" "$([[ -L "$link" ]] && echo yes || echo no)"
+  check "uninstall: CLI kept" "corgi $version" "$(installed "$state")"
+
+  run_app_install "$state" --uninstall --cli || status=$?
+  check "uninstall --cli: exit status" "0" "$status"
+  check "uninstall --cli: link removed" "no" "$([[ -L "$link" ]] && echo yes || echo no)"
+}
+
+# --- test: a plugin install adds the mod when the Herdr app is installed -----
+test_plugin_install_adds_app_mod() {
+  local state status=0 mod
+  state="$(new_app_state plugin-app)"
+  publish_release "$state" "corgi $version"
+  mod="$(app_mod "$state")"
+
+  run_install "$state" || status=$?
+  check "plugin with app: exit status" "0" "$status"
+  check "plugin with app: installs the CLI" "corgi $version" "$(installed "$state")"
+  check "plugin with app: adds the mod, without config.json" "yes no" \
+    "$([[ -f "$mod/main.js" ]] && echo yes || echo no) $([[ -e "$mod/config.json" ]] && echo yes || echo no)"
+  check_stderr "plugin with app: says so" "the Herdr app is installed: adding its Corgi mod" "$state"
+
+  status=0
+  state="$(new_app_state plugin-no-app)"
+  publish_release "$state" "corgi $version"
+  rm "$state/bin/herdr-app"
+  PATH="$state/bin:/usr/bin:/bin" run_install "$state" || status=$?
+  check "plugin without app: exit status" "0" "$status"
+  check "plugin without app: no mod" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
+  check "plugin without app: says nothing of it" "0" "$(grep -c 'Herdr app' "$state/stderr.log" || true)"
+}
+
+# --- test: piped, it fetches the release tag and takes its pins from main ----
+test_app_install_piped() {
+  local state status=0 repo checkout mod
+  state="$(new_app_state app-piped)"
+  publish_release "$state" "corgi $version"
+  repo="$state/checkout"
+  checkout="$state/home/.local/share/corgi"
+  mod="$(app_mod "$state")"
+  # The release tag lacks its own pins; main gets them in a later commit.
+  mv "$repo/checksums/v$version.sha256" "$state/pins"
+  git -C "$repo" init -q -b main
+  git -C "$repo" add .
+  git -C "$repo" -c user.name=test -c user.email=test@example.com commit -q -m release
+  git -C "$repo" tag "v$version"
+  cp "$state/pins" "$repo/checksums/v$version.sha256"
+  git -C "$repo" add checksums
+  git -C "$repo" -c user.name=test -c user.email=test@example.com commit -q -m "pins for v$version"
+
+  FAKE_STATE="$state" HOME="$state/home" CORGI_DOWNLOAD_URL="file://$state/release" \
+    CORGI_REPO_URL="$repo" PATH="$state/bin:$PATH" \
+    sh -s -- --version "$version" <"$repo/herdr-app/install.sh" 2>"$state/stderr.log" || status=$?
+  check "piped: exit status" "0" "$status"
+  check "piped: checks out the release tag" "v$version" "$(git -C "$checkout" describe --tags --exact-match 2>/dev/null)"
+  check_stderr "piped: takes the pins from main" "took the reviewed checksum pins for v$version from origin/main" "$state"
+  check "piped: downloads the verified release binary" "corgi $version" "$("$checkout/target/release/corgi" --version 2>/dev/null)"
+  check "piped: cargo not run" "0" "$(count_cargo "$state")"
+  check "piped: installs the mod" "yes" "$([[ -f "$mod/main.js" ]] && echo yes || echo no)"
+
+  # Again, with the checkout in place: fetched, not cloned.
+  status=0
+  FAKE_STATE="$state" HOME="$state/home" CORGI_DOWNLOAD_URL="file://$state/release" \
+    CORGI_REPO_URL="$repo" PATH="$state/bin:$PATH" \
+    sh -s -- --version "$version" --cli-only <"$repo/herdr-app/install.sh" 2>"$state/stderr.log" || status=$?
+  check "piped again: exit status" "0" "$status"
+  check_stderr "piped again: updates the checkout" "updating $checkout" "$state"
+
+  status=0
+  FAKE_STATE="$state" HOME="$state/home" CORGI_REPO_URL="$repo" PATH="$state/bin:$PATH" \
+    sh -s -- --version 9.9.9 <"$repo/herdr-app/install.sh" 2>"$state/stderr.log" || status=$?
+  check "piped unknown release: fails" "1" "$status"
+  check_stderr "piped unknown release: says so" "could not check out v9.9.9" "$state"
+}
+
 test_replaced_remote_artifacts
 test_invalid_pins
 test_remote_sums_not_required
@@ -570,6 +820,12 @@ test_file_or_folder_left_alone
 test_link_opt_out_and_override
 test_link_failure_only_warns
 test_no_link_outside_herdr
+test_app_install
+test_app_install_refusals
+test_app_install_options
+test_app_uninstall
+test_plugin_install_adds_app_mod
+test_app_install_piped
 
 echo
 echo "$tests_run tests run, $failures failed"

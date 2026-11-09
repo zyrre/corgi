@@ -20,6 +20,8 @@ Commands:
   inbox       Print what a supervisor's inbox holds
   recovery    List recovered sessions held from wakes, and release one
   tag         Tag an agent ready to merge, or clear its tag
+  merge       Merge an agent's worktree branch, as the dashboard's m does
+  status      Print every project's supervisor, agents and questions as JSON
   role        Print a part of the supervisor's role it reads on demand
   edit        Open the focused or selected agent's checkout in your editor
   hook        What Herdr runs on its start and on agents' events
@@ -63,6 +65,10 @@ fn main() -> Result<()> {
         Some("inbox") => corgi::app::inbox_command(&args[2..]),
         Some("recovery") if help() => usage(corgi::app::RECOVERY_USAGE),
         Some("recovery") => corgi::app::recovery_command(&args[2..]),
+        Some("status") if help() => usage(corgi::app::STATUS_USAGE),
+        Some("status") => corgi::app::status_command(&args[2..]),
+        Some("merge") if help() => usage(corgi::app::MERGE_USAGE),
+        Some("merge") => corgi::app::merge_command(&args[2..]),
         Some("tag") if help() => usage(corgi::app::TAG_USAGE),
         Some("tag") => corgi::app::tag_command(&args[2..]),
         Some("role") if help() => usage(corgi::app::ROLE_USAGE),

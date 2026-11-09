@@ -175,6 +175,12 @@ Install on macOS or Linux:
 herdr plugin install zyrre/corgi && corgi setup
 ```
 
+For the Herdr app (herdr-app 0.1.14 or newer), this installs the `corgi` command and Corgi's mod, and updates both when run again ([`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) describes the mod):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh
+```
+
 Requirements:
 
 - [Herdr](https://herdr.dev) 0.8.2 or newer
