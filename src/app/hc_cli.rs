@@ -141,33 +141,46 @@ pub(super) fn supervisor(
     let root = hc_project_root(project);
     anyhow::ensure!(!is_home(&root), SUPERVISOR_HOME_REFUSAL);
     let agents = hc::agents::agents(&client)?;
-    if let Some(exited) = agents
+    // A supervisor whose agent exited into its kept shell starts again
+    // there: same terminal, name and space, and its workers keep reporting.
+    let exited = agents
         .iter()
         .find(|agent| agent.supervisor && agent.exited && agent.project_root == root)
-    {
-        anyhow::bail!(
-            "{root}'s supervisor terminal {} ({}) is still there, its agent exited; resume \
-             it there, or end it with hc kill {} first",
-            exited.info.display_name(),
-            exited.info.pane_id,
-            exited.info.pane_id
-        );
-    }
+        .cloned();
+    let others: Vec<DashboardAgent> = agents
+        .into_iter()
+        .filter(|agent| Some(&agent.info.pane_id) != exited.as_ref().map(|e| &e.info.pane_id))
+        .collect();
     let mut plan = supervisor_plan(
-        &agents,
+        &others,
         &root,
         harness,
         options.model.clone(),
         options.effort.clone(),
         task,
     )?;
+    plan.extra_args = options.agent_args.clone();
+    let corgi_bin = supervisor::corgi_bin(None)?;
+    if let Some(exited) = exited {
+        plan.name = exited.info.display_name().to_string();
+        eprintln!(
+            "{root}'s supervisor terminal {} ({}) is at its shell: starting the supervisor there",
+            plan.name, exited.info.pane_id
+        );
+        let launched = hc::launch::relaunch_supervisor(
+            &client,
+            &plan,
+            &corgi_bin,
+            &exited.info.pane_id,
+            &mut Said,
+        )?;
+        return Ok(launched_json(&plan, &launched));
+    }
     let project_name = dir_name(&root).unwrap_or(supervisor::UNNAMED_PROJECT);
     plan.name = match options.name.as_deref() {
         Some(requested) => free_name(&client, requested, false)?,
         None => free_name(&client, &format!("{project_name}-supervisor"), false)?,
     };
-    plan.extra_args = options.agent_args.clone();
-    let corgi_bin = supervisor::corgi_bin(None)?;
     let launched = hc::launch::launch_supervisor(&client, &plan, &corgi_bin, &mut Said)?;
     Ok(launched_json(&plan, &launched))
 }

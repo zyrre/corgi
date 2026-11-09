@@ -156,7 +156,12 @@ A child Claude in `--permission-mode default` asked to run
   (`size` events 200×50 and back, tested); the observer did not.
 
 **Porting `draft.rs`:** keep it as it is; feed it the observer's first
-paint instead of `agent.read`'s styled screen. The daemon opens
+paint instead of `agent.read`'s styled screen. (Found while building the
+daemon: the viewer first asks its terminal for its colours, cell size and
+attributes, `OSC 10/11/12 ?`, `CSI 16 t` and `CSI c`, and paints only after
+waiting about half a second for answers, starting with a clear screen.
+`corgi daemon` answers nothing and reads from the clear screen on; see
+ARCHITECTURE.md, "`corgi daemon`".) The daemon opens
 `terminal.attach {observe: true}` on the framed connection, reads the first
 paint, closes it. The framed protocol (`hello {framed: true}`, channels,
 DATA/CLOSE frames) is in the schema only by name: its byte layout is

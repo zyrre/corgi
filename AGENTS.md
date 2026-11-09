@@ -551,6 +551,48 @@ restarted, and only terminals you start; remove each by address
   (`opencode session delete`, run in the project) and the lock under
   `~/.local/state/corgi/hc/` that the test created.
 
+### Testing `corgi daemon`
+
+`crates/corgi-core/src/waker/hc/tests.rs` drives the daemon's passes
+against a fake core (`waker::hc::Core`); `hc/daemon/tests.rs` covers its
+resume and space decisions, its lock, the event stream (a fake socket) and
+`hc/tests.rs` the watch-only viewer (a fake `hc` that paints in a
+pseudo-terminal) and the real paints in `fixtures/input_box/hc-observe-*`.
+`scripts/test-install` covers `herdr-app/install.sh`'s daemon and OpenCode
+parts with a fake release binary that logs its calls. A live test of the
+daemon stops and starts a core, so it never uses the user's:
+
+- Run a core of your own with a short state path (`HC_SESSION=x`,
+  `XDG_STATE_HOME=~/.cdt/s`: the socket path limit is 103 bytes) and an
+  `env -i` environment: `HOME`, `USER`, `SHELL`, `TERM`, `LANG`, a `PATH`
+  with `~/.local/bin`, and the `SSH_CONNECTION`/`SSH_CLIENT` of an SSH
+  session. Without those, `hc server start` starts the core through a
+  launchd job, and every Claude Code in it says `Login expired`. The same
+  `XDG_STATE_HOME` keeps Corgi's state (supervisors, inboxes, the daemon's
+  log) out of the real one, and hc passes it, with `HC_SESSION`, to every
+  terminal. Run every `hc` and `corgi` call of the test through that
+  environment (a wrapper script), or it reaches the user's core.
+- List the scratch project in `$XDG_STATE_HOME/corgi/created-projects` so
+  Corgi answers its folder-trust question.
+- Run `corgi daemon` in the background with that environment and stop it by
+  its pid; `CORGI_DEBUG_HANDOVER_PERCENT=1` and
+  `CORGI_DEBUG_HANDOVER_IDLE_SECS=30` force a handover in a minute or two,
+  and hand every new session over again a minute later, so restart the
+  daemon without them right after. A test LaunchAgent gets a label of its
+  own (`corgi daemon install --label io.github.zyrre.corgi-daemon-test`
+  in that environment) and `corgi daemon uninstall --label …` before you
+  finish; never run the plain `corgi daemon install` for the user.
+- `hc keys` types a draft into a supervisor's box (it does not count as a
+  person typing for hc's send, but the box holds it), and `backspace` keys
+  clear it.
+- `hc attach --observe` waits half a second for answers to its questions
+  before it paints; a read that stops at the first quiet moment gets no
+  screen.
+- Afterwards, besides the above: `hc kill` and `hc rm` each terminal by
+  address, `hc server stop` the core, delete its state folder, the worktrees
+  under `~/.herdr/worktrees/<project>`, and the transcripts of the project
+  and of each worktree under `~/.claude/projects/`.
+
 ## Session recovery checks
 
 `cargo test recovery` uses isolated native-store/config fixtures and fake Herdr

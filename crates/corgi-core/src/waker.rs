@@ -32,6 +32,8 @@ use crate::{
     progress::Silent,
 };
 
+pub mod hc;
+
 /// How long a supervisor that handed over has to exit, polled this often.
 const SUPERVISOR_EXIT_POLLS: usize = 60;
 const SUPERVISOR_EXIT_POLL_DELAY: Duration = Duration::from_millis(250);
@@ -120,6 +122,10 @@ pub struct SupervisorWaker {
     paused: crate::pause::Holds,
     /// The pauses before reading a report again ([`REPORT_REREADS`]).
     report_rereads: &'static [Duration],
+    /// Where the supervisors and their workers run, which the wakes' lines
+    /// name commands for: the Herdr TUI, unless the hc daemon made this
+    /// waker ([`SupervisorWaker::for_hc`]).
+    backend: crate::backend::Backend,
 }
 
 impl Default for SupervisorWaker {
@@ -145,6 +151,7 @@ impl Default for SupervisorWaker {
             recovery_store: None,
             paused: crate::pause::Holds::default(),
             report_rereads: &REPORT_REREADS,
+            backend: crate::backend::Backend::Herdr,
         }
     }
 }
@@ -783,7 +790,7 @@ impl SupervisorWaker {
             {
                 continue;
             }
-            let item = wake_item(&stop, report, corgi_bin);
+            let item = wake_item(&stop, report, corgi_bin, self.backend);
             if let Err(failed) = self.notify(item) {
                 let name = stop.name;
                 error = Some(format!(
@@ -1232,26 +1239,35 @@ fn own(agent: &DashboardAgent) -> bool {
 /// the report goes out with it instead. Its id names the agent's pane, run of
 /// state changes and state change, so the same stop is never added twice and
 /// a later one never taken for it.
-fn wake_item(stop: &Stop<'_>, report: Option<Captured>, corgi_bin: &Path) -> Item {
+fn wake_item(
+    stop: &Stop<'_>,
+    report: Option<Captured>,
+    corgi_bin: &Path,
+    backend: crate::backend::Backend,
+) -> Item {
     let Stop {
         agent, name, state, ..
     } = stop;
     let (pane, change) = (&agent.info.pane_id, agent.info.state_change_seq);
     let label = state.label().to_lowercase();
+    let source = match backend {
+        crate::backend::Backend::Herdr => "dashboard",
+        crate::backend::Backend::Hc => "daemon",
+    };
     Item {
         id: inbox::file_safe(&format!(
             "wake-{name}-{pane}-{}-{change}-{label}",
             stop.since
         )),
         project: agent.project_root.clone(),
-        source: "dashboard".into(),
+        source: source.into(),
         kind: Kind::Wake,
         agent: Some(name.to_string()),
         state: Some(label),
         pane: Some(pane.clone()),
         change: Some(change),
         key: name.to_string(),
-        text: supervisor::wake_message(corgi_bin, name, *state),
+        text: supervisor::wake_message_on(corgi_bin, name, *state, backend),
         own: own(agent),
         request: agent.info.tokens.get(CORGI_REQUEST_TOKEN).cloned(),
         said: report.as_ref().is_some_and(|report| report.transcript),

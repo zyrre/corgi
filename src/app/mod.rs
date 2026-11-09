@@ -59,6 +59,7 @@ pub(crate) use prompt::PromptForm;
 mod bar;
 mod cards;
 mod cli;
+mod daemon;
 mod hc_cli;
 mod navigate;
 mod status;
@@ -72,6 +73,7 @@ pub use cli::{
     SPAWN_USAGE, SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify,
     recovery_command, report, role_command, spawn, supervisor_command, tag_command,
 };
+pub use daemon::{DAEMON_USAGE, daemon_command};
 pub use edit::{EDIT_USAGE, edit_command};
 pub use orphans::{ORPHANS_USAGE, orphans_command};
 mod hook;

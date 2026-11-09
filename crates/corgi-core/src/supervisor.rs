@@ -750,8 +750,22 @@ pub fn handover_archive(state_dir: &Path, now: u64) -> PathBuf {
 
 /// The line that tells a supervisor where `worker` is and what to run next.
 pub fn wake_message(corgi_bin: &Path, worker: &str, state: AgentState) -> String {
+    wake_message_on(corgi_bin, worker, state, Backend::Herdr)
+}
+
+/// [`wake_message`] for a supervisor whose workers run on `backend`, whose
+/// command reads a blocked worker's screen.
+pub fn wake_message_on(
+    corgi_bin: &Path,
+    worker: &str,
+    state: AgentState,
+    backend: Backend,
+) -> String {
     let next = if state == AgentState::Blocked {
-        format!("herdr agent read {worker} --source recent --lines 120")
+        match backend {
+            Backend::Herdr => format!("herdr agent read {worker} --source recent --lines 120"),
+            Backend::Hc => format!("hc read {worker} --lines 120"),
+        }
     } else {
         format!("{} report {worker}", corgi_bin.display())
     };

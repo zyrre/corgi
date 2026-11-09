@@ -2351,6 +2351,10 @@ Labels replace pane tokens: `corgi.project` (the primary checkout,
 without symlinks), `corgi.role` (`supervisor` or `worker`), `corgi.request`,
 `corgi.task`, `corgi.harness`, `corgi.session` and `corgi.resume` (the
 command line that resumes the session, typed into a POSIX-quoting shell),
+`corgi.pid` (the pid of the program Corgi started the agent from: the
+supervisor's shell, a worker's agent), `corgi.handover` and `corgi.baseline`
+(a supervisor session's handover request and context baseline, as the
+`corgi_handover` and `corgi_baseline` tokens on the TUI),
 `corgi.tag=merge` with `corgi.tag.at` (the state and hc `turn` it was tagged
 at, so a tag the agent has worked past stops showing), and `herdr.space`
 (the calling terminal's, else the project supervisor's, else
@@ -2360,10 +2364,14 @@ row's `pane_id` is the terminal's address and its `state_change_seq` hc's
 
 A supervisor is a `--keep` shell terminal named `<project>-supervisor`
 with the agent's command line typed into it, so that a handover can `/exit`
-and start its successor in the same terminal. Its role names `hc send`,
+and start its successor in the same terminal. `corgi supervisor` on a
+project whose supervisor terminal has its shell in front (its agent
+exited) starts the new session there, with the terminal's address, name and
+space (`hc::launch::relaunch_supervisor`). Its role names `hc send`,
 `hc read` and `hc keys` where the TUI's names `herdr agent prompt`, `read`
 and `send-keys` (`STEERING` in `supervisor.rs`; the TUI's text is
-unchanged). A worker is a terminal of its own, `--no-parent --no-notify`,
+unchanged), and a wake for a blocked worker names `hc read <worker> --lines
+120`. A worker is a terminal of its own, `--no-parent --no-notify --keep`,
 in a worktree made with `git worktree add` where Herdr makes them
 (`~/.herdr/worktrees/<repo>/worktree-<name>`, branch `worktree/<name>`).
 A request id is found again by its label under a lock file in
@@ -2376,13 +2384,96 @@ may have been started from a Claude Code session in a Herdr pane, and a
 Claude Code that inherits that session's marker saves no transcript. A
 user's own `CLAUDE_CODE_*` settings (Bedrock, Vertex, limits) pass through. Claude Code is given its session id (`--session-id`), so it is
 labelled before it starts; its first prompt comes after `--`, past
-`--add-dir`, which takes several values. Codex always gets `--no-daemon`;
-OpenCode runs by full path with `--prompt`. Claude Code's folder-trust
+`--add-dir`, which takes several values. Codex always gets `--no-daemon`,
+and a Codex supervisor's role, inline as `-c developer_instructions` on the
+TUI too, is written to `codex-developer-instructions.arg` in its state
+directory and named in the typed line as `@corgi-arg-file:<path>`, which
+the agent script replaces with the file's text, so 25 KB are never typed
+into a shell. (Codex has no file form of `developer_instructions`;
+`model_instructions_file` would replace Codex's own instructions, a
+project's `.codex/config.toml` would land in the user's repository, and
+`CODEX_HOME` would replace the user's whole Codex home.) OpenCode runs by
+full path with `--prompt`. Claude Code's folder-trust
 question is answered as on the TUI, only in a project Corgi created, with
 Enter pressed only once Yes shows highlighted.
 
-Wakes, inbox delivery, handovers and resuming after a core stop are not on
-hc yet: they are the daemon's (`docs/herdr-app-port.md`, Design A).
+#### `corgi daemon`
+
+Wakes, inbox delivery, handovers and resuming after a core stop are the
+daemon's (`docs/herdr-app-port.md`, Design A): `crates/corgi-core/src/hc/daemon.rs`
+around the hc waker in `crates/corgi-core/src/waker/hc.rs`, with the
+command in `src/app/daemon.rs`. It does for supervisors on hc what the
+plugin hooks do on the TUI, whether the app's window is open or not, and
+acts only on terminals with Corgi's labels: it never reads a Herdr TUI
+session, and its records are named after the hc core's socket
+(`wake/<socket>.seen.json`, `.handovers.json`, `.lock`), never a TUI
+socket's.
+
+- **One per core, never starting one.** It holds `daemon/<socket>.lock`
+  (with its pid, which `corgi daemon status` and `corgi status --json`'s
+  `daemon` show) and the core's wake lock for its whole life. It waits for
+  the core's socket to accept a connection and asks `hc` nothing while it
+  does not, since any `hc` command starts a stopped core with the caller's
+  environment; it follows the events on the socket itself
+  (`events.subscribe`, `hc/events.rs`), not through `hc events`.
+- **Trigger, then reconcile.** An event of one of Corgi's terminals (or one
+  that gives a terminal Corgi's role label) starts a pass once the burst
+  settles (300 ms); so do its start, every reconnect (the stream ends at a
+  core stop or restart, and `seq` starts again), and a timer counted from
+  the last pass: three seconds while an inbox waits for a resting
+  supervisor (clearing a draft gives no event) or a handover runs, else a
+  minute, which times a resting supervisor's prompt cache. hc's heartbeat
+  every 15 s does not restart it. A pass reads Corgi's terminals afresh
+  (`hc ls` and `hc get`), so a stop missed while the daemon or the core was
+  away is found from `seen.json` as on the TUI.
+- **Resume.** A kept terminal whose program the core replaced with a shell
+  (a core stop, a reboot, a death by signal) has another pid than its
+  `corgi.pid`: once its shell has drawn a prompt, the daemon types its
+  `corgi.resume` line there and sets `corgi.pid` to the shell's, so it does
+  so once. A supervisor whose agent exited into its own shell keeps its pid
+  and waits for `corgi supervisor`.
+- **Wakes** go through `SupervisorWaker::observe` and the inbox exactly as
+  on the TUI (the items' `source` is `daemon`). Delivery types a project's
+  inbox in with `hc send`, never `--force`, only when a fresh `hc get`
+  shows the supervisor resting (`done` or `idle`) with its agent in front,
+  not its shell, and the first paint of a watch-only viewer shows its
+  input box empty (`draft.rs`). The viewer is `hc attach --observe` in a
+  pseudo-terminal of Corgi's (`hc/observe.rs`; the API's framed attach is
+  undocumented): it asks its terminal for colours and size, waits half a
+  second for answers it never gets (nothing is ever written to it), then
+  paints the screen after a clear screen, and the read ends 400 ms after
+  the paint goes quiet. A box it cannot find holds nothing back, as on the
+  TUI. A send that took over a second is logged as a possible merge into a
+  draft (the accepted race between the look and the paste). hc's refusals
+  (`blocked`, `not_found`, `finished`, …) leave the items for a later pass;
+  another failure leaves them too, so a wake may arrive twice but is never
+  lost.
+- **Handover** follows `supervisor::Handover` with timed rests (the daemon
+  can time one, unlike a hook): the request is typed like a wake and
+  recorded in `corgi.handover`; once the note is written the replacement
+  types the harness's exit command, waits for the shell in front, and
+  starts the successor in the same terminal with the takeover prompt. Its
+  workers, terminals of their own, keep running.
+- **Spaces.** For the user's default core only, the daemon names each space
+  `corgi-<project>-<hash>` after its project through the open app window
+  (`herdr-app do space.rename`), once, when the window lists it unnamed;
+  with no window open (`$HERDR_APP_HOME/herdr-app.sock`) it does nothing,
+  and it never creates a space.
+
+`corgi daemon install` writes a LaunchAgent (`~/Library/LaunchAgents/
+io.github.zyrre.corgi.daemon.plist`) or a systemd user unit, `KeepAlive`/
+`Restart=always`, with the login shell's `PATH` and the `HC_*`, `XDG_*`,
+`HERDR_APP_*` and `CORGI_*` settings of the environment it runs in, logging
+to `daemon/daemon.log` in Corgi's state directory, and (re)starts it;
+`uninstall` stops and removes it. `herdr-app/install.sh` runs `install` on
+every run (not with `--mod-only`, the TUI plugin's, or `--no-daemon`) and
+`uninstall` with `--uninstall`. It also asks once, in a terminal, whether to
+install `herdr-app/opencode/corgi-hc-status.js` into
+`~/.config/opencode/plugin/`, which writes OSC 7501 for OpenCode inside hc
+terminals; it keeps the answer in `opencode-plugin` in Corgi's state
+directory, says so and skips the question with no terminal to ask in
+(`CORGI_OPENCODE_PLUGIN=yes|no` answers it), and removes Corgi's plugin when
+OpenCode's binary writes OSC 7501 itself.
 
 ### Plan usage
 

@@ -51,7 +51,8 @@ inbox items still waiting, ledger counts and the backlog's length. It works
 outside a Herdr pane: the Herdr socket is $HERDR_SOCKET_PATH, else the default
 session's (~/.config/herdr/herdr.sock). When Herdr cannot be reached, the
 projects still come from the state directories, without agents, and
-\"herdr\".\"connected\" is false. It changes nothing.";
+\"herdr\".\"connected\" is false. \"daemon\" says whether corgi daemon runs
+for herdr-core (\"running\", \"pid\"). It changes nothing.";
 
 pub const MERGE_USAGE: &str = "\
 Usage: corgi merge NAME --project DIR [--json] [--pull | --skip-upstream]
@@ -133,7 +134,7 @@ pub fn status_command(args: &[String]) -> Result<()> {
     let project = project.as_deref().map(existing_dir).transpose()?;
     let app = status_app()?;
     let only = project.map(|dir| project_root(&app.client, app.connected, &dir));
-    let value = status_value(
+    let mut value = status_value(
         &app.agents,
         app.projects.roots(),
         &Inboxes::default(),
@@ -141,6 +142,8 @@ pub fn status_command(args: &[String]) -> Result<()> {
         only.as_deref(),
         unix_now(),
     );
+    // Whether supervisors on hc are woken while the app is closed.
+    value["daemon"] = super::daemon::status_value();
     println!("{}", serde_json::to_string(&value)?);
     Ok(())
 }

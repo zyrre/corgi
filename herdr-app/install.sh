@@ -2,7 +2,7 @@
 # Installs Corgi into the Herdr app: the corgi CLI and the Corgi mod.
 #
 #   curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh
-#   herdr-app/install.sh [--version X.Y.Z] [--home DIR] [--cli-only | --mod-only]
+#   herdr-app/install.sh [--version X.Y.Z] [--home DIR] [--cli-only | --mod-only] [--no-daemon]
 #   herdr-app/install.sh --uninstall [--cli] [--home DIR]
 #
 # Run again to update. Needs no Herdr TUI and no Herdr TUI plugin.
@@ -23,6 +23,17 @@
 #     ~/.local/bin/corgi ($CORGI_BIN_DIR, else $XDG_BIN_HOME/corgi) links to
 #     it, unless something else is there: a file, or a working link elsewhere
 #     (such as the Herdr TUI plugin's), is left alone
+#   - the daemon: `corgi daemon install` runs `corgi daemon` as a service of
+#     the user's session (a LaunchAgent on macOS, a systemd user unit on
+#     Linux), restarted with the new binary on every run, so supervisors on
+#     herdr-core are woken and handed over while the app's window is closed
+#   - OpenCode's status plugin: when OpenCode is installed and does not
+#     report its status to herdr-core itself, the script asks once whether to
+#     put herdr-app/opencode/corgi-hc-status.js into
+#     ~/.config/opencode/plugin/ (without it, an OpenCode worker on hc wakes
+#     no supervisor), and remembers the answer; a run with no terminal to ask
+#     in skips it and says so, and one where OpenCode reports by itself
+#     removes Corgi's plugin
 #   - the mod: herdr-app/mods/corgi is put together in a hidden folder of the
 #     app home ($HERDR_APP_HOME, else ~/.config/herdr-app; --home DIR), with
 #     a config.json naming the CLI, checked with `herdr-app check`, and swapped
@@ -32,15 +43,22 @@
 #   --version X.Y.Z  the release to install; in a checkout it must be the
 #                    checkout's own (herdr-plugin.toml), so nothing else is
 #                    ever installed in its place
-#   --cli-only       the CLI alone (the mod runs this to install corgi)
+#   --cli-only       the CLI, the daemon and OpenCode's plugin, without the
+#                    mod (the mod runs this to install corgi)
 #   --mod-only       the mod alone, with no config.json (scripts/install.sh
 #                    runs this during `herdr plugin install`)
-#   --uninstall      removes the mod; with --cli also the link to this
-#                    checkout's corgi (the checkout itself is left)
+#   --no-daemon      leaves the daemon as it is
+#   --uninstall      removes the mod, the daemon and Corgi's OpenCode plugin;
+#                    with --cli also the link to this checkout's corgi (the
+#                    checkout itself is left)
 #
-#   CORGI_CHECKOUT=<dir>   where the piped install keeps its checkout
-#   CORGI_REPO_URL=<url>   clone from <url> instead of GitHub
-#   HERDR_APP_BIN=<path>   the herdr-app to check the mod with
+#   CORGI_CHECKOUT=<dir>         where the piped install keeps its checkout
+#   CORGI_REPO_URL=<url>         clone from <url> instead of GitHub
+#   HERDR_APP_BIN=<path>         the herdr-app to check the mod with
+#   CORGI_OPENCODE_PLUGIN=yes|no the answer to the OpenCode question, kept
+#                                as if given in a terminal
+#   CORGI_OPENCODE_BIN=<path>    the opencode to look at, instead of the one
+#                                on PATH or in ~/.opencode/bin
 set -u
 
 say() { printf 'corgi app install: %s\n' "$*" >&2; }
@@ -49,7 +67,7 @@ die() {
   exit 1
 }
 
-version='' home_dir='' uninstall='' cli='' cli_only='' mod_only=''
+version='' home_dir='' uninstall='' cli='' cli_only='' mod_only='' no_daemon=''
 parse_args() {
   while [ $# -gt 0 ]; do
     case $1 in
@@ -67,8 +85,9 @@ parse_args() {
       --cli) cli=1 ;;
       --cli-only) cli_only=1 ;;
       --mod-only) mod_only=1 ;;
+      --no-daemon) no_daemon=1 ;;
       -h | --help)
-        sed -n '2,48p' "$0" 2>/dev/null || say "see https://github.com/zyrre/corgi#install"
+        sed -n '2,61p' "$0" 2>/dev/null || say "see https://github.com/zyrre/corgi#install"
         exit 0
         ;;
       *) die "unknown argument $1 (see --help)" ;;
@@ -155,7 +174,90 @@ find_app() {
   done
 }
 
+# --- OpenCode's status plugin -----------------------------------------------------
+oc_src="$root/herdr-app/opencode/corgi-hc-status.js"
+oc_plugin="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugin/corgi-hc-status.js"
+oc_answer="${XDG_STATE_HOME:-$HOME/.local/state}/corgi/opencode-plugin"
+
+# OpenCode's binary: $CORGI_OPENCODE_BIN, else on PATH, else where its
+# installer puts it.
+find_opencode() {
+  if [ -n "${CORGI_OPENCODE_BIN:-}" ]; then
+    [ -x "$CORGI_OPENCODE_BIN" ] && printf '%s\n' "$CORGI_OPENCODE_BIN"
+    return
+  fi
+  c=$(command -v opencode 2>/dev/null) || c=
+  [ -n "$c" ] || c="$HOME/.opencode/bin/opencode"
+  [ -x "$c" ] && printf '%s\n' "$c"
+}
+# Whether that OpenCode writes OSC 7501 itself: its binary holds the escape.
+opencode_reports() { LC_ALL=C grep -a -q ']7501;state' "$1" 2>/dev/null; }
+# Only ever replace or remove a plugin file that is Corgi's.
+oc_ours() { [ ! -e "$1" ] || grep -q 'io.github.zyrre.corgi' "$1" 2>/dev/null; }
+remove_oc_plugin() {
+  if [ -f "$oc_plugin" ] && oc_ours "$oc_plugin"; then
+    rm -f "$oc_plugin" && say "$1"
+  fi
+}
+# Asks the person running this, when there is one, whether to install the
+# plugin; prints yes or no, or nothing when nobody can be asked.
+ask_opencode() {
+  [ -t 2 ] && [ -r /dev/tty ] || return 0
+  printf '%s' "corgi app install: install Corgi's status plugin for OpenCode in $(dirname "$oc_plugin")? Without it an OpenCode worker on herdr-core wakes no supervisor. Every OpenCode session loads it; outside herdr-core it does nothing. [y/N] " >&2
+  reply=
+  read -r reply </dev/tty 2>/dev/null || reply=
+  case $reply in
+    [Yy] | [Yy][Ee][Ss]) echo yes ;;
+    *) echo no ;;
+  esac
+}
+install_opencode_plugin() {
+  oc=$(find_opencode)
+  if [ -z "$oc" ]; then
+    return 0
+  fi
+  if opencode_reports "$oc"; then
+    remove_oc_plugin "OpenCode reports its status to herdr-core itself: removed Corgi's plugin $oc_plugin"
+    return 0
+  fi
+  answer=${CORGI_OPENCODE_PLUGIN:-}
+  [ -n "$answer" ] || answer=$(cat "$oc_answer" 2>/dev/null) || answer=
+  if [ -z "$answer" ]; then
+    answer=$(ask_opencode)
+    if [ -z "$answer" ]; then
+      say "skipped OpenCode's status plugin: no terminal to ask in (run this again in one, or set CORGI_OPENCODE_PLUGIN=yes)"
+      return 0
+    fi
+  fi
+  case $answer in
+    yes | no) ;;
+    *) die "CORGI_OPENCODE_PLUGIN is yes or no, not $answer" ;;
+  esac
+  mkdir -p "$(dirname "$oc_answer")" && printf '%s\n' "$answer" >"$oc_answer"
+  if [ "$answer" = no ]; then
+    remove_oc_plugin "removed Corgi's OpenCode plugin $oc_plugin, as answered"
+    return 0
+  fi
+  if ! oc_ours "$oc_plugin"; then
+    say "left $oc_plugin alone: it is not Corgi's"
+  elif [ -f "$oc_plugin" ] && cmp -s "$oc_src" "$oc_plugin"; then
+    :
+  elif mkdir -p "$(dirname "$oc_plugin")" && cp "$oc_src" "$oc_plugin.tmp" && mv "$oc_plugin.tmp" "$oc_plugin"; then
+    say "installed Corgi's OpenCode status plugin in $oc_plugin"
+  else
+    rm -f "$oc_plugin.tmp"
+    say "could not install Corgi's OpenCode plugin in $oc_plugin"
+  fi
+}
+
 if [ -n "$uninstall" ]; then
+  if [ -x "$bin" ]; then
+    "$bin" daemon uninstall || say "could not remove the corgi daemon; run $bin daemon uninstall"
+  else
+    say "no $bin to remove the daemon with: run corgi daemon uninstall"
+  fi
+  remove_oc_plugin "removed Corgi's OpenCode plugin $oc_plugin"
+  rm -f "$oc_answer"
   if [ -d "$mod_dir" ]; then
     ours "$mod_dir" || die "$mod_dir is not Corgi's mod; leaving it"
     rm -rf "$mod_dir" && say "removed $mod_dir"
@@ -209,8 +311,19 @@ if [ -z "$mod_only" ]; then
 fi
 
 # --- the daemon --------------------------------------------------------------------
-# `corgi daemon` (wakes and delivery while the app is closed) is installed
-# here once it exists: after the CLI, before the mod, skipped with --mod-only.
+# Wakes, deliveries and handovers on herdr-core while the app is closed.
+# Installed again on every run, so it runs the binary just installed.
+if [ -z "$mod_only" ] && [ -z "$no_daemon" ]; then
+  if "$bin" daemon install; then
+    say "the corgi daemon runs as a service; corgi daemon status says how it is"
+  else
+    say "could not install the corgi daemon; run $bin daemon install to try again"
+  fi
+fi
+
+if [ -z "$mod_only" ]; then
+  install_opencode_plugin
+fi
 
 [ -z "$cli_only" ] || exit 0
 

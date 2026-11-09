@@ -73,7 +73,11 @@ on the theme's `surface`, text 13 px.
 - When no `corgi` that knows `status --json` and is at least the mod's
   version is found, it installs that version at once, without asking, then
   shows the overview.
-- It never starts, wakes, types into or focuses an agent.
+- It never starts, wakes, types into or focuses an agent. Waking
+  supervisors, delivering their inboxes and handing them over is
+  `corgi daemon`'s, a service `herdr-app/install.sh` installs, so it goes on
+  with the window closed; `corgi status --json` says whether it runs
+  (`daemon.running`).
 
 ## Built from
 

@@ -12,7 +12,10 @@
 //! [`agents`]). [`launch`] starts supervisors and workers there.
 
 pub mod agents;
+pub mod daemon;
+pub mod events;
 pub mod launch;
+mod observe;
 
 use std::{
     collections::BTreeMap,
@@ -61,6 +64,17 @@ pub const TAG_AT_LABEL: &str = "corgi.tag.at";
 /// The Herdr app's space that shows the terminal; one it does not know
 /// becomes a new space.
 pub const SPACE_LABEL: &str = "herdr.space";
+/// A supervisor session's handover request, `<unix seconds> <session>`: the
+/// hc counterpart of [`crate::supervisor::HANDOVER_TOKEN`].
+pub const HANDOVER_LABEL: &str = "corgi.handover";
+/// A supervisor session's context baseline, `<tokens> <session>`: the hc
+/// counterpart of [`crate::supervisor::BASELINE_TOKEN`].
+pub const BASELINE_LABEL: &str = "corgi.baseline";
+/// The process id of the program Corgi started its agent from: the
+/// supervisor's shell, a worker's agent. A kept terminal whose program has
+/// another pid lost it (a core stop, a reboot) and got a shell in its place,
+/// which the daemon gives the [`RESUME_LABEL`] line, once.
+pub const PID_LABEL: &str = "corgi.pid";
 
 /// An error `hc` reported: `{error: {kind, message, hint}}` on stderr, with
 /// its exit code (3 not found, 9 blocked, 10 status mismatch, 11 finished).
@@ -126,6 +140,19 @@ pub struct Terminal {
     pub argv: Vec<String>,
     #[serde(default)]
     pub created_ms: u64,
+    /// The process id of its program, while it runs.
+    #[serde(default)]
+    pub pid: Option<u64>,
+    /// Whether a lost program (a core stop, a reboot, death by a signal) is
+    /// replaced with a shell in place; an exit with a code and a kill stay
+    /// final.
+    #[serde(default)]
+    pub keep: bool,
+    /// Its size in cells.
+    #[serde(default)]
+    pub cols: u16,
+    #[serde(default)]
+    pub rows: u16,
 }
 
 impl Terminal {
@@ -447,6 +474,15 @@ impl HcClient {
     pub fn remove(&self, target: &str) -> Result<()> {
         self.output(&["rm", target]).map(drop)
     }
+
+    /// The first paint a watch-only viewer of `target` gets (`hc attach
+    /// --observe`, through a pseudo-terminal of `cols` by `rows`): its whole
+    /// screen as ANSI, one row per line with its styling, which is what
+    /// [`crate::draft::holds_draft`] reads. The viewer never types or
+    /// resizes, and is ended once the paint has gone quiet.
+    pub fn observe_paint(&self, target: &str, cols: u16, rows: u16) -> Result<String> {
+        observe::paint(&self.bin, target, cols, rows)
+    }
 }
 
 /// Whether this process runs in an hc terminal, as hc tells every program in
@@ -467,13 +503,31 @@ pub fn calling_terminal() -> Option<String> {
 /// asking `hc`: any `hc` call starts a stopped core, with the caller's
 /// environment, which a command that only reads must not do. It looks where
 /// hc puts the socket of the session `HC_SESSION` (default `default`):
-/// `HC_SOCKET`, else under `$XDG_RUNTIME_DIR/herdr-core/`, else under
+/// `HC_SOCKET`, else in an hc terminal `HC_TERMINAL_SOCKET`, else under
+/// `$XDG_RUNTIME_DIR/herdr-core/`, else under
 /// `$XDG_STATE_HOME/herdr-core/<session>/` (`~/.local/state` by default). A
 /// socket moved by hc's own config is not found.
 pub fn core_running() -> bool {
+    running_socket().is_some()
+}
+
+/// The socket of the core [`core_running`] finds, if one accepts
+/// connections. Asking it is safe where calling `hc` is not: a connection to
+/// a socket nobody listens on starts nothing.
+pub fn running_socket() -> Option<PathBuf> {
     socket_candidates(&|name| env::var_os(name), home().as_deref())
-        .iter()
-        .any(|socket| UnixStream::connect(socket).is_ok())
+        .into_iter()
+        .find(|socket| UnixStream::connect(socket).is_ok())
+}
+
+/// Where the core of this environment's session listens, or would: the
+/// first place [`core_running`] looks. It names the core in Corgi's own
+/// records (the daemon's lock, what it saw of each agent), so it must not
+/// depend on whether the core runs.
+pub fn expected_socket() -> Option<PathBuf> {
+    socket_candidates(&|name| env::var_os(name), home().as_deref())
+        .into_iter()
+        .next()
 }
 
 /// Where hc's socket may be, given the environment `var` and the home
@@ -483,7 +537,9 @@ fn socket_candidates(
     home: Option<&Path>,
 ) -> Vec<PathBuf> {
     let set = |name: &str| var(name).filter(|value| !value.is_empty());
-    if let Some(socket) = set("HC_SOCKET") {
+    // hc's own: the socket it chose, then, in one of its terminals, the
+    // socket of that terminal's core.
+    if let Some(socket) = set("HC_SOCKET").or_else(|| set("HC_TERMINAL_SOCKET")) {
         return vec![PathBuf::from(socket)];
     }
     let session = set("HC_SESSION")
