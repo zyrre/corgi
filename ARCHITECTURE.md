@@ -251,6 +251,10 @@ All of this is in the core, `crates/corgi-core/src/`.
   messages, and progress; strips terminal chrome; redacts common credentials;
   and caps output length. It is the fallback for what the session file lacks,
   and the only source of the permission prompts a blocked CLI shows on screen.
+- `app_space.rs` finds, makes and removes the Herdr app's Corgi space (a
+  space named `Corgi` whose only tab is the `corgi` mod) through `herdr-app
+  ls` and `herdr-app do`, and keeps the note of a pending one for
+  `corgi daemon`; `corgi app-space` (`src/app/app_space.rs`) runs it.
 - `session/` reads each agent's session file, which its CLI already
   writes: Claude Code's transcript under `projects/` in its configuration
   directory, and Codex's rollout under `~/.codex/sessions`. From it come the
@@ -2476,9 +2480,14 @@ socket's.
   types the harness's exit command, waits for the shell in front, and
   starts the successor in the same terminal with the takeover prompt. Its
   workers, terminals of their own, keep running.
-- **Spaces** are not the daemon's: it never names, makes or moves a space
-  of the app (a named space would keep its name instead of following its
-  repository's), and never talks to the app's window.
+- **Spaces** are not the daemon's: it never names, makes or moves a
+  project's or a worker's space of the app (a named space would keep its
+  name instead of following its repository's). The one exception is the
+  Corgi space (`app_space.rs`): when `corgi app-space` found the app's
+  window closed, it left `app-space.json` in Corgi's state directory, and
+  each pass with the window's socket answering makes the space through
+  `herdr-app ls`/`do` and deletes the note, so it is made once. That is
+  the only time the daemon talks to the app's window.
 
 `corgi daemon install` writes a LaunchAgent (`~/Library/LaunchAgents/
 io.github.zyrre.corgi.daemon.plist`) or a systemd user unit, `KeepAlive`/

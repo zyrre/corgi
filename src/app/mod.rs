@@ -56,6 +56,7 @@ pub(crate) use prompt::PromptForm;
 
 // Row derivation, the project cards, the command-line tools, and the
 // Omarchy bar endpoints.
+mod app_space;
 mod bar;
 mod cards;
 mod cli;
@@ -65,6 +66,7 @@ mod navigate;
 mod status;
 pub use status::{MERGE_USAGE, STATUS_USAGE, merge_command, status_command};
 pub(crate) mod orphans;
+pub use app_space::{APP_SPACE_USAGE, app_space_command};
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
 pub(crate) use cli::digest_summary;

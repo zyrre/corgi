@@ -15,8 +15,10 @@
 //! 2. adds the wakes, moves the handovers on, and types each supervisor's
 //!    inbox in when it may be typed into ([`SupervisorWaker::tick_hc`]).
 //!
-//! It never names or makes a space of the Herdr app: the app calls a space
-//! nobody named after where its first terminal is.
+//! It never names or makes a project's or a worker's space of the Herdr app:
+//! the app calls a space nobody named after where its first terminal is. The
+//! one space it makes is the Corgi space, once, when `corgi app-space` could
+//! not because the app's window was closed ([`app_space::make_pending`]).
 //!
 //! Passes also run on a timer: every few seconds while an inbox waits for a
 //! supervisor that rests (a draft in its box gives no event when it is
@@ -47,6 +49,7 @@ use super::{
     events::{EventStream, Message, concerns_corgi},
 };
 use crate::{
+    app_space,
     model::AgentState,
     paths::{corgi_state_dir, socket_state_file},
     time::{LocalTime, unix_now},
@@ -366,6 +369,9 @@ impl Daemon {
         };
         self.known = terminals.iter().map(|t| t.address.clone()).collect();
         let mut said = self.resume(&terminals);
+        // The Corgi space `corgi app-space` could not make while the app's
+        // window was closed.
+        said.extend(app_space::make_pending());
         let agents = dashboard_agents(&terminals, None);
         said.extend(self.waker.tick_hc(
             &mut self.core,

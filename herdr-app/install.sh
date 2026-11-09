@@ -1,5 +1,6 @@
 #!/bin/sh
-# Installs Corgi into the Herdr app: the corgi CLI and the Corgi mod.
+# Installs Corgi into the Herdr app: the corgi CLI, the Corgi mod and the
+# Corgi space.
 #
 #   curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh
 #   herdr-app/install.sh [--version X.Y.Z] [--home DIR] [--cli-only | --mod-only] [--no-daemon]
@@ -43,6 +44,9 @@
 #     a config.json naming the CLI, checked with `herdr-app check`, and swapped
 #     in with one rename, only when it differs from the installed one: the app
 #     reloads a mod on every file it sees change
+#   - the Corgi space: `corgi app-space` finds the app's space named Corgi or
+#     makes it, first in the Spaces list, with the mod as its only tab; when
+#     the app's window is not open, the corgi daemon makes it once it opens
 #
 #   --version X.Y.Z  the release to install; in a checkout it must be the
 #                    checkout's own (herdr-plugin.toml), so nothing else is
@@ -52,9 +56,9 @@
 #   --mod-only       the mod alone, with no config.json (scripts/install.sh
 #                    runs this during `herdr plugin install`)
 #   --no-daemon      leaves the daemon as it is
-#   --uninstall      removes the mod, the daemon and Corgi's OpenCode plugin;
-#                    with --cli also the link to this checkout's corgi (the
-#                    checkout itself is left)
+#   --uninstall      removes the Corgi space, the mod, the daemon and
+#                    Corgi's OpenCode plugin; with --cli also the link to
+#                    this checkout's corgi (the checkout itself is left)
 #
 #   CORGI_BUILD=source|release   build the CLI from source, or use the pinned
 #                                download, whatever the checkout's HEAD
@@ -93,7 +97,7 @@ parse_args() {
       --mod-only) mod_only=1 ;;
       --no-daemon) no_daemon=1 ;;
       -h | --help)
-        sed -n '2,61p' "$0" 2>/dev/null || say "see https://github.com/zyrre/corgi#install"
+        sed -n '2,71p' "$0" 2>/dev/null || say "see https://github.com/zyrre/corgi#install"
         exit 0
         ;;
       *) die "unknown argument $1 (see --help)" ;;
@@ -259,8 +263,19 @@ install_opencode_plugin() {
   fi
 }
 
+# Runs `corgi app-space` with this app and home: makes the Corgi space, or
+# with remove closes it.
+app_space() {
+  set -- "$@" --home "$home_dir"
+  [ -z "$app" ] || set -- "$@" --app "$app"
+  said=$("$bin" app-space "$@") || return 1
+  [ -z "$said" ] || say "$said"
+}
+
 if [ -n "$uninstall" ]; then
+  app=$(find_app)
   if [ -x "$bin" ]; then
+    app_space remove || say "could not remove the Corgi space; close it in the Herdr app"
     "$bin" daemon uninstall || say "could not remove the corgi daemon; run $bin daemon uninstall"
   else
     say "no $bin to remove the daemon with: run corgi daemon uninstall"
@@ -366,4 +381,13 @@ else
   fi
   mv "$stage/corgi" "$mod_dir" || die "could not move the mod into $mod_dir"
   say "installed the Corgi mod in $mod_dir"
+fi
+
+# --- the Corgi space -------------------------------------------------------------------
+# After the mod, which its tab shows. --mod-only has a corgi when
+# scripts/install.sh has just built it.
+if [ -x "$bin" ]; then
+  app_space || say "could not make the Corgi space; run $bin app-space to try again"
+else
+  say "no $bin to make the Corgi space with; run corgi app-space once it is installed"
 fi

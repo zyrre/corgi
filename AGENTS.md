@@ -429,7 +429,11 @@ shellcheck scripts/install.sh scripts/link-command.sh scripts/test-install herdr
 
 `herdr-app/mods/corgi/` is the Herdr app's Corgi mod; `herdr-app/RECIPE.md`
 describes it for people and agents, and `herdr-app/install.sh` installs it
-with the CLI. The mod reads `corgi status --json` and runs `corgi merge`;
+with the CLI and runs `corgi app-space`, which gives it a space of its own
+(`crates/corgi-core/src/app_space.rs`; the daemon makes a pending one once
+the window opens). Test that against a fake `herdr-app` (its tests do), not
+the user's app: on the real one, touch only a space named `Corgi`. The mod
+reads `corgi status --json` and runs `corgi merge`;
 both live in `src/app/status.rs` and see hc's agents alone, never the Herdr
 TUI's. Check every change with
 `herdr-app check herdr-app/mods/corgi` (it writes `jsconfig.json` and
