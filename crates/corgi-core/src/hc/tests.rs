@@ -14,7 +14,7 @@ use super::{
     launch::{
         SESSION_VARIABLES, Start, agent_argv, agent_script, answer_folder_trust,
         create_worktree_in, harness_command, harness_refusal, launch_worker, new_session_id,
-        project_space, shell_line, task_title,
+        project_space, shell_line, task_title, worker_space,
     },
     *,
 };
@@ -649,6 +649,7 @@ fn a_worker_starts_in_its_checkout_with_corgis_labels() {
     let session = launched.session.unwrap();
     let calls = hc.calls();
     let run = calls.iter().find(|call| call.starts_with("run|")).unwrap();
+    // On the primary checkout: a tab of the project's space.
     let space = project_space(&root_text);
     for part in [
         format!("|--cwd|{root_text}|"),
@@ -677,6 +678,75 @@ fn a_worker_starts_in_its_checkout_with_corgis_labels() {
     assert!(
         run.contains(&format!(" --resume {session} --model haiku|")),
         "{run}"
+    );
+}
+
+/// The `herdr.space` label a recorded `hc run` call gives its terminal.
+fn space_label(run: &str) -> String {
+    run.split('|')
+        .find_map(|part| part.strip_prefix("herdr.space="))
+        .unwrap_or_else(|| panic!("no herdr.space label in {run}"))
+        .to_string()
+}
+
+#[test]
+fn a_worktree_worker_gets_a_space_of_its_own_and_a_shared_checkout_the_projects() {
+    let project = project_space("/repos/weather");
+    let first = worker_space("/repos/weather", Checkout::Worktree, "1a2b3c4d");
+    assert_eq!(first, format!("{project}-1a2b3c4d"));
+    assert_ne!(
+        first,
+        worker_space("/repos/weather", Checkout::Worktree, "5e6f7a8b")
+    );
+    // Another project's worker never lands in this project's spaces.
+    assert!(!worker_space("/other/weather", Checkout::Worktree, "1a2b3c4d").starts_with(&project));
+    // Not a linked worktree, so a space of its own would not nest: a tab of
+    // the project's space, the supervisor's.
+    for checkout in [Checkout::ProjectRoot, Checkout::Directory] {
+        assert_eq!(
+            worker_space("/repos/weather", checkout, "1a2b3c4d"),
+            project
+        );
+    }
+}
+
+#[test]
+fn a_shared_checkout_worker_joins_the_projects_space_not_its_supervisors_old_one() {
+    let scratch = ScratchDir::new("hc-worker-spaces");
+    let root = git_repo(&scratch.join("weather"));
+    let root_text = root.to_string_lossy().into_owned();
+    let hc = FakeHc::new();
+    hc.answer(
+        "run",
+        r#"{"address":"t5","name":"weather","state":"live","turn":0}"#,
+    );
+    // The supervisor, in a space an older Corgi chose (its caller's), is
+    // there to be found; a worker no longer joins it.
+    let supervisor = terminal_json(
+        "t1",
+        "weather-supervisor",
+        &[
+            (PROJECT_LABEL, &root_text),
+            (ROLE_LABEL, SUPERVISOR_ROLE),
+            (SPACE_LABEL, "s1"),
+        ],
+        "idle",
+    );
+    hc.answer("ls", &format!(r#"{{"terminals":[{supervisor}]}}"#));
+    hc.answer("get.t1", &supervisor);
+    hc.answer("get.t5", &terminal_json("t5", "weather", &[], "idle"));
+    let plan = worker_plan(&root, Harness::Claude, Checkout::ProjectRoot);
+    launch_worker(&hc.client(), &plan, &root_text, &mut Silent).unwrap();
+    launch_worker(&hc.client(), &plan, &root_text, &mut Silent).unwrap();
+    let spaces: Vec<String> = hc
+        .calls()
+        .iter()
+        .filter(|call| call.starts_with("run|"))
+        .map(|run| space_label(run))
+        .collect();
+    assert_eq!(
+        spaces,
+        [project_space(&root_text), project_space(&root_text)]
     );
 }
 

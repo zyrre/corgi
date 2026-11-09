@@ -1,15 +1,13 @@
-//! The daemon's decisions: which terminals it resumes, which spaces it
-//! names, its lock, and how it reads the Herdr app's spaces.
+//! The daemon's decisions: which terminals it resumes, its lock, and the
+//! events it follows.
 
 use std::collections::BTreeMap;
 
 use super::*;
 use crate::{
-    hc::{Foreground, ROLE_LABEL, Status, launch::project_space},
+    hc::{Foreground, ROLE_LABEL, Status},
     test_support::ScratchDir,
 };
-
-const ROOT: &str = "/repos/weather";
 
 fn kept(address: &str, pid: u64, front: &str, labels: &[(&str, &str)]) -> Terminal {
     Terminal {
@@ -83,56 +81,6 @@ fn a_supervisor_that_exited_into_its_own_shell_and_a_running_agent_are_left_alon
     );
     finished.state = "finished".into();
     assert_eq!(needs_resume(&finished), None);
-}
-
-#[test]
-fn only_the_spaces_corgi_made_for_projects_are_named_after_them() {
-    let own = project_space(ROOT);
-    let terminals = [
-        kept(
-            "t3",
-            1,
-            "claude",
-            &[(PROJECT_LABEL, ROOT), (SPACE_LABEL, &own)],
-        ),
-        // A worker in the space of the terminal that spawned it.
-        kept(
-            "t4",
-            2,
-            "claude",
-            &[(PROJECT_LABEL, ROOT), (SPACE_LABEL, "s7")],
-        ),
-        // Not Corgi's.
-        kept("t5", 3, "zsh", &[(SPACE_LABEL, "corgi-weather-123456")]),
-    ];
-    assert_eq!(
-        project_spaces(&terminals),
-        BTreeMap::from([(own, "weather".to_string())])
-    );
-}
-
-#[test]
-fn the_apps_spaces_are_read_from_any_object_that_describes_one() {
-    let listed = br#"{"spaces":[
-        {"id":"corgi-weather-1a2b3c","index":1,"name":"weather","named":false,"tabs":[
-            {"id":"tab1","name":"1","panes":[{"id":"p1","terminal":"t3"}]}]},
-        {"id":"s2","name":"api","named":true,"tabs":[]}]}"#;
-    assert_eq!(
-        app_spaces(listed),
-        BTreeMap::from([
-            ("corgi-weather-1a2b3c".to_string(), false),
-            ("s2".to_string(), true),
-        ])
-    );
-    assert!(app_spaces(b"herdr-app: no Herdr window").is_empty());
-}
-
-#[test]
-fn only_the_default_cores_daemon_names_the_apps_spaces() {
-    assert!(names_spaces(None, None));
-    assert!(names_spaces(Some("default"), Some("")));
-    assert!(!names_spaces(Some("x"), None));
-    assert!(!names_spaces(None, Some("/tmp/hc.sock")));
 }
 
 #[test]
@@ -257,7 +205,7 @@ fn the_event_stream_subscribes_on_the_socket_and_ends_with_it() {
         Some(Message::Event { kind, terminal: Some(t), .. }) if kind == "turn" && t == "t2"
     ));
     assert_eq!(events.next_message().unwrap(), None, "the core closed it");
-    let request: Value = serde_json::from_str(&core.join().unwrap()).unwrap();
+    let request: serde_json::Value = serde_json::from_str(&core.join().unwrap()).unwrap();
     assert_eq!(request["method"], "events.subscribe");
 }
 
