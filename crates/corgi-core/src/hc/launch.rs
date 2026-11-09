@@ -410,7 +410,7 @@ pub fn launch_worker(
     };
     let session = session_id_for(&plan.harness)?;
     let command = harness_command(plan, session.as_deref(), &[], Start::Task(&plan.prompt));
-    let space = worker_space(root, &space_nonce()?);
+    let space = worker_space(root, checkout, &space_nonce()?);
     let mut labels = agent_labels(
         plan,
         root,
@@ -604,18 +604,21 @@ pub fn task_title(prompt: &str) -> String {
     title
 }
 
-/// A new space of the Herdr app for a worker of the project at `root`, one
-/// per worker: the project's own ([`project_space`]) with `nonce` after it.
-/// The app makes a space for an id it does not know, unnamed, so it is
-/// called after where the worker's terminal is; its `spaces` sidebar nests
-/// a space whose first terminal is in a linked worktree under the space of
-/// the repository's main checkout, the supervisor's, by `git
-/// rev-parse --git-common-dir`, whoever made either space and whatever
-/// they are called. Never the caller's or the supervisor's space: a worker
-/// there would be one more tab of the project's space, not a space beside
-/// it.
-pub fn worker_space(root: &str, nonce: &str) -> String {
-    format!("{}-{nonce}", project_space(root))
+/// The Herdr app's space for a worker of the project at `root` that works
+/// in `checkout`, whoever spawned it. A worker in a worktree gets a new
+/// space of its own: the project's ([`project_space`]) with `nonce` after
+/// it. The app makes a space for an id it does not know, unnamed, so it is
+/// called after where the worker's terminal is, and its `spaces` sidebar
+/// nests a space whose first terminal is in a linked worktree under the
+/// space of the repository's main checkout, the supervisor's, by `git
+/// rev-parse --git-common-dir`, whoever made either space and whatever they
+/// are called. A worker in the primary checkout or another directory is a
+/// tab of the project's space: a space of its own there would not nest.
+pub fn worker_space(root: &str, checkout: Checkout, nonce: &str) -> String {
+    match checkout {
+        Checkout::Worktree => format!("{}-{nonce}", project_space(root)),
+        Checkout::ProjectRoot | Checkout::Directory => project_space(root),
+    }
 }
 
 /// Eight random hexadecimal digits for [`worker_space`].

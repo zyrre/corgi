@@ -51,8 +51,8 @@ per core; it waits for the core to start and starts none itself.
   status        whether the service is installed, and whether a daemon runs
 
 The service runs this binary with the PATH of your login shell and the
-HC_SESSION, HC_SOCKET, XDG_*, HERDR_APP_* and CORGI_* settings of the
-environment install runs in, and logs to daemon/daemon.log in Corgi's state
+HC_SESSION, HC_SOCKET, XDG_* and CORGI_* settings of the environment
+install runs in, and logs to daemon/daemon.log in Corgi's state
 directory. --label names the service (default io.github.zyrre.corgi.daemon),
 for a test of its own.";
 
@@ -60,17 +60,15 @@ for a test of its own.";
 pub const SERVICE_LABEL: &str = "io.github.zyrre.corgi.daemon";
 
 /// The variables the service takes from the environment `install` runs in,
-/// when they are set: where the core and Corgi's state are, the Herdr app,
-/// Corgi's own settings.
-const KEPT_VARIABLES: [&str; 15] = [
+/// when they are set: where the core and Corgi's state are, Corgi's own
+/// settings.
+const KEPT_VARIABLES: [&str; 13] = [
     "HC_SESSION",
     "HC_SOCKET",
     "XDG_STATE_HOME",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
     "XDG_RUNTIME_DIR",
-    "HERDR_APP_HOME",
-    "HERDR_APP_BIN",
     "CORGI_HC_BIN",
     "CORGI_BIN",
     "CORGI_CLAUDE_BIN",

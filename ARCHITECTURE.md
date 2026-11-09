@@ -2358,8 +2358,10 @@ supervisor's shell, a worker's agent), `corgi.handover` and `corgi.baseline`
 `corgi.tag=merge` with `corgi.tag.at` (the state and hc `turn` it was tagged
 at, so a tag the agent has worked past stops showing), and `herdr.space`
 (`hc::launch`: the supervisor's is the project's, `corgi-<project>-<hash>`
-(`project_space`); each worker gets a new one, that id and eight random hex
-digits (`worker_space`), whoever spawned it). The app makes a space for an
+(`project_space`); a worker in a worktree gets a new one, that id and
+eight random hex digits, and a worker in the primary checkout or another
+directory is a tab of the project's space (`worker_space`), whoever spawned
+it). The app makes a space for an
 id it does not know, unnamed, and Corgi never names one, so the app calls
 each after where its first terminal is: the project's after its repository,
 a worker's after its worktree. Its `spaces` sidebar nests a space under
@@ -2367,9 +2369,9 @@ another by Git alone, not by how a space was made or named: a space whose
 first terminal's folder is a linked worktree (`git rev-parse
 --git-common-dir` is not `<top>/.git`) goes under the first space of the
 same repository that is on its main checkout, the supervisor's, and it
-shows each space's branch, ahead/behind and changes itself. A worker on the
-primary checkout or in another directory gets a space of its own too, which
-does not nest. A row's `pane_id` is the terminal's address and its
+shows each space's branch, ahead/behind and changes itself. A space of its
+own for a worker that is not in a linked worktree would not nest, which is
+why such a worker is a tab of the project's space. A row's `pane_id` is the terminal's address and its
 `state_change_seq` hc's `turn`; `done` and `idle` both rest, `error` reads
 as blocked.
 
@@ -2472,7 +2474,7 @@ socket's.
 `corgi daemon install` writes a LaunchAgent (`~/Library/LaunchAgents/
 io.github.zyrre.corgi.daemon.plist`) or a systemd user unit, `KeepAlive`/
 `Restart=always`, with the login shell's `PATH` and the `HC_*`, `XDG_*`,
-`HERDR_APP_*` and `CORGI_*` settings of the environment it runs in, logging
+and `CORGI_*` settings of the environment it runs in, logging
 to `daemon/daemon.log` in Corgi's state directory, and (re)starts it;
 `uninstall` stops and removes it. `herdr-app/install.sh` runs `install` on
 every run (not with `--mod-only`, the TUI plugin's, or `--no-daemon`) and
