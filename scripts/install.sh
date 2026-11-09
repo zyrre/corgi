@@ -8,8 +8,13 @@
 # or it cannot be verified. A checkout with uncommitted changes to tracked
 # files is a developer's, so it always builds what it has.
 #
-# The release binary is used even when the checkout is past the release
-# commit: `main` may move ahead of the newest tag between releases.
+# A git checkout is a developer's unless it is exactly the release: when HEAD
+# is not the commit of the tag v<version>, the CLI is built from source, so an
+# install never replaces a build of newer code with an older release binary.
+# Two installs are not a developer's and keep the pinned download whatever
+# their HEAD: the one Herdr runs in <plugins>/.tmp-install-*/checkout, and one
+# that sets CORGI_BUILD=release (herdr-app/install.sh does for its own checkout).
+# A folder that is not a git checkout (an unpacked release) downloads too.
 #
 # Either way it then links ~/.local/bin/corgi to the binary (see
 # scripts/link-command.sh), which only warns when it cannot, and, when the
@@ -17,6 +22,9 @@
 # herdr-app/install.sh --mod-only, which also only warns when it cannot.
 #
 #   CORGI_BUILD=source         always build from source
+#   CORGI_BUILD=release        use the pinned download even when the checkout
+#                              is not on the release tag (uncommitted changes,
+#                              a missing pin or a failed check still build)
 #   CORGI_DOWNLOAD_URL=<url>   download from <url>/v<version>/ instead of the
 #                              GitHub release of `origin`
 #   CORGI_LINK=0               do not link ~/.local/bin/corgi
@@ -60,9 +68,11 @@ build_from_source() {
   exit 0
 }
 
-if [ "${CORGI_BUILD:-}" = source ]; then
-  build_from_source "CORGI_BUILD=source is set"
-fi
+case "${CORGI_BUILD:-}" in
+  source) build_from_source "CORGI_BUILD=source is set" ;;
+  "" | release) ;;
+  *) say "ignoring CORGI_BUILD=$CORGI_BUILD (it is source or release)" ;;
+esac
 
 version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' herdr-plugin.toml | head -n 1)
 [ -n "$version" ] || build_from_source "herdr-plugin.toml has no version"
@@ -86,6 +96,16 @@ if [ -e .git ] && command -v git >/dev/null 2>&1; then
     build_from_source "this checkout has uncommitted changes"
   fi
   origin=$(git remote get-url origin 2>/dev/null)
+  case "${CORGI_BUILD:-}:$(pwd -P)" in
+    release:* | *:*/.tmp-install-*/checkout) ;;
+    *)
+      head=$(git rev-parse --verify -q HEAD 2>/dev/null)
+      tagged=$(git rev-parse --verify -q "refs/tags/$tag^{commit}" 2>/dev/null)
+      if [ -z "$head" ] || [ "$head" != "$tagged" ]; then
+        build_from_source "this checkout is not on the release tag $tag (CORGI_BUILD=release downloads it anyway)"
+      fi
+      ;;
+  esac
 fi
 
 # The file binds each digest to both a version and an exact platform asset.

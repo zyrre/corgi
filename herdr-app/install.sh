@@ -18,8 +18,12 @@
 #
 # In a checkout:
 #   - the CLI: scripts/install.sh puts the checkout's version of corgi at
-#     target/release/corgi, a release binary verified against the checkout's
-#     checksum pins, else built with cargo build --release --locked; then
+#     target/release/corgi: a release binary verified against the checkout's
+#     checksum pins when HEAD is the tag v<version> (the piped install's own
+#     checkout counts as such), else built with cargo build --release --locked,
+#     so a developer's checkout is never downgraded to the release
+#     (CORGI_BUILD=source builds anyway, CORGI_BUILD=release downloads
+#     anyway); then
 #     ~/.local/bin/corgi ($CORGI_BIN_DIR, else $XDG_BIN_HOME/corgi) links to
 #     it, unless something else is there: a file, or a working link elsewhere
 #     (such as the Herdr TUI plugin's), is left alone
@@ -52,6 +56,8 @@
 #                    with --cli also the link to this checkout's corgi (the
 #                    checkout itself is left)
 #
+#   CORGI_BUILD=source|release   build the CLI from source, or use the pinned
+#                                download, whatever the checkout's HEAD
 #   CORGI_CHECKOUT=<dir>         where the piped install keeps its checkout
 #   CORGI_REPO_URL=<url>         clone from <url> instead of GitHub
 #   HERDR_APP_BIN=<path>         the herdr-app to check the mod with
@@ -133,6 +139,9 @@ if [ ! -f "$0" ] || [ -z "$here" ] || [ ! -f "$here/../scripts/install.sh" ] || 
       fi
     fi
   fi
+  # Its own checkout is the release being installed, even on the main branch.
+  CORGI_BUILD=${CORGI_BUILD:-release}
+  export CORGI_BUILD
   exec sh "$checkout/herdr-app/install.sh" "$@"
 fi
 
@@ -301,7 +310,7 @@ link_cli() {
 }
 
 if [ -z "$mod_only" ]; then
-  # The checkout's own pinned download, else source build. It links nothing
+  # The pinned download when HEAD is the release tag, else a source build. It links nothing
   # (that is for `herdr plugin install`) and leaves the mod to this script.
   CORGI_LINK=0 CORGI_APP_MOD=0 sh "$root/scripts/install.sh" || die "installing the corgi CLI failed"
   reported=$("$bin" --version 2>/dev/null) || reported=
