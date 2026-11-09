@@ -14,8 +14,9 @@ Each finding is marked:
   (inside the app binary); not run;
 - **not reached**: not looked at in this spike.
 
-The tests used Claude Code 2.1.317 with `--model haiku` in hc terminals
-named `spike-*`. A second, isolated core (`HC_SESSION=s`, its own state
+The tests used Claude Code 2.1.317 with `--model haiku`, and OpenCode
+1.18.33 with `litellm/claude-haiku-5-5` (section 4), in hc terminals named
+`spike-*`. A second, isolated core (`HC_SESSION=s`, its own state
 directory, a clean environment) was used for anything that stops or
 restarts a core, so the user's core was never stopped. A "person" was
 simulated by attaching through a pty (`hc attach <t>` under Python's
@@ -34,12 +35,18 @@ template and a test LaunchAgent were removed afterwards (see "Clean-up").
   paint of a watch-only attach (`hc attach --observe`, API
   `terminal.attach {observe: true}`), so the daemon can check, then send
   only when the box is empty. A small race stays: the user starting to type
-  between the check and the paste.
+  between the check and the paste. Decided (user, 2026-11-09): accept it;
+  no upstream request for a `send --if-empty`.
 - **Can hc's notes replace Corgi's wakes? No.** Notes cover a child that is
   blocked, errors or exits; a child finishing its turn (`done`), which is
   Corgi's main wake, is not a note. Notes merge into the user's draft, go
   only to the terminal that started the child (fixed at launch), and
   `notes = false` is one switch for the whole core.
+- **OpenCode 1.18.33 reports no status to hc** (tested), so hc treats it
+  as a plain program: no wakes from events, `--if`/`--wait` useless, and a
+  plain send answers its permission dialog. A small project-local plugin
+  that writes OSC 7501 fixed all three in a test. Its drafts, sessions,
+  resume and role work (section 4). Codex is covered from docs only.
 - **Recommendation: design A**, a `corgi daemon` under launchd following
   `hc events` and delivering with a draft-checked `hc send`, with workers
   started `--no-notify` so hc never types into the supervisor on its own.
@@ -162,8 +169,11 @@ this spike did, which works but is clumsy.
 is the time between the paint and the paste. If the user starts typing in
 that window, send waits for their pause and merges. The daemon can notice
 afterwards (the send took longer than ~1 s, so it waited for a person) but
-cannot undo it. Closing the hole needs hc: a `send --if-empty`, or the
-input-pending flag Claude Code itself knows about. Worth asking upstream.
+cannot undo it. Only hc could close the hole (a `send --if-empty`, or an
+input-pending flag). **Decided (user, 2026-11-09): accept the race and do
+not ask herdr-core upstream for it.** The daemon may still log a send that
+took over ~1 s as a possible merge, so a damaged draft can be found in the
+log afterwards.
 
 ## 2. hc's notes as Corgi's wakes
 
@@ -318,7 +328,7 @@ supervisor rests (`done` or `idle`) and the observer paint shows no draft.
 Workers are started `--no-notify`, so hc types nothing on its own.
 
 - Window closed: yes (launchd + core).
-- Draft: yes, with the small race above.
+- Draft: yes, with the small race above, which is accepted.
 - Nothing lost: yes. The inbox holds wakes while the supervisor works, is
   blocked, has a draft, is between sessions, or the daemon or core is
   down; `seen.json` (or hc's `turn` counter) catches stops missed while
@@ -475,14 +485,7 @@ to the usual `~/.claude/projects/<folder slug>/<session id>.jsonl`.
   A template's body becomes the start of the first message, not a system
   prompt; it fits a short instruction, while Corgi's ROLE.md (25.8 KB)
   should keep coming in as today.
-- Codex (from docs, `hc --skill`): must run with `--no-daemon`, or its
-  commands run outside hc. Its OSC 7501 status is unconfirmed
-  (supervisor research note: a hook can emit it). To verify once installed:
-  status words through a turn and a permission prompt, the draft
-  detector's `›` composer on the observer paint, `--no-daemon` with
-  resume.
-- OpenCode (from docs/research only): reported to emit OSC 7501 natively;
-  unverified. To verify: status words, transcript location, resume argv.
+- OpenCode and Codex: see section 4.
 
 ### A minimal mod (tested with `herdr-app check`; the window was not opened)
 
@@ -527,6 +530,223 @@ the app binary). From docs: `exec` runs with the user's real environment;
 data changes, so no polling timers; actions reach a mod only as
 `herdr-app do <mod>.<command>` with no payload.
 
+## 4. OpenCode and Codex under hc
+
+### OpenCode 1.18.33 (tested)
+
+Run as `/Users/peter.krantz/.opencode/bin/opencode -m litellm/claude-haiku-5-5`
+(it is on the interactive shell's `PATH` only, so hc needs the full path or
+a `PATH` set for the terminal) in the scratch project, on the user's core
+(the one with the leaked `CLAUDE_CODE_*`/`HERDR_*` environment).
+
+**Status: OpenCode does not emit OSC 7501.** `hc get` showed
+`"status":null,"reported":false` at start, through a turn and on a
+permission prompt; the observer paint's only OSCs were the title
+(`OC | <session title>`) and colour queries (10/11/12); the binary contains
+no 7501 escape. So for hc it is a plain program:
+
+- `hc send` answers `{"started":null,"status":null,"turn":0}`;
+  `--if idle` and `--if working` both refuse (`t16 is silent, not idle`,
+  exit 10); `send --wait` runs to its timeout (`reason: timeout`), since
+  "a program that never reported status is working until it exits";
+  `hc wait` likewise; `turn` never moves; no `status`/`turn` events, so
+  Corgi's daemon would see no transitions at all.
+- **A send into its permission dialog approves it, without `--force`.**
+  Asked to read `/etc/hosts`, OpenCode showed `△ Permission required ←
+  Access external directory /etc` with `Allow once  Allow always  Reject`;
+  a plain `hc send spike-oc "Reply X"` went in (hc had no `blocked` to
+  refuse on) and Enter chose `Allow once`; the file was read.
+- **A send during OpenCode's boot was dropped silently** (`started: null`
+  could not tell): the box stayed empty. hc's manual warns of this for any
+  agent ("a send to a booting agent can be dropped").
+
+**A project-local plugin makes it report (tested).**
+`<project>/.opencode/plugin/hc-status.js` (no global config) listening to
+OpenCode's plugin events and writing `ESC ]7501;state=…:app=opencode ESC \`
+to `/dev/tty`:
+
+```js
+import { writeFileSync } from "node:fs";
+const say = (state, extra = "") => {
+  try { writeFileSync("/dev/tty", `\x1b]7501;state=${state}:app=opencode${extra}\x1b\\`); } catch {}
+};
+export const HcStatus = async () => ({
+  event: async ({ event }) => {
+    switch (event.type) {
+      case "session.status":
+        if (event.properties?.status?.type === "busy") say("working");
+        else if (event.properties?.status?.type === "idle") say("done");
+        break;
+      case "session.idle": say("done"); break;
+      case "permission.asked": say("blocked", ":kind=permission"); break;
+      case "question.asked": say("blocked", ":kind=question"); break;
+      case "permission.replied": say("working"); break;
+      case "session.error": say("error"); break;
+    }
+  },
+});
+```
+
+With it, hc saw `{"app":"opencode","state":"done"}`, `turn` 1 after a
+turn; `send --wait` returned `"reason":"status","status":"done"`; on the
+`/etc/shells` permission prompt the status was
+`{"app":"opencode","kind":"permission","state":"blocked"}` and a plain send
+was refused (exit 9, `typing would answer its dialog`). Event names seen in
+its log: `session.created`, `session.updated`, `session.status`
+(`{"type":"busy"}` / `{"type":"idle"}`), `session.idle`, `session.diff`.
+Gaps: nothing is reported until the first event, so a fresh OpenCode has
+no status (the plugin could say `idle` when it loads; not tried), and
+`session.error`/`question.asked` were not triggered. Corgi would install
+this plugin (globally in `~/.config/opencode/plugin/`, or per worktree)
+the way the Codex hook below would be installed; the user's call.
+
+**Sends and drafts (tested, same as Claude):**
+
+- idle, empty box: the text was submitted at once.
+- `hc keys` draft `my draft`, then send: `my draftReply with just SENT-B.`
+- a person's paused draft: send waited until ~3 s after the last key and submitted
+  `half typedReply with just SENT-B2.`
+- a person typing: send held until ~4 s after the last key, then submitted
+  `aaaa … hhhhReply with just SENT-C.`
+- mid-turn: OpenCode queues the message itself (a `QUEUED` badge under it)
+  and runs it after the turn (`QUEUED-D` answered).
+
+**Draft detection on its observer paint (tested):** the paint has the same
+shape as Claude's (rows separated by `\r\n`, SGR styling, cursor position
+at the end) but a different box, and it styles with truecolor, not dim:
+
+```text
+  ┃  my draft                         ← box text rows (one or more)
+  ┃                                     
+  ┃  Build · claude-haiku-5-5 LiteLLM  ← agent · model row, still in the box
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ← bottom edge
+```
+
+- The box is the run of rows starting (after two cells of margin) with
+  `┃` in the accent colour (`38;2;92;156;245` here), ending at the row
+  with `╹`. The row just above `╹` is the agent/model line and not input.
+- Box cells have the box background (`48;2;30;30;30`); a sidebar on the
+  same rows (wide terminals) has another background (`48;2;20;20;20`), so
+  the parser must keep only cells on the box background.
+- Typed text is in the text colour (`38;2;238;238;238`); the placeholder
+  (`Ask anything… "Fix broken tests"`, shown at start) is in the muted
+  colour (`38;2;128;128;128`), the same colour as the `·` and `LiteLLM`
+  on the agent row. So: **draft = any non-space cell on the box background,
+  in the box's text rows, whose colour is not the muted one.** The colours
+  come from OpenCode's theme, so read them from the agent row rather than
+  hard-coding them.
+- The cursor helps too: column 6 with an empty box, column 14 after
+  `my draft` (row 114 both times); the input starts two cells after `┃`.
+- `draft.rs` needs a third `Harness::OpenCode` branch for this, with
+  `styled_chars` extended to keep each cell's foreground and background
+  colour, not only whether it is dim. Corgi's `Harness::OpenCode` exists
+  already (`crates/corgi-core/src/harness.rs`).
+
+**Sessions and resume (tested):** sessions are rows in SQLite,
+`~/.local/share/opencode/opencode.db` (tables `session`, `message`, `part`,
+…), with OpenCode-chosen ids such as `ses_e4047094affe2nD7pkoQn2fWfR`;
+there is no flag to choose one at launch. `opencode session list --format
+json -n N` gives `{id, title, updated, created, projectId, directory}`
+across all folders, so Corgi finds a worker's session as the newest one
+with its worktree as `directory` created after the launch (the terminal
+title `OC | <title>` matches the session's `title` too).
+`opencode export <id>` prints `{info, messages}` with every part's text and
+each assistant message's `tokens` (`input`, `output`, `reasoning`,
+`cache.read`, `cache.write`) and `cost`: what Corgi's report and ctx/cache
+readings need. Resume: `opencode -m <model> -s <id>` in the same folder;
+after a kill, a relaunch with `-s` answered `PONG2` when asked for its first
+reply. `corgi.resume` label: `opencode -m litellm/claude-haiku-5-5 -s
+ses_…` (with `--agent <name>` if it had one).
+
+**Role (tested):** an inline agent through the environment, no file in the
+user's config:
+
+```sh
+env 'OPENCODE_CONFIG_CONTENT={"agent":{"corgi-spike":{"mode":"primary","model":"litellm/claude-haiku-5-5","prompt":"{file:/abs/role.md}"}}}' \
+  opencode --agent corgi-spike
+```
+
+Asked "What is your role?", it answered `ROLE-FILE-OK` as `role.md` told
+it to. From docs/binary only: `OPENCODE_CONFIG_DIR`, an `instructions`
+list in the config, and the project's `AGENTS.md` are other ways in;
+`--prompt` sets only the first message.
+
+**Leaked environment (tested):** OpenCode ran normally in the polluted core
+and saved its sessions; its binary reads no `CLAUDE_CODE_CHILD_SESSION`,
+no `HERDR_*` and no `HC_*` variable (it knows only
+`CLAUDE_CODE_SKILLS`/`_SSE_PORT`/`_PROMPT`/`_AGENT_RULE_DISABLED`, none of
+which leak). The `PATH` point above matters, though: a core with launchd's
+bare `PATH` cannot find it by name.
+
+### Codex (from docs and web sources only; not installed, not run)
+
+Corgi already runs Codex supervisors and workers (from Corgi's code:
+`Harness::Codex` in `crates/corgi-core/src/harness.rs` passes the role as
+`-c developer_instructions=<TOML string>` and trusts the project with
+`-c projects={<root>={trust_level="trusted"}}`; it exits with `/quit`;
+`crates/corgi-core/src/session/locate.rs` reads rollouts under
+`~/.codex/sessions`). What hc changes:
+
+- **`--no-daemon`.** hc's manual: "Codex must run with `--no-daemon`
+  (including templates), or its commands execute outside hc"
+  (`hc --skill`). Since Codex 0.157 an interactive session starts or
+  reuses a persistent background server (`codex exec-server`), which
+  outlives the session and ignores per-session overrides when one already
+  runs; config `[daemon] auto_start = false` turns it off
+  ([third-party blog](https://codex.danielvaughan.com/2026/09/25/codex-cli-daemon-auto-start-stable-default-v0157/)).
+  The flag itself appears only in hc's manual and in a user report run as
+  `codex.exe --no-daemon` ([openai/codex#60326](https://github.com/openai/codex/issues/60326)),
+  not in OpenAI's docs found; check `codex --help` once installed. For
+  Corgi: add `--no-daemon` to every Codex argv it starts under hc, and to
+  the `corgi.resume` label; otherwise Codex's commands would not run in the
+  hc terminal (nor end with it).
+- **OSC 7501: sources disagree.** "Codex reports natively since 0.163
+  (`app=codex`; nothing while its "Hooks need review" panel is up)", with
+  0.166 "observed live in throwaway hc terminals"
+  ([keinstn/drover#369](https://github.com/keinstn/drover/pull/369)).
+  A later-merged PR (2026-11-08) says Codex does not, though its author
+  could not run Codex ("both logins expired"), and emits the record
+  from Codex's hooks instead: `ESC ] 7501 ; state=<s>[:kind=<k>]:app=<agent> ESC \`
+  to `/dev/tty` (else the agent's tty found through its ancestors) when
+  `$HC_TERMINAL_ID` is set; PermissionRequest → `blocked:kind=permission`,
+  Stop/agent-turn-complete → `done`, SessionStart → `idle`, StopFailure →
+  `error`, prompt/tool events → `working`
+  ([sebastienrousseau/dotfiles#1398](https://github.com/sebastienrousseau/dotfiles/pull/1398)).
+  Known gap: with a background terminal still running after a turn, Codex
+  keeps reporting `working` (Codex 0.167.0-alpha.3.2 under herdr-core
+  0.1.19; open, [openai/codex#60326](https://github.com/openai/codex/issues/60326)).
+  Codex's own `notify = [...]` runs a program only on
+  `agent-turn-complete` ([config sample](https://developers.openai.com/codex/config-sample)),
+  too little for blocked/working. So: check native reporting first on the
+  installed version; if missing, a hook like the OpenCode plugin above.
+- **Resume:** `codex resume <SESSION_ID>` (or `--last`); transcripts are
+  `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl`, the
+  uuid being the session id, with an index in `~/.codex/state_*.sqlite`
+  ([Codex session lifecycle, third-party](https://codex.danielvaughan.com/2026/04/11/codex-cli-session-lifecycle-resume-fork-rollouts),
+  [session management, third-party](https://inventivehq.com/knowledge-base/openai/how-to-resume-sessions)).
+  No source showed a way to choose the id at launch; Corgi already finds
+  the rollout after launch. `corgi.resume` label: `codex --no-daemon
+  resume <id>` plus Corgi's `-c` overrides (role, trust), since a resume
+  does not keep them (as `restart.rs` already handles for Herdr's
+  `resume_argv`).
+- **Role:** `developer_instructions` ("injected before AGENTS.md") adds
+  to Codex's own instructions; `model_instructions_file` replaces the
+  built-in base instructions; both in `~/.codex/config.toml` or a
+  project-scoped `.codex/config.toml`; `AGENTS.md` is read up to
+  `project_doc_max_bytes` (32768)
+  ([config sample](https://developers.openai.com/codex/config-sample)).
+  Corgi's existing `-c developer_instructions=…` works the same under hc.
+- **Drafts:** Corgi's `draft.rs` already parses Codex's `›` composer from a
+  styled screen; on the observer paint it should work unchanged, but that
+  is untested.
+- **Environment:** whether Codex reacts to the leaked `CLAUDE_CODE_*`/
+  `HERDR_*` variables is unknown; nothing found in the sources.
+
+To verify once Codex may be installed: native 7501 words through a turn, a
+permission prompt and the hooks-review panel; `--no-daemon` exists and
+keeps tool commands in the terminal (`hc get`'s `foreground` during a
+command); resume with the `-c` overrides; `draft.rs` on its observer paint.
+
 ## Plan changes for the port's next workers
 
 ### CLI and daemon
@@ -555,10 +775,19 @@ data changes, so no polling timers; actions reach a mod only as
    kept shells with `corgi.resume` and sends it.
 5. Wakes: rest = `done` or `idle` (not `--if idle`); before each send,
    check that the foreground is the agent (never type a wake into the
-   shell), check the observer paint with `draft.rs`, never `--force`.
-   Log sends that took over ~1 s as possible draft merges.
+   shell), check the observer paint with `draft.rs` (per harness: see
+   section 4 for OpenCode's box), never `--force`. The check-then-send race
+   is accepted; log sends that took over ~1 s as possible draft merges.
 6. Keep `inbox`, `report`, `digest`, ledger, roles as they are; folder trust
    becomes `hc keys <t> down enter`.
+7. Harnesses: Codex argv gets `--no-daemon`. OpenCode needs Corgi's
+   status plugin (section 4) before the daemon can see it at all; without
+   it, an OpenCode worker gives no wake and a send can answer its
+   permission dialog, so Corgi must not send to an OpenCode terminal that
+   has never reported. OpenCode's session id is found after launch
+   (`opencode session list --format json`), its report and token counts
+   come from `opencode export <id>`, its role from an inline agent in
+   `OPENCODE_CONFIG_CONTENT`. Launch it by full path or with `PATH` set.
 
 ### JS mod
 
@@ -578,9 +807,9 @@ dashboards, and `markers.json`/pane tokens where labels replace them.
 
 ## Open questions
 
-- **A send that refuses a non-empty box.** Only hc can close the
-  check-then-send race. Ask upstream for `send --if-empty` or an input-
-  pending flag; until then, accept the small race (recommended).
+- ~~A send that refuses a non-empty box.~~ Settled (user, 2026-11-09):
+  accept the check-then-send race; no upstream request. The daemon may log
+  sends that took over ~1 s as possible merges.
 - **Framed protocol for `terminal.attach`.** Needed for a Rust observer
   without a pty; get it from herdr-core's source or maintainers.
 - **Which environment starts the core at login.** If the app or another hc
@@ -589,8 +818,14 @@ dashboards, and `markers.json`/pane tokens where labels replace them.
   than rely on how the core was started.
 - **Whether `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` alone is enough**
   under a polluted core; not tested.
-- **Codex and OpenCode** need installing to verify status, drafts and
-  resume (installs not yet approved).
+- **Installing Corgi's OpenCode status plugin.** Globally
+  (`~/.config/opencode/plugin/`, one file, every OpenCode session reports
+  to hc, harmless outside hc since `/dev/tty` gets an ignored OSC) or per
+  worktree (`.opencode/plugin/`, which lands in the user's repos). I
+  recommend globally, installed by `corgi` with the user's consent, like
+  the Codex hook if Codex turns out not to report natively.
+- **Codex** stays unverified (not to be installed now): native 7501,
+  `--no-daemon`, resume with overrides, drafts on the observer paint.
 
 ## Clean-up done
 
@@ -605,6 +840,11 @@ dashboards, and `markers.json`/pane tokens where labels replace them.
 - The LaunchAgent above unloaded and its plist deleted.
 - The test sessions' Claude project folder (keyed by the scratch folder)
   deleted from `~/.claude/projects/`.
+- OpenCode follow-up: test terminals t16–t19 and t1b (`spike-oc*`)
+  killed and removed by address; `hc ls --all` empty again. The three
+  OpenCode sessions created in the scratch project deleted with
+  `opencode session delete`. The status plugin lived only in the scratch
+  project's `.opencode/plugin/`; no OpenCode config was changed.
 - Kept on purpose: the mod in `~/.config/herdr-app/mods/corgi-spike/`, as
   the spike asked for it there. `~/.config/herdr-app/` did not exist
   before; delete it to undo.
