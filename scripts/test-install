@@ -89,6 +89,11 @@ publish_release() {
 if [ "${1:-}" != --version ] && [ -n "${FAKE_STATE:-}" ]; then
   printf 'corgi %s\n' "$*" >>"$FAKE_STATE/calls.log"
 fi
+if [ "${1:-}" = app-space ]; then
+  [ -z "${FAKE_SPACE_FAIL:-}" ] || { echo "corgi app-space: the window said no" >&2; exit 1; }
+  echo "the Corgi space is there (sp1)"
+  exit 0
+fi
 FAKE_CORGI
   printf 'echo "%s"\n' "$reports" >>"$dir/$asset"
   printf '#!/bin/sh\necho "corgi %s"\n' "$version" >"$dir/corgi-other-target"
@@ -691,6 +696,8 @@ count_daemon() { grep -c "^corgi daemon $2\$" "$1/calls.log" || true; }
 app_mod() { echo "$1/home/.config/herdr-app/mods/corgi"; }
 real_checkout() { (cd "$1/checkout" && pwd -P); }
 count_checks() { grep -c '^herdr-app check ' "$1/calls.log" || true; }
+# The `corgi app-space` calls, one per line.
+space_calls() { grep '^corgi app-space' "$1/calls.log" || true; }
 
 # --- test: the CLI from the pinned release, linked, and the mod checked in --
 test_app_install() {
@@ -714,6 +721,10 @@ test_app_install() {
   check_stderr "app: says it installed the mod" "installed the Corgi mod in $mod" "$state"
   check "app: installs the daemon with the new binary" "1" "$(count_daemon "$state" install)"
   check_stderr "app: says the daemon runs" "the corgi daemon runs as a service" "$state"
+  check "app: makes the Corgi space in the app's home with the app found" \
+    "corgi app-space --home $state/home/.config/herdr-app --app $state/bin/herdr-app" "$(space_calls "$state")"
+  check "app: after the mod is in" "corgi app-space" "$(grep -A1 '^herdr-app check' "$state/calls.log" | tail -n 1 | cut -d ' ' -f 1-2)"
+  check_stderr "app: says what corgi app-space said" "the Corgi space is there (sp1)" "$state"
   check "app: no OpenCode, no question and no plugin" "no" \
     "$([[ -e "$state/home/.config/opencode" || -e "$state/home/.local/state/corgi/opencode-plugin" ]] && echo yes || echo no)"
 
@@ -725,6 +736,14 @@ test_app_install() {
   check "app again: the daemon is installed again, to restart it" "2" "$(count_daemon "$state" install)"
   check "app again: unchanged mod left in place" "yes" "$([[ -e "$mod/.marker" ]] && echo yes || echo no)"
   check_stderr "app again: says so" "is up to date" "$state"
+  check "app again: asks for the Corgi space again (corgi app-space finds it)" "2" "$(space_calls "$state" | wc -l | tr -d ' ')"
+
+  # A Corgi space that cannot be made fails no install.
+  status=0
+  FAKE_SPACE_FAIL=1 run_app_install "$state" || status=$?
+  check "app space fails: exit status" "0" "$status"
+  check_stderr "app space fails: shows why" "the window said no" "$state"
+  check_stderr "app space fails: says how to try again" "could not make the Corgi space; run" "$state"
 
   # A changed mod is swapped in whole.
   echo "// changed" >>"$state/checkout/herdr-app/mods/corgi/main.js"
@@ -782,6 +801,8 @@ test_app_install_options() {
   check "--home: exit status" "0" "$status"
   check "--home: the mod goes there" "yes" "$([[ -f "$home/mods/corgi/main.js" ]] && echo yes || echo no)"
   check "--home: not in the default home" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
+  check "--home: the Corgi space in that home's app" \
+    "corgi app-space --home $home --app $state/bin/herdr-app" "$(space_calls "$state")"
 
   status=0
   state="$(new_app_state app-cli-only)"
@@ -792,6 +813,7 @@ test_app_install_options() {
   check "--cli-only: no mod" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
   check "--cli-only: herdr-app check not run" "0" "$(count_checks "$state")"
   check "--cli-only: installs the daemon" "1" "$(count_daemon "$state" install)"
+  check "--cli-only: no Corgi space" "" "$(space_calls "$state")"
 
   status=0
   state="$(new_app_state app-no-daemon)"
@@ -809,6 +831,7 @@ test_app_install_options() {
   check "--mod-only: and no daemon" "0" "$(count_daemon "$state" install)"
   check "--mod-only: the mod without config.json" "yes no" \
     "$([[ -f "$(app_mod "$state")/main.js" ]] && echo yes || echo no) $([[ -e "$(app_mod "$state")/config.json" ]] && echo yes || echo no)"
+  check_stderr "--mod-only: with no corgi, says the space waits for one" "to make the Corgi space with" "$state"
 
   status=0
   state="$(new_app_state app-link-elsewhere)"
@@ -838,6 +861,9 @@ test_app_uninstall() {
   check "uninstall: exit status" "0" "$status"
   check "uninstall: mod removed" "no" "$([[ -e "$mod" ]] && echo yes || echo no)"
   check "uninstall: daemon removed" "1" "$(count_daemon "$state" uninstall)"
+  check "uninstall: removes the Corgi space first" \
+    "corgi app-space remove --home $state/home/.config/herdr-app --app $state/bin/herdr-app|corgi daemon uninstall" \
+    "$(grep -A1 '^corgi app-space remove' "$state/calls.log" | tr '\n' '|' | sed 's/|$//')"
   check "uninstall: CLI link kept" "yes" "$([[ -L "$link" ]] && echo yes || echo no)"
   check "uninstall: CLI kept" "corgi $version" "$(installed "$state")"
 

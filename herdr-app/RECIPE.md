@@ -1,6 +1,6 @@
 # Corgi
 
-A panel that shows how each of your Corgi projects on herdr-core (`hc`), the
+The Corgi space's overview: how each of your Corgi projects on herdr-core (`hc`), the
 Herdr app's backend, is doing: one block per project with its supervisor's
 state, its workers by state, the open questions waiting for you, the work
 ready to merge and the inbox items not yet delivered; projects that need you
@@ -8,16 +8,20 @@ stand out. Above them, whether `corgi daemon`, which wakes the supervisors,
 is running. Click a project for its
 supervisor and workers (state, task, model, context, prompt cache, MERGE
 tag), its open questions with their full text, and a Merge button on each
-worker tagged ready to merge. It needs the `corgi` command-line tool, which
-it installs by itself; `herdr-app/install.sh` in the Corgi repository
-installs both the tool and the mod.
+worker tagged ready to merge; click an agent to see its terminal. It needs
+the `corgi` command-line tool, which it installs by itself;
+`herdr-app/install.sh` in the Corgi repository installs the tool, the mod
+and the Corgi space.
 
 <!-- preview.png is still to be made, from a look at the running window. -->
 
 ## What you see
 
-The panel docks on the right, 420 px wide (`mod.json`: `"place": "right"`),
-on the theme's `surface`, text 13 px.
+The mod is the only tab of a space of its own, named `Corgi`, first in the
+Spaces list, so `ctrl-1` (`space.select:1`) comes back to it. It docks
+nowhere else (`mod.json`: `"place": "none"`). It fills the tab on the theme's
+`surface`, text 13 px; the views' content is a column at most 960 px wide,
+centred in a wider tab.
 
 - **Header** (one line, a `border` rule below): `Corgi` in 14 px semibold,
   `herdr-core not running` in `blocked` when the core is not running (or
@@ -49,7 +53,8 @@ on the theme's `surface`, text 13 px.
   base branch, then a card per agent, the supervisor first: a dot in the
   state's color, the name (semibold), its role, its state, a `MERGE` badge
   (`accent`) when tagged, and a `Merge` button (`solid`); below, the task on
-  one line, and `model · ctx 18% · cache warm 55m · branch` in `dim`. Then
+  one line, and `model · ctx 18% · cache warm 55m · branch` in `dim`; a card
+  takes `hover` under the pointer. Then
   `Open questions (N)`, each with its id in `blocked`, its title, and the
   worker it blocks; and a `dim` line with the ledger counts, inbox and
   backlog.
@@ -72,7 +77,10 @@ on the theme's `surface`, text 13 px.
 - It reads `corgi status --json` when it starts, every 5 seconds, when a file
   under the supervisors' state folder changes, and when the app's live
   agents change (compared once a second).
-- Clicking a project opens its view; `← All projects` goes back. Clicking a
+- Clicking a project opens its view; `← All projects` goes back. Clicking an
+  agent's card runs `agent.focus` on its terminal, which shows it in its own
+  space and tab; its buttons (`Merge`, `Cancel`, `Merge + push`) only do
+  their own thing. Clicking a
   question with a saved text shows its whole text below it; clicking again
   hides it.
 - `Merge` asks inline, `Merge worktree/x into main and push?` with `Cancel`
@@ -89,7 +97,7 @@ on the theme's `surface`, text 13 px.
 - When no `corgi` that knows `status --json` and is at least the mod's
   version is found, it installs that version at once, without asking, then
   shows the overview.
-- It never starts, wakes, types into or focuses an agent. Waking
+- It never starts, wakes or types into an agent. Waking
   supervisors, delivering their inboxes and handing them over is
   `corgi daemon`'s, a service `herdr-app/install.sh` installs, so it goes on
   with the window closed; `corgi status --json` says whether it runs
@@ -100,8 +108,8 @@ on the theme's `surface`, text 13 px.
 
 - One mod, `mods/corgi/` (`main.js`, `mod.json`). Imports: `View`, `div`
   from `gpui-kit`; `v_flex`, `h_flex` from `gpui-base`; `agents`, `exec`,
-  `home`, `appHome`, `readTextFile`, `watchFolder`, `theme` from `herdr`.
-  No commands, keys or overlays.
+  `home`, `appHome`, `readTextFile`, `watchFolder`, `theme`, `run` from
+  `herdr`. App commands: `agent.focus`. No keys or overlays.
 - Programs: `corgi --version`, `corgi status --help`,
   `corgi status --json`, `corgi merge … --json`, and, to install,
   `sh -c` running `curl` on the release's `herdr-app/install.sh` with
@@ -119,6 +127,31 @@ on the theme's `surface`, text 13 px.
   ledger: {needs_answer, ready_to_merge, dispatched}, backlog}]}`.
   `corgi merge` prints `{result: merged | conflicts | push-failed | refused,
   message, commit, reason}`.
+
+## The Corgi space
+
+- `corgi app-space` makes it, and `herdr-app/install.sh` runs that after the
+  mod is in place: `space.new {name: "Corgi", folder: ~, machine: ""}`
+  (the app has no command that makes a space around a mod, so it starts
+  with a shell), `tab.new {space, mod: "corgi", name: "Corgi"}`,
+  `tab.close` on the shell's tab, and `space.move {index: 1}`. If the mod's
+  tab cannot be made, the new space is closed again.
+- A space named `Corgi` on this computer is the Corgi space (`herdr-app
+  ls`); with one there, nothing is made, so running the install again keeps
+  one. A space nobody named is called after its first terminal's repo, and
+  Corgi's own repo space is `corgi`, in lower case. A Corgi space that is
+  there is left where it is.
+- When the app's window is not open, `corgi app-space` notes the space as
+  pending (`app-space.json` in Corgi's state folder) and `corgi daemon`
+  makes it at its next pass with the window open (within a minute), then
+  forgets the note. It is made once: closing the space is the person's
+  choice, and nothing brings it back until the install runs again.
+- `herdr-app/install.sh --uninstall` runs `corgi app-space remove`: it
+  closes the tabs named `Corgi` with no terminals in Corgi spaces (the space
+  goes with its last tab; terminals the person opened there stay).
+- Spaces live in herdr-core per machine, so the space comes back after the
+  app restarts or updates; Herdr's updates replace its shipped layouts, not
+  spaces.
 
 ## Watch out
 
@@ -158,6 +191,11 @@ on the theme's `surface`, text 13 px.
 ## Done when
 
 - `herdr-app check mods/corgi` passes.
+- After `herdr-app/install.sh`, a `Corgi` space is first in the Spaces list
+  and its only tab shows the overview; running the install again leaves one
+  Corgi space; it is still there after the app is quit and reopened.
+- Clicking an agent's card in a project's view shows that agent's
+  terminal; `ctrl-1` comes back to the Corgi space.
 - The overview shows `Corgi daemon running · pid N` while `corgi daemon`
   runs, and the warning with `corgi daemon install` when it does not.
 - With `corgi` installed and supervisors running on herdr-core, the overview

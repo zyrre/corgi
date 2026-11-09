@@ -1,10 +1,11 @@
 // Corgi for the Herdr app (io.github.zyrre.corgi): each project's supervisor,
 // workers and open questions on herdr-core, and whether `corgi daemon` runs,
 // from `corgi status --json`. It only reads, and merges a worker's branch when
-// asked; it never wakes or types into an agent.
+// asked; it never wakes or types into an agent. It is the only tab of the
+// Corgi space, which `corgi app-space` makes; clicking an agent shows it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, exec, home, appHome, readTextFile, watchFolder, theme } from "herdr";
+import { agents, exec, home, appHome, readTextFile, watchFolder, theme, run } from "herdr";
 
 // The Corgi release this mod belongs to. The release sets it (see AGENTS.md,
 // "Releasing"); the mod installs or updates corgi to this version and no other.
@@ -21,6 +22,9 @@ const INSTALL_SCRIPT =
   `s=$?; rm -f "$f"; exit $s`;
 // The installer may build from source; exec's longest wait is 10 minutes.
 const INSTALL_TIMEOUT_MS = 600000;
+// The widest the overview's column grows: it is a whole tab, and lines
+// across a wide window are hard to read.
+const COLUMN_PX = 960;
 // How often the status is read again besides on file and agent changes.
 const POLL_MS = 5000;
 // Whether this app start has tried an install yet: shared by every copy, so
@@ -368,6 +372,11 @@ export default class Corgi extends View {
       .child(div().text_color(t.dim).text_size(11).child(this.loading ? "…" : s.generated.slice(11, 19)));
   }
 
+  // The column a view's content goes in, centred once the tab is wider.
+  column() {
+    return v_flex().w_full().max_w(COLUMN_PX).mx_auto().gap(10);
+  }
+
   overview(cx, t) {
     const projects = this.status.projects;
     return v_flex()
@@ -380,11 +389,13 @@ export default class Corgi extends View {
           .min_h(0)
           .overflow_y_scrollbar()
           .p(10)
-          .gap(10)
-          .when(Boolean(this.status.daemon), (el) => el.child(this.daemonLine(t, this.status.daemon)))
-          .when(Boolean(this.status.hc?.error), (el) => el.child(div().text_color(t.blocked).text_size(12).child(oneLine(`herdr-core did not answer: ${this.status.hc.error}`))))
-          .when(projects.length === 0, (el) => el.child(div().text_color(t.muted).child("No projects with a supervisor or a Corgi agent.")))
-          .children(projects.map((p) => this.projectBlock(cx, t, p))),
+          .child(
+            this.column()
+              .when(Boolean(this.status.daemon), (el) => el.child(this.daemonLine(t, this.status.daemon)))
+              .when(Boolean(this.status.hc?.error), (el) => el.child(div().text_color(t.blocked).text_size(12).child(oneLine(`herdr-core did not answer: ${this.status.hc.error}`))))
+              .when(projects.length === 0, (el) => el.child(div().text_color(t.muted).child("No projects with a supervisor or a Corgi agent.")))
+              .children(projects.map((p) => this.projectBlock(cx, t, p))),
+          ),
       );
   }
 
@@ -491,20 +502,22 @@ export default class Corgi extends View {
           .min_h(0)
           .overflow_y_scrollbar()
           .p(10)
-          .gap(10)
-          .child(div().text_color(t.dim).text_size(12).child(`${p.dir} · ${p.base ?? "no branch"}`))
-          .when(Boolean(result), (el) => el.child(this.resultBanner(cx, t, p, result)))
-          .child(div().font_semibold().child(sorted.length ? "Agents" : "No agents running"))
-          .children(sorted.map((a) => this.agentRow(cx, t, p, a)))
-          .when(p.questions.length > 0, (el) =>
-            el.child(div().pt(4).font_semibold().child(`Open questions (${p.questions.length})`)).children(p.questions.map((q, i) => this.questionRow(cx, t, p, q, i))),
-          )
           .child(
-            div()
-              .text_color(t.dim)
-              .text_size(12)
+            this.column()
+              .child(div().text_color(t.dim).text_size(12).child(`${p.dir} · ${p.base ?? "no branch"}`))
+              .when(Boolean(result), (el) => el.child(this.resultBanner(cx, t, p, result)))
+              .child(div().font_semibold().child(sorted.length ? "Agents" : "No agents running"))
+              .children(sorted.map((a) => this.agentRow(cx, t, p, a)))
+              .when(p.questions.length > 0, (el) =>
+                el.child(div().pt(4).font_semibold().child(`Open questions (${p.questions.length})`)).children(p.questions.map((q, i) => this.questionRow(cx, t, p, q, i))),
+              )
               .child(
-                `Ledger: ${p.ledger.needs_answer} need an answer · ${p.ledger.ready_to_merge} ready to merge · ${p.ledger.dispatched} dispatched · inbox ${p.inbox_pending} waiting · backlog ${p.backlog}`,
+                div()
+                  .text_color(t.dim)
+                  .text_size(12)
+                  .child(
+                    `Ledger: ${p.ledger.needs_answer} need an answer · ${p.ledger.ready_to_merge} ready to merge · ${p.ledger.dispatched} dispatched · inbox ${p.inbox_pending} waiting · backlog ${p.backlog}`,
+                  ),
               ),
           ),
       );
@@ -514,8 +527,25 @@ export default class Corgi extends View {
     const tagged = a.tag === "merge";
     const confirming = this.confirm === a.name;
     const merging = this.merging === a.name;
+    // A button's click is its own, not also the row's.
     const button = (id, label, bg, fg, onClick) =>
-      div().id(id).px(10).h(24).flex().items_center().rounded(6).bg(bg).text_color(fg).text_size(12).cursor_pointer().hover((s) => s.opacity(0.88)).on_click(onClick).child(label);
+      div()
+        .id(id)
+        .px(10)
+        .h(24)
+        .flex()
+        .items_center()
+        .rounded(6)
+        .bg(bg)
+        .text_color(fg)
+        .text_size(12)
+        .cursor_pointer()
+        .hover((s) => s.opacity(0.88))
+        .on_click((e, cx) => {
+          cx.stop_propagation();
+          onClick(e, cx);
+        })
+        .child(label);
     return v_flex()
       .id(`agent-${a.terminal}`)
       .p(8)
@@ -524,6 +554,13 @@ export default class Corgi extends View {
       .border_1()
       .border_color(tagged ? t.accent : t.border)
       .bg(t.background)
+      // Shows the agent's terminal.
+      .when(Boolean(a.terminal), (el) =>
+        el
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .on_click(() => run("agent.focus", { terminal: a.terminal })),
+      )
       .child(
         h_flex()
           .gap(8)

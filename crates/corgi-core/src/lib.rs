@@ -6,6 +6,7 @@
 //! plugin hooks and a desktop app can all build on it.
 
 pub mod activity;
+pub mod app_space;
 pub mod art;
 pub mod backend;
 pub mod backlog;
