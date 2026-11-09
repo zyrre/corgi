@@ -1,18 +1,25 @@
-//! `corgi status --json` and `corgi merge NAME --json`: what a frontend that
-//! is not a Herdr pane, such as the Herdr app's Corgi mod, reads and runs.
-//! Both find the Herdr socket as `corgi serve` does, since the mod's `exec`
-//! runs with the user's environment rather than inside a pane.
+//! `corgi status --json` and `corgi merge NAME --json`: what the Herdr app's
+//! Corgi mod reads and runs. Both see the agents Corgi runs on herdr-core
+//! (`hc`), the Herdr app's backend, and nothing of the Herdr TUI. Neither asks
+//! `hc` anything while its core's socket refuses connections, since any `hc`
+//! call starts a stopped core, with the caller's environment.
 
 use std::{
     collections::HashMap,
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use corgi_core::{backlog, progress::Silent, project_main::project_root_of, waker::Inboxes};
+use corgi_core::{
+    backlog,
+    hc::{self, HcClient},
+    progress::Silent,
+    projects::ProjectMemory,
+    waker::Inboxes,
+};
 
 use crate::{
     digest::{
@@ -20,68 +27,60 @@ use crate::{
         lookup::{LEDGER_FILE, QUESTIONS_DIR},
         parse_ledger,
     },
-    git::{git_current_branch, trust_root},
-    herdr::HerdrClient,
+    git::git_current_branch,
     model::{DashboardAgent, PromptCacheKind},
-    paths::{expand_home, home},
+    paths::expand_home,
     time::{rfc3339_utc, unix_now},
 };
 
 use super::{
-    App,
+    hc_cli::hc_project_root,
     launch::CORGI_REQUEST_TOKEN,
     merge::{
-        MergeError, Upstream, abort_merge, clear_merged_tag, conflict_item, merge_form,
-        project_supervisor, run_merge, tell_supervisor_about_merge,
+        MergeError, Upstream, abort_merge, conflict_item, merge_form, project_supervisor,
+        run_merge, tell_supervisor_about_merge,
     },
 };
 
 /// The version of `corgi status --json`'s shape: fields may be added under
-/// it, and a rename or removal bumps it.
-pub const STATUS_VERSION: u32 = 1;
+/// it, and a rename or removal bumps it. Version 2 reads hc alone: the
+/// Herdr TUI's `herdr` object gave way to `hc`.
+pub const STATUS_VERSION: u32 = 2;
 
 pub const STATUS_USAGE: &str = "\
 Usage: corgi status --json [--project DIR]
 
 Prints one JSON object describing every project with a supervisor state
-directory or a running Corgi agent (only DIR's project with --project): its
-supervisor, its agents (the rows corgi fleet lists, the supervisor included,
-each with its role), the open questions its supervisor's ledger keeps, the
-inbox items still waiting, ledger counts and the backlog's length. It works
-outside a Herdr pane: the Herdr socket is $HERDR_SOCKET_PATH, else the default
-session's (~/.config/herdr/herdr.sock). When Herdr cannot be reached, the
-projects still come from the state directories, without agents, and
-\"herdr\".\"connected\" is false. \"daemon\" says whether corgi daemon runs
-for herdr-core (\"running\", \"pid\"). It changes nothing.";
+directory or a running Corgi agent on herdr-core (hc), the Herdr app's backend
+(only DIR's project with --project): its supervisor, its agents (the supervisor
+included, each with its role), the open questions its supervisor's ledger
+keeps, the inbox items still waiting, ledger counts and the backlog's length.
+Agents on the Herdr TUI are not listed. hc is asked only when its core already
+runs, since asking it would start one: when it does not, the projects still
+come from the state directories, without agents, and \"hc\".\"running\" is
+false. \"daemon\" says whether corgi daemon runs for the core (\"running\",
+\"pid\") and whether its service is installed (\"installed\"). It changes
+nothing.";
 
 pub const MERGE_USAGE: &str = "\
 Usage: corgi merge NAME --project DIR [--json] [--pull | --skip-upstream]
 
-Merges the branch of agent NAME of DIR's project, from its linked worktree,
-into the branch checked out in the project's primary checkout, and pushes it:
-the merge the dashboard's m runs, with its checks. The base branch's upstream
-is fetched first, and the merge is refused when the upstream has commits the
-base lacks; --pull pulls them in first, and --skip-upstream merges without
-fetching (after a failed fetch). The project's supervisor is told of a merge,
-and of a failed push, in its inbox. A merge that stops on conflicts is
-aborted and handed to the project's running supervisor, as the dashboard's s
-does; without one it is left in the primary checkout to resolve.
+Merges the branch of worker NAME of DIR's project on herdr-core (hc), from its
+linked worktree, into the branch checked out in the project's primary checkout,
+and pushes it: the merge the dashboard's m runs, with its checks, and clears
+the worker's merge tag. The base branch's upstream is fetched first, and the
+merge is refused when the upstream has commits the base lacks; --pull pulls
+them in first, and --skip-upstream merges without fetching (after a failed
+fetch). The project's supervisor is told of a merge, and of a failed push, in
+its inbox. A merge that stops on conflicts is aborted and handed to the
+project's running supervisor, as the dashboard's s does; without one it is left
+in the primary checkout to resolve.
 
 With --json it prints {\"result\", \"message\", \"commit\", \"reason\"}: result
 is merged, conflicts, push-failed or refused; reason says why a refusal was
 (unavailable, behind, fetch-failed, failed, no-agent). It exits 0 only when
-the branch was merged and pushed. The Herdr socket is found as for corgi status.";
-
-/// The Herdr socket for a command run outside a pane: the one Herdr gave
-/// this process, else the default session's.
-fn herdr_socket() -> Result<PathBuf> {
-    match env::var_os("HERDR_SOCKET_PATH").filter(|path| !path.is_empty()) {
-        Some(path) => Ok(PathBuf::from(path)),
-        None => Ok(home()
-            .context("HOME is not set")?
-            .join(".config/herdr/herdr.sock")),
-    }
-}
+the branch was merged and pushed. A core that is not running is not started:
+the merge is refused as unavailable.";
 
 /// `dir` as an existing absolute directory.
 fn existing_dir(dir: &str) -> Result<PathBuf> {
@@ -96,21 +95,63 @@ fn existing_dir(dir: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// The primary checkout of the project at `dir`, as Herdr reports it, or as
-/// Git does when Herdr cannot be asked.
-fn project_root(client: &HerdrClient, connected: bool, dir: &Path) -> String {
-    connected
-        .then(|| project_root_of(client, dir).ok())
-        .flatten()
-        .unwrap_or_else(|| trust_root(dir).to_string_lossy().into_owned())
+/// What `corgi status` and `corgi merge` see of hc.
+pub(crate) struct HcSeen {
+    /// The client, once the core runs and an `hc` was found.
+    pub(crate) client: Option<HcClient>,
+    /// Corgi's agents on it, in the dashboard's order.
+    pub(crate) agents: Vec<DashboardAgent>,
+    /// Whether the core's socket accepts connections.
+    pub(crate) running: bool,
+    /// Why no agents could be read from a running core.
+    pub(crate) error: Option<String>,
 }
 
-/// A headless app on the out-of-pane Herdr socket that has tried one
-/// snapshot; `connected` says whether it got one.
-fn status_app() -> Result<App> {
-    let mut app = App::headless(HerdrClient::from_socket_path(herdr_socket()?));
-    app.refresh();
-    Ok(app)
+impl HcSeen {
+    /// hc as this environment finds it, asked only when its core runs.
+    fn look() -> Self {
+        let mut seen = Self {
+            client: None,
+            agents: Vec::new(),
+            running: hc::core_running(),
+            error: None,
+        };
+        if !seen.running {
+            return seen;
+        }
+        let Some(client) = HcClient::locate() else {
+            seen.error =
+                Some("hc (herdr-core) is not installed: no hc on PATH or in ~/.local/bin".into());
+            return seen;
+        };
+        match hc::agents::agents(&client) {
+            Ok(agents) => {
+                seen.agents = agents;
+                seen.client = Some(client);
+            }
+            Err(error) => seen.error = Some(format!("{error:#}")),
+        }
+        seen
+    }
+
+    /// Why a merge cannot be run on hc, if it cannot.
+    fn unavailable(&self) -> Option<String> {
+        match (&self.client, &self.error) {
+            (Some(_), _) => None,
+            (None, Some(error)) => Some(format!("herdr-core could not be asked: {error}")),
+            (None, None) => {
+                Some("herdr-core (hc) is not running; Corgi does not start it for a merge".into())
+            }
+        }
+    }
+}
+
+/// `root` without symlinks, as hc's `corgi.project` labels hold a project, so
+/// a remembered path and a label compare as text.
+fn canonical_root(root: &str) -> String {
+    fs::canonicalize(root)
+        .map(|root| root.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| root.to_string())
 }
 
 /// `corgi status`.
@@ -132,13 +173,18 @@ pub fn status_command(args: &[String]) -> Result<()> {
         "corgi status prints JSON only for now: pass --json\n\n{STATUS_USAGE}"
     );
     let project = project.as_deref().map(existing_dir).transpose()?;
-    let app = status_app()?;
-    let only = project.map(|dir| project_root(&app.client, app.connected, &dir));
+    let only = project.map(|dir| hc_project_root(&dir));
+    let seen = HcSeen::look();
+    let remembered: Vec<String> = ProjectMemory::load()
+        .roots()
+        .iter()
+        .map(|root| canonical_root(root))
+        .collect();
     let mut value = status_value(
-        &app.agents,
-        app.projects.roots(),
+        &seen.agents,
+        &remembered,
         &Inboxes::default(),
-        (app.connected, &app.status),
+        (seen.running, seen.error.as_deref()),
         only.as_deref(),
         unix_now(),
     );
@@ -148,16 +194,17 @@ pub fn status_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The object `corgi status --json` prints for `agents` (the fleet's rows,
-/// in the dashboard's order), the projects Corgi remembers (`remembered`),
-/// of which those that had a supervisor are listed even with no agent
-/// running, and the supervisors' state in `inboxes`. `herdr` is whether
-/// Herdr answered and the app's status line; `only` keeps one project.
+/// The object `corgi status --json` prints for `agents` (Corgi's rows on
+/// hc, in the dashboard's order), the projects Corgi remembers
+/// (`remembered`), of which those that had a supervisor are listed even with
+/// no agent running, and the supervisors' state in `inboxes`. `hc` is
+/// whether its core runs, and why its agents could not be read; `only` keeps
+/// one project.
 pub(crate) fn status_value(
     agents: &[DashboardAgent],
     remembered: &[String],
     inboxes: &Inboxes,
-    herdr: (bool, &str),
+    hc: (bool, Option<&str>),
     only: Option<&str>,
     now: u64,
 ) -> Value {
@@ -181,7 +228,7 @@ pub(crate) fn status_value(
     json!({
         "version": STATUS_VERSION,
         "generated": rfc3339_utc(now),
-        "herdr": {"connected": herdr.0, "status": herdr.1},
+        "hc": {"running": hc.0, "error": hc.1},
         "projects": projects,
     })
 }
@@ -339,18 +386,19 @@ pub fn merge_command(args: &[String]) -> Result<()> {
     let name = name.context(format!("name the agent to merge\n\n{MERGE_USAGE}"))?;
     let project =
         existing_dir(&project.context(format!("--project is required\n\n{MERGE_USAGE}"))?)?;
-    let mut app = status_app()?;
-    anyhow::ensure!(app.connected, "Herdr is unavailable: {}", app.status);
-    let root = project_root(&app.client, app.connected, &project);
-    let client = app.client.clone();
-    let outcome = merge_agent(
-        &client,
-        &mut app.agents,
-        &Inboxes::default(),
-        &name,
-        &root,
-        upstream,
-    );
+    let root = hc_project_root(&project);
+    let mut seen = HcSeen::look();
+    let outcome = match (seen.unavailable(), &seen.client) {
+        (None, Some(client)) => merge_agent(
+            client,
+            &mut seen.agents,
+            &Inboxes::default(),
+            &name,
+            &root,
+            upstream,
+        ),
+        (unavailable, _) => MergeOutcome::refused("unavailable", unavailable.unwrap_or_default()),
+    };
     if json_output {
         println!("{}", serde_json::to_string(&outcome.json())?);
     } else if outcome.result == "merged" {
@@ -364,26 +412,28 @@ pub fn merge_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Merges the branch of the agent `name` of the project at `root` among
-/// `agents`, as the dashboard's merge dialog does once confirmed, with
-/// `upstream` choosing what happens to the base branch's upstream: clears
-/// its merge tag on `client` and tells the supervisor through `inboxes`
-/// once it lands, and hands a conflict to the running supervisor.
+/// Merges the branch of the worker `name` of the project at `root` among
+/// `agents` (Corgi's rows on hc), as the dashboard's merge dialog does once
+/// confirmed, with `upstream` choosing what happens to the base branch's
+/// upstream: clears its merge tag on `client` and tells the supervisor
+/// through `inboxes` once it lands, and hands a conflict to the running
+/// supervisor.
 pub(crate) fn merge_agent(
-    client: &HerdrClient,
+    client: &HcClient,
     agents: &mut [DashboardAgent],
     inboxes: &Inboxes,
     name: &str,
     root: &str,
     upstream: fn(&Upstream) -> Upstream,
 ) -> MergeOutcome {
-    let Some(agent) = agents.iter().find(|agent| {
+    let Some(index) = agents.iter().position(|agent| {
         agent.project_root == root
             && !agent.supervisor
             && (agent.info.display_name() == name || agent.info.name.as_deref() == Some(name))
     }) else {
         return MergeOutcome::refused("no-agent", format!("No worker {name} runs in {root}"));
     };
+    let agent = &agents[index];
     let mut form = match merge_form(agent) {
         Ok(form) => form,
         Err(error) => {
@@ -394,8 +444,8 @@ pub(crate) fn merge_agent(
     let what = format!("{} into {}", form.source_branch, form.target_branch);
     match run_merge(&form, &mut Silent) {
         Ok(commit) => {
-            clear_merged_tag(client, agents, &form);
             let mut message = format!("Merged and pushed {what}");
+            clear_tag(client, &mut agents[index], &mut message);
             if let Err(error) = tell_supervisor_about_merge(inboxes, agents, &form, &commit, None) {
                 message.push_str(&format!(
                     ", but the supervisor could not be told: {error:#}"
@@ -409,8 +459,8 @@ pub(crate) fn merge_agent(
             }
         }
         Err(MergeError::PushFailed { commit, error }) => {
-            clear_merged_tag(client, agents, &form);
             let mut message = format!("Merged {what}, but the push failed: {error}");
+            clear_tag(client, &mut agents[index], &mut message);
             if let Err(error) =
                 tell_supervisor_about_merge(inboxes, agents, &form, &commit, Some(&error))
             {
@@ -475,6 +525,14 @@ pub(crate) fn merge_agent(
     }
 }
 
+/// Clears the merge tag of the merged `agent` on hc, as `corgi tag --clear`
+/// does, adding to `message` when that fails.
+fn clear_tag(client: &HcClient, agent: &mut DashboardAgent, message: &mut String) {
+    if let Err(error) = hc::agents::clear_merge_tag(client, agent) {
+        message.push_str(&format!("; its merge tag could not be cleared: {error:#}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
@@ -487,6 +545,154 @@ mod tests {
         supervisor::{MERGE_TOKEN, ROLE_FILE, merge_tag_value},
         test_support::{ScratchDir, git, git_repo, git_worktree},
     };
+    use corgi_core::hc::{
+        PROJECT_LABEL, REQUEST_LABEL, ROLE_LABEL, TAG_AT_LABEL, TAG_LABEL, TASK_LABEL, Terminal,
+        agents::dashboard_agents,
+    };
+
+    /// A fake `hc` in `dir` that records each call's arguments, one call a
+    /// line, in `dir/calls`, and answers every call with a terminal record.
+    fn fake_hc(dir: &Path) -> HcClient {
+        fs::create_dir_all(dir).unwrap();
+        let script = dir.join("hc");
+        fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/calls\"\necho '{\"address\":\"t9\"}'\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        fs::set_permissions(&script, permissions).unwrap();
+        HcClient::new(script)
+    }
+
+    /// The calls the fake `hc` in `dir` got.
+    fn hc_calls(dir: &Path) -> Vec<String> {
+        fs::read_to_string(dir.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// An hc terminal record as `hc get` gives it.
+    fn terminal(
+        address: &str,
+        name: &str,
+        cwd: &Path,
+        status: &str,
+        turn: u64,
+        labels: &[(&str, &str)],
+    ) -> Terminal {
+        let labels: std::collections::BTreeMap<&str, &str> = labels.iter().copied().collect();
+        serde_json::from_value(json!({
+            "address": address,
+            "name": name,
+            "state": "live",
+            "status": {"state": status, "app": "claude-code"},
+            "labels": labels,
+            "cwd": cwd,
+            "foreground": {"name": "claude", "cwd": cwd},
+            "turn": turn,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn status_lists_corgis_hc_terminals_as_the_projects_agents() {
+        let scratch = ScratchDir::new("status-hc");
+        let base = scratch.join("state");
+        let app = git_repo(&scratch.join("app"));
+        let fix = git_worktree(&app, &scratch.join("fix"), "worktree/fix");
+        let busy = git_worktree(&app, &scratch.join("busy"), "worktree/busy");
+        let root = app.to_string_lossy().into_owned();
+        supervisor_state(&base, &app);
+        let inboxes = corgi_core::waker::SupervisorWaker::in_dir(&base).inboxes();
+        let project = |role| [(PROJECT_LABEL, root.as_str()), (ROLE_LABEL, role)];
+        let terminals = [
+            // A worker tagged where it rests now: ready to merge.
+            terminal(
+                "t2",
+                "w-fix",
+                &fix,
+                "done",
+                3,
+                &[
+                    project("worker")[0],
+                    project("worker")[1],
+                    (REQUEST_LABEL, "20261109-fix"),
+                    (TASK_LABEL, "Fix it"),
+                    (TAG_LABEL, "merge"),
+                    (TAG_AT_LABEL, &merge_tag_value(AgentState::Done, 3)),
+                ],
+            ),
+            // A worker that has worked past its tag: no MERGE shows.
+            terminal(
+                "t3",
+                "w-busy",
+                &busy,
+                "working",
+                5,
+                &[
+                    project("worker")[0],
+                    project("worker")[1],
+                    (TAG_LABEL, "merge"),
+                    (TAG_AT_LABEL, &merge_tag_value(AgentState::Done, 2)),
+                ],
+            ),
+            terminal(
+                "t1",
+                "app-supervisor",
+                &app,
+                "idle",
+                7,
+                &project("supervisor"),
+            ),
+        ];
+        let home = scratch.join("home");
+        let agents = dashboard_agents(&terminals, Some(&home));
+
+        let value = status_value(&agents, &[], &inboxes, (true, None), None, NOW);
+        let projects = value["projects"].as_array().unwrap();
+        assert_eq!(projects.len(), 1, "{value:#}");
+        let project = &projects[0];
+        assert_eq!(project["dir"], root);
+        assert_eq!(project["supervisor"]["name"], "app-supervisor");
+        assert_eq!(project["supervisor"]["terminal"], "t1");
+        assert_eq!(project["supervisor"]["state"], "idle");
+        let rows = project["agents"].as_array().unwrap();
+        let names: Vec<&str> = rows.iter().map(|a| a["name"].as_str().unwrap()).collect();
+        assert_eq!(names[0], "app-supervisor", "{names:?}");
+        let row = |name: &str| rows.iter().find(|a| a["name"] == name).unwrap().clone();
+        let fixed = row("w-fix");
+        assert_eq!(fixed["role"], "worker");
+        assert_eq!(fixed["state"], "done");
+        assert_eq!(fixed["terminal"], "t2");
+        assert_eq!(fixed["request_id"], "20261109-fix");
+        assert_eq!(fixed["harness"], "agent");
+        assert_eq!(fixed["branch"], "worktree/fix");
+        assert_eq!(fixed["worktree"], fix.to_string_lossy().as_ref());
+        assert_eq!(fixed["tag"], "merge");
+        let busy_row = row("w-busy");
+        assert_eq!(busy_row["state"], "working");
+        assert_eq!(busy_row["tag"], json!(null));
+        assert_eq!(busy_row["terminal"], "t3");
+    }
+
+    #[test]
+    fn without_a_running_core_the_projects_still_come_from_the_state_directories() {
+        let scratch = ScratchDir::new("status-hc-down");
+        let base = scratch.join("state");
+        let app = git_repo(&scratch.join("app"));
+        supervisor_state(&base, &app);
+        let inboxes = corgi_core::waker::SupervisorWaker::in_dir(&base).inboxes();
+        let remembered = [app.to_string_lossy().into_owned()];
+        let value = status_value(&[], &remembered, &inboxes, (false, None), None, NOW);
+        assert_eq!(value["hc"], json!({"running": false, "error": null}));
+        assert_eq!(value["projects"][0]["name"], "app");
+        assert_eq!(value["projects"][0]["supervisor"], json!(null));
+        assert_eq!(value["projects"][0]["agents"], json!([]));
+    }
 
     const NOW: u64 = 1_800_000_000;
 
@@ -583,16 +789,14 @@ mod tests {
             &[supervisor, worker, scratch_agent],
             &remembered,
             &inboxes,
-            (true, "3 agents"),
+            (true, None),
             None,
             NOW,
         );
-        assert_eq!(value["version"], 1);
+        assert_eq!(value["version"], 2);
         assert_eq!(value["generated"], "2027-01-15T08:00:00Z");
-        assert_eq!(
-            value["herdr"],
-            json!({"connected": true, "status": "3 agents"})
-        );
+        assert_eq!(value["hc"], json!({"running": true, "error": null}));
+        assert_eq!(value.get("herdr"), None);
         let projects = value["projects"].as_array().unwrap();
         let names: Vec<&str> = projects
             .iter()
@@ -658,11 +862,11 @@ mod tests {
             &[],
             &remembered,
             &inboxes,
-            (false, "Herdr is not running"),
+            (false, None),
             Some(&idle.to_string_lossy()),
             NOW,
         );
-        assert_eq!(only["herdr"]["connected"], false);
+        assert_eq!(only["hc"]["running"], false);
         assert_eq!(only["projects"].as_array().unwrap().len(), 1);
         assert_eq!(only["projects"][0]["name"], "idle");
     }
@@ -717,13 +921,17 @@ mod tests {
             worker
         }
 
+        /// The folder of the fake `hc` the merges label terminals with.
+        fn hc_dir(&self) -> PathBuf {
+            self.state.with_file_name("hc")
+        }
+
         fn merge(
             &self,
             agents: &mut [DashboardAgent],
             upstream: fn(&Upstream) -> Upstream,
         ) -> MergeOutcome {
-            let client = HerdrClient::from_socket_path(self.state.join("no.sock"))
-                .with_marker_record(self.state.join("markers.json"));
+            let client = fake_hc(&self.hc_dir());
             merge_agent(
                 &client,
                 agents,
@@ -800,6 +1008,63 @@ mod tests {
                  into main at {commit}."
             )),
             "{pending:?}"
+        );
+    }
+
+    #[test]
+    fn merging_a_tagged_hc_worker_clears_its_tag_on_its_terminal() {
+        let project = Mergeable::new("status-merge-hc");
+        supervisor_state(&project.state, &project.repo);
+        let mut worker = project.worker();
+        worker.info.pane_id = "t4".into();
+        worker.info.state = AgentState::Done;
+        worker
+            .info
+            .tokens
+            .insert(MERGE_TOKEN.into(), merge_tag_value(AgentState::Done, 0));
+        let mut agents = vec![agent("app-supervisor", &project.repo, true), worker];
+        let outcome = project.merge(&mut agents, Upstream::checked);
+        assert_eq!(outcome.result, "merged", "{}", outcome.message);
+        assert_eq!(outcome.message, "Merged and pushed worktree/fix into main");
+        assert_eq!(project.head("origin/main"), project.head("main"));
+        assert_eq!(
+            hc_calls(&project.hc_dir()),
+            ["label t4 corgi.tag= corgi.tag.at= --json"]
+        );
+        assert!(!agents[1].info.tokens.contains_key(MERGE_TOKEN));
+        assert_eq!(project.pending().len(), 1);
+
+        // An untagged worker's terminal is left alone.
+        let project = Mergeable::new("status-merge-hc-untagged");
+        let mut agents = vec![project.worker()];
+        let outcome = project.merge(&mut agents, Upstream::checked);
+        assert_eq!(outcome.result, "merged", "{}", outcome.message);
+        assert!(hc_calls(&project.hc_dir()).is_empty());
+    }
+
+    #[test]
+    fn a_tag_that_cannot_be_cleared_is_said_after_the_merge() {
+        let project = Mergeable::new("status-merge-hc-label");
+        let mut worker = project.worker();
+        worker
+            .info
+            .tokens
+            .insert(MERGE_TOKEN.into(), merge_tag_value(AgentState::Done, 0));
+        let mut agents = vec![worker];
+        let client = HcClient::new(project.state.join("no-hc"));
+        let outcome = merge_agent(
+            &client,
+            &mut agents,
+            &corgi_core::waker::SupervisorWaker::in_dir(&project.state).inboxes(),
+            "w-fix",
+            &project.root(),
+            Upstream::checked,
+        );
+        assert_eq!(outcome.result, "merged", "{}", outcome.message);
+        assert!(
+            outcome.message.contains("merge tag could not be cleared"),
+            "{}",
+            outcome.message
         );
     }
 

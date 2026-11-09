@@ -426,21 +426,28 @@ shellcheck scripts/install.sh scripts/link-command.sh scripts/test-install herdr
 `herdr-app/mods/corgi/` is the Herdr app's Corgi mod; `herdr-app/RECIPE.md`
 describes it for people and agents, and `herdr-app/install.sh` installs it
 with the CLI. The mod reads `corgi status --json` and runs `corgi merge`;
-both live in `src/app/status.rs`. Check every change with
+both live in `src/app/status.rs` and see hc's agents alone, never the Herdr
+TUI's. Check every change with
 `herdr-app check herdr-app/mods/corgi` (it writes `jsconfig.json` and
 `gpui-kit.d.ts` there, which Git ignores). `check` renders only the first
 frame (the "Reading Corgi's status…" line), so a mistake in the overview or
 the project view passes it: run the mod's other views too, for example
 under Node with stub `gpui-kit`, `gpui-base` and `herdr` modules fed a real
-`corgi status --json`. Never open the app window (`herdr-app` with no
+`corgi status --json` (the stubs are plain chainable records whose
+`child`, `when` and `on_*` calls are kept, so a script can read each view's
+texts and call its click handlers). A status from a private core's live test
+(see "Testing on hc") shows hc agents, a MERGE tag and the daemon line; stop
+that test's daemon, then its core, for the daemon warning and the
+`herdr-core not running` badge. Never open the app window (`herdr-app` with no
 command) from an agent; it takes over the user's screen. In a mod, a
 `.when(cond, fn)` callback must return the element it was given, and text
 for one line goes through the mod's `oneLine`, since a `\n` starts a second
 line even in a truncated element.
 
-`corgi status --json` only reads, so it may be run on the user's real
-Herdr and state. Never run `corgi merge` against a real project; its tests
-use scratch repositories.
+`corgi status --json` only reads, and asks `hc` nothing unless its core's
+socket accepts a connection, so it may be run on the user's real core and
+state. Never run `corgi merge` against a real project; its tests use scratch
+repositories and a fake `hc` script.
 
 After reviewed changes are merged into the primary checkout, make them live
 from that primary checkout with `cargo build --release` and

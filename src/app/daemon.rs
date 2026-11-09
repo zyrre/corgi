@@ -474,12 +474,15 @@ pub(crate) fn systemd_unit(program: &Path, environment: &[(String, String)], log
 }
 
 /// What `corgi status --json` says of the daemon of the core of this
-/// environment: whether one runs, and its pid.
+/// environment: whether one runs, and its pid, and whether the service
+/// `corgi daemon install` writes is installed.
 pub(crate) fn status_value() -> serde_json::Value {
     let running = hc::expected_socket().map(|socket| daemon::running(&socket));
+    let installed = service_file(SERVICE_LABEL).is_ok_and(|file| file.exists());
     serde_json::json!({
         "running": running.as_ref().is_some_and(|running| running.running),
         "pid": running.as_ref().and_then(|running| running.pid),
+        "installed": installed,
     })
 }
 

@@ -2346,6 +2346,15 @@ starts agents. `crates/corgi-core/src/backend.rs` chooses the backend:
   those two anywhere.
 
 The command-line side is `src/app/hc_cli.rs`; `cli.rs` only dispatches.
+`corgi status --json` and `corgi merge … --json` (`src/app/status.rs`), what
+the Herdr app's mod reads and runs, see hc alone, wherever they run: hc's
+agents only when its core's socket accepts a connection (`"hc": {"running",
+"error"}` says which), and the projects Corgi wrote down whose supervisor
+state directory exists, so a project with no agent running still shows;
+`corgi supervisor` on hc writes its project down for that, as a launch on the
+TUI does. A merge of an hc worker takes its checkout and branch from its
+row, refuses (`unavailable`) when the core is not running rather than start
+one, and clears the worker's `corgi.tag` labels as `corgi tag --clear` does.
 
 Labels replace pane tokens: `corgi.project` (the primary checkout,
 without symlinks), `corgi.role` (`supervisor` or `worker`), `corgi.request`,
