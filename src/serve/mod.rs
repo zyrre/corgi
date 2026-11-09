@@ -14,6 +14,7 @@
 mod commands;
 mod forge;
 mod state;
+pub(crate) use state::split_question;
 #[cfg(test)]
 mod tests;
 

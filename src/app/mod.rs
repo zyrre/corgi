@@ -60,6 +60,8 @@ mod bar;
 mod cards;
 mod cli;
 mod navigate;
+mod status;
+pub use status::{MERGE_USAGE, STATUS_USAGE, merge_command, status_command};
 pub(crate) mod orphans;
 pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};

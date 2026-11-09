@@ -2,7 +2,8 @@
 # publishes a GitHub release carrying the binaries and their SHA256SUMS.
 #
 # Runs when a `vX.Y.Z` tag is pushed. The tag must match `version` in
-# herdr-plugin.toml, Cargo.toml and omarchy/manifest.json, or nothing is
+# herdr-plugin.toml, Cargo.toml, omarchy/manifest.json and the Herdr app
+# mod's VERSION (herdr-app/mods/corgi/main.js), or nothing is
 # built. Every asset below must be present before the release is created, so
 # a partial release is never published. Once it is, the Omarchy bar widget
 # is published to its own repository (see the `omarchy` job).
@@ -30,6 +31,7 @@ jobs:
           grep -qx "version = \"$version\"" herdr-plugin.toml || { echo "::error::herdr-plugin.toml version is not $version"; exit 1; }
           grep -qx "version = \"$version\"" Cargo.toml || { echo "::error::Cargo.toml version is not $version"; exit 1; }
           jq -e --arg version "$version" '.version == $version' omarchy/manifest.json >/dev/null || { echo "::error::omarchy/manifest.json version is not $version"; exit 1; }
+          grep -qx "const VERSION = \"$version\";" herdr-app/mods/corgi/main.js || { echo "::error::herdr-app/mods/corgi/main.js VERSION is not $version"; exit 1; }
 
   build:
     needs: check-version

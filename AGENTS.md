@@ -412,14 +412,35 @@ bash scripts/test-herdr-corgi-dashboard
 shellcheck scripts/herdr-corgi-dashboard scripts/test-herdr-corgi-dashboard
 ```
 
-Before handing off changes to `scripts/install.sh` or `scripts/link-command.sh`,
-run their shell test, which serves a fake release from a local directory and
-uses a fake `cargo`:
+Before handing off changes to `scripts/install.sh`, `scripts/link-command.sh`
+or `herdr-app/install.sh`, run their shell test, which serves a fake release
+from a local directory and uses a fake `cargo` and a fake `herdr-app`:
 
 ```bash
 bash scripts/test-install
-shellcheck scripts/install.sh scripts/link-command.sh scripts/test-install
+shellcheck scripts/install.sh scripts/link-command.sh scripts/test-install herdr-app/install.sh
 ```
+
+## The Herdr app mod
+
+`herdr-app/mods/corgi/` is the Herdr app's Corgi mod; `herdr-app/RECIPE.md`
+describes it for people and agents, and `herdr-app/install.sh` installs it
+with the CLI. The mod reads `corgi status --json` and runs `corgi merge`;
+both live in `src/app/status.rs`. Check every change with
+`herdr-app check herdr-app/mods/corgi` (it writes `jsconfig.json` and
+`gpui-kit.d.ts` there, which Git ignores). `check` renders only the first
+frame (the "Reading Corgi's status…" line), so a mistake in the overview or
+the project view passes it: run the mod's other views too, for example
+under Node with stub `gpui-kit`, `gpui-base` and `herdr` modules fed a real
+`corgi status --json`. Never open the app window (`herdr-app` with no
+command) from an agent; it takes over the user's screen. In a mod, a
+`.when(cond, fn)` callback must return the element it was given, and text
+for one line goes through the mod's `oneLine`, since a `\n` starts a second
+line even in a truncated element.
+
+`corgi status --json` only reads, so it may be run on the user's real
+Herdr and state. Never run `corgi merge` against a real project; its tests
+use scratch repositories.
 
 After reviewed changes are merged into the primary checkout, make them live
 from that primary checkout with `cargo build --release` and
@@ -532,9 +553,11 @@ the README and its images will be redone after the GUI work. Leave
 ## Releasing
 
 Bump `version` in the root `Cargo.toml` (`[workspace.package]`, which both
-crates take), `herdr-plugin.toml` and `omarchy/manifest.json` (and run
+crates take), `herdr-plugin.toml`, `omarchy/manifest.json` and `VERSION` in
+`herdr-app/mods/corgi/main.js` (and run
 `cargo build` so `Cargo.lock` follows), commit, and push a `vX.Y.Z` tag
-matching it.
+matching it. The Herdr app mod installs exactly its `VERSION`, from that
+tag's `herdr-app/install.sh`, so the tag must hold the installer.
 `.github/workflows/release.yml` then builds the four binaries and publishes
 the GitHub release with them and their `SHA256SUMS`; it refuses a tag that
 does not match all three versions. Its last job, `omarchy`, then publishes the

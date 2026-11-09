@@ -252,7 +252,7 @@ pub(super) fn question_text(path: &Path) -> String {
 
 /// `Q2: Keep the old flag?` as its handle, `Q2`, and title. A question
 /// without a number keeps its whole text as its title.
-pub(super) fn split_question(question: &str) -> (String, String) {
+pub(crate) fn split_question(question: &str) -> (String, String) {
     let question = question.trim();
     if let Some((handle, title)) = question.split_once(':')
         && let Some(number) = question_number(handle)
