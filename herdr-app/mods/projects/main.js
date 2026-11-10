@@ -766,25 +766,23 @@ export default class Projects extends View {
     const tip = any
       ? `Resume the ${n === 1 ? "paused agent" : `${n} paused agents`} on ${n === 1 ? "its" : "their"} own conversation`
       : "Pause the agents that are working, before you go offline. Each ends its turn and exits, its conversation saved; nothing is typed into a supervisor until you resume.";
+    // Drawn as the + beside it: its height, radius, hover and colours, the
+    // header's text; paused is told apart by the icon alone (▶, not ⏸).
     return div()
       .id("agents-pause")
-      .h(22)
-      .px(7)
+      .h(26)
+      .px(6)
+      .gap(4)
       .flex()
       .flex_none()
       .items_center()
       .rounded(6)
-      .text_size(11)
-      .font_medium()
       .cursor_pointer()
-      .when(any, (el) => el.bg(t.accent).text_color(t.accent_foreground).hover((s) => s.opacity(0.88)))
-      .when(!any, (el) => el.text_color(t.muted).hover((s) => s.bg(t.hover).text_color(t.foreground)))
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .when(busy, (el) => el.opacity(0.5))
-      .gap(4)
       .tooltip(tip)
       .on_click((_e, cx) => this.pauseAgents(cx))
-      // ▶ and ⏸ as the mod's own icons: the glyphs draw thin and small.
-      .child(svg(any ? PLAY_ICON : PAUSE_ICON).size(11).flex_none())
+      .child(svg(any ? PLAY_ICON : PAUSE_ICON).size(14).flex_none())
       .child("Agents");
   }
 

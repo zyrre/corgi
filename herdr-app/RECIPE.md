@@ -166,13 +166,13 @@ The Projects mod fills its block on `chrome`, text 13 px:
     the reading is (`Max · read 2m ago`), and why the last reading failed. With no reading, `loading…`, or `unavailable` once one failed.
 - **Header** (31 px): `Projects` in `dim` 11.5 px and, 4 px apart on the
   right, the pause button and a 26 px `+` button (tooltip `Open project`),
-  lit while its field is open. The pause button (22 px high, radius 6,
-  padding 7, 11 px medium): an 11 px pause icon (two bars, the mod's
-  `pause.svg`) and `Agents` in `muted`, `hover` behind it on hover; while
-  agents are paused a play icon (`play.svg`) and `Agents` in
-  `accent_foreground` on `accent`, so it stands out; at half opacity while a
-  pause or resume runs. Its tooltip says what it does. Not drawn on the rail,
-  nor from a `corgi` whose status has no `paused`.
+  lit while its field is open. The pause button is drawn as the `+`: 26 px
+  high, radius 6, no fill and the header's `dim`, `hover` behind it and
+  `foreground` on hover; a 14 px icon (the mod's `pause.svg`, two bars,
+  stroked as the `+` is) and `Agents` in the header's 11.5 px. While agents
+  are paused only its icon changes, to a play triangle (`play.svg`); at
+  half opacity while a pause or resume runs. Its tooltip says what it does.
+  Not drawn on the rail, nor from a `corgi` whose status has no `paused`.
 - **Pause progress and result** (under the header, 8 px in from each side,
   a card on `surface`, radius 7, padding 7, 11.5 px): a spinner and
   `Pausing 3 agents…` (or `Resuming 2 agents…`) with a `border` outline

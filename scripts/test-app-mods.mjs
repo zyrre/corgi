@@ -1616,6 +1616,14 @@ const markOf = (root, id) => {
   const root = mod.render();
   assert.deepEqual(header(root), ['▶ Agents']);
   assert.match(byId(root, 'agents-pause').calls.tooltip[0], /^Resume the 2 paused agents on their own conversation/);
+  // Drawn as the + beside it, paused or not: no fill or colour of its own;
+  // only the icon tells paused apart.
+  for (const id of ['agents-pause', 'project-open']) {
+    const b = byId(root, id);
+    assert.ok(!('bg' in b.calls) && !('text_color' in b.calls) && !('border_1' in b.calls), `${id}: ${Object.keys(b.calls)}`);
+    assert.deepEqual([b.calls.h ?? b.calls.size, b.calls.rounded], [[26], [6]]);
+  }
+  assert.deepEqual(kept(byId(root, 'agents-pause').children[0]).calls.size, [14]);
   assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t20', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7']);
   assert.deepEqual(texts(kept(byId(root, 'agent-t5').children[0])), ['Write the docs']);
   assert.equal(markOf(root, 'agent-t5'), '⏸');
