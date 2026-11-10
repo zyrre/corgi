@@ -448,12 +448,12 @@ fn projects_lists_what_is_open_and_completes_what_is_typed() {
 }
 
 #[test]
-fn app_layout_builds_the_layout_in_the_home_it_is_given() {
+fn app_layout_changes_the_sidebar_of_the_layout_in_the_home_it_is_given() {
     let world = World::new("layout");
     let home = world.private.join("app");
     fs::create_dir_all(home.join("layouts")).unwrap();
-    fs::create_dir_all(home.join("mods/projects")).unwrap();
-    fs::write(home.join("mods/projects/main.js"), "// the mod").unwrap();
+    fs::write(home.join("installed.json"), r#"{"layout:main":{}}"#).unwrap();
+    fs::write(home.join("update-notes.json"), r#"{"last_run":"0.1.14"}"#).unwrap();
     let main = json!({ "id": "root", "type": "row", "children": [
         { "id": "sidebar", "type": "column", "children": [
             { "id": "spaces", "type": "block", "content": { "mod": "spaces" } },
@@ -461,55 +461,89 @@ fn app_layout_builds_the_layout_in_the_home_it_is_given() {
         { "id": "main", "type": "block", "content": { "tab": "active" } } ] });
     fs::write(home.join("layouts/main.json"), main.to_string()).unwrap();
     let home_text = home.to_string_lossy().into_owned();
+    let read = |name: &str| -> Value {
+        serde_json::from_str(
+            &fs::read_to_string(home.join(format!("layouts/{name}.json"))).unwrap(),
+        )
+        .unwrap()
+    };
 
+    // The app is closed and shows main: corgi is a clone of it, by hand.
     let (made, output) = world.json(&["app-layout", "--home", &home_text, "--json"]);
     assert!(output.status.success());
-    assert_eq!(made["result"], "made");
+    assert_eq!(made["result"], "cloned");
+    assert_eq!(made["layout"], "corgi");
     assert_eq!(
-        made["layout"],
+        made["path"],
         home.join("layouts/corgi.json").to_string_lossy().as_ref()
     );
-    let layout: Value =
-        serde_json::from_str(&fs::read_to_string(home.join("layouts/corgi.json")).unwrap())
-            .unwrap();
+    assert!(
+        made["message"]
+            .as_str()
+            .unwrap()
+            .ends_with(r#"show it with: herdr-app do layout.switch '{"name":"corgi"}'"#),
+        "{made}"
+    );
+    let layout = read("corgi");
     assert_eq!(
         layout["children"][0]["children"],
         json!([{ "id": "spaces", "type": "block", "content": { "mod": "projects" } }])
     );
+    assert_eq!(
+        layout["cloned_from"],
+        json!({ "name": "main", "version": "0.1.14" })
+    );
+    assert_eq!(read("main"), main);
     let (again, _) = world.json(&["app-layout", "--home", &home_text, "--json"]);
     assert_eq!(again["result"], "unchanged");
 
-    // A main of another shape keeps the build, exits 0 and says why.
+    // A layout of the person's own, named, is edited in place.
+    fs::write(home.join("layouts/mine.json"), main.to_string()).unwrap();
+    let output = world.corgi(&["app-layout", "--home", &home_text, "--layout", "mine"]);
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        said.starts_with("put Corgi's Projects list in the sidebar of your layout mine"),
+        "{said}"
+    );
+
+    // One with nowhere to put it is left, exits 0 and says why.
     fs::write(
-        home.join("layouts/main.json"),
+        home.join("layouts/odd.json"),
         r#"{"id":"root","children":[]}"#,
     )
     .unwrap();
-    let (kept, output) = world.json(&["app-layout", "--home", &home_text, "--json"]);
+    let (refused, output) = world.json(&[
+        "app-layout",
+        "--home",
+        &home_text,
+        "--layout",
+        "odd",
+        "--json",
+    ]);
     assert!(output.status.success());
-    assert_eq!(kept["result"], "kept");
+    assert_eq!(refused["result"], "refused");
     assert!(
-        kept["message"]
+        refused["message"]
             .as_str()
             .unwrap()
-            .contains("no node called sidebar"),
-        "{kept}"
-    );
-    let output = world.corgi(&["app-layout", "--home", &home_text]);
-    let said = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        said.starts_with("kept the Corgi layout as it was built last: "),
-        "{said}"
+            .starts_with("left the layout odd as it was: there is no Spaces or Projects list"),
+        "{refused}"
     );
 
     let output = world.corgi(&["app-layout", "remove", "--home", &home_text]);
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "removed the Corgi layout\n"
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        said.contains("back in place of Corgi's Projects list in: corgi, mine;"),
+        "{said}"
     );
-    assert!(!home.join("layouts/corgi.json").exists());
-    assert!(home.join("layouts/main.json").exists());
+    for name in ["corgi", "mine"] {
+        assert_eq!(
+            read(name)["children"][0]["children"],
+            main["children"][0]["children"]
+        );
+    }
+    assert!(home.join("layouts/corgi.json").exists());
 }
 
 #[test]

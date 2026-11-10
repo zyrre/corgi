@@ -1,6 +1,6 @@
 # Corgi
 
-Two mods and a layout. The **Corgi** mod is an overview: how
+Two mods and a change to your layout. The **Corgi** mod is an overview: how
 each of your Corgi projects on herdr-core (`hc`), the Herdr app's backend,
 is doing: one block per project with its supervisor's state, its workers by
 state, the open questions waiting for you, the work ready to merge and the
@@ -11,9 +11,8 @@ cache, MERGE tag), its open questions with their full text, and a Merge
 button on each worker tagged ready to merge; click an agent to see its
 terminal.
 
-The **Projects** mod is the sidebar of the **Corgi layout**, which is
-Herdr's own layout with one list where Herdr has its Spaces and Agents
-lists: your spaces, each repository with its agents under it, one line each
+The **Projects** mod is a sidebar list that stands in your layout where
+Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, one line each
 (the agent's task, its harness's icon, its state and the worktree it works
 in, in that order), and a `+` that opens a project: type a name or a path, and Enter shows
 its supervisor or starts it. A worker Corgi tagged ready to merge has a
@@ -23,9 +22,12 @@ last line says which Corgi runs (`Corgi 0.2.3 · 5b50895`) and whether a
 newer one has been merged since.
 
 They need the `corgi` command-line tool; `herdr-app/install.sh` in the
-Corgi repository installs the tool, both mods and the layout. The layout is
-not switched to: `herdr-app do layout.switch '{"name":"corgi"}'` shows it,
-and `"main"` shows Herdr's own again. The Corgi mod is installed but shown
+Corgi repository installs the tool and both mods, and puts the Projects
+list into the layout the window shows. A layout of your own gets it in
+place; Herdr's own `main` is cloned to `corgi` first, which the window
+switches to (`"main"` shows Herdr's own again). Nothing else in the layout
+changes, so another mod's changes to it (a panel, a tab bar) stay. The
+Corgi mod is installed but shown
 nowhere: the space it used to have, the Corgi space, is retired, since
 Corgi's place in the app is the Projects list. `corgi app-space`, run by
 hand, still makes that space for whoever wants the overview.
@@ -37,7 +39,7 @@ hand, still makes that space for whoever wants the overview.
 ### The Corgi mod's overview
 
 The Corgi mod docks nowhere by itself (`mod.json`: `"place": "none"`) and no
-layout of Corgi's shows it: it is drawn where a person puts it, which
+layout Corgi changes shows it: it is drawn where a person puts it, which
 `corgi app-space` does as the only tab of a space named `Corgi`, first in
 the list of spaces (see "The Corgi space"). It fills the tab on the theme's
 `surface`, text 13 px; the views' content is a column at most 960 px wide,
@@ -83,13 +85,14 @@ centred in a wider tab.
   fails, the error in `blocked`, the installer's last lines in a monospace
   box, the command to run by hand, and `Retry`.
 
-### The Corgi layout and its Projects list
+### The Projects list in the sidebar
 
-The layout (`layouts/corgi.json`, listed as "Corgi") is Herdr's shipped
-`main` as it is, except in the sidebar: the block that showed Herdr's
-`spaces` mod shows the `projects` mod, and the block that showed its
-`agents` mod is gone, so the one list takes the whole height between the
-brand row and the footer. It is built, never hand-written (below).
+In the layout (yours, or `layouts/corgi.json`, listed as "Corgi", cloned
+from Herdr's `main`), the sidebar's block that showed Herdr's `spaces` mod
+shows the `projects` mod, and the block that showed its `agents` mod is
+gone, so in `main`'s sidebar the one list takes the whole height between
+the brand row and the footer. Everything else is as it was (see "The
+layout").
 
 The Projects mod fills its block on `chrome`, text 13 px:
 
@@ -207,12 +210,7 @@ The overview:
   with the window closed; `corgi status --json` says whether it runs
   (`daemon.running`, `daemon.pid`) and whether its service is installed
   (`daemon.installed`), and the overview shows it.
-- When it starts it runs `corgi app-layout --home <app home> --json` once:
-  the Corgi layout is built again if Herdr's `main` changed. `Corgi layout
-  rebuilt` is a toast; a `main` it could not build from is a line in the
-  overview, `Corgi layout: kept the Corgi layout as it was built last: …` in
-  `blocked` (or in `dim` when there is no layout at all, such as without the
-  Projects mod). It never switches the window's layout.
+- It never changes or switches a layout: only the installer does.
 
 The Projects list:
 
@@ -308,11 +306,10 @@ The Projects list:
 - The Corgi mod, `mods/corgi/` (`main.js`, `mod.json`: `"place": "none"`).
   Imports: `View`, `div` from `gpui-kit`; `v_flex`, `h_flex` from
   `gpui-base`; `agents`, `exec`, `home`, `appHome`, `readTextFile`,
-  `watchFolder`, `theme`, `run`, `notify` from `herdr`. App commands:
+  `watchFolder`, `theme`, `run` from `herdr`. App commands:
   `agent.focus`. No keys or overlays.
 - Programs: `corgi --version`, `corgi status --help`,
-  `corgi status --json`, `corgi merge … --json`, `corgi app-layout --home
-  <app home> --json`, and, to install, `sh -c` running `curl` on the
+  `corgi status --json`, `corgi merge … --json`, and, to install, `sh -c` running `curl` on the
   release's `herdr-app/install.sh` with `--version <VERSION> --cli-only`.
 - The Projects mod, `mods/projects/` (`main.js`, `mod.json`: `"place":
   "none"`, `"title": "Projects"`). It began as a copy of Herdr's `spaces`
@@ -321,7 +318,7 @@ The Projects list:
   `v_flex`, `h_flex`, `InputState`, `Input` from `gpui-base`; `spaces`,
   `machines`, `panes`, `agents`, `focused`, `run`, `openOverlay`, `exec`,
   `hc`, `theme`, `shared`, `setShared`, `setAgentOrder`, `watchFolder`,
-  `window`, `layout`, `notify`, `home`, `appHome`, `readTextFile`,
+  `window`, `layout`, `home`, `appHome`, `readTextFile`,
   `nextCommand` from `herdr`. App commands: `space.select`, `space.move`,
   `space.new`, `agent.focus`, `layout.resize`; its own command `open`
   (`projects.open`). It opens Herdr's `menu` mod as a popup and draws
@@ -329,17 +326,15 @@ The Projects list:
   Programs: `git` (status and `rev-parse`, per space), `hc machine ls`,
   `corgi status --json`, `corgi projects --json …`, `corgi open … --json`,
   `corgi merge … --json` (with `--pull`, `--skip-upstream`, or
-  `--ask-supervisor <error> [--commit <commit>]`),
-  `corgi app-layout --home <app home> --json`. Files: `mods/projects/
+  `--ask-supervisor <error> [--commit <commit>]`). Files: `mods/projects/
   config.json` or `mods/corgi/config.json` (`{ "corgi": "<path>" }`).
-- The layout, `layouts/corgi.json`: no file of this folder, but what `corgi
-  app-layout` builds from the app's own `layouts/main.json` (see "The Corgi
-  layout").
+- The layout: no file of this folder, but the one change `corgi
+  app-layout` makes to the app's own (see "The layout").
 - `corgi projects --json` prints `{query, parent, projects: [{dir, name,
   badge, new, supervisor}]}`; `corgi open … --json` prints `{result: started
   | running | failed, message, project, name, terminal, created, place: new
-  | own | shell}`; `corgi app-layout --json` prints `{result: made | rebuilt
-  | unchanged | kept | missing, message, layout}`.
+  | own | shell}`; `corgi app-layout --json` prints `{result: edited |
+  cloned | unchanged | refused, layout, path, message}`.
 - Files: `mods/corgi/config.json` (`{ "corgi": "<path>" }`, written by
   `herdr-app/install.sh`), each question's file (`questions/Q<n>.md` in the
   supervisor's state folder, named by `corgi status`), and a watch on the
@@ -361,35 +356,42 @@ The Projects list:
   `corgi 0.2.3 (5b50895)`, and `--version --json` `{version, commit, dirty,
   source}`.
 
-## The Corgi layout
+## The layout
 
-- `corgi app-layout [--home DIR]` builds it, and `herdr-app/install.sh`
-  runs that after the Projects mod is in place: it reads the app home's
-  `layouts/main.json`, finds the node `sidebar`, and in it changes the one
-  block whose `content.mod` is `spaces` to show `projects` (the block keeps
-  its id `spaces`, its size and everything else) and removes the one block
-  whose `content.mod` is `agents`. Nothing else differs from `main`. The
-  file is written in one rename, and only when it differs from the one
-  there, since the app reloads a layout the moment its file changes.
-- Herdr replaces its shipped `main` whole on every start, so the layout is
-  built again from it: by each install, and by each of Corgi's mods once
-  when it starts. The build is a function of `main` alone, so comparing its
-  result with the file in place says whether `main` changed.
-- A `main` that is missing, is not JSON, has no `sidebar`, or has another
-  number of `spaces` and `agents` blocks in it than one each, is not
-  guessed at: nothing is written, the last build stays in use, and the
-  command, the Corgi mod's overview and a toast of the Projects mod say
-  why. The same holds for a home with no `mods/projects/main.js`: the
-  layout would show a mod the app does not have.
-- It never switches the window to the layout, and neither does the install:
-  it prints `herdr-app do layout.switch '{"name":"corgi"}'`. A layout is
-  listed under its file's name, so `corgi.json` is "Corgi" in Settings and
-  the palette. The sidebar's width and the other things a person changes by
-  hand are the app's own per layout, so the Corgi layout starts with
-  Herdr's default width, not the one `main` was dragged to.
-- `corgi app-layout remove` (run by `herdr-app/install.sh --uninstall`)
-  deletes the file when it is one Corgi built (it shows the `projects`
-  mod), after switching a window that shows it to `main`.
+- `herdr-app/install.sh` runs `corgi app-layout --app <herdr-app> --home
+  <app home>` after the Projects mod is in place. It takes the layout the
+  window shows (`herdr-app status`; with the window closed the one it
+  showed last, `layout` in `shared.json`, else `main`), or the one named
+  with `--layout NAME`.
+- The change: in the node `sidebar` (or the whole layout, when it has no
+  such node), the one block whose `content.mod` is `spaces` shows
+  `projects` (it keeps its id `spaces`, its size and everything else), and
+  the blocks whose `content.mod` is `agents` go. Nothing else is touched:
+  herdr-gitlab's `gitlab` block in `panel-body` and its `tabs-gitlab` tab
+  bar, say, stay as they are, whichever was installed first. The file is
+  written in one rename, and only when it changes.
+- A layout of the person's own (not `layout:<name>` in the app's
+  `installed.json`) is changed in place. A shipped one (`main`), which
+  Herdr replaces whole on every start, is cloned to `corgi` first: with
+  the window open by `herdr-app do layout.clone '{"name":"main","as":
+  "corgi"}'`, which keeps its clicks and switches to the clone; with it
+  closed by a copy recording `cloned_from: {name, version}` as the app's
+  clone does, and the command says how to switch
+  (`herdr-app do layout.switch '{"name":"corgi"}'`). A `corgi` layout that
+  is there already is used, and switched to, instead.
+- Run again, it changes nothing: a sidebar that shows `projects` is left
+  as it is, even with an Agents list put back by hand. Corgi never builds
+  a layout from `main` again and does not follow Herdr's later changes to
+  it.
+- A sidebar with no `spaces` and no `projects` block, or with more than
+  one `spaces` block, is not guessed at: nothing is changed or cloned, and
+  the command says why (`--json`: `refused`, exit 0).
+- `corgi app-layout remove` (run by `herdr-app/install.sh --uninstall`,
+  before the Projects mod goes) puts Spaces and Agents back in each of the
+  person's layouts that shows `projects`: the `projects` block shows
+  `spaces` again, and an `agents` block (the one in Herdr's `main`) follows
+  it when the layout has none. No layout is deleted (`corgi` stays, as the
+  person's own) and the window is not switched.
 
 ## The Corgi space
 
@@ -434,7 +436,7 @@ wants the overview on screen.
   builds it with `cargo build --release --locked` (minutes; `exec` waits at
   most 10 minutes). It never installs another version than the mod's own,
   and it leaves the mod's folder alone (`--cli-only` does put the Projects
-  mod and the Corgi layout in place). A failed install shows the error,
+  mod and the Projects list in the layout in place). A failed install shows the error,
   the installer's last lines and the command to run by hand, and is tried
   once per app start; `Retry` tries again.
 - `VERSION` in `main.js` is set by each Corgi release (the release refuses a
@@ -455,7 +457,8 @@ wants the overview on screen.
   supervisors: that stays with Corgi.
 - Never edit Herdr's shipped `layouts/main.json` or its `spaces` and
   `agents` mods: Herdr replaces them whole on every start and moves an
-  edited one aside. The Corgi layout is a file of its own for that reason.
+  edited one aside. That is why a shipped layout is cloned to `corgi`
+  before Corgi changes it.
 - The Projects mod is one mod standing where two stood, so what only
   Herdr's Agents list did, it must: `setAgentOrder` on every render (or
   `agent.next` and `agent.prev` follow no list), and the `»` that unfolds
@@ -517,11 +520,12 @@ wants the overview on screen.
 ## Done when
 
 - `herdr-app check mods/corgi` and `herdr-app check mods/projects` pass.
-- After `herdr-app/install.sh`, `layouts/corgi.json` is there and differs
-  from `layouts/main.json` only in the sidebar's two blocks; the window
-  still shows the layout it showed; after `herdr-app do layout.switch
-  '{"name":"corgi"}'` the sidebar is one list titled Projects, with no
-  Agents list under it.
+- After `herdr-app/install.sh` on Herdr's `main`, `layouts/corgi.json` is
+  there, records `cloned_from` and differs from `layouts/main.json` only in
+  the sidebar's two blocks, and the window shows it: the sidebar is one
+  list titled Projects, with no Agents list under it. On a layout of your
+  own, that layout has the same change and no `corgi.json` is made. A
+  second run changes no file.
 - Projects shows each repository with its agents in one-line rows (task,
   icon, state, worktree), the supervisor first; in a sidebar too narrow for
   a row, its worktree's name is cut with `…` and then gone before its task
@@ -552,9 +556,9 @@ wants the overview on screen.
   under it, and `corgi fleet` lists both), else in a new space; a new name
   creates the directory beside the other projects and starts its supervisor
   with no folder-trust question left open.
-- With `layouts/main.json` changed (in a scratch app home), the next start
-  of either mod rebuilds `corgi.json` from it; with its sidebar's blocks
-  gone, `corgi.json` stays as it was and the overview says why.
+- With herdr-gitlab installed before or after Corgi (in a scratch app
+  home), the layout shows both the Projects list and the GitLab panel;
+  `--uninstall` brings back Spaces and Agents and leaves the panel.
 - `herdr-app/install.sh` makes no space, and after it `corgi daemon` makes
   none when the window opens, even with an old `app-space.json` in Corgi's
   state folder, which is gone once the daemon has started. `corgi

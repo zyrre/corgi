@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installs Corgi into the Herdr app: the corgi CLI, the Corgi and Projects
-# mods and the Corgi layout.
+# mods, and the Projects list in the sidebar of the app's layout.
 #
 #   curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh
 #   herdr-app/install.sh [--version X.Y.Z] [--home DIR] [--cli-only | --mod-only] [--no-daemon]
@@ -39,19 +39,19 @@
 #     no supervisor), and remembers the answer; a run with no terminal to ask
 #     in skips it and says so, and one where OpenCode reports by itself
 #     removes Corgi's plugin
-#   - the mods: herdr-app/mods/projects (the Projects list of Corgi's
-#     layout) and herdr-app/mods/corgi (an overview of every project, shown
+#   - the mods: herdr-app/mods/projects (the Projects list of the
+#     sidebar) and herdr-app/mods/corgi (an overview of every project, shown
 #     nowhere until it is given a tab; see `corgi app-space` below) are each
 #     put together in a hidden folder of the app home ($HERDR_APP_HOME, else
 #     ~/.config/herdr-app; --home DIR), with a config.json naming the CLI,
 #     checked with `herdr-app check`, and swapped in with one rename, only
 #     when it differs from the installed one: the app reloads a mod on every
 #     file it sees change
-#   - the Corgi layout: `corgi app-layout` builds layouts/corgi.json from
-#     Herdr's shipped main layout, with the Projects mod in place of the
-#     sidebar's Spaces and without its Agents list, again whenever main has
-#     changed. The window is not switched to it: the script says how to
-#     (herdr-app do layout.switch '{"name":"corgi"}')
+#   - the layout: `corgi app-layout` puts the Projects mod in place of the
+#     sidebar's Spaces and takes out its Agents list, and changes nothing
+#     else: a layout of the person's own in place; Herdr's shipped main is
+#     first cloned to layouts/corgi.json, which an open window switches to.
+#     Run again, it changes nothing
 #
 # It makes no space in the app, and neither does the daemon. The Corgi space
 # (a space named Corgi showing the Corgi mod), which earlier versions made,
@@ -61,17 +61,18 @@
 #                    checkout's own (herdr-plugin.toml), so nothing else is
 #                    ever installed in its place
 #   --cli-only       the CLI, the daemon, OpenCode's plugin, the Projects mod
-#                    and the Corgi layout, without the Corgi mod (the Corgi
+#                    and the layout, without the Corgi mod (the Corgi
 #                    mod runs this to install corgi)
 #   --mod-only       the mods and the layout alone, with no config.json
 #                    (scripts/install.sh runs this during `herdr plugin
 #                    install`)
 #   --no-daemon      leaves the daemon as it is
-#   --uninstall      removes the Corgi layout, the mods, the daemon and
-#                    Corgi's OpenCode plugin, and closes a Corgi space made
-#                    with `corgi app-space`, whose mod is going; with --cli
-#                    also the link to this checkout's corgi (the checkout
-#                    itself is left)
+#   --uninstall      puts Herdr's Spaces and Agents back where Projects is in
+#                    the layouts (no layout is deleted), removes the mods,
+#                    the daemon and Corgi's OpenCode plugin, and closes a
+#                    Corgi space made with `corgi app-space`, whose mod is
+#                    going; with --cli also the link to this checkout's
+#                    corgi (the checkout itself is left)
 #
 #   CORGI_BUILD=source|release   build the CLI from source, or use the pinned
 #                                download, whatever the checkout's HEAD
@@ -110,7 +111,7 @@ parse_args() {
       --mod-only) mod_only=1 ;;
       --no-daemon) no_daemon=1 ;;
       -h | --help)
-        sed -n '2,84p' "$0" 2>/dev/null || say "see https://github.com/zyrre/corgi#install"
+        sed -n '2,85p' "$0" 2>/dev/null || say "see https://github.com/zyrre/corgi#install"
         exit 0
         ;;
       *) die "unknown argument $1 (see --help)" ;;
@@ -291,8 +292,8 @@ app_space() {
   [ -z "$said" ] || say "$said"
 }
 
-# Runs `corgi app-layout` with this app's home: builds the Corgi layout, or
-# with remove deletes it.
+# Runs `corgi app-layout` with this app's home: puts the Projects list into
+# the layout, or with remove puts Spaces and Agents back in its place.
 app_layout() {
   set -- "$@" --home "$home_dir"
   said=$("$bin" app-layout "$@") || return 1
@@ -303,16 +304,12 @@ if [ -n "$uninstall" ]; then
   app=$(find_app)
   if [ -x "$bin" ]; then
     app_space remove || say "could not close the Corgi space; close it in the Herdr app if there is one"
-    # Before the Projects mod goes, which the layout shows; a window on the
-    # layout is switched to Herdr's main.
-    if [ -n "$app" ]; then
-      app_layout remove --app "$app" || say "could not remove the Corgi layout $home_dir/layouts/corgi.json"
-    else
-      app_layout remove || say "could not remove the Corgi layout $home_dir/layouts/corgi.json"
-    fi
+    # Before the Projects mod goes, which the layouts show: Spaces and
+    # Agents go back in its place, and every layout stays.
+    app_layout remove || say "could not put Spaces and Agents back in the layouts in $home_dir/layouts; run $bin app-layout remove"
     "$bin" daemon uninstall || say "could not remove the corgi daemon; run $bin daemon uninstall"
   else
-    say "no $bin to remove the daemon and the Corgi layout with: run corgi daemon uninstall, and delete $home_dir/layouts/corgi.json"
+    say "no $bin to remove the daemon and the Projects list with: run corgi daemon uninstall, and in $home_dir/layouts/*.json make the \"projects\" block \"spaces\" again"
   fi
   remove_oc_plugin "removed Corgi's OpenCode plugin $oc_plugin"
   rm -f "$oc_answer"
@@ -391,7 +388,7 @@ app=$(find_app)
 if [ -z "$app" ]; then
   # The Corgi mod asked for the CLI, which is there: the rest can wait.
   [ -z "$cli_only" ] || {
-    say "the Herdr app was not found (no herdr-app on PATH or in /Applications): the Projects mod and the Corgi layout are not installed"
+    say "the Herdr app was not found (no herdr-app on PATH or in /Applications): the Projects mod and the layout are not installed"
     exit 0
   }
   die "the Herdr app is not installed (no herdr-app on PATH or in /Applications); set HERDR_APP_BIN"
@@ -438,11 +435,12 @@ install_mod() {
 install_mod projects
 [ -n "$cli_only" ] || install_mod corgi
 
-# --- the Corgi layout ------------------------------------------------------------------
-# Built from Herdr's shipped main, and never switched to: corgi says how.
+# --- the layout ------------------------------------------------------------------------
+# The Projects list in the sidebar of the layout the window shows: a shipped
+# one is cloned to corgi first, and an open window switched to the clone.
 # --mod-only has a corgi when scripts/install.sh has just built it.
 if [ -x "$bin" ]; then
-  app_layout || say "could not build the Corgi layout; run $bin app-layout to try again"
+  app_layout --app "$app" || say "could not put the Projects list into the layout; run $bin app-layout to try again"
 else
-  say "no $bin to build the Corgi layout with; run corgi app-layout once it is installed"
+  say "no $bin to put the Projects list into the layout with; run corgi app-layout once it is installed"
 fi

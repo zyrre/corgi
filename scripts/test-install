@@ -96,7 +96,7 @@ if [ "${1:-}" = app-space ]; then
 fi
 if [ "${1:-}" = app-layout ]; then
   [ -z "${FAKE_LAYOUT_FAIL:-}" ] || { echo "corgi app-layout: no home" >&2; exit 1; }
-  if [ "${2:-}" = remove ]; then echo "removed the Corgi layout"; else echo "built the Corgi layout from Herdr's main; to show it, run: herdr-app do layout.switch '{\"name\":\"corgi\"}'"; fi
+  if [ "${2:-}" = remove ]; then echo "put Herdr's Spaces and Agents lists back in place of Corgi's Projects list in: corgi"; else echo "Herdr replaces its own main layout on its updates, so Corgi cloned it to corgi and put its Projects list in the sidebar; the window shows it"; fi
   exit 0
 fi
 FAKE_CORGI
@@ -756,12 +756,12 @@ test_app_install() {
   check "app: no staging folder left" "no" "$([[ -e "$stage" ]] && echo yes || echo no)"
   check_stderr "app: says it installed the mod" "installed the Corgi mod in $mod" "$state"
   check_stderr "app: says it installed the Projects mod" "installed the Projects mod in $projects" "$state"
-  check "app: builds the Corgi layout in the app's home" \
-    "corgi app-layout --home $state/home/.config/herdr-app" "$(layout_calls "$state")"
+  check "app: puts the Projects list into the layout of the app's home, asking its window" \
+    "corgi app-layout --app $state/bin/herdr-app --home $state/home/.config/herdr-app" "$(layout_calls "$state")"
   check "app: after the mods are in" "herdr-app check|herdr-app check|corgi app-layout" \
     "$(grep -E '^(herdr-app check|corgi app-layout)' "$state/calls.log" | cut -d ' ' -f 1-2 | tr '\n' '|' | sed 's/|$//')"
-  check_stderr "app: says how to show the layout, and switches nothing" \
-    "to show it, run: herdr-app do layout.switch '{\"name\":\"corgi\"}'" "$state"
+  check_stderr "app: says what corgi did to the layout" \
+    "so Corgi cloned it to corgi and put its Projects list in the sidebar" "$state"
   check "app: installs the daemon with the new binary" "1" "$(count_daemon "$state" install)"
   check_stderr "app: says the daemon runs" "the corgi daemon runs as a service" "$state"
   # The Corgi space is retired: only `corgi app-space`, by hand, makes one.
@@ -781,16 +781,16 @@ test_app_install() {
     "$([[ -e "$mod/.marker" ]] && echo yes || echo no) $([[ -e "$projects/.marker" ]] && echo yes || echo no)"
   check_stderr "app again: says so" "the Corgi mod in $mod is up to date" "$state"
   check_stderr "app again: of the Projects mod too" "the Projects mod in $projects is up to date" "$state"
-  check "app again: asks for the layout again (corgi app-layout rebuilds it when main changed)" "2" \
+  check "app again: asks for the layout again (corgi app-layout then changes nothing)" "2" \
     "$(layout_calls "$state" | wc -l | tr -d ' ')"
   check "app again: still no Corgi space" "" "$(space_calls "$state")"
 
-  # A layout that cannot be built fails no install.
+  # A layout corgi cannot change fails no install.
   status=0
   FAKE_LAYOUT_FAIL=1 run_app_install "$state" || status=$?
   check "app layout fails: exit status" "0" "$status"
   check_stderr "app layout fails: shows why" "corgi app-layout: no home" "$state"
-  check_stderr "app layout fails: says how to try again" "could not build the Corgi layout; run" "$state"
+  check_stderr "app layout fails: says how to try again" "could not put the Projects list into the layout; run" "$state"
 
   # A changed mod is swapped in whole, and the other is left.
   echo "// changed" >>"$state/checkout/herdr-app/mods/corgi/main.js"
@@ -819,7 +819,7 @@ test_app_install_refusals() {
   check "check fails: exit status" "1" "$status"
   check "check fails: no mod installed" "no no" \
     "$([[ -e "$mod" ]] && echo yes || echo no) $([[ -e "$(projects_mod "$state")" ]] && echo yes || echo no)"
-  check "check fails: no layout built" "" "$(layout_calls "$state")"
+  check "check fails: the layout left alone" "" "$(layout_calls "$state")"
   check_stderr "check fails: shows the error" "main.js: SyntaxError" "$state"
 
   status=0
@@ -871,7 +871,7 @@ test_app_install_options() {
   check "--home: the mod goes there" "yes" "$([[ -f "$home/mods/corgi/main.js" ]] && echo yes || echo no)"
   check "--home: the Projects mod too" "yes" "$([[ -f "$home/mods/projects/main.js" ]] && echo yes || echo no)"
   check "--home: not in the default home" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
-  check "--home: the layout in that home" "corgi app-layout --home $home" "$(layout_calls "$state")"
+  check "--home: the layout in that home" "corgi app-layout --app $state/bin/herdr-app --home $home" "$(layout_calls "$state")"
   check "--home: no Corgi space there either" "" "$(space_calls "$state")"
 
   status=0
@@ -883,7 +883,7 @@ test_app_install_options() {
   check "--cli-only: no Corgi mod (it is the one running this)" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
   check "--cli-only: the Projects mod, checked" "yes 1" \
     "$([[ -f "$(projects_mod "$state")/main.js" ]] && echo yes || echo no) $(count_checks "$state")"
-  check "--cli-only: the Corgi layout" "corgi app-layout --home $state/home/.config/herdr-app" "$(layout_calls "$state")"
+  check "--cli-only: the layout" "corgi app-layout --app $state/bin/herdr-app --home $state/home/.config/herdr-app" "$(layout_calls "$state")"
   check "--cli-only: installs the daemon" "1" "$(count_daemon "$state" install)"
   check "--cli-only: no Corgi space" "" "$(space_calls "$state")"
 
@@ -897,7 +897,7 @@ test_app_install_options() {
   check "--cli-only, no app: installs the CLI" "corgi $version" "$(installed "$state")"
   check "--cli-only, no app: no Projects mod and no layout" "no " \
     "$([[ -e "$(projects_mod "$state")" ]] && echo yes || echo no) $(layout_calls "$state")"
-  check_stderr "--cli-only, no app: says so" "the Projects mod and the Corgi layout are not installed" "$state"
+  check_stderr "--cli-only, no app: says so" "the Projects mod and the layout are not installed" "$state"
 
   status=0
   state="$(new_app_state app-no-daemon)"
@@ -917,7 +917,7 @@ test_app_install_options() {
     "$([[ -f "$(app_mod "$state")/main.js" ]] && echo yes || echo no) $([[ -e "$(app_mod "$state")/config.json" ]] && echo yes || echo no)"
   check "--mod-only: the Projects mod without config.json" "yes no" \
     "$([[ -f "$(projects_mod "$state")/main.js" ]] && echo yes || echo no) $([[ -e "$(projects_mod "$state")/config.json" ]] && echo yes || echo no)"
-  check_stderr "--mod-only: with no corgi, says the layout waits for one" "to build the Corgi layout with" "$state"
+  check_stderr "--mod-only: with no corgi, says the layout waits for one" "to put the Projects list into the layout with" "$state"
   check "--mod-only: says nothing of a Corgi space" "0" "$(grep -c 'Corgi space' "$state/stderr.log" || true)"
 
   status=0
@@ -950,10 +950,10 @@ test_app_uninstall() {
   check "uninstall: mods removed" "no no" \
     "$([[ -e "$mod" ]] && echo yes || echo no) $([[ -e "$(projects_mod "$state")" ]] && echo yes || echo no)"
   check "uninstall: daemon removed" "1" "$(count_daemon "$state" uninstall)"
-  check "uninstall: closes a Corgi space made by hand, then removes the layout, first" \
-    "corgi app-space remove --home $state/home/.config/herdr-app --app $state/bin/herdr-app|corgi app-layout remove --app $state/bin/herdr-app --home $state/home/.config/herdr-app|corgi daemon uninstall" \
+  check "uninstall: closes a Corgi space made by hand, then puts Spaces back in the layouts, first" \
+    "corgi app-space remove --home $state/home/.config/herdr-app --app $state/bin/herdr-app|corgi app-layout remove --home $state/home/.config/herdr-app|corgi daemon uninstall" \
     "$(grep -A2 '^corgi app-space remove' "$state/calls.log" | tr '\n' '|' | sed 's/|$//')"
-  check_stderr "uninstall: says the layout went" "removed the Corgi layout" "$state"
+  check_stderr "uninstall: says where Spaces and Agents went back" "back in place of Corgi's Projects list in: corgi" "$state"
 
   # A space that cannot be closed fails no uninstall.
   status=0
@@ -1057,7 +1057,7 @@ test_plugin_install_adds_app_mod() {
   check "plugin with app: installs the CLI" "corgi $version" "$(installed "$state")"
   check "plugin with app: adds the mod, without config.json" "yes no" \
     "$([[ -f "$mod/main.js" ]] && echo yes || echo no) $([[ -e "$mod/config.json" ]] && echo yes || echo no)"
-  check "plugin with app: adds the Projects mod and builds the layout" "yes 1" \
+  check "plugin with app: adds the Projects mod and puts it into the layout" "yes 1" \
     "$([[ -f "$(projects_mod "$state")/main.js" ]] && echo yes || echo no) $(layout_calls "$state" | wc -l | tr -d ' ')"
   check "plugin with app: makes no Corgi space" "" "$(space_calls "$state")"
   check_stderr "plugin with app: says so" "the Herdr app is installed: adding its Corgi mod" "$state"
