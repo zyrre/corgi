@@ -404,6 +404,10 @@ wants the overview on screen.
   scratch copy of the mod whose `init` opens the field and whose `render`
   adds rows made from made-up agents; `node scripts/test-app-mods.mjs` in
   the Corgi repository runs both mods' other views with stand-ins.
+- None of those shows what the window draws. In the Corgi repository,
+  `scripts/app-preview start` opens a window of the checkout's own, with
+  these mods and made-up projects on a herdr-core of its own, and
+  `scripts/app-preview shot <name>` saves a picture of it (macOS).
 
 ## Done when
 
