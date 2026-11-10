@@ -107,8 +107,12 @@ The `corgi-brand` mod fills the sidebar's `brand` block (46 px, on
 `chrome`, text 13.5 px), as Herdr's `workspace-chrome` did:
 
 - From the left: Herdr's logo (`frame/welcome/herdr.png`, 20 px, radius
-  5), "Herdr", a `+` in `dim`, Corgi's logo (`corgi.png`, the pixel corgi
-  of `assets/icon/AppIcon.png`, 40 px for 20 px at 2x, radius 5) and
+  5), "Herdr", a `+` in `dim`, Corgi's logo (`corgi.png`, 20 px, radius
+  5: the pixel corgi on a copy of Herdr's tile, a 160 px canvas with a
+  128 px plate of Herdr's cream `#f4f1e9` 16 px in, corners of radius 26,
+  the corgi 8 px a pixel and its white edged in a warm grey where it meets
+  the cream; `cargo brand-tile` draws it again from `src/app_icon.rs`, and
+  a test fails while it lags the corgi) and
   "Corgi", the two names semibold in `foreground`, 5 px apart; then the
   search button (opens the `picker` mod) and the sidebar toggle, 26 px
   each, `muted`, `hover` behind.

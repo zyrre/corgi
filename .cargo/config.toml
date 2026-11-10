@@ -5,3 +5,7 @@ readme-shots = "test --lib readme_shots::tests::readme_shots -- --ignored --exac
 # Draws Corgi's macOS app icon in assets/icon/ from the corgi's pixel grid;
 # needs macOS for iconutil. See src/app_icon.rs.
 app-icon = "test --lib app_icon::tests::app_icon -- --ignored --exact"
+# Draws the Herdr app brand row's Corgi logo,
+# herdr-app/mods/corgi-brand/corgi.png, on Herdr's cream plate. See
+# src/app_icon.rs.
+brand-tile = "test --lib app_icon::tests::brand_tile_png_file -- --ignored --exact"
