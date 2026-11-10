@@ -33,8 +33,8 @@
 # repositories with a supervisor, workers in worktrees and an agent started
 # by hand, in every state, and a folder outside any repository. Their tasks
 # and roles come from a canned `corgi status --json` (fake/corgi, which
-# answers a merge from fake/merge.json when there is one, and passes every
-# other command to target/release/corgi). Anything may be done
+# answers a merge from fake/merge.json and a close from fake/close.json when
+# there is one, and passes every other command to target/release/corgi). Anything may be done
 # in it: `do tab.new`, `do space.new`, a click by a person.
 #
 # It is never put on the person's own core. A second window there is no
@@ -296,12 +296,22 @@ if [ "\${1:-}" = status ]; then
 fi
 # \`corgi merge\` answers what merge.json holds (ask.json with
 # --ask-supervisor), after merge.delay seconds, and merges nothing. Without
-# the file the worktree's corgi answers, for the preview's core.
+# the file the worktree's corgi answers, for the preview's core. So does
+# \`corgi close\`, with close.json (forced.json with --force) and
+# close.delay, and closes nothing.
 if [ "\${1:-}" = merge ]; then
   answer="$fake/merge.json"
   case " \$* " in *" --ask-supervisor "*) answer="$fake/ask.json" ;; esac
   if [ -e "\$answer" ]; then
     [ ! -e "$fake/merge.delay" ] || sleep "\$(cat "$fake/merge.delay")"
+    exec cat "\$answer"
+  fi
+fi
+if [ "\${1:-}" = close ]; then
+  answer="$fake/close.json"
+  case " \$* " in *" --force "*) answer="$fake/forced.json" ;; esac
+  if [ -e "\$answer" ]; then
+    [ ! -e "$fake/close.delay" ] || sleep "\$(cat "$fake/close.delay")"
     exec cat "\$answer"
   fi
 fi

@@ -21,6 +21,7 @@ Commands:
   recovery    List recovered sessions held from wakes, and release one
   tag         Tag an agent ready to merge, or clear its tag
   merge       Merge an agent's worktree branch, as the dashboard's m does
+  close       Close a worker on herdr-core and remove its worktree
   status      Print every project's supervisor, agents and questions as JSON
   role        Print a part of the supervisor's role it reads on demand
   edit        Open the focused or selected agent's checkout in your editor
@@ -74,6 +75,8 @@ fn main() -> Result<()> {
         Some("status") => corgi::app::status_command(&args[2..]),
         Some("merge") if help() => usage(corgi::app::MERGE_USAGE),
         Some("merge") => corgi::app::merge_command(&args[2..]),
+        Some("close") if help() => usage(corgi::app::CLOSE_USAGE),
+        Some("close") => corgi::app::close_command(&args[2..]),
         Some("tag") if help() => usage(corgi::app::TAG_USAGE),
         Some("tag") => corgi::app::tag_command(&args[2..]),
         Some("role") if help() => usage(corgi::app::ROLE_USAGE),

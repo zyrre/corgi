@@ -18,7 +18,9 @@ lists: your spaces, each repository with its agents under it, one line each
 in, in that order), and a `+` that opens a project: type a name or a path, and Enter shows
 its supervisor or starts it. A worker Corgi tagged ready to merge has a
 `MERGE` mark in its row: click it, confirm, and its branch is merged into
-the project's base branch and pushed, as `m` does in Corgi's dashboard. The
+the project's base branch and pushed, as `m` does in Corgi's dashboard;
+then it offers to close the worker and remove its worktree, keeping the
+branch, as `x` does there. The
 last line says which Corgi runs (`Corgi 0.2.3 · 5b50895`) and whether a
 newer one has been merged since.
 
@@ -145,6 +147,17 @@ The Projects mod fills its block on `chrome`, text 13 px:
     high: `Pull, merge + push` or `Merge + push without fetching` when
     Corgi offers it, `Ask supervisor to fix` when it failed and the
     project's supervisor runs, and `Dismiss`.
+    After `merged` it asks, under Corgi's message, `Close <worker> and
+    remove its worktree?` with `Keep` (`raised`) and `Close` (`solid`, with
+    a 1 px outline in `solid` that turns `foreground` while it holds the
+    keyboard); then a spinner and `Closing…`; then Corgi's message, its
+    paths under the home folder as `~/…`, in `ansi2`, and `Dismiss`. A
+    close refused for changes in the worktree turns the outline `blocked`
+    and shows Corgi's message (which names them) in `blocked`, then `Close
+    <worker> anyway and discard them?` with `Keep` and `Close anyway`
+    (`solid`); a close that failed shows its message in `blocked` on a
+    `blocked` outline. Once the worker is closed its row is gone with its
+    space, and the card stands after the project's last agent row instead.
   - A worktree's space with no agent in it keeps a 28 px row of its own
     under its project: a branch glyph and the space's name.
   - A space outside a repository with agents in it has their rows under it
@@ -285,6 +298,20 @@ The Projects list:
   `refused`, with why. Refused because the base branch's upstream has new
   commits, it offers `Pull, merge + push` (`--pull`); after a failed fetch,
   `Merge + push without fetching` (`--skip-upstream`).
+- After `merged` (merged and pushed; never after conflicts, a refusal or a
+  failed push) the card asks whether to close the worker. `Close` is the
+  default: it takes the keyboard as the question shows, so Enter closes and
+  Escape keeps. `Close` runs `corgi close <worker> --project <dir> --json`,
+  the close Corgi's dashboard runs with `x`: it ends the worker's hc
+  terminal and removes it, by its address, then removes its worktree with
+  `git worktree remove`; the branch stays. The app closes the worker's
+  space once its last terminal is gone (a terminal of the person's in it
+  keeps it). A worktree with uncommitted or untracked changes is refused
+  (`reason` `dirty`, `dirty` listing them) and nothing is closed: `Close
+  anyway` runs it again with `--force`, which discards them. `Keep` puts
+  the question away and leaves the plain result. Then the status is read
+  again. `corgi close` refuses a supervisor and an agent Corgi did not
+  start.
 - `Ask supervisor to fix` is offered on a failed push, a failed fetch, and
   a merge that failed or was refused before it started (uncommitted changes
   in the primary checkout, say): whenever Corgi's answer has an `error`,

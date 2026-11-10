@@ -181,6 +181,13 @@ check "a canned merge answers, and merges nothing" test "$("$preview/fake/corgi"
 check "(the checkout's corgi is not run)" not_logged "corgi merge w-docs"
 echo '{"result":"asked"}' >"$preview/fake/ask.json"
 check "asking the supervisor has an answer of its own" test "$("$preview/fake/corgi" merge w-docs --project /p --json --ask-supervisor boom)" = '{"result":"asked"}'
+"$preview/fake/corgi" close w-cache --project /p --json >/dev/null || true
+check "a close with no canned answer goes to the checkout's corgi" logged "corgi close w-cache --project /p --json"
+echo '{"result":"refused","reason":"dirty"}' >"$preview/fake/close.json"
+echo '{"result":"closed"}' >"$preview/fake/forced.json"
+check "a canned close answers, and closes nothing" test "$("$preview/fake/corgi" close w-docs --project /p --json)" = '{"result":"refused","reason":"dirty"}'
+check "(the checkout's corgi is not run)" not_logged "corgi close w-docs"
+check "a forced close has an answer of its own" test "$("$preview/fake/corgi" close w-docs --project /p --json --force)" = '{"result":"closed"}'
 if grep -q display-of-the-person "$preview/home/window.json" 2>/dev/null; then
   check "the window is told the corner of the person's display" grep -Eq '"bounds":\[[0-9]+\.0,[0-9]+\.0,1280\.0,800\.0\]' "$preview/home/window.json"
 else

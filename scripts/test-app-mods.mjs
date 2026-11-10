@@ -199,7 +199,13 @@ async function start(mod, w) {
       every: (ms, tick) => cx.timers.push({ ms, tick }),
       after: (_ms, tick) => tasks.push(Promise.resolve().then(() => tick(cx))),
     },
-    focus_handle: () => ({ focus() {} }),
+    // A handle counts how often it was given the keyboard.
+    focus_handle: () => ({
+      focused: 0,
+      focus() {
+        this.focused += 1;
+      },
+    }),
     // How many clicks kept to themselves: a button inside a clickable row.
     stopped: 0,
     stop_propagation() {
@@ -783,11 +789,16 @@ async function merged(outcome, state) {
   w.programs[1] = corgi({ status: STATUS, merge: () => new Promise((resolve) => { finish = resolve; }) });
   finish({ result: 'merged', message: `Merged and pushed ${BRANCH}\ninto main`, commit: 'abc1234', reason: null, error: null });
   await mod.settle();
-  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', `Merged and pushed ${BRANCH} into main`, 'Dismiss']);
+  // Merged and pushed: closing the worker is offered, Close the default.
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', `Merged and pushed ${BRANCH} into main`, 'Close w-cache and remove its worktree?', 'Keep', 'Close']);
   // Green, not the amber of an agent that works.
   assert.deepEqual(panel(mod).calls.border_color, ['#ansi2']);
   assert.equal(w.execs.filter((call) => call[1] === 'status').length, reads + 1);
   assert.deepEqual(ids(mod.render(), 'merge-t'), [], 'no mark is left');
+  // Keep: the plain result again, and nothing is closed.
+  click(mod.render(), 'close-keep-t3', mod.cx);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', `Merged and pushed ${BRANCH} into main`, 'Dismiss']);
+  assert.deepEqual(w.execs.filter((call) => call[1] === 'close'), []);
   click(mod.render(), 'merge-dismiss-t3', mod.cx);
   assert.equal(panel(mod), null);
 }
@@ -825,6 +836,131 @@ async function merged(outcome, state) {
   assert.deepEqual(panel(mod).calls.border_color, ['#ansi2']);
   click(mod.render(), 'merge-dismiss-t3', mod.cx);
   assert.equal(panel(mod), null);
+}
+
+// After a merge that went through, the worker is closed at a click on
+// Close, or with Enter, which Close holds: `corgi close`, then the result
+// in the card, under the project once the worker's row is gone.
+const closes = (w) => w.execs.filter((call) => call[1] === 'close').map((call) => call.slice(2));
+const MERGED = { result: 'merged', message: `Merged and pushed ${BRANCH} into main`, commit: 'abc1234', reason: null, error: null, supervisor: null };
+const WORKTREE = `${TREES}/worktree-calm-forest-4f96`;
+const CLOSED = { result: 'closed', message: `Closed w-cache and removed its worktree ${WORKTREE};\nbranch ${BRANCH} stays`, reason: null, dirty: [], worktree: WORKTREE, branch: BRANCH, removed: true };
+// As the card shows it: on one line, the worktree under the home folder as ~.
+const SHOWN_CLOSED = `Closed w-cache and removed its worktree ~/${WORKTREE.slice(HOME.length + 1)}; branch ${BRANCH} stays`;
+// The status once w-cache is closed: its row and its space are gone.
+function closedWindow(w) {
+  const status = tagged();
+  status.projects[0].agents.splice(0, 1);
+  w.programs[1] = corgi({ status, 'app-layout': { result: 'unchanged' } });
+  w.agents = w.agents.filter((a) => a.address !== 't3');
+}
+{
+  let finish;
+  const { w, mod } = await merged(MERGED);
+  // Close holds the keyboard: given it when the question came, and again
+  // once it is drawn.
+  assert.ok(mod.view.closeFocus.focused >= 2, `focused ${mod.view.closeFocus.focused} times`);
+  const close = byId(mod.render(), 'close-confirm-t3');
+  assert.ok(close.calls.track_focus[0] === mod.view.closeFocus, 'Close is the element the keyboard means');
+  assert.ok('on_key_down' in close.handlers);
+  // Another key does nothing; Enter closes.
+  w.programs[1] = corgi({ status: tagged(), close: () => new Promise((resolve) => { finish = resolve; }) });
+  close.handlers.on_key_down({ key: 'a', modifiers: {} }, mod.cx);
+  assert.deepEqual(closes(w), []);
+  byId(mod.render(), 'close-confirm-t3').handlers.on_key_down({ key: 'enter', modifiers: {} }, mod.cx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(closes(w), [['w-cache', '--project', REPO, '--json']]);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, 'Closing…']);
+  // Another worker's MERGE mark does nothing meanwhile.
+  const other = tagged();
+  Object.assign(other.projects[0].agents[2], { tag: 'merge', state: 'done' });
+  w.programs[1] = corgi({ status: other });
+  // The timers fire, without waiting for the close, which is still running.
+  const refresh = async () => {
+    for (const timer of mod.cx.timers.filter((timer) => timer.ms === 5000)) timer.tick(mod.cx);
+    for (let n = 0; n < 5; n++) await new Promise((resolve) => setImmediate(resolve));
+  };
+  await refresh();
+  assert.ok(byId(mod.render(), 'merge-t5'), 'another worker tagged');
+  click(mod.render(), 'merge-t5', mod.cx);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, 'Closing…']);
+  // A refresh meanwhile, which sees the worker gone, keeps the card.
+  closedWindow(w);
+  await refresh();
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, 'Closing…']);
+  finish(CLOSED);
+  await mod.settle();
+  // The worker's row is gone; the result stands under its project's agents.
+  const root = mod.render();
+  assert.equal(byId(root, 'agent-t3'), null);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, SHOWN_CLOSED, 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#ansi2']);
+  let siblings;
+  walk(root, (node) => {
+    if ((node.children ?? []).some((child) => kept(child)?.id === 'merge-panel-t3')) siblings = node.children.map((child) => kept(child).id);
+  });
+  assert.equal(siblings[siblings.indexOf('merge-panel-t3') - 1], 'agent-t5', "under the project, after its last agent");
+  // The status is read again after the close, and the result stays.
+  await mod.tick(5000);
+  assert.ok(panel(mod));
+  click(mod.render(), 'merge-dismiss-t3', mod.cx);
+  assert.equal(panel(mod), null);
+}
+
+// A worktree with changes is refused: what is uncommitted is said, and
+// "Close anyway" closes with --force; Keep leaves both.
+{
+  const DIRTY = { result: 'refused', reason: 'dirty', message: 'The worktree of w-cache has uncommitted or untracked changes: M cache.rs, ?? notes.txt', dirty: ['M cache.rs', '?? notes.txt'], worktree: WORKTREE, branch: BRANCH, removed: false };
+  for (const answer of ['anyway', 'keep']) {
+    const { w, mod } = await merged(MERGED);
+    w.programs[1] = corgi({ status: tagged(), close: (args) => (args.includes('--force') ? CLOSED : { code: 1, stdout: JSON.stringify(DIRTY) }) });
+    click(mod.render(), 'close-confirm-t3', mod.cx);
+    await mod.settle();
+    assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, DIRTY.message, 'Close w-cache anyway and discard them?', 'Keep', 'Close anyway']);
+    assert.deepEqual(panel(mod).calls.border_color, ['#blocked'], 'the person decides');
+    assert.deepEqual(closes(w), [['w-cache', '--project', REPO, '--json']]);
+    if (answer === 'keep') {
+      click(mod.render(), 'close-keep-t3', mod.cx);
+      assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, 'Dismiss']);
+      assert.equal(closes(w).length, 1);
+      continue;
+    }
+    click(mod.render(), 'close-force-t3', mod.cx);
+    await mod.settle();
+    assert.deepEqual(closes(w).at(-1), ['w-cache', '--project', REPO, '--json', '--force']);
+    assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, SHOWN_CLOSED, 'Dismiss']);
+  }
+}
+
+// Escape on Close is Keep.
+{
+  const { w, mod } = await merged(MERGED);
+  byId(mod.render(), 'close-confirm-t3').handlers.on_key_down({ key: 'escape', modifiers: {} }, mod.cx);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, 'Dismiss']);
+  assert.deepEqual(closes(w), []);
+}
+
+// A close that failed is said in the card, which stays under the worker.
+{
+  const { w, mod } = await merged(MERGED);
+  const failed = { result: 'failed', reason: null, message: 'Close of w-cache failed: hc: refused', dirty: [], worktree: WORKTREE, branch: BRANCH, removed: false };
+  w.programs[1] = corgi({ status: tagged(), close: { code: 1, stdout: JSON.stringify(failed) } });
+  click(mod.render(), 'close-confirm-t3', mod.cx);
+  await mod.settle();
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, failed.message, 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#blocked']);
+}
+
+// Only a merge that was merged and pushed offers the close: not conflicts,
+// a refusal or a failed push.
+for (const outcome of [
+  { result: 'conflicts', message: 'stopped on conflicts in a.txt', commit: null, reason: null, error: null, supervisor: 'weather-supervisor' },
+  { result: 'refused', message: 'origin/main has 2 commit(s) main lacks', commit: null, reason: 'behind', error: null },
+  { result: 'push-failed', message: 'Merged, but the push failed: main is protected', commit: 'abc1234', reason: null, error: 'main is protected' },
+]) {
+  const { mod } = await merged(outcome);
+  assert.equal(byId(mod.render(), 'close-confirm-t3'), null, outcome.result);
+  assert.ok(!texts(panel(mod)).some((text) => text.startsWith('Close')), outcome.result);
 }
 
 // Refused because the upstream moved on: pulled first, at a click.

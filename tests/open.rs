@@ -1,5 +1,5 @@
-//! The real `corgi open`, `corgi projects`, `corgi supervisor --terminal`
-//! and `corgi app-layout`, as the Herdr app's mods and installer run them:
+//! The real `corgi open`, `corgi projects`, `corgi supervisor --terminal`,
+//! `corgi app-layout` and `corgi close`, as the Herdr app's mods and installer run them:
 //! against a fake `hc`, with a private home and state directory. Nothing
 //! here reaches a live herdr-core, a real agent CLI or the developer's own
 //! state.
@@ -7,12 +7,13 @@
 use std::{
     fs,
     os::unix::fs::PermissionsExt,
+    os::unix::net::UnixListener,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use corgi_core::test_support::{ScratchDir, git_repo};
+use corgi_core::test_support::{ScratchDir, git_repo, git_worktree};
 use serde_json::{Value, json};
 
 /// A fake `hc`, a private home and state, and a folder for projects. `hc CMD
@@ -571,4 +572,85 @@ fn app_space_makes_nothing_without_a_window_and_leaves_no_note_for_the_daemon() 
         .map(|entry| entry.unwrap().file_name())
         .collect();
     assert!(left.is_empty(), "{left:?}");
+}
+
+/// `corgi close`, as the Projects list runs it after a merge: refused while
+/// the worktree has changes, then closed with `--force`, its terminal ended
+/// and removed by its address, its worktree removed and its branch kept.
+#[test]
+fn close_refuses_a_dirty_worktree_then_closes_the_worker_when_forced() {
+    let world = World::new("close");
+    let root = world.repo("weather");
+    let worktree = git_worktree(
+        Path::new(&root),
+        &world.projects.join("worktree-fix"),
+        "worktree/fix",
+    );
+    fs::write(worktree.join("draft.txt"), "unsaved").unwrap();
+    let worker = json!({
+        "address": "t5", "name": "w-fix", "state": "live",
+        "status": {"state": "done", "app": "claude-code"},
+        "labels": {"corgi.role": "worker", "corgi.project": root, "herdr.space": "sp-fix"},
+        "cwd": worktree, "keep": true, "turn": 3,
+        "foreground": {"name": "claude", "pid": 4242, "argv": [], "cwd": worktree},
+    });
+    world.answer("ls.worker", r#"{"terminals":[{"address":"t5"}]}"#);
+    // Live while it is listed, twice, and looked at before the kill.
+    for n in 1..=3 {
+        world.answer(&format!("get.t5.{n}"), &worker.to_string());
+    }
+    let mut finished = worker.clone();
+    finished["state"] = "finished".into();
+    world.answer("get.t5", &finished.to_string());
+    // A core that runs, as far as `corgi close` looks: a socket that takes
+    // a connection. Short, for the socket path limit.
+    let socket = PathBuf::from(format!("/tmp/corgi-close-{}.sock", std::process::id()));
+    fs::remove_file(&socket).ok();
+    let _core = UnixListener::bind(&socket).unwrap();
+    let close = |extra: &[&str]| {
+        let mut args = vec!["close", "w-fix", "--project", &root, "--json"];
+        args.extend(extra);
+        let output = Command::new(env!("CARGO_BIN_EXE_corgi"))
+            .args(&args)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", world.private.join("home"))
+            .env("XDG_STATE_HOME", world.private.join("state"))
+            .env("CORGI_HC_BIN", world.private.join("hc/hc"))
+            .env("HC_SOCKET", &socket)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run corgi");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "corgi close printed no JSON ({error}): {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        (value, output.status.code())
+    };
+
+    let (refused, code) = close(&[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(refused["result"], "refused", "{refused}");
+    assert_eq!(refused["reason"], "dirty");
+    assert_eq!(refused["dirty"], json!(["?? draft.txt"]));
+    assert!(called(&world.calls(), "kill").is_empty());
+    assert!(worktree.exists());
+
+    let (closed, code) = close(&["--force"]);
+    fs::remove_file(&socket).ok();
+    assert_eq!(code, Some(0), "{closed}");
+    assert_eq!(closed["result"], "closed");
+    assert_eq!(closed["removed"], true);
+    assert_eq!(closed["branch"], "worktree/fix");
+    let calls = world.calls();
+    assert_eq!(called(&calls, "kill"), ["kill|t5|--json"]);
+    assert_eq!(called(&calls, "rm"), ["rm|t5|--json"]);
+    assert!(!worktree.exists());
+    let branch = Command::new("git")
+        .args(["-C", &root, "rev-parse", "--verify", "-q", "worktree/fix"])
+        .output()
+        .unwrap();
+    assert!(branch.status.success(), "the branch stays");
 }

@@ -15,7 +15,10 @@ use serde_json::{Value, json};
 
 use corgi_core::{
     backlog,
-    hc::{self, HcClient},
+    hc::{
+        self, HcClient,
+        close::{CloseOptions, CloseOutcome, close_worker},
+    },
     progress::Silent,
     projects::ProjectMemory,
     waker::Inboxes,
@@ -64,6 +67,27 @@ its service is installed (\"installed\"). \"corgi\" is this binary's build, as
 corgi --version --json prints it, and \"newer\": the branch and the number of
 commits the checkout it was built in has that the build lacks, or null. It
 changes nothing.";
+
+pub const CLOSE_USAGE: &str = "\
+Usage: corgi close NAME --project DIR [--force] [--keep-worktree] [--json]
+
+Closes worker NAME of DIR's project on herdr-core (hc), as the dashboard's x
+does: ends its terminal and removes it, by its address, then removes its
+linked worktree with git worktree remove in the project's primary checkout.
+The branch stays. A worktree with uncommitted or untracked changes is
+refused (dirty) and nothing is closed; --force removes it anyway, discarding
+them, and --keep-worktree leaves the worktree on disk. The Herdr app closes
+the worker's space once its last terminal is gone; a space with a terminal
+of the person's in it stays. A supervisor, an agent Corgi did not start and
+the terminal running this command are refused.
+
+With --json it prints {\"result\", \"message\", \"reason\", \"dirty\",
+\"worktree\", \"branch\", \"removed\"}: result is closed, refused or failed;
+reason says why a refusal was (dirty, supervisor, no-agent, self,
+unavailable); dirty lists the changes as git status --porcelain does;
+removed says whether the worktree was removed. It exits 0 only when the
+worker was closed. A core that is not running is not started: the close is
+refused as unavailable.";
 
 pub const MERGE_USAGE: &str = "\
 Usage: corgi merge NAME --project DIR [--json] [--pull | --skip-upstream]
@@ -150,14 +174,14 @@ impl HcSeen {
         seen
     }
 
-    /// Why a merge cannot be run on hc, if it cannot.
-    fn unavailable(&self) -> Option<String> {
+    /// Why `what` (a merge, a close) cannot be run on hc, if it cannot.
+    fn unavailable(&self, what: &str) -> Option<String> {
         match (&self.client, &self.error) {
             (Some(_), _) => None,
             (None, Some(error)) => Some(format!("herdr-core could not be asked: {error}")),
-            (None, None) => {
-                Some("herdr-core (hc) is not running; Corgi does not start it for a merge".into())
-            }
+            (None, None) => Some(format!(
+                "herdr-core (hc) is not running; Corgi does not start it for {what}"
+            )),
         }
     }
 }
@@ -444,7 +468,7 @@ pub fn merge_command(args: &[String]) -> Result<()> {
     );
     let root = hc_project_root(&project);
     let mut seen = HcSeen::look();
-    let outcome = match (seen.unavailable(), &seen.client, &ask) {
+    let outcome = match (seen.unavailable("a merge"), &seen.client, &ask) {
         (None, Some(_), Some(error)) => ask_supervisor(
             &seen.agents,
             &Inboxes::default(),
@@ -474,6 +498,55 @@ pub fn merge_command(args: &[String]) -> Result<()> {
         eprintln!("{}", outcome.message);
     }
     if !succeeded {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `corgi close`.
+pub fn close_command(args: &[String]) -> Result<()> {
+    let mut name = None;
+    let mut project = None;
+    let mut json_output = false;
+    let mut options = CloseOptions::default();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--json" => json_output = true,
+            "--force" => options.force = true,
+            "--keep-worktree" => options.keep_worktree = true,
+            "--project" => {
+                project = Some(args.next().context("--project needs a directory")?.clone())
+            }
+            other if other.starts_with('-') => bail!("unknown option {other:?}\n\n{CLOSE_USAGE}"),
+            other if name.is_none() => name = Some(other.to_string()),
+            other => bail!("unexpected argument {other:?}\n\n{CLOSE_USAGE}"),
+        }
+    }
+    let name = name.context(format!("name the worker to close\n\n{CLOSE_USAGE}"))?;
+    let project =
+        existing_dir(&project.context(format!("--project is required\n\n{CLOSE_USAGE}"))?)?;
+    let root = hc_project_root(&project);
+    let seen = HcSeen::look();
+    let outcome = match (seen.unavailable("a close"), &seen.client) {
+        (None, Some(client)) => close_worker(
+            client,
+            &seen.agents,
+            &name,
+            &root,
+            hc::calling_terminal().as_deref(),
+            options,
+        ),
+        (unavailable, _) => CloseOutcome::refused("unavailable", unavailable.unwrap_or_default()),
+    };
+    if json_output {
+        println!("{}", serde_json::to_string(&outcome.json())?);
+    } else if outcome.succeeded() {
+        println!("{}", outcome.message);
+    } else {
+        eprintln!("{}", outcome.message);
+    }
+    if !outcome.succeeded() {
         std::process::exit(1);
     }
     Ok(())
