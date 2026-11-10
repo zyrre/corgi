@@ -928,10 +928,26 @@ async function merged(outcome, state) {
     await line({ newer: { branch: 'main', commits: 1, commit: COMMIT } }, { build: null }),
     ['Corgi 0.2.3 · 5b50895', '· main is newer', 'cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh', 'The daemon runs an older build', 'corgi daemon install'],
   );
-  // A daemon that does not run has no build to differ.
-  assert.deepEqual(await line({}, { running: false, pid: null, build: null }), ['Corgi 0.2.3 · 5b50895']);
+  // A daemon that does not run wakes no supervisor: said, with what starts
+  // it, whether its service is installed or not, and once only.
+  assert.deepEqual(
+    await line({}, { running: false, pid: null, build: null, installed: false }),
+    ['Corgi 0.2.3 · 5b50895', "Corgi daemon not running: supervisors won't be woken or handed over", 'corgi daemon install'],
+  );
+  assert.deepEqual(
+    await line({ newer: { branch: 'main', commits: 1, commit: COMMIT } }, { running: false, pid: null, build: null, installed: true }),
+    ['Corgi 0.2.3 · 5b50895', '· main is newer', 'cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh', "Corgi daemon installed but not running: supervisors won't be woken or handed over", 'corgi daemon install'],
+  );
+  // A corgi too old to say what it is still says that its daemon is down.
+  assert.deepEqual(await line(null, { running: false, pid: null, installed: true }), ["Corgi daemon installed but not running: supervisors won't be woken or handed over", 'corgi daemon install']);
+  {
+    const down = await projects(window({ status: { ...STATUS, daemon: { running: false, pid: null, installed: false } } }));
+    const warning = kept(byId(down.render(), 'corgi-version').children[0]);
+    assert.deepEqual(warning.calls.text_color, ['#blocked'], 'in the color of what needs the person');
+  }
 
-  // A corgi from before it said what it was built from: no line; nor on the rail.
+  // A corgi from before it said what it was built from, its daemon
+  // running: no line; nor on the rail.
   assert.equal(await line(null), null);
   const w = window({ status: { ...STATUS, corgi: { ...build, source: null, newer: null } } });
   w.sidebar = 76;

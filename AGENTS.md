@@ -547,8 +547,8 @@ The Projects list says when it is due: its last line names the build that
 answers (`Corgi 0.2.3 · 5b50895`, from `corgi --version`, which `build.rs`
 gives the commit), adds `· main is newer` with this command once the
 checkout the binary was built in has commits the build lacks, and warns
-when the daemon still runs another build (`corgi daemon install` restarts
-it). The dashboard in the Herdr TUI is a process of its own: quit and reopen
+when the daemon is not running or still runs another build (`corgi daemon
+install` starts it again). The dashboard in the Herdr TUI is a process of its own: quit and reopen
 it to run a rebuilt binary (and `herdr plugin link "$PWD"` after a change to
 `herdr-plugin.toml`); do not restart Herdr.
 

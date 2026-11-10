@@ -20,7 +20,7 @@
 // runs with m, and shows how it went, with "Ask supervisor to fix" when it
 // failed and the project's supervisor runs. Under the list, which Corgi
 // answers (`Corgi 0.2.3 · 5b50895`), whether the checkout it was built in
-// has moved on since, and whether the daemon runs another build.
+// has moved on since, and whether the daemon is down or runs another build.
 //
 // It began as a copy of Herdr's `spaces` mod and is Corgi's own since.
 
@@ -86,7 +86,7 @@ const MERGE_TIMEOUT_MS = 600000;
 // What makes a Corgi built from a checkout the newest merged there again
 // (AGENTS.md, "After a merge"): run in that checkout.
 const INSTALL_COMMAND = "CORGI_BUILD=source herdr-app/install.sh";
-// What restarts the daemon with the corgi that answers.
+// What starts the daemon, or restarts it, with the corgi that answers.
 const DAEMON_COMMAND = "corgi daemon install";
 
 // What a stored color name looks like on an avatar (the same in every mod
@@ -493,17 +493,20 @@ export default class Projects extends View {
 
   // Under the list: the corgi that answers, and what is not as it should be:
   // its checkout has commits it lacks (a branch merged since it was built),
-  // with what to run there, and a daemon of another build, with what
-  // restarts it. Nothing before Corgi answered, or from one too old to say.
+  // with what to run there; a daemon that does not run, or runs another
+  // build, with what starts it again. Nothing before Corgi answered; a
+  // corgi too old to say what it is still says whether its daemon runs.
   versionLine(t) {
     const b = this.build;
-    if (!b) return null;
+    const d = this.daemon;
+    // Without the daemon no supervisor on the app is woken or handed over.
+    const stopped = d && !d.running ? `Corgi daemon ${d.installed ? "installed but not running" : "not running"}: supervisors won't be woken or handed over` : null;
+    if (!b && !stopped) return null;
     const h = home();
     const tilde = (dir) => (dir === h ? "~" : dir.startsWith(`${h}/`) ? `~${dir.slice(h.length)}` : dir);
-    const what = [`Corgi ${b.version}`, ...(b.commit ? [b.commit.slice(0, 7)] : []), ...(b.dirty ? ["modified"] : [])].join(" · ");
-    const newer = b.newer ? `${b.newer.branch ?? "its checkout"} is newer` : null;
-    const d = this.daemon;
-    const other = d?.running && !(d.build && sameBuild(d.build, b)) ? (d.build ? `another build: ${buildName(d.build)}` : "an older build") : null;
+    const what = b && [`Corgi ${b.version}`, ...(b.commit ? [b.commit.slice(0, 7)] : []), ...(b.dirty ? ["modified"] : [])].join(" · ");
+    const newer = b?.newer ? `${b.newer.branch ?? "its checkout"} is newer` : null;
+    const other = b && d?.running && !(d.build && sameBuild(d.build, b)) ? `The daemon runs ${d.build ? `another build: ${buildName(d.build)}` : "an older build"}` : null;
     const command = (text) => div().whitespace_normal().font_family("JetBrains Mono").text_size(10).text_color(t.muted).child(text);
     return v_flex()
       .id("corgi-version")
@@ -514,13 +517,17 @@ export default class Projects extends View {
       .gap(2)
       .text_size(10.5)
       .text_color(t.dim)
-      .child(
-        h_flex().gap(4).items_center()
-          .child(div().flex_shrink(1).min_w(0).truncate().child(what))
-          .when(Boolean(newer), (el) => el.child(div().flex_none().text_color(t.done).child(`· ${newer}`))),
+      .when(Boolean(b), (el) =>
+        el.child(
+          h_flex().gap(4).items_center()
+            .child(div().flex_shrink(1).min_w(0).truncate().child(what))
+            .when(Boolean(newer), (el) => el.child(div().flex_none().text_color(t.done).child(`· ${newer}`))),
+        ),
       )
       .when(Boolean(newer), (el) => el.child(command(`${b.source ? `cd ${tilde(b.source)} && ` : ""}${INSTALL_COMMAND}`)))
-      .when(Boolean(other), (el) => el.child(div().text_color(t.blocked).whitespace_normal().child(`The daemon runs ${other}`)).child(command(DAEMON_COMMAND)));
+      // Either starts with the same command: it installs the service again,
+      // which starts the daemon on the corgi that answers.
+      .when(Boolean(stopped ?? other), (el) => el.child(div().text_color(t.blocked).whitespace_normal().child(stopped ?? other)).child(command(DAEMON_COMMAND)));
   }
 
   // --- Open project ------------------------------------------------------------
@@ -1253,6 +1260,7 @@ export default class Projects extends View {
   render() {
     const t = theme();
     const collapsed = narrow();
+    const version = collapsed ? null : this.versionLine(t);
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
     const sp = spaces();
     const ps = panes();
@@ -1280,7 +1288,7 @@ export default class Projects extends View {
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
         .children(this.grouped(t, collapsed, sp, ps)))
-      .when(!collapsed && Boolean(this.build), (el) => el.child(this.versionLine(t)))
+      .when(Boolean(version), (el) => el.child(version))
       // Herdr's own layout unfolds the rail from its agents list, which Corgi's has not.
       .when(collapsed, (el) =>
         el.child(

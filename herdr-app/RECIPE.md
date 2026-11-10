@@ -153,10 +153,13 @@ The Projects mod fills its block on `chrome`, text 13 px:
   newer` (the branch checked out there) in `done`, and under it, in
   monospace 10 px `muted`, wrapping, what to run:
   `cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh`. When the
-  daemon runs another build, `The daemon runs another build: 4563c06` (or
-  `an older build`) in `blocked`, and `corgi daemon install` under it the
-  same way. Nothing until Corgi has answered, or from a `corgi` too old to
-  say.
+  daemon does not run, `Corgi daemon not running: supervisors won't be
+  woken or handed over` (`installed but not running` when its service is
+  installed) in `blocked`, wrapping, and `corgi daemon install` under it
+  the same way; when it runs another build, `The daemon runs another build:
+  4563c06` (or `an older build`) in its place. Nothing until Corgi has
+  answered; a `corgi` too old to say what it is shows no build, only a
+  daemon that is down.
 - **The rail** (the sidebar narrower than 160 px): no texts; the `+`, a
   32 px cell per space with its number and, on the right, the most urgent
   state in it (the spinner, the `!`, a dot for done), and `»` at the bottom.
@@ -291,7 +294,11 @@ The Projects list:
   downloaded release was built elsewhere, so it is never "newer". A running
   daemon whose `build` is not the answering `corgi`'s (version, commit and
   `dirty` compared) is another build: the binary was rebuilt and the daemon
-  not restarted.
+  not restarted. A daemon that is not running (`daemon.running` false) wakes
+  no supervisor and delivers no inbox, a merge's line included, so it is
+  said first; `daemon.installed` only changes the words. `corgi daemon
+  install` is the answer to both: it installs the service again, which
+  starts the daemon on the `corgi` that answers.
 - `»` on the rail unfolds the sidebar (Herdr's own layout has it in its
   Agents list).
 
@@ -527,8 +534,8 @@ wants the overview on screen.
   `corgi` was built in, it adds `· main is newer` and `cd <checkout> &&
   CORGI_BUILD=source herdr-app/install.sh`, and after that command has run
   it shows the new commit alone; with the binary rebuilt and the daemon
-  not restarted, it warns that the daemon runs another build, with `corgi
-  daemon install`.
+  not restarted, it warns that the daemon runs another build, and with the
+  daemon stopped, that it is not running, each with `corgi daemon install`.
 - `+`, then typing, narrows the known projects and completes a path; Enter
   on a project whose supervisor runs shows it; Enter on one without starts
   its supervisor, in the shell that waits in its primary checkout when
