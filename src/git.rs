@@ -8,16 +8,6 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-/// The commits on `source` that `target` does not have, newest first, each
-/// as `<short hash> <subject>`. Only informs the confirmation dialog, so a
-/// failure to list them shows nothing rather than blocking the merge.
-pub fn worktree_commits(cwd: &Path, target: &str, source: &str) -> Vec<String> {
-    let range = format!("{target}..{source}");
-    git_output(cwd, &["log", "--format=%h %s", "--no-merges", &range])
-        .map(|log| log.lines().map(str::to_string).collect())
-        .unwrap_or_default()
-}
-
 /// The upstream `branch` pulls from and pushes to, as `origin/main`, or
 /// nothing when it has none.
 pub fn git_upstream(cwd: &Path, branch: &str) -> Option<String> {
@@ -56,12 +46,6 @@ pub fn ensure_git_clean(cwd: &Path, label: &str) -> Result<()> {
         bail!("{label} has uncommitted or untracked changes: {named}");
     }
     Ok(())
-}
-
-/// Whether a checkout has no uncommitted or untracked changes.
-pub fn git_status_clean(cwd: &Path) -> Result<bool> {
-    let changes = git_output(cwd, &["status", "--porcelain", "--untracked-files=normal"])?;
-    Ok(changes.trim().is_empty())
 }
 
 pub fn git_output(cwd: &Path, args: &[&str]) -> Result<String> {

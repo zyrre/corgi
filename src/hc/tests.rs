@@ -23,10 +23,9 @@ use crate::{
     harness::Harness,
     launch::{CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role},
     model::AgentState,
-    progress::Silent,
+    progress::{Recorded, Silent},
     supervisor::MERGE_TOKEN,
     tag::TagOptions,
-    test_support::Recorded,
     test_support::{ScratchDir, git, git_repo},
 };
 
@@ -117,7 +116,6 @@ fn worker_plan(project: &Path, harness: Harness, checkout: Checkout) -> LaunchPl
         effort: String::new(),
         prompt: "# Fix the cache\n\nDetails.".into(),
         project: project.to_path_buf(),
-        new_project: false,
         checkout,
         extra_args: Vec::new(),
         role: Role::Worker,
@@ -356,7 +354,6 @@ fn labelled_terminals_become_rows_with_their_sessions_facts() {
     assert!(supervisor.exited);
     let worker = agents.iter().find(|agent| !agent.supervisor).unwrap();
     assert_eq!(worker.project_root, "/repos/weather");
-    assert_eq!(worker.project, "weather/calm-otter-1f2e");
     assert_eq!(worker.worktree_checkout.as_deref(), Some(worktree));
     assert_eq!(worker.info.pane_id, "t4");
     assert_eq!(worker.info.workspace_id, "corgi-weather");
@@ -1248,14 +1245,7 @@ fn a_supervisor_started_in_an_open_shell_makes_that_terminal_and_space_the_proje
     hc.answer("label", &shell.to_string());
     hc.answer("send", r#"{"started":null,"status":null,"turn":0}"#);
     let plan = supervisor_plan(&root);
-    let prepare = |root: &str| {
-        crate::supervisor::prepare_at(
-            &state,
-            root,
-            Path::new("/opt/corgi"),
-            crate::supervisor::Backend::Hc,
-        )
-    };
+    let prepare = |root: &str| crate::supervisor::prepare_at(&state, root, Path::new("/opt/corgi"));
     let launched = start_supervisor_with(
         &hc.client(),
         &plan,
@@ -1345,14 +1335,7 @@ fn a_terminal_outside_the_app_gets_the_projects_space_and_is_kept() {
     hc.answer("get.t7", &agent.to_string());
     hc.answer("label", &shell.to_string());
     hc.answer("send", r#"{"started":null,"status":null,"turn":0}"#);
-    let prepare = |root: &str| {
-        crate::supervisor::prepare_at(
-            &state,
-            root,
-            Path::new("/opt/corgi"),
-            crate::supervisor::Backend::Hc,
-        )
-    };
+    let prepare = |root: &str| crate::supervisor::prepare_at(&state, root, Path::new("/opt/corgi"));
     start_supervisor_with(
         &hc.client(),
         &supervisor_plan(&root),
@@ -1410,14 +1393,7 @@ fn a_shell_nothing_could_be_typed_into_is_not_left_as_a_supervisors() {
         9,
         r#"{"error":{"kind":"blocked","message":"t7 is blocked","hint":""}}"#,
     );
-    let prepare = |root: &str| {
-        crate::supervisor::prepare_at(
-            &state,
-            root,
-            Path::new("/opt/corgi"),
-            crate::supervisor::Backend::Hc,
-        )
-    };
+    let prepare = |root: &str| crate::supervisor::prepare_at(&state, root, Path::new("/opt/corgi"));
     let error = start_supervisor_with(
         &hc.client(),
         &supervisor_plan(&root),

@@ -124,11 +124,8 @@ impl ClaudeScan {
     pub fn facts(&self, task: Option<String>, settings: &ClaudeWindowSettings) -> SessionFacts {
         let mut facts = SessionFacts {
             task,
-            message: self.conversation.message(),
-            tool: self.conversation.tool(),
             report: self.conversation.report(),
             turn: self.conversation.turn(),
-            last_activity: self.touched_at,
             ..SessionFacts::default()
         };
         let Some(request) = &self.request else {
@@ -226,7 +223,7 @@ pub fn claude_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
                     }
                     Some("thinking") => {
                         if let Some(text) = block["thinking"].as_str() {
-                            emit(Event::said(ActivityKind::Thinking, text).row_only());
+                            emit(Event::said(ActivityKind::Thinking, text));
                         }
                     }
                     Some("tool_use") => {

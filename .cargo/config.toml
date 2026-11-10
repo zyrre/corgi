@@ -1,7 +1,4 @@
 [alias]
-# Redraws the README screenshots and animation in docs/images/ from the
-# dashboard's own UI code and made-up agents; see src/readme_shots.rs.
-readme-shots = "test --lib readme_shots::tests::readme_shots -- --ignored --exact"
 # Draws the Herdr app brand row's Corgi logo,
 # herdr-app/mods/corgi-brand/corgi.png. See src/brand_tile.rs.
-brand-tile = "test --lib brand_tile::tests::brand_tile_png_file -- --ignored --exact"
+brand-tile = "test --bin corgi brand_tile::tests::brand_tile_png_file -- --ignored --exact"

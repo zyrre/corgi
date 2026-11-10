@@ -67,22 +67,6 @@ fn claude_task(path: &Path) -> Option<String> {
     head.found
 }
 
-fn entries(path: &Path, events: Events, limit: usize) -> Vec<Activity> {
-    let mut tail = Tail::<Entries>::default();
-    tail.update(path, &[TRANSCRIPT_TAIL_BYTES], |record| {
-        Entries::of(record, events)
-    });
-    tail.found().newest_first().take(limit).cloned().collect()
-}
-
-fn claude_entries(path: &Path, limit: usize) -> Vec<Activity> {
-    entries(path, claude_events, limit)
-}
-
-fn codex_entries(path: &Path, limit: usize) -> Vec<Activity> {
-    entries(path, codex_events, limit)
-}
-
 fn write(path: &Path, lines: &[&str]) {
     let mut file = File::create(path).expect("create session file");
     for line in lines {
@@ -149,18 +133,6 @@ fn a_pasted_multi_line_prompt_is_the_task_not_injected_context() {
         claude_task(&path).as_deref(),
         Some("Start the session. Read the role.")
     );
-    assert_eq!(
-        claude_facts(&path, None)
-            .message
-            .map(|message| message.text),
-        Some("Start the session. Read the role.".into())
-    );
-    assert_eq!(
-        claude_entries(&path, 10)
-            .first()
-            .map(|entry| entry.text.as_str()),
-        Some("Start the session.\nRead the role.")
-    );
 }
 
 #[test]
@@ -215,51 +187,6 @@ fn a_claude_transcript_says_when_its_prompt_cache_lapses() {
         ],
     );
     assert_eq!(claude_facts(&path, None).cache, None);
-}
-
-#[test]
-fn a_session_was_last_active_at_its_newest_timestamped_record() {
-    let directory = TempDir::new("last-activity");
-    let at = |text: &str| parse_rfc3339(text).expect("timestamp");
-
-    // A Claude subagent's record says nothing about the main session, nor
-    // does a record without a timestamp.
-    let path = directory.join("session.jsonl");
-    write(
-        &path,
-        &[
-            r#"{"type":"user","timestamp":"2026-10-20T08:00:00Z","message":{"role":"user","content":"Fix the cache column"}}"#,
-            r#"{"type":"assistant","timestamp":"2026-10-20T08:21:30.512Z","message":{"content":[{"type":"text","text":"Done."}]}}"#,
-            r#"{"type":"assistant","isSidechain":true,"timestamp":"2026-10-20T08:25:00Z","message":{"content":[]}}"#,
-            r#"{"type":"last-prompt","lastPrompt":"unrelated"}"#,
-        ],
-    );
-    assert_eq!(
-        claude_facts(&path, None).last_activity,
-        Some(at("2026-10-20T08:21:30Z"))
-    );
-
-    // Every Codex record counts, whatever it carries.
-    let path = directory.join("rollout-2026-10-20T08-00-00-thread.jsonl");
-    write(
-        &path,
-        &[
-            r#"{"timestamp":"2026-10-20T08:00:00Z","type":"session_meta","payload":{"id":"thread","model":"gpt-5.6"}}"#,
-            r#"{"timestamp":"2026-10-20T08:04:00Z","type":"event_msg","payload":{"type":"agent_message","message":"Done."}}"#,
-            r#"{"timestamp":"2026-10-20T08:04:10Z","type":"turn_context","payload":{}}"#,
-        ],
-    );
-    assert_eq!(
-        codex_facts(&path).last_activity,
-        Some(at("2026-10-20T08:04:10Z"))
-    );
-
-    // A transcript without timestamps has no time to show.
-    write(
-        &path,
-        &[r#"{"type":"session_meta","payload":{"id":"thread"}}"#],
-    );
-    assert_eq!(codex_facts(&path).last_activity, None);
 }
 
 #[test]
@@ -623,73 +550,6 @@ fn activity(kind: ActivityKind, text: &str) -> Option<Activity> {
 }
 
 #[test]
-fn a_claude_transcript_reports_what_was_said_last_and_the_newest_tool_call_in_full() {
-    let directory = TempDir::new("claude-conversation");
-    let path = directory.join("session.jsonl");
-    let long_command = format!("cargo test -- {}", "very_long_test_name ".repeat(12));
-    write(
-        &path,
-        &[
-            r#"{"type":"user","message":{"role":"user","content":"Fix the failing merge test"}}"#,
-            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"Caveat: injected by the CLI"}}"#,
-            r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"thinking","thinking":"The test compares paths."}],"usage":{"input_tokens":2}}}"#,
-            r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"text","text":"I'll run the suite first."}],"usage":{"input_tokens":2}}}"#,
-            &format!(
-                r#"{{"type":"assistant","message":{{"model":"claude-opus-5","content":[{{"type":"tool_use","id":"t1","name":"Bash","input":{{"command":"{long_command}","description":"Run tests"}}}}],"usage":{{"input_tokens":2}}}}}}"#
-            ),
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"test result: FAILED"}]}}"#,
-            r#"{"type":"user","isSidechain":true,"message":{"role":"user","content":"Subagent prompt that is not the conversation"}}"#,
-            r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"thinking","thinking":""},{"type":"text","text":"Two tests fail. Should I fix both?"}],"usage":{"input_tokens":2}}}"#,
-        ],
-    );
-
-    let facts = claude_facts(&path, None);
-    // The assistant spoke last, and asked something.
-    assert_eq!(
-        facts.message,
-        activity(ActivityKind::Question, "Two tests fail. Should I fix both?")
-    );
-    // The command is the whole command, not what fits on the screen.
-    assert_eq!(
-        facts.tool,
-        activity(ActivityKind::Command, long_command.trim_end())
-    );
-    assert_eq!(facts.model.as_deref(), Some("Opus 5"));
-    assert_eq!(facts.task.as_deref(), Some("Fix the failing merge test"));
-
-    // The user's turn shows as soon as it is written, before any reply.
-    write(
-        &path,
-        &[
-            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>injected</system-reminder>"},{"type":"text","text":"Yes, fix both"}]}}"#,
-            r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{"file_path":"src/app.rs","old_string":"a","new_string":"b"}}],"usage":{"input_tokens":2}}}"#,
-        ],
-    );
-    let facts = claude_facts(&path, None);
-    assert_eq!(
-        facts.message,
-        activity(ActivityKind::Prompt, "Yes, fix both")
-    );
-    assert_eq!(facts.tool, activity(ActivityKind::Tool, "Edit(src/app.rs)"));
-
-    // Thinking counts as the newest thing said while nothing follows it.
-    write(
-        &path,
-        &[
-            r#"{"type":"user","message":{"role":"user","content":"Go on"}}"#,
-            r#"{"type":"assistant","message":{"model":"claude-opus-5","content":[{"type":"thinking","thinking":"Both failures share a cause."}]}}"#,
-        ],
-    );
-    let facts = claude_facts(&path, None);
-    assert_eq!(
-        facts.message,
-        activity(ActivityKind::Thinking, "Both failures share a cause.")
-    );
-    assert_eq!(facts.tool, None);
-    assert_eq!(facts.model, None);
-}
-
-#[test]
 fn a_claude_transcript_reports_the_newest_reply_whole_even_past_the_row_cap() {
     let directory = TempDir::new("claude-report");
     let path = directory.join("session.jsonl");
@@ -713,83 +573,18 @@ fn a_claude_transcript_reports_the_newest_reply_whole_even_past_the_row_cap() {
             r#"{"type":"user","message":{"role":"user","content":"Summarize the change"}}"#,
             &record.to_string(),
             // A user prompt sent after the reply does not replace the
-            // report, even though it becomes the newest thing said in the
-            // row.
+            // report.
             r#"{"type":"user","message":{"role":"user","content":"Thanks"}}"#,
         ],
     );
 
     let facts = claude_facts(&path, None);
-    // The row shows the newest thing said, folded to its usual cap...
-    assert_eq!(facts.message, activity(ActivityKind::Prompt, "Thanks"));
-    // ...but the report is the assistant's reply whole, paragraphs and all.
+    // The report is the assistant's reply whole, paragraphs and all.
     let report = facts.report.expect("report");
     assert_eq!(report.kind, ActivityKind::Message);
     assert_eq!(report.text, long_reply);
     assert_eq!(report.text.chars().count(), long_reply.chars().count());
     assert!(report.text.chars().count() > MAX_MESSAGE_CHARS);
-}
-
-#[test]
-fn a_codex_rollout_reports_the_conversation_and_the_shell_command_it_runs() {
-    let directory = TempDir::new("codex-conversation");
-    let path = directory.join("rollout-2026-09-10T09-00-00-thread.jsonl");
-    write(
-        &path,
-        &[
-            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd</environment_context>"}]}}"#,
-            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add a retry to the uploader"}]}}"#,
-            r#"{"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Looking for the upload loop"}]}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"rg -n upload src\"]}","call_id":"c1"}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"src/upload.rs:10"}}"#,
-        ],
-    );
-    let facts = codex_facts(&path);
-    assert_eq!(
-        facts.message,
-        activity(ActivityKind::Thinking, "Looking for the upload loop")
-    );
-    assert_eq!(
-        facts.tool,
-        activity(ActivityKind::Command, "rg -n upload src")
-    );
-    // The rollout begins with harness context, but the task is the first
-    // actual user prompt rather than the injected AGENTS.md instructions.
-    assert_eq!(facts.task.as_deref(), Some("Add a retry to the uploader"));
-
-    write(
-        &path,
-        &[
-            r#"{"type":"event_msg","payload":{"type":"exec_command_begin","command":["cargo","test","-p","uploader"],"cwd":"/repos/x"}}"#,
-            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The uploader now retries three times."}]}}"#,
-        ],
-    );
-    let facts = codex_facts(&path);
-    assert_eq!(
-        facts.message,
-        activity(
-            ActivityKind::Message,
-            "The uploader now retries three times."
-        )
-    );
-    assert_eq!(
-        facts.tool,
-        activity(ActivityKind::Command, "cargo test -p uploader")
-    );
-
-    // Current Codex builds wrap tool calls in a JavaScript `exec`
-    // transport. The dashboard shows the command, not that transport.
-    write(
-        &path,
-        &[
-            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"cargo clippy -- -D warnings\",\"yield_time_ms\":30000}); text(r.output);"}}"#,
-        ],
-    );
-    let facts = codex_facts(&path);
-    assert_eq!(
-        facts.tool,
-        activity(ActivityKind::Command, "cargo clippy -- -D warnings")
-    );
 }
 
 #[test]
@@ -816,107 +611,18 @@ fn a_codex_rollout_reports_the_newest_reply_whole_even_past_the_row_cap() {
             r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Summarize the change"}]}}"#,
             &record.to_string(),
             // A user prompt sent after the reply does not replace the
-            // report, even though it becomes the newest thing said in the
-            // row.
+            // report.
             r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Thanks"}]}}"#,
         ],
     );
 
     let facts = codex_facts(&path);
-    // The row shows the newest thing said, folded to its usual cap...
-    assert_eq!(facts.message, activity(ActivityKind::Prompt, "Thanks"));
-    // ...but the report is the assistant's reply whole, paragraphs and all.
+    // The report is the assistant's reply whole, paragraphs and all.
     let report = facts.report.expect("report");
     assert_eq!(report.kind, ActivityKind::Message);
     assert_eq!(report.text, long_reply);
     assert_eq!(report.text.chars().count(), long_reply.chars().count());
     assert!(report.text.chars().count() > MAX_MESSAGE_CHARS);
-}
-
-#[test]
-fn a_claude_transcript_reads_back_the_turns_newest_first() {
-    let directory = TempDir::new("claude-entries");
-    let path = directory.join("session.jsonl");
-    write(
-        &path,
-        &[
-            r#"{"type":"user","message":{"role":"user","content":"<system-reminder>injected</system-reminder>"}}"#,
-            r#"{"type":"user","message":{"role":"user","content":"Fix the uploader retry"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Reading the loop"},{"type":"tool_use","name":"Bash","input":{"command":"rg -n retry src"}}]}}"#,
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"src/upload.rs:10"}]}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Done.\n\nThe uploader now retries."}]}}"#,
-            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"Subagent chatter"}]}}"#,
-        ],
-    );
-
-    let entries = claude_entries(&path, TRANSCRIPT_ENTRIES);
-    // Newest first, and the subagent's own turns are not this session's.
-    assert_eq!(
-        entries,
-        vec![
-            Activity {
-                kind: ActivityKind::Message,
-                // Paragraphs survive, because the newest reply is read
-                // rather than skimmed.
-                text: "Done.\n\nThe uploader now retries.".into(),
-            },
-            Activity {
-                kind: ActivityKind::Command,
-                text: "rg -n retry src".into(),
-            },
-            Activity {
-                kind: ActivityKind::Prompt,
-                text: "Fix the uploader retry".into(),
-            },
-        ]
-    );
-
-    // The limit counts from the newest turn backwards.
-    assert_eq!(
-        claude_entries(&path, 1),
-        vec![Activity {
-            kind: ActivityKind::Message,
-            text: "Done.\n\nThe uploader now retries.".into(),
-        }]
-    );
-}
-
-#[test]
-fn a_codex_rollout_reads_back_the_turns_without_doubling_them() {
-    let directory = TempDir::new("codex-entries");
-    let path = directory.join("rollout-2026-09-10T09-00-00-thread.jsonl");
-    write(
-        &path,
-        &[
-            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add a retry to the uploader"}]}}"#,
-            r#"{"type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"Looking for the upload loop"}]}}"#,
-            r#"{"type":"event_msg","payload":{"type":"exec_command_begin","command":["bash","-lc","rg -n upload src"]}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"rg -n upload src\"]}","call_id":"c1"}}"#,
-            r#"{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"src/upload.rs:10"}}"#,
-            r#"{"type":"event_msg","payload":{"type":"agent_message","message":"The uploader now retries."}}"#,
-            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The uploader now retries."}]}}"#,
-        ],
-    );
-
-    // The `event_msg` echo of the same command and the same reply is not
-    // a second turn, and reasoning is not one of the turns shown.
-    assert_eq!(
-        codex_entries(&path, TRANSCRIPT_ENTRIES),
-        vec![
-            Activity {
-                kind: ActivityKind::Message,
-                text: "The uploader now retries.".into(),
-            },
-            Activity {
-                kind: ActivityKind::Command,
-                text: "rg -n upload src".into(),
-            },
-            Activity {
-                kind: ActivityKind::Prompt,
-                text: "Add a retry to the uploader".into(),
-            },
-        ]
-    );
 }
 
 #[test]
@@ -1022,43 +728,6 @@ fn reader(home: &Path) -> SessionReader {
     }
 }
 
-#[test]
-fn unidentified_codex_never_borrows_a_transcript_from_the_same_directory() {
-    let home = TempDir::new("codex-unidentified");
-    let directory = home.join(".codex/sessions/2026/10/02");
-    fs::create_dir_all(&directory).expect("create sessions directory");
-    write(
-        &directory.join("rollout-other-thread.jsonl"),
-        &[
-            r#"{"type":"session_meta","payload":{"id":"other-thread","cwd":"/home/me","model":"gpt-5-codex"}}"#,
-            r#"{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Another session's reply"}]}}"#,
-        ],
-    );
-    let mut reader = reader(&home);
-    let mut info = agent("codex", "scratch:p1", "other-thread", "/home/me");
-    assert!(reader.facts(&info).model.is_some());
-    assert!(!reader.transcript(&info).is_empty());
-    for session in [
-        None,
-        Some(AgentSession {
-            value: "   ".into(),
-            ..AgentSession::default()
-        }),
-    ] {
-        info.agent_session = session;
-        assert_eq!(reader.facts(&info), SessionFacts::default());
-        assert!(reader.transcript(&info).is_empty());
-    }
-    info.agent_session = Some(AgentSession {
-        value: "other-thread".into(),
-        ..AgentSession::default()
-    });
-    assert!(
-        reader.facts(&info).model.is_some(),
-        "facts return when the identity arrives"
-    );
-}
-
 /// Moves every lookup of `reader` back in time, as if `by` had passed.
 fn age_lookups(reader: &mut SessionReader, by: Duration) {
     for lookup in reader.files.values_mut() {
@@ -1121,10 +790,7 @@ fn a_growing_transcript_is_read_on_from_where_the_last_read_stopped() {
     let agent = agent("claude", "p1", "s1", "/repos/corgi");
     let first = reader.facts(&agent);
     assert_eq!(first.model.as_deref(), Some("Opus 5"));
-    assert_eq!(
-        first.message,
-        activity(ActivityKind::Prompt, "Fix the uploader")
-    );
+    assert_eq!(first.report, None);
 
     // Blank out everything already read, keeping the length. A reader that
     // parsed those bytes again would lose every fact they held.
@@ -1138,12 +804,8 @@ fn a_growing_transcript_is_read_on_from_where_the_last_read_stopped() {
 
     append(&path, &format!("{rest}\n"));
     let facts = reader.facts(&agent);
-    assert_eq!(
-        facts.message,
-        activity(ActivityKind::Message, "Tests pass.")
-    );
+    assert_eq!(facts.report, activity(ActivityKind::Message, "Tests pass."));
     // What only the older records said is remembered.
-    assert_eq!(facts.tool, activity(ActivityKind::Command, "cargo test"));
     assert_eq!(facts.model.as_deref(), Some("Opus 5"));
     assert_eq!(facts.effort.as_deref(), Some("high"));
     assert_eq!(facts.task.as_deref(), Some("Fix the uploader"));
@@ -1153,41 +815,6 @@ fn a_growing_transcript_is_read_on_from_where_the_last_read_stopped() {
         facts.cache.map(|cache| cache.expires_at),
         Some(touched_at + CLAUDE_CACHE_1H)
     );
-}
-
-#[test]
-fn the_transcript_is_shared_until_the_session_writes_more() {
-    let home = TempDir::new("reader-transcript");
-    let path = claude_project(&home, "-repos-corgi").join("s1.jsonl");
-    write(
-        &path,
-        &[
-            r#"{"type":"user","message":{"role":"user","content":"Fix the uploader"}}"#,
-            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#,
-        ],
-    );
-    let mut reader = reader(&home);
-    let agent = agent("claude", "p1", "s1", "/repos/corgi");
-    let first = reader.transcript(&agent);
-    assert_eq!(first.len(), 2);
-    assert!(Arc::ptr_eq(&first, &reader.transcript(&agent)));
-
-    write_line(
-        &path,
-        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Tests pass."}]}}"#,
-    );
-    let grown = reader.transcript(&agent);
-    assert_eq!(
-        grown
-            .iter()
-            .map(|entry| entry.text.as_str())
-            .collect::<Vec<_>>(),
-        ["Tests pass.", "cargo test", "Fix the uploader"]
-    );
-}
-
-fn write_line(path: &Path, line: &str) {
-    append(path, &format!("{line}\n"));
 }
 
 #[test]
@@ -1235,153 +862,6 @@ fn a_retried_codex_lookup_searches_the_newest_days_and_everything_now_and_then()
     assert_eq!(reader.facts(&resumed).model, None);
     age_lookups(&mut reader, FULL_SEARCH_RETRY);
     assert_eq!(reader.facts(&resumed).model.as_deref(), Some("gpt-5-codex"));
-}
-
-#[test]
-fn retain_forgets_the_sessions_of_closed_panes() {
-    let home = TempDir::new("reader-retain");
-    let project = claude_project(&home, "-repos-corgi");
-    for session in ["s1", "s2"] {
-        write(
-            &project.join(format!("{session}.jsonl")),
-            &[r#"{"type":"user","message":{"role":"user","content":"Fix it"}}"#],
-        );
-    }
-    let mut reader = reader(&home);
-    let kept = agent("claude", "p1", "s1", "/repos/corgi");
-    let closed = agent("claude", "p2", "s2", "/repos/corgi");
-    for agent in [&kept, &closed] {
-        reader.facts(agent);
-        reader.transcript(agent);
-    }
-
-    reader.retain([&kept].into_iter());
-    let kept_path = project.join("s1.jsonl");
-    assert_eq!(
-        reader.files.keys().collect::<Vec<_>>(),
-        [&session_key(&kept)]
-    );
-    assert_eq!(reader.parsed.keys().collect::<Vec<_>>(), [&kept_path]);
-    assert_eq!(reader.transcripts.keys().collect::<Vec<_>>(), [&kept_path]);
-    assert_eq!(reader.facts(&kept).task.as_deref(), Some("Fix it"));
-}
-
-/// A Claude Code pane in `cwd` whose session Herdr does not know, with the
-/// `session` token a status-line bridge reports for it, if any.
-fn reported_claude(pane_id: &str, session: Option<&str>, cwd: &str) -> AgentInfo {
-    AgentInfo {
-        agent: Some("claude".into()),
-        pane_id: pane_id.into(),
-        cwd: Some(cwd.into()),
-        tokens: session
-            .map(|session| (STATUS_LINE_SESSION_TOKEN.to_string(), session.to_string()))
-            .into_iter()
-            .collect(),
-        ..AgentInfo::default()
-    }
-}
-
-/// A transcript in `project` whose only turn is the prompt `said`.
-fn said(project: &Path, session: &str, said: &str) -> PathBuf {
-    let path = project.join(format!("{session}.jsonl"));
-    write(
-        &path,
-        &[&format!(
-            r#"{{"type":"user","message":{{"role":"user","content":"{said}"}}}}"#
-        )],
-    );
-    path
-}
-
-fn shown(reader: &mut SessionReader, info: &AgentInfo) -> Vec<String> {
-    reader
-        .transcript(info)
-        .iter()
-        .map(|entry| entry.text.clone())
-        .collect()
-}
-
-#[test]
-fn claude_panes_sharing_a_directory_each_show_the_session_their_token_names() {
-    let home = TempDir::new("reader-shared-cwd");
-    let project = claude_project(&home, "-repos-weather");
-    said(&project, "supervisor", "Plan the release");
-    let notes = said(&project, "notes", "Write the notes");
-    filetime(&notes);
-    let supervisor = reported_claude("p1", Some("supervisor"), "/repos/weather");
-    let notes = reported_claude("p2", Some("notes"), "/repos/weather");
-
-    let mut reader = SessionReader {
-        home: Some(home.to_path_buf()),
-        ..SessionReader::among([&supervisor, &notes].into_iter())
-    };
-    assert_eq!(shown(&mut reader, &supervisor), ["Plan the release"]);
-    assert_eq!(shown(&mut reader, &notes), ["Write the notes"]);
-    assert_eq!(
-        reader.facts(&supervisor).task.as_deref(),
-        Some("Plan the release")
-    );
-
-    // Herdr's own identity comes first, should the token lag behind it.
-    let mut identified = supervisor.clone();
-    identified.agent_session = Some(AgentSession {
-        value: "notes".into(),
-        ..AgentSession::default()
-    });
-    assert_eq!(shown(&mut reader, &identified), ["Write the notes"]);
-}
-
-#[test]
-fn a_cleared_claude_pane_shows_the_session_its_token_names_now() {
-    let home = TempDir::new("reader-token-clear");
-    let project = claude_project(&home, "-repos-weather");
-    said(&project, "before", "Fix the uploader");
-    let mut info = reported_claude("p1", Some("before"), "/repos/weather");
-    let mut reader = reader(&home);
-    assert_eq!(shown(&mut reader, &info), ["Fix the uploader"]);
-
-    said(&project, "after", "Write the notes");
-    info.tokens
-        .insert(STATUS_LINE_SESSION_TOKEN.into(), "after".into());
-    assert_eq!(shown(&mut reader, &info), ["Write the notes"]);
-}
-
-#[test]
-fn an_unidentified_claude_pane_borrows_no_transcript_from_a_shared_directory() {
-    let home = TempDir::new("reader-unidentified-claude");
-    let project = claude_project(&home, "-repos-weather");
-    said(&project, "notes", "Write the notes");
-    let unknown = reported_claude("p1", None, "/repos/weather");
-    let notes = reported_claude("p2", Some("notes"), "/repos/weather");
-    let codex = AgentInfo {
-        agent: Some("codex".into()),
-        ..reported_claude("p3", Some("notes"), "/repos/weather")
-    };
-
-    // Alone in its directory, it shows the newest transcript there; a Codex
-    // pane beside it writes no Claude Code transcript.
-    let mut reader = SessionReader {
-        home: Some(home.to_path_buf()),
-        ..SessionReader::among([&unknown, &codex].into_iter())
-    };
-    assert_eq!(shown(&mut reader, &unknown), ["Write the notes"]);
-    // A Codex pane takes no identity from a token.
-    assert!(shown(&mut reader, &codex).is_empty());
-
-    reader.retain([&unknown, &notes, &codex].into_iter());
-    assert!(shown(&mut reader, &unknown).is_empty());
-    assert_eq!(reader.facts(&unknown), SessionFacts::default());
-    assert_eq!(shown(&mut reader, &notes), ["Write the notes"]);
-
-    // The newest transcript is looked for again, so a session started in the
-    // pane since replaces the one it showed.
-    reader.retain([&unknown].into_iter());
-    assert_eq!(shown(&mut reader, &unknown), ["Write the notes"]);
-    let cleared = said(&project, "cleared", "Start over");
-    filetime(&cleared);
-    assert_eq!(shown(&mut reader, &unknown), ["Write the notes"]);
-    age_lookups(&mut reader, MISS_RETRY);
-    assert_eq!(shown(&mut reader, &unknown), ["Start over"]);
 }
 
 /// The newest turn's state in `facts`, and the report they give.

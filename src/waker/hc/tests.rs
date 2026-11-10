@@ -69,7 +69,7 @@ impl Core for FakeCore {
     fn replace(&mut self, replacement: Replacement) -> Job<Result<String>> {
         let name = replacement.name.clone();
         self.replaced.push(replacement);
-        Job::spawn(move |_| Ok(format!("{name} handed over to a fresh session")))
+        Job::spawn(move || Ok(format!("{name} handed over to a fresh session")))
     }
 }
 
@@ -288,7 +288,7 @@ fn a_full_supervisor_is_asked_for_its_note_when_its_cache_is_about_to_go_cold_th
         corgi,
         asked_at + 5,
     );
-    let dir = waker.inboxes().dir(ROOT).unwrap();
+    let dir = waker.inbox_dir(ROOT).unwrap();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(crate::supervisor::HANDOVER_NOTE), "# Handover\n").unwrap();
     waker.tick_hc(&mut core, &[full_supervisor(Done, 4)], corgi, asked_at + 30);

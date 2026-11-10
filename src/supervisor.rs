@@ -14,7 +14,6 @@
 //! that long with its context grown to twice its baseline.
 
 use std::{
-    collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -23,7 +22,6 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub use crate::backend::Backend;
 use crate::{
     harness::Harness,
     model::{AgentInfo, AgentState},
@@ -121,13 +119,6 @@ fn joined(warnings: impl IntoIterator<Item = String>) -> Option<String> {
     (!warnings.is_empty()).then(|| warnings.join(" "))
 }
 
-/// The warning that the project's state from before a rename sits beside
-/// its current state directory instead of having been moved into it.
-pub fn state_dir_conflict(project_root: &str) -> Option<String> {
-    let (dir, old) = state_dirs(project_root).ok()?;
-    conflicts(&dir, &old)
-}
-
 /// Brings the most recent of the pre-rename paths `old` that holds a
 /// directory to `dir`, and returns `dir` with anything the user should be
 /// told. Nothing is ever overwritten, merged, or deleted:
@@ -200,9 +191,6 @@ pub struct Prepared {
     pub warning: Option<String>,
 }
 
-/// Corgi's Herdr plugin ID, under which its installed build is found.
-pub const PLUGIN_ID: &str = "io.github.zyrre.corgi";
-
 /// Chooses a development build for supervisors' commands on purpose, instead
 /// of the installed plugin.
 const BIN_OVERRIDE_ENV: &str = "CORGI_BIN";
@@ -233,47 +221,23 @@ pub fn corgi_bin(installed_plugin_root: Option<&Path>) -> Result<PathBuf> {
     env::current_exe().context("find the Corgi binary")
 }
 
-/// Creates the state directory and its files where missing, and writes the
-/// role for this launch, naming `corgi` as the binary its commands call.
-/// Existing decisions, briefs, and ledger are kept, and moved from where
-/// Corgi kept them before the rename (see [`migrate_state_dir`]). That
-/// happens only here, as a session starts: by then a session started there
-/// has exited, as a handover asks it to before its successor is prepared,
-/// so no running session, whose harness may have resolved the old path for
-/// its sandbox, has its files moved away from under it.
-///
-/// It also compacts the ledger (see [`compact_ledger`]), for the same reason:
-/// no session of the project is running to append to it meanwhile.
+/// Prepares the state directory of `project_root`'s supervisor for a launch:
+/// its role, whose commands call `corgi_bin`, and what the launch needs to
+/// know of it.
 pub fn prepare(project_root: &str, corgi_bin: &Path) -> Result<Prepared> {
-    prepare_for(project_root, corgi_bin, Backend::Herdr)
+    prepare_at(&state_base()?, project_root, corgi_bin)
 }
 
-/// [`prepare`] for a supervisor whose workers run on `backend`, which its
-/// role's commands steer them through.
-pub fn prepare_for(project_root: &str, corgi_bin: &Path, backend: Backend) -> Result<Prepared> {
-    prepare_at(&state_base()?, project_root, corgi_bin, backend)
-}
-
-/// [`prepare_for`] under the Corgi state directory `base`.
-pub(crate) fn prepare_at(
-    base: &Path,
-    project_root: &str,
-    corgi_bin: &Path,
-    backend: Backend,
-) -> Result<Prepared> {
+/// [`prepare`] under the Corgi state directory `base`.
+pub(crate) fn prepare_at(base: &Path, project_root: &str, corgi_bin: &Path) -> Result<Prepared> {
     let (dir, old) = state_dirs_in(base, project_root);
     let (state_dir, warning) = migrate_state_dir(dir, &old)?;
-    let mut prepared = prepare_in(state_dir, project_root, corgi_bin, backend)?;
+    let mut prepared = prepare_in(state_dir, project_root, corgi_bin)?;
     prepared.warning = joined(warning.into_iter().chain(prepared.warning.take()));
     Ok(prepared)
 }
 
-fn prepare_in(
-    state_dir: PathBuf,
-    project_root: &str,
-    corgi_bin: &Path,
-    backend: Backend,
-) -> Result<Prepared> {
+fn prepare_in(state_dir: PathBuf, project_root: &str, corgi_bin: &Path) -> Result<Prepared> {
     crate::inbox_privacy::state_dir(&state_dir)?;
     for dir in ["briefs", HANDOVERS_DIR] {
         fs::create_dir_all(state_dir.join(dir))
@@ -299,7 +263,7 @@ fn prepare_in(
         .err()
         .map(|error| format!("The ledger was not compacted: {error:#}"));
     let role_file = state_dir.join(ROLE_FILE);
-    let role = role_for(corgi_bin, &state_dir, backend);
+    let role = role(corgi_bin, &state_dir);
     fs::write(&role_file, &role).with_context(|| format!("write {}", role_file.display()))?;
     Ok(Prepared {
         state_dir,
@@ -390,39 +354,33 @@ pub fn launch_of(state_dir: &Path, harness: &Harness) -> Launch {
         })
 }
 
-#[cfg(test)]
+/// The role of the supervisor in `state_dir`, whose commands call
+/// `corgi_bin`.
 fn role(corgi_bin: &Path, state_dir: &Path) -> String {
-    role_for(corgi_bin, state_dir, Backend::Herdr)
-}
-
-fn role_for(corgi_bin: &Path, state_dir: &Path, backend: Backend) -> String {
-    filled(ROLE, corgi_bin, state_dir, backend)
+    filled(ROLE, corgi_bin, state_dir)
 }
 
 /// The role's section on handing over, for the supervisor in `state_dir`
 /// whose commands call `corgi_bin`.
 pub fn handover_instructions(corgi_bin: &Path, state_dir: &Path) -> String {
-    filled(HANDOVER, corgi_bin, state_dir, Backend::Herdr)
+    filled(HANDOVER, corgi_bin, state_dir)
 }
 
-/// The commands the role names for steering a worker, reading its screen
-/// and pressing a key in it, by placeholder: on the Herdr TUI, and on hc.
-const STEERING: [(&str, &str, &str); 4] = [
-    ("{{prompt}}", "herdr agent prompt", "hc send"),
-    ("{{read}}", "herdr agent read", "hc read"),
-    ("{{recent}}", " --source recent", ""),
-    ("{{keys}}", "herdr agent send-keys", "hc keys"),
+/// The `hc` commands the role names for steering a worker, reading its
+/// screen and pressing a key in it, by placeholder. `{{recent}}` is an
+/// option `hc read` has no need of.
+const STEERING: [(&str, &str); 4] = [
+    ("{{prompt}}", "hc send"),
+    ("{{read}}", "hc read"),
+    ("{{recent}}", ""),
+    ("{{keys}}", "hc keys"),
 ];
 
-fn filled(text: &str, corgi_bin: &Path, state_dir: &Path, backend: Backend) -> String {
+fn filled(text: &str, corgi_bin: &Path, state_dir: &Path) -> String {
     let mut text = text
         .replace("{{corgi}}", &corgi_bin.to_string_lossy())
         .replace("{{state}}", &state_dir.to_string_lossy());
-    for (placeholder, herdr, hc) in STEERING {
-        let command = match backend {
-            Backend::Herdr => herdr,
-            Backend::Hc => hc,
-        };
+    for (placeholder, command) in STEERING {
         text = text.replace(placeholder, command);
     }
     text
@@ -577,38 +535,6 @@ fn session_token<T: std::str::FromStr>(token: Option<&str>, session: &str) -> Op
         .and_then(|(value, _)| value.parse().ok())
 }
 
-/// The pane token that marks a project's supervisor: `session:<native session>`
-/// once known, otherwise the launch name. Name values from older Corgi
-/// versions remain valid until they can be upgraded to a session marker.
-///
-/// The key keeps the name it had while the supervisor was the Project handler.
-/// Marks live on running panes, where every Corgi build in the Herdr session
-/// reads them: an installed dashboard not yet rebuilt, or another worktree's
-/// build, would not recognise a supervisor under a new key, and moving the mark
-/// to one would take the supervisor away from them.
-pub const SUPERVISOR_TOKEN: &str = "corgi_handler";
-
-/// What [`SUPERVISOR_TOKEN`] was called while the supervisor was the Steward. A
-/// session an older Corgi launched still carries it, so it counts as the
-/// supervisor's marker, and Corgi moves it to [`SUPERVISOR_TOKEN`] the next time it
-/// writes the pane's marks.
-pub const OLD_SUPERVISOR_TOKEN: &str = "corgi_steward";
-
-/// The supervisor marker among a pane's `tokens`, under either key.
-pub fn supervisor_marker(tokens: &BTreeMap<String, String>) -> Option<&String> {
-    tokens
-        .get(SUPERVISOR_TOKEN)
-        .or_else(|| tokens.get(OLD_SUPERVISOR_TOKEN))
-}
-
-/// Moves a marker under [`OLD_SUPERVISOR_TOKEN`] to [`SUPERVISOR_TOKEN`],
-/// unless that is set already.
-pub fn upgrade_marker(tokens: &mut BTreeMap<String, String>) {
-    if let Some(marker) = tokens.remove(OLD_SUPERVISOR_TOKEN) {
-        tokens.entry(SUPERVISOR_TOKEN.to_string()).or_insert(marker);
-    }
-}
-
 /// The pane token a supervisor sets with `corgi tag NAME merge` when it
 /// recommends the user merge the agent's branch, as `<state> <change>`: the
 /// agent's resting state and `state_change_seq` when it was tagged, so a tag
@@ -669,28 +595,6 @@ pub fn native_session(info: &AgentInfo) -> Option<&str> {
         .filter(|session| !session.is_empty())
 }
 
-pub fn marker(name: &str, session: Option<&str>) -> String {
-    match session.filter(|session| !session.is_empty()) {
-        Some(session) => format!("session:{session}"),
-        None => name.to_string(),
-    }
-}
-
-/// Whether `info` is a project's supervisor: the agent Corgi launched as one and
-/// marked, wherever its pane has since moved. Sitting in the project's root
-/// tab does not make an agent the supervisor.
-pub fn is_supervisor(info: &AgentInfo) -> bool {
-    let Some(marker) = supervisor_marker(&info.tokens) else {
-        return false;
-    };
-    if let Some(session) = marker.strip_prefix("session:") {
-        return native_session(info) == Some(session);
-    }
-    info.name
-        .as_deref()
-        .is_some_and(|name| !name.is_empty() && marker == name)
-}
-
 /// The line that asks the supervisor of `project_root` for its handover
 /// note, saying why, and naming the command that prints how to write it.
 pub fn handover_request(
@@ -748,24 +652,12 @@ pub fn handover_archive(state_dir: &Path, now: u64) -> PathBuf {
         .join(format!("{}.md", utc_stamp(now)))
 }
 
-/// The line that tells a supervisor where `worker` is and what to run next.
+/// The line that tells a supervisor `worker` stopped in `state`, with the
+/// command to run next: the worker's report, or for a blocked one its
+/// screen.
 pub fn wake_message(corgi_bin: &Path, worker: &str, state: AgentState) -> String {
-    wake_message_on(corgi_bin, worker, state, Backend::Herdr)
-}
-
-/// [`wake_message`] for a supervisor whose workers run on `backend`, whose
-/// command reads a blocked worker's screen.
-pub fn wake_message_on(
-    corgi_bin: &Path,
-    worker: &str,
-    state: AgentState,
-    backend: Backend,
-) -> String {
     let next = if state == AgentState::Blocked {
-        match backend {
-            Backend::Herdr => format!("herdr agent read {worker} --source recent --lines 120"),
-            Backend::Hc => format!("hc read {worker} --lines 120"),
-        }
+        format!("hc read {worker} --lines 120")
     } else {
         format!("{} report {worker}", corgi_bin.display())
     };
@@ -971,27 +863,6 @@ pub fn push_failed_message(merge: &MergeLanded<'_>) -> String {
          failed: {error} {} is merged. {} {PUSH_FAILED}",
         merge.worker,
         after_merge(merge)
-    )
-}
-
-/// The line that tells a supervisor the user closed its question `Q<number>`
-/// without answering it, so it drops the question from its ledger and
-/// deletes its `questions/Q<n>.md`. The role says how.
-pub fn question_closed_message(number: u32) -> String {
-    format!(
-        "{WAKE_PREFIX} The user closed Q{number} without answering. Drop it from the ledger \
-         and delete its questions file."
-    )
-}
-
-/// The line that passes on what the user wrote in the desktop window about
-/// the backlog entry `heading` (`backlog.md`): the heading on one line, the
-/// user's text as they wrote it.
-pub fn backlog_message(heading: &str, text: &str) -> String {
-    let heading = heading.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!(
-        "{WAKE_PREFIX} The user wrote about backlog entry \"{heading}\": {}",
-        text.trim()
     )
 }
 
@@ -1440,6 +1311,8 @@ impl Handover {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use AgentState::{Blocked, Done, Idle, Working};
 
@@ -1451,13 +1324,8 @@ mod tests {
         let state = parent.join("project");
         fs::create_dir(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
-        let prepared = prepare_in(
-            state.clone(),
-            "/repos/private",
-            Path::new("/bin/corgi"),
-            Backend::Herdr,
-        )
-        .unwrap();
+        let prepared =
+            prepare_in(state.clone(), "/repos/private", Path::new("/bin/corgi")).unwrap();
         assert!(prepared.role_file.is_file());
         assert!(state.join("briefs").is_dir());
         assert_eq!(
@@ -1499,84 +1367,6 @@ mod tests {
         assert_eq!(tag(Some(&done), Blocked, 8), MergeTag::Stale);
         assert_eq!(tag(Some(&done), AgentState::Unknown, 8), MergeTag::Unsure);
         assert_eq!(tag(Some("merge"), Done, 7), MergeTag::Stale);
-    }
-
-    #[test]
-    fn supervisor_identity_survives_renaming_but_not_pane_reuse() {
-        let mut agent = AgentInfo {
-            name: Some("supervisor-m-ta-sverige".into()),
-            agent_session: Some(crate::model::AgentSession {
-                value: "original-session".into(),
-                ..Default::default()
-            }),
-            tokens: [(
-                SUPERVISOR_TOKEN.into(),
-                marker("", Some("original-session")),
-            )]
-            .into(),
-            ..Default::default()
-        };
-        assert!(is_supervisor(&agent));
-        agent.name = Some("start-your-supervisor-session-for-m".into());
-        assert!(is_supervisor(&agent));
-        // Neither an old bridge token nor the old name can override native identity.
-        agent
-            .tokens
-            .insert("session".into(), "original-session".into());
-        agent.agent_session.as_mut().unwrap().value = "replacement-session".into();
-        assert!(!is_supervisor(&agent));
-        agent.name = Some("supervisor-m-ta-sverige".into());
-        assert!(!is_supervisor(&agent));
-        agent.agent_session = None;
-        assert!(!is_supervisor(&agent));
-        agent.agent_session = Some(Default::default());
-        assert!(!is_supervisor(&agent));
-        agent
-            .tokens
-            .insert(SUPERVISOR_TOKEN.into(), "session:".into());
-        assert!(!is_supervisor(&agent));
-    }
-
-    /// A session an older Corgi started as the project's Steward carries its
-    /// marker under the old key, and is still the project's supervisor.
-    #[test]
-    fn a_session_marked_as_a_steward_by_an_older_corgi_is_the_supervisor() {
-        let mut agent = AgentInfo {
-            name: Some("steward-corgi".into()),
-            agent_session: Some(crate::model::AgentSession {
-                value: "old-session".into(),
-                ..Default::default()
-            }),
-            tokens: [(OLD_SUPERVISOR_TOKEN.into(), "session:old-session".into())].into(),
-            ..Default::default()
-        };
-        assert!(is_supervisor(&agent));
-        agent.agent_session.as_mut().unwrap().value = "another-session".into();
-        assert!(!is_supervisor(&agent));
-        agent.tokens = [(OLD_SUPERVISOR_TOKEN.into(), "steward-corgi".into())].into();
-        assert!(is_supervisor(&agent), "an old name marker");
-
-        let mut tokens = agent.tokens.clone();
-        upgrade_marker(&mut tokens);
-        assert_eq!(
-            tokens,
-            [(SUPERVISOR_TOKEN.into(), "steward-corgi".into())].into()
-        );
-        // A current marker beside an old one wins.
-        let mut tokens: BTreeMap<String, String> = [
-            (SUPERVISOR_TOKEN.into(), "session:new".into()),
-            (OLD_SUPERVISOR_TOKEN.into(), "session:old".into()),
-        ]
-        .into();
-        assert_eq!(
-            supervisor_marker(&tokens).map(String::as_str),
-            Some("session:new")
-        );
-        upgrade_marker(&mut tokens);
-        assert_eq!(
-            tokens,
-            [(SUPERVISOR_TOKEN.into(), "session:new".into())].into()
-        );
     }
 
     /// A scratch Corgi state directory, removed when dropped.
@@ -1684,13 +1474,7 @@ mod tests {
         )
         .unwrap();
 
-        let prepared = prepare_at(
-            &base.0,
-            "/repos/weather",
-            Path::new("/opt/corgi"),
-            Backend::Herdr,
-        )
-        .unwrap();
+        let prepared = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
         assert_eq!(prepared.warning, None);
         let read = |name: &str| fs::read_to_string(dir.join(name)).unwrap();
         assert_eq!(read("ledger.jsonl"), format!("{b1}\n{bad}\n{a2}\n"));
@@ -1703,13 +1487,7 @@ mod tests {
 
         // A second launch finds nothing to move and leaves both as they are.
         let before = files(&dir);
-        prepare_at(
-            &base.0,
-            "/repos/weather",
-            Path::new("/opt/corgi"),
-            Backend::Herdr,
-        )
-        .unwrap();
+        prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
         assert_eq!(files(&dir), before);
     }
 
@@ -1752,13 +1530,8 @@ mod tests {
                 assert!(note_written_since(real, 0));
                 assert_eq!(launch_of(real, &Harness::Claude).model, "opus");
 
-                let prepared = prepare_at(
-                    &base.0,
-                    "/repos/weather",
-                    Path::new("/opt/corgi"),
-                    Backend::Herdr,
-                )
-                .unwrap();
+                let prepared =
+                    prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
                 assert_eq!(prepared.state_dir, dir);
                 assert_eq!(prepared.warning, None, "{left:?}");
                 assert!(!fs::symlink_metadata(&dir).unwrap().file_type().is_symlink());
@@ -1817,13 +1590,7 @@ mod tests {
                 assert!(prepared.role.contains(&dir.display().to_string()));
 
                 // Starting again finds it migrated and leaves the links alone.
-                let again = prepare_at(
-                    &base.0,
-                    "/repos/weather",
-                    Path::new("/opt/corgi"),
-                    Backend::Herdr,
-                )
-                .unwrap();
+                let again = prepare_at(&base.0, "/repos/weather", Path::new("/opt/corgi")).unwrap();
                 assert_eq!((again.state_dir, again.warning), (dir.clone(), None));
                 assert_eq!(real.canonicalize().unwrap(), dir);
             }
@@ -1838,7 +1605,7 @@ mod tests {
 
         // Neither: a session starts in a new directory, with no link left.
         let (dir, old) = state_dirs_in(&base.0, "/repos/fresh");
-        let prepared = prepare_at(&base.0, "/repos/fresh", corgi_bin, Backend::Herdr).unwrap();
+        let prepared = prepare_at(&base.0, "/repos/fresh", corgi_bin).unwrap();
         assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
         assert!(dir.join("decisions.md").is_file() && dir.join("briefs").is_dir());
         assert!(old.iter().all(|old| fs::symlink_metadata(old).is_err()));
@@ -1857,7 +1624,7 @@ mod tests {
                 current_state_dir(dir.clone(), std::slice::from_ref(old)),
                 dir
             );
-            let prepared = prepare_at(&base.0, &project, corgi_bin, Backend::Herdr).unwrap();
+            let prepared = prepare_at(&base.0, &project, corgi_bin).unwrap();
             assert_eq!(prepared.state_dir, dir);
             let warning = prepared.warning.expect("a warning");
             assert!(warning.contains(&dir.display().to_string()), "{warning}");
@@ -1885,7 +1652,7 @@ mod tests {
             fs::write(path.join("decisions.md"), text).unwrap();
         }
         assert_eq!(current_state_dir(dir.clone(), &old), *corgis);
-        let prepared = prepare_at(&base.0, "/repos/both", corgi_bin, Backend::Herdr).unwrap();
+        let prepared = prepare_at(&base.0, "/repos/both", corgi_bin).unwrap();
         assert_eq!(prepared.state_dir, dir);
         let warning = prepared.warning.expect("a warning");
         assert_eq!(conflict(&dir, handler), Some(warning));
@@ -1907,7 +1674,7 @@ mod tests {
         fs::create_dir_all(corgis.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&dir, corgis).unwrap();
         assert_eq!(current_state_dir(dir.clone(), &old), dir);
-        let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin, Backend::Herdr).unwrap();
+        let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin).unwrap();
         assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
         assert!(link(corgis) && corgis.canonicalize().unwrap() == dir);
 
@@ -1915,7 +1682,7 @@ mod tests {
         // a fresh start, and the link, kept, resolves again.
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(current_state_dir(dir.clone(), &old), dir);
-        let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin, Backend::Herdr).unwrap();
+        let prepared = prepare_at(&base.0, "/repos/linked", corgi_bin).unwrap();
         assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
         assert!(link(corgis) && corgis.canonicalize().unwrap() == dir);
 
@@ -1930,7 +1697,7 @@ mod tests {
             fs::create_dir_all(old[n].parent().unwrap()).unwrap();
             std::os::unix::fs::symlink(&elsewhere, &old[n]).unwrap();
             assert_eq!(current_state_dir(dir.clone(), &old), old[n]);
-            let prepared = prepare_at(&base.0, &project, corgi_bin, Backend::Herdr).unwrap();
+            let prepared = prepare_at(&base.0, &project, corgi_bin).unwrap();
             assert_eq!((prepared.state_dir, prepared.warning), (dir.clone(), None));
             assert!(link(&old[n]) && link(&dir));
             assert_eq!(dir.canonicalize().unwrap(), elsewhere);
@@ -1945,25 +1712,6 @@ mod tests {
     fn state_dirs_conflict_in(base: &Path, project_root: &str) -> Option<String> {
         let (dir, old) = state_dirs_in(base, project_root);
         conflicts(&dir, &old)
-    }
-
-    #[test]
-    fn legacy_and_pre_prompt_markers_require_the_launch_name() {
-        let mut agent = AgentInfo {
-            name: Some("supervisor-corgi".into()),
-            tokens: [(SUPERVISOR_TOKEN.into(), marker("supervisor-corgi", None))].into(),
-            ..Default::default()
-        };
-        assert!(is_supervisor(&agent));
-        agent.agent_session = Some(crate::model::AgentSession {
-            value: "s1".into(),
-            ..Default::default()
-        });
-        assert!(is_supervisor(&agent));
-        agent.name = Some("worker".into());
-        assert!(!is_supervisor(&agent));
-        agent.name = None;
-        assert!(!is_supervisor(&agent));
     }
 
     fn wakes(steps: &[(AgentState, u64)]) -> Vec<Option<AgentState>> {
@@ -2041,7 +1789,7 @@ mod tests {
         );
         assert_eq!(
             wake_message(corgi_bin, "w-x", Blocked),
-            "[Corgi] w-x is blocked. Run: herdr agent read w-x --source recent --lines 120"
+            "[Corgi] w-x is blocked. Run: hc read w-x --lines 120"
         );
     }
 
@@ -2064,14 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn a_backlog_message_names_the_entry_and_the_role_says_what_the_backlog_is() {
-        assert_eq!(
-            backlog_message(
-                "1. \"Stop all\"\n  button ",
-                "  Do this first.\nThen that.\n"
-            ),
-            "[Corgi] The user wrote about backlog entry \"1. \"Stop all\" button\": Do this first.\nThen that."
-        );
+    fn the_role_says_what_the_backlog_is() {
         assert!(ROLE.contains(
             "- `backlog.md`: things to build later: an optional `# ` title and intro,\n  \
              then one `## <heading>` per entry, running to the next `## `. The window\n  \
@@ -2080,11 +1821,7 @@ mod tests {
     }
 
     #[test]
-    fn a_closed_question_is_one_line_the_role_says_how_to_handle() {
-        assert_eq!(
-            question_closed_message(40),
-            "[Corgi] The user closed Q40 without answering. Drop it from the ledger and delete its questions file."
-        );
+    fn the_role_says_how_to_handle_a_closed_question() {
         assert!(ROLE.contains(
             "- When Corgi says the user closed a question without answering, append a\n  \
              ledger line without it for each unfinished id whose newest line lists it\n  \
@@ -2289,20 +2026,8 @@ mod tests {
     }
 
     #[test]
-    fn the_role_steers_workers_with_the_commands_of_their_backend() {
-        let bin = Path::new("/opt/corgi/corgi");
-        let state = Path::new("/state");
-        let herdr = role_for(bin, state, Backend::Herdr);
-        for command in [
-            "- `herdr agent prompt NAME \"$(cat <<'EOF' … EOF)\"`: steer a running worker.",
-            "- `herdr agent read NAME --source recent --lines 120`: the worker's screen,",
-            "- `blocked`: run `herdr agent read`, tell",
-            "(`herdr agent read NAME --source recent --lines 40`)",
-            "`herdr agent send-keys NAME esc`",
-        ] {
-            assert!(herdr.contains(command), "{command}");
-        }
-        let hc = role_for(bin, state, Backend::Hc);
+    fn the_role_steers_workers_with_hcs_commands() {
+        let role = role(Path::new("/opt/corgi/corgi"), Path::new("/state"));
         for command in [
             "- `hc send NAME \"$(cat <<'EOF' … EOF)\"`: steer a running worker.",
             "- `hc read NAME --lines 120`: the worker's screen,",
@@ -2310,12 +2035,10 @@ mod tests {
             "(`hc read NAME --lines 40`)",
             "`hc keys NAME esc`",
         ] {
-            assert!(hc.contains(command), "{command}");
+            assert!(role.contains(command), "{command}");
         }
-        for role in [&herdr, &hc] {
-            assert!(!role.contains("{{"), "a placeholder is left");
-        }
-        assert!(!hc.contains("herdr agent"));
+        assert!(!role.contains("{{"), "a placeholder is left");
+        assert!(!role.contains("herdr agent"));
     }
 
     #[test]

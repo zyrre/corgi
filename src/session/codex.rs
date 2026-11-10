@@ -125,11 +125,8 @@ impl CodexScan {
             context_tokens: self.usage.as_ref().map(|usage| usage.tokens),
             cache: self.prompt_cache(),
             task,
-            message: self.conversation.message(),
-            tool: self.conversation.tool(),
             report: self.conversation.report(),
             turn: self.conversation.turn(),
-            last_activity: self.written_at,
         }
     }
 
@@ -248,7 +245,7 @@ pub fn codex_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
                 return;
             }
             if let Some(text) = row {
-                emit(Event::said(kind_of(text), text).row_only());
+                emit(Event::said(kind_of(text), text));
             }
             if let Some(text) = listed {
                 emit(Event::said(kind_of(text), text).transcript_only());
@@ -258,7 +255,7 @@ pub fn codex_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
             let text = spoken_text(&payload["summary"], "summary_text")
                 .or_else(|| spoken_text(&payload["content"], "reasoning_text"));
             if let Some(text) = text {
-                emit(Event::said(ActivityKind::Thinking, text).row_only());
+                emit(Event::said(ActivityKind::Thinking, text));
             }
         }
         (Some("response_item"), Some("function_call")) => {
@@ -282,17 +279,17 @@ pub fn codex_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
         }
         (Some("event_msg"), Some("exec_command_begin")) => {
             if let Some(command) = shell_command(payload) {
-                emit(Event::called(ActivityKind::Command, command).row_only());
+                emit(Event::called(ActivityKind::Command, command));
             }
         }
         (Some("event_msg"), Some("user_message")) => {
             if let Some(text) = payload["message"].as_str().filter(|text| is_spoken(text)) {
-                emit(Event::said(ActivityKind::Prompt, text).row_only());
+                emit(Event::said(ActivityKind::Prompt, text));
             }
         }
         (Some("event_msg"), Some("agent_message")) => {
             if let Some(text) = payload["message"].as_str() {
-                emit(Event::said(assistant_kind(text), text).row_only());
+                emit(Event::said(assistant_kind(text), text));
             }
         }
         (Some("event_msg"), Some("task_started" | "turn_started")) => {
@@ -304,7 +301,7 @@ pub fn codex_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
         ) => emit(Event::marks(Mark::End)),
         (Some("event_msg"), Some("agent_reasoning")) => {
             if let Some(text) = payload["text"].as_str() {
-                emit(Event::said(ActivityKind::Thinking, text).row_only());
+                emit(Event::said(ActivityKind::Thinking, text));
             }
         }
         _ => {}

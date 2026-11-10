@@ -1,8 +1,6 @@
 //! The command-line tools on herdr-core (`hc`), the Herdr app's backend:
 //! `corgi supervisor` and `corgi spawn` starting agents there, and the
-//! agents the commands that only read (`fleet`, `report`, `digest`) and
-//! `tag` see, from either backend. Which backend a command uses is
-//! [`crate::backend`]'s rule.
+//! agents that `fleet`, `report`, `digest` and `tag` see.
 
 use std::{
     fs,
@@ -12,39 +10,23 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
-    backend::{Backend, Caller, reachable_herdr},
     git::trust_root,
+    harness::{Harness, default_harness},
     hc::{self, HcClient, launch::Launched},
     launch::{
         CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL,
         sanitize_agent_name, supervisor_plan,
     },
+    model::DashboardAgent,
+    paths::{corgi_state_dir, dir_name, is_home, project_root_digest},
     progress::Progress,
-    project_main::{project_root_digest, project_root_of},
     projects::ProjectMemory,
+    supervisor,
+    tag::TagOptions,
     time::unix_now,
 };
-use crate::{
-    harness::Harness,
-    herdr::HerdrClient,
-    model::DashboardAgent,
-    paths::{corgi_state_dir, dir_name, is_home},
-    supervisor,
-    tag::{TagOptions, tag_agent},
-};
 
-use super::{
-    App,
-    catalog::default_harness,
-    cli::{SpawnOptions, connected_app, refreshed_app, spawn_harness},
-};
-
-/// Where `corgi supervisor` and `corgi spawn` start their agent: as
-/// `requested` by `--backend`, else where the caller runs, else on hc
-/// unless a Herdr TUI is running.
-pub(super) fn launch_backend(requested: Option<Backend>) -> Backend {
-    Caller::from_env().launch_backend(requested, || reachable_herdr().is_some())
-}
+use super::cli::{SpawnOptions, spawn_harness};
 
 /// The project root of `project` on hc, as its agents' `corgi.project`
 /// label holds it: the primary checkout of its repository, as Git says, or
@@ -82,7 +64,7 @@ pub(super) fn spawn(
         hc_project_root(&project)
     };
     // Held until the worker has started, so that a retry waits for it and
-    // then finds it, as on the Herdr TUI.
+    // then finds it.
     let _lock = match options.request_id.as_deref() {
         Some(_) => Some(spawn_lock(&root, || {
             eprintln!("Waiting for another spawn in {root} to finish…");
@@ -119,7 +101,6 @@ pub(super) fn spawn(
         effort: options.effort,
         prompt,
         project,
-        new_project: false,
         checkout: options.checkout,
         extra_args: options.agent_args,
         role: Role::Worker,
@@ -305,16 +286,16 @@ fn shell_is_in(terminal: &hc::Terminal, root: &str) -> bool {
     })
 }
 
-/// Writes `root` down among the projects Corgi used, as a launch on the
-/// Herdr TUI does, so that `corgi status` still lists the project, with its
-/// supervisor's state, once no agent of it runs.
+/// Writes `root` down among the projects Corgi used, so that `corgi status`
+/// still lists the project, with its supervisor's state, once no agent of it
+/// runs.
 fn remember_project(root: &str) {
     ProjectMemory::load().remember(root);
 }
 
-/// What `corgi spawn` and `corgi supervisor` print of an agent started on
-/// hc: the fields they print on the Herdr TUI, with the terminal's address
-/// as `terminal` (and as `pane_id`, for a script that reads that).
+/// What `corgi spawn` and `corgi supervisor` print of an agent they started:
+/// the terminal's address is `terminal` (and `pane_id`, for a script that
+/// reads that).
 pub(super) fn launched_json(plan: &LaunchPlan, launched: &Launched) -> serde_json::Value {
     serde_json::json!({
         "name": launched.name,
@@ -328,7 +309,7 @@ pub(super) fn launched_json(plan: &LaunchPlan, launched: &Launched) -> serde_jso
         "supervisor": matches!(plan.role, Role::Supervisor { .. }),
         "location": launched.location,
         "session": launched.session,
-        "backend": Backend::Hc.name(),
+        "backend": "hc",
     })
 }
 
@@ -370,7 +351,7 @@ fn requested_agent(agents: &[DashboardAgent], root: &str, id: &str) -> Option<se
             info.pane_id
         ),
         "existing": true,
-        "backend": Backend::Hc.name(),
+        "backend": "hc",
     }))
 }
 
@@ -418,120 +399,35 @@ fn spawn_lock(root: &str, waiting: impl FnOnce()) -> Result<fs::File> {
     Ok(lock)
 }
 
-/// The agents a command sees: the Herdr TUI's and hc's, each where the
-/// caller can reach it.
+/// Corgi's agents on hc, and the client that read them.
 pub(super) struct Seen {
-    pub(super) herdr: Option<(HerdrClient, App)>,
-    pub(super) hc: Option<(HcClient, Vec<DashboardAgent>)>,
+    pub(super) client: HcClient,
+    pub(super) agents: Vec<DashboardAgent>,
 }
 
-/// What a command run here sees: inside a Herdr TUI pane, that TUI alone,
-/// exactly as before hc; inside an hc terminal, hc alone; anywhere else,
-/// whichever of the two runs (hc only when its core already runs, since
-/// asking it would start one).
+/// What a command run here sees of hc: inside one of its terminals, that
+/// terminal's core; anywhere else, the core that already runs, since asking
+/// a stopped one would start it.
 pub(super) fn seen() -> Result<Seen> {
-    match Caller::from_env() {
-        Caller::Herdr => Ok(Seen {
-            herdr: Some(connected_app()?),
-            hc: None,
-        }),
-        Caller::Hc => {
-            let client = HcClient::from_env()?;
-            let agents = hc::agents::agents(&client)?;
-            Ok(Seen {
-                herdr: None,
-                hc: Some((client, agents)),
-            })
-        }
-        Caller::Outside => {
-            let herdr = reachable_herdr()
-                .and_then(|client| refreshed_app(client.clone()).ok().map(|app| (client, app)));
-            let hc = hc::core_running()
-                .then(HcClient::locate)
-                .flatten()
-                .and_then(|client| {
-                    hc::agents::agents(&client)
-                        .ok()
-                        .map(|agents| (client, agents))
-                });
-            anyhow::ensure!(
-                herdr.is_some() || hc.is_some(),
-                "neither a Herdr TUI nor herdr-core (hc) is running; run this inside one, or \
-                 start one"
-            );
-            Ok(Seen { herdr, hc })
-        }
-    }
+    anyhow::ensure!(
+        hc::in_terminal() || hc::core_running(),
+        "herdr-core (hc) is not running; run this inside one of its terminals, or start it"
+    );
+    let client = HcClient::from_env()?;
+    let agents = hc::agents::agents(&client)?;
+    Ok(Seen { client, agents })
 }
 
 impl Seen {
-    /// The root of `project`: as the Herdr TUI reports it when it is seen,
-    /// else as hc's labels hold it.
-    pub(super) fn root(&self, project: &Path) -> Result<String> {
-        match &self.herdr {
-            Some((client, _)) => project_root_of(client, project),
-            None => Ok(hc_project_root(project)),
-        }
-    }
-
-    /// Every agent seen, the Herdr TUI's first.
-    pub(super) fn agents(&self) -> Vec<DashboardAgent> {
-        let herdr = self.herdr.iter().flat_map(|(_, app)| app.agents.iter());
-        let hc = self.hc.iter().flat_map(|(_, agents)| agents.iter());
-        herdr.chain(hc).cloned().collect()
-    }
-
-    /// The running agent named or addressed `target`, and how to read its
-    /// screen: the Herdr TUI's first.
-    pub(super) fn find(&self, target: &str) -> Option<(DashboardAgent, Screen<'_>)> {
-        let named = |agent: &&DashboardAgent| {
+    /// The running agent named or addressed `target`.
+    pub(super) fn find(&self, target: &str) -> Option<&DashboardAgent> {
+        self.agents.iter().find(|agent| {
             agent.info.name.as_deref() == Some(target) || agent.info.pane_id == target
-        };
-        if let Some((client, app)) = &self.herdr
-            && let Some(agent) = app.agents.iter().find(named)
-        {
-            return Some((agent.clone(), Screen::Herdr(client)));
-        }
-        let (client, agents) = self.hc.as_ref()?;
-        let agent = agents.iter().find(named)?;
-        Some((agent.clone(), Screen::Hc(client)))
+        })
     }
 
-    /// `corgi tag` on whichever backend runs the agent: the Herdr TUI when
-    /// it is seen and has the agent (or hc is not seen), else hc.
+    /// `corgi tag` on the agent `options` names, of the project at `root`.
     pub(super) fn tag(&self, root: &str, options: &TagOptions) -> Result<String> {
-        let in_project = |agents: &[DashboardAgent]| {
-            agents.iter().any(|agent| {
-                agent.project_root == root
-                    && (agent.info.name.as_deref() == Some(options.name.as_str())
-                        || agent.info.pane_id == options.name)
-            })
-        };
-        match (&self.herdr, &self.hc) {
-            (Some((client, app)), None) => tag_agent(client, &app.agents, root, options),
-            (Some((client, app)), Some(_)) if in_project(&app.agents) => {
-                tag_agent(client, &app.agents, root, options)
-            }
-            (_, Some((client, agents))) => hc::agents::tag(client, agents, root, options),
-            (None, None) => anyhow::bail!("no Herdr TUI or hc to tag {} in", options.name),
-        }
-    }
-}
-
-/// How to read a running agent's screen.
-pub(super) enum Screen<'a> {
-    Herdr(&'a HerdrClient),
-    Hc(&'a HcClient),
-}
-
-impl Screen<'_> {
-    /// The newest `lines` lines of the screen of the agent in `pane`.
-    pub(super) fn read(&self, pane: &str, lines: u32) -> Result<String> {
-        match self {
-            Self::Herdr(client) => Ok(client
-                .read_agent(pane, crate::herdr::ReadSource::RecentUnwrapped, Some(lines))?
-                .text),
-            Self::Hc(client) => client.read(pane, lines),
-        }
+        hc::agents::tag(&self.client, &self.agents, root, options)
     }
 }

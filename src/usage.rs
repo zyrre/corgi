@@ -11,7 +11,7 @@
 //! passed to `curl` through stdin so it never appears in process arguments.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     env, fs,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
@@ -107,76 +107,6 @@ pub fn read_plan_usage(provider: Provider) -> Result<PlanUsage> {
         Provider::Codex => read_codex_usage(),
         Provider::Claude => read_claude_usage(),
     }
-}
-
-/// Reads the models that the locally authenticated Codex CLI currently offers
-/// in its picker. This deliberately uses the app-server catalog rather than
-/// the public API catalog: the app-server knows the account, workspace policy,
-/// and Codex-specific availability that the CLI will use.
-pub fn read_codex_models() -> Result<Vec<String>> {
-    let mut server = AppServer::start()?;
-    let mut models: Vec<String> = Vec::new();
-    let mut cursor = None;
-    loop {
-        let response = server.call(
-            "model/list",
-            json!({
-                "cursor": cursor,
-                "includeHidden": false,
-                "limit": 100,
-            }),
-        )?;
-        let (page, next_cursor) = parse_codex_models(&response)?;
-        for model in page {
-            if !models
-                .iter()
-                .any(|known| known.eq_ignore_ascii_case(&model))
-            {
-                models.push(model);
-            }
-        }
-        let Some(next_cursor) = next_cursor else {
-            break;
-        };
-        cursor = Some(next_cursor);
-    }
-    if models.is_empty() {
-        bail!("Codex returned no picker-visible models")
-    }
-    Ok(models)
-}
-
-/// Reads Codex's generated, human-facing name for each known thread.
-///
-/// The app-server protocol is experimental, so an unavailable method or an
-/// older CLI simply returns an error to the caller. Corgi keeps the transcript
-/// task fallback in that case. A missing name is normal for a brand-new thread
-/// whose title generation has not completed yet.
-pub fn read_codex_thread_titles(thread_ids: &[String]) -> Result<HashMap<String, String>> {
-    let mut seen = HashSet::new();
-    let thread_ids: Vec<String> = thread_ids
-        .iter()
-        .map(|thread_id| thread_id.trim())
-        .filter(|thread_id| !thread_id.is_empty())
-        .filter(|thread_id| seen.insert((*thread_id).to_string()))
-        .map(str::to_string)
-        .collect();
-    if thread_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-
-    let mut server = AppServer::start()?;
-    let mut titles = HashMap::new();
-    for thread_id in &thread_ids {
-        let response = server.call(
-            "thread/read",
-            json!({ "threadId": thread_id, "includeTurns": false }),
-        )?;
-        if let Some(title) = parse_codex_thread_title(&response) {
-            titles.insert(thread_id.clone(), title);
-        }
-    }
-    Ok(titles)
 }
 
 // ---------------------------------------------------------------------------
@@ -323,47 +253,6 @@ fn wait_for_response(messages: &mpsc::Receiver<String>, id: u64) -> Result<Value
             .cloned()
             .context("Codex app-server response did not include a result");
     }
-}
-
-fn parse_codex_models(response: &Value) -> Result<(Vec<String>, Option<String>)> {
-    let data = response
-        .get("data")
-        .and_then(Value::as_array)
-        .context("Codex did not return a model list")?;
-    let models = data
-        .iter()
-        .filter(|model| {
-            !model
-                .get("hidden")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-        })
-        .filter_map(|model| {
-            model
-                .get("model")
-                .or_else(|| model.get("id"))
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|model| !model.is_empty())
-                .map(str::to_string)
-        })
-        .collect();
-    let next_cursor = response
-        .get("nextCursor")
-        .and_then(Value::as_str)
-        .filter(|cursor| !cursor.is_empty())
-        .map(str::to_string);
-    Ok((models, next_cursor))
-}
-
-/// The optional generated task title in a `thread/read` response.
-fn parse_codex_thread_title(response: &Value) -> Option<String> {
-    response
-        .pointer("/thread/name")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|title| !title.is_empty())
-        .map(str::to_string)
 }
 
 fn parse_codex_usage(account: &Value, rate_limits: &Value) -> Result<PlanUsage> {
@@ -700,9 +589,8 @@ mod tests {
 
     use super::{
         AppServer, CLAUDE_EXPIRED, CLAUDE_REJECTED, PlanUsage, Provider, UsageWindow, curl_quote,
-        first_accepted, parse_claude_credentials, parse_claude_usage, parse_codex_models,
-        parse_codex_thread_title, parse_codex_usage, rank_claude_credentials,
-        read_codex_thread_titles, split_curl_status, summarize_body, wait_for_response,
+        first_accepted, parse_claude_credentials, parse_claude_usage, parse_codex_usage,
+        rank_claude_credentials, split_curl_status, summarize_body, wait_for_response,
     };
     use crate::test_support::ScratchDir;
 
@@ -754,43 +642,6 @@ mod tests {
             wait_for_response(&rx, 2).expect("parse JSON-RPC response"),
             json!({ "data": [] })
         );
-    }
-
-    #[test]
-    fn parses_visible_codex_models_and_the_next_page_cursor() {
-        let (models, next_cursor) = parse_codex_models(&json!({
-            "data": [
-                { "id": "default", "model": "gpt-5.6-sol", "hidden": false },
-                { "id": "hidden", "model": "gpt-5.6-internal", "hidden": true },
-                { "id": "legacy", "hidden": false }
-            ],
-            "nextCursor": "second-page"
-        }))
-        .expect("model response parses");
-
-        assert_eq!(models, ["gpt-5.6-sol", "legacy"]);
-        assert_eq!(next_cursor.as_deref(), Some("second-page"));
-    }
-
-    #[test]
-    fn reads_a_generated_codex_thread_title_when_one_is_available() {
-        assert_eq!(
-            parse_codex_thread_title(&json!({
-                "thread": { "name": "  Investigate Codex task titles  " }
-            })),
-            Some("Investigate Codex task titles".into())
-        );
-        assert_eq!(
-            parse_codex_thread_title(&json!({ "thread": { "name": null } })),
-            None
-        );
-    }
-
-    #[test]
-    #[ignore = "requires a locally authenticated Codex CLI"]
-    fn live_codex_model_catalog() {
-        let models = super::read_codex_models().expect("read the Codex model catalog");
-        assert!(models.iter().any(|model| model.starts_with("gpt-")));
     }
 
     #[test]
@@ -1037,31 +888,6 @@ mod tests {
                 banked_resets: Some(0),
             }
         );
-    }
-
-    #[test]
-    fn the_wrapper_kills_the_child_and_returns_the_error_when_a_request_fails() {
-        let _scratch = fake_codex_app_server(
-            r#"
-            while IFS= read -r line; do
-                id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-                case "$line" in
-                    *'"method":"initialize"'*)
-                        printf '{"id":%s,"result":{}}\n' "$id" ;;
-                    *'"method":"thread/read"'*)
-                        printf '{"id":%s,"error":{"message":"thread/read is not supported"}}\n' "$id" ;;
-                esac
-            done
-            "#,
-        );
-
-        // If the child were left running on this early return, it would still
-        // be blocked reading its next line and the test would hang until
-        // REQUEST_TIMEOUT; returning promptly demonstrates AppServer's Drop
-        // tore it down instead.
-        let error = read_codex_thread_titles(&["thread-1".into()])
-            .expect_err("an app-server error should surface as an error");
-        assert!(error.to_string().contains("thread/read is not supported"));
     }
 
     #[test]

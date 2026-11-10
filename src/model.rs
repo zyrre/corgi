@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{harness::Harness, time::LocalTime};
+use crate::harness::Harness;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -24,10 +24,6 @@ impl AgentState {
             Self::Done => "DONE",
             Self::Unknown => "UNKNOWN",
         }
-    }
-
-    pub fn can_prompt(self) -> bool {
-        !matches!(self, Self::Blocked)
     }
 }
 
@@ -147,19 +143,15 @@ pub struct WorkspaceWorktreeInfo {
 #[derive(Debug, Clone, Default)]
 pub struct DashboardAgent {
     pub info: AgentInfo,
-    /// The repository or workspace shared by related sessions. This is kept
-    /// separate from `project`, which may include a worktree checkout name.
+    /// The name of the repository related sessions share, which they are
+    /// sorted by; `Scratch` for the scratch sessions.
     pub project_group: String,
-    pub project: String,
     /// Directory a sibling agent should be created from: the repository's
     /// primary checkout when the agent works in a worktree, else its cwd.
     pub project_root: String,
     /// Path of the agent's linked worktree checkout, when it has one. Closing
     /// such an agent removes the checkout instead of only the workspace.
     pub worktree_checkout: Option<String>,
-    /// Short name of that checkout, without the `worktree-` prefix Herdr adds
-    /// to the directories it creates. `None` for a primary checkout.
-    pub worktree_label: Option<String>,
     /// A few words describing what the agent is working on, as the agent CLI
     /// itself summarizes the session.
     pub task: String,
@@ -178,16 +170,6 @@ pub struct DashboardAgent {
     /// let Corgi derive a conservative minimum lifetime from a cache hit or
     /// write in the rollout.
     pub cache: Option<PromptCache>,
-    /// When the session last did anything: the newest timestamped record of
-    /// its transcript, on the local clock. `None` for a harness whose session
-    /// file Corgi does not read or that records no time.
-    pub last_activity: Option<LocalTime>,
-    /// The newest thing said in the session, whoever said it: the user's
-    /// prompt, the assistant's reply, or the assistant's thinking.
-    pub message: Activity,
-    /// The command or tool call the agent is running, or the last one it ran,
-    /// with its whole argument rather than the CLI's abbreviation of it.
-    pub tool: Activity,
     /// The agent in the root tab of its project's Corgi workspace: the
     /// project's supervisor, shown by that name and first in its project.
     pub supervisor: bool,
@@ -199,16 +181,6 @@ pub struct DashboardAgent {
     /// row stands for it, offers Resume (`restart::resume`) and nothing
     /// else acts on it. Its `info` describes the pane, with no session.
     pub exited: bool,
-    /// An exited row Pause all stopped ([`crate::pause`]): Resume all
-    /// starts it again.
-    pub paused: bool,
-    /// What the running agent lacks of the options Corgi launched it with
-    /// (`role`, `memory`, `model`, a flag), as after a resume by a Herdr
-    /// older than 0.9.2: a warning on its row.
-    pub missing_options: Vec<String>,
-    /// Why Corgi refuses to type wakes into this supervisor, while it does
-    /// (`recovery::mark_refused`). The wakes wait in its inbox.
-    pub delivery_refused: Option<String>,
 }
 
 impl DashboardAgent {

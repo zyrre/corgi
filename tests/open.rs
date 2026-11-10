@@ -13,8 +13,13 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use corgi::test_support::{ScratchDir, git_repo, git_worktree};
 use serde_json::{Value, json};
+
+// The unit tests' helpers, which use std alone. This file uses some of them.
+#[allow(dead_code)]
+#[path = "../src/test_support.rs"]
+mod test_support;
+use test_support::{ScratchDir, git_repo, git_worktree};
 
 /// A fake `hc`, a private home and state, and a folder for projects. `hc CMD
 /// TARGET …` prints `CMD.TARGET.N.out` on its `N`th call for that target,
@@ -392,18 +397,11 @@ fn supervisor_with_a_terminal_starts_there_or_nowhere() {
         "{started}"
     );
 
-    // It is hc's alone, and never a worker's.
-    let output = world.corgi(&[
-        "supervisor",
-        &root,
-        "--terminal",
-        "t5",
-        "--backend",
-        "herdr",
-    ]);
+    // It is a supervisor's alone, never a worker's.
+    let output = world.corgi(&["spawn", "--project", &root, "--terminal", "t5"]);
     assert!(!output.status.success());
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("does not go with --backend herdr"),
+        String::from_utf8_lossy(&output.stderr).contains("--terminal is for corgi supervisor"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

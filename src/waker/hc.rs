@@ -37,7 +37,6 @@ use super::{
     SupervisorWaker, successor_plan, transcript_report, wake_lock_path,
 };
 use crate::{
-    backend::Backend,
     draft,
     hc::{
         BASELINE_LABEL, HANDOVER_LABEL, HcClient, HcError,
@@ -114,18 +113,16 @@ impl SupervisorWaker {
     pub fn for_hc(socket: &Path) -> Self {
         let mut waker = Self::default();
         waker.socket = Some(socket.to_path_buf());
-        waker.backend = Backend::Hc;
         waker.hc_pause = crate::hc::pause::record_path(socket);
         waker
     }
 
     /// [`SupervisorWaker::for_hc`] keeping its inboxes, records and lock
     /// under `base`, as [`SupervisorWaker::in_dir`] does.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn for_hc_in(base: &Path) -> Self {
         let mut waker = Self::in_dir(base);
         waker.socket = Some(base.join("hc.sock"));
-        waker.backend = Backend::Hc;
         waker.hc_pause = Some(base.join("pause.json"));
         waker
     }
@@ -145,7 +142,6 @@ impl SupervisorWaker {
         if !self.take_lock(&path) {
             return false;
         }
-        self.hold = true;
         self.take_up();
         true
     }
@@ -176,7 +172,7 @@ impl SupervisorWaker {
             .as_deref()
             .map(PauseHolds::read)
             .unwrap_or_default();
-        self.paused = crate::pause::Holds {
+        self.paused = super::Paused {
             panes: holds.panes(agents),
             roots: holds.supervisor_roots(),
         };
@@ -389,10 +385,6 @@ impl HcCore {
             notes: Vec::new(),
         }
     }
-
-    pub fn client(&self) -> &HcClient {
-        &self.client
-    }
 }
 
 impl Core for HcCore {
@@ -468,7 +460,7 @@ impl Core for HcCore {
     fn replace(&mut self, replacement: Replacement) -> Job<Result<String>> {
         let client = self.client.clone();
         let corgi_bin = self.corgi_bin.clone();
-        Job::spawn(move |_| replace_supervisor(&client, &replacement, &corgi_bin))
+        Job::spawn(move || replace_supervisor(&client, &replacement, &corgi_bin))
     }
 }
 

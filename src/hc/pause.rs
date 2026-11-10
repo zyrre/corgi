@@ -173,13 +173,6 @@ impl Record {
     pub fn in_force(&self) -> bool {
         self.agents.iter().any(PausedAgent::is_paused)
     }
-
-    /// The paused agent `agent`, a row, stands for, if it is one.
-    pub fn paused_row(&self, agent: &DashboardAgent) -> Option<&PausedAgent> {
-        self.agents
-            .iter()
-            .find(|paused| paused.is_paused() && paused.is_row(agent))
-    }
 }
 
 /// The pause file at `path`; an empty one when there is none.

@@ -10,13 +10,11 @@
 use std::{
     env, fmt, fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
-use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
-use crate::{activity::strip_ansi, paths::home, usage::read_codex_models};
+use crate::paths::{corgi_state_dir, home};
 
 /// The flag every supported harness CLI takes to start on a given model.
 const MODEL_FLAG: &str = "--model";
@@ -155,29 +153,10 @@ impl Harness {
             .unwrap_or_else(|| PathBuf::from(self.kind()))
     }
 
-    /// Models the form offers when none were discovered, on top of the
-    /// harness default the CLI picks for itself. A model the CLI knows but
-    /// this list does not can still be typed into the field.
-    pub fn fallback_models(&self) -> &'static [&'static str] {
-        match self {
-            Self::Claude => &["opus", "opus[1m]", "sonnet", "sonnet[1m]", "haiku", "fable"],
-            Self::Codex => &["gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra"],
-            Self::Gemini => &["gemini-2.5-pro", "gemini-2.5-flash"],
-            Self::Copilot => &["claude-sonnet-4.5", "gpt-5"],
-            Self::OpenCode | Self::Other(_) => &[],
-        }
-    }
-
     /// Whether the CLI takes an effort level at start: Codex as a config
     /// override, Claude Code as `--effort`. Both use the same five levels.
     pub fn supports_effort(&self) -> bool {
         matches!(self, Self::Codex | Self::Claude)
-    }
-
-    /// Whether the harness has a local, account-aware model-discovery
-    /// surface. Others keep their fallback list and free-text entry.
-    pub fn supports_model_discovery(&self) -> bool {
-        matches!(self, Self::Codex | Self::OpenCode)
     }
 
     /// The harnesses a supervisor runs on, as one phrase: `claude or codex`.
@@ -192,16 +171,6 @@ impl Harness {
     /// Whether a supervisor can run on this harness.
     pub fn supports_supervisor(&self) -> bool {
         Self::SUPERVISOR_HARNESSES.contains(self)
-    }
-
-    /// The models the harness's CLI currently offers. Codex asks its
-    /// authenticated app-server; OpenCode lists its own provider cache.
-    pub fn discover_models(&self) -> Result<Vec<String>> {
-        match self {
-            Self::Codex => read_codex_models(),
-            Self::OpenCode => read_opencode_models(),
-            other => bail!("{other} does not expose a model catalog"),
-        }
     }
 
     /// The arguments that pin the CLI to one model; none when the harness
@@ -294,16 +263,6 @@ impl Harness {
             Self::Claude => Some(SessionFormat::Claude),
             Self::Codex => Some(SessionFormat::Codex),
             _ => None,
-        }
-    }
-
-    /// What starts an assistant message on the CLI's screen. A harness Corgi
-    /// does not know gets the generic labels and both known ones.
-    pub fn reply_prefixes(&self) -> &'static [&'static str] {
-        match self {
-            Self::Codex => &["codex:", "•", "●"],
-            Self::Claude => &["claude:", "⏺", "●"],
-            _ => &["assistant:", "agent:", "codex:", "claude:"],
         }
     }
 }
@@ -403,65 +362,6 @@ fn candidate_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// OpenCode maintains its provider model catalog itself. Its command does not
-/// currently offer machine-readable output, so accept any provider/model
-/// tokens it renders, whether it uses a compact list or a table. We don't pass
-/// `--refresh`: opening Corgi should never force a network refresh; users can
-/// refresh OpenCode's cache on their own schedule.
-fn read_opencode_models() -> Result<Vec<String>> {
-    let output = Command::new(Harness::OpenCode.command())
-        .arg("models")
-        .output()
-        .context("run opencode models")?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!(
-            "opencode models failed: {}",
-            if detail.is_empty() {
-                format!("exited with {}", output.status)
-            } else {
-                detail
-            }
-        );
-    }
-    let output = String::from_utf8(output.stdout).context("OpenCode model list is not UTF-8")?;
-    let models = parse_opencode_models(&output);
-    if models.is_empty() {
-        bail!("OpenCode returned no provider/model entries")
-    }
-    Ok(models)
-}
-
-pub fn parse_opencode_models(output: &str) -> Vec<String> {
-    let output = strip_ansi(output);
-    let mut models = Vec::new();
-    for token in output.split_whitespace() {
-        let token = token.trim_matches(|character: char| {
-            !character.is_ascii_alphanumeric() && !matches!(character, '/' | '.' | '_' | '-' | ':')
-        });
-        let Some((provider, model)) = token.split_once('/') else {
-            continue;
-        };
-        let valid = !provider.is_empty()
-            && !model.is_empty()
-            && provider.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')
-            })
-            && model.chars().all(|character| {
-                character.is_ascii_alphanumeric()
-                    || matches!(character, '/' | '.' | '_' | '-' | ':')
-            });
-        if valid
-            && !models
-                .iter()
-                .any(|known: &String| known.eq_ignore_ascii_case(token))
-        {
-            models.push(token.to_string());
-        }
-    }
-    models
-}
-
 /// Claude Code's configuration directories, the most specific first:
 /// `CLAUDE_CONFIG_DIR` when set, then `~/.claude`.
 pub fn claude_config_dirs() -> Vec<PathBuf> {
@@ -496,6 +396,66 @@ pub fn first_setting(settings: &[Value], pick: impl Fn(&Value) -> &Value) -> Opt
         .map(str::trim)
         .find(|value| !value.is_empty())
         .map(str::to_string)
+}
+
+/// The reasoning levels Corgi offers when starting a Codex or Claude Code
+/// session. The empty value leaves the harness or model default in charge.
+pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// The harness a launch that names none starts on: the one the last spawn
+/// recorded, if it is still installed; otherwise `CORGI_DEFAULT_AGENT` if
+/// set, otherwise the first installed harness of [`Harness::KNOWN`],
+/// otherwise `codex`.
+pub fn default_harness() -> Harness {
+    default_harness_from(
+        last_spawn_harness(),
+        std::env::var("CORGI_DEFAULT_AGENT").ok(),
+        &Harness::installed(),
+    )
+}
+
+fn default_harness_from(
+    last_used: Option<String>,
+    override_kind: Option<String>,
+    installed: &[Harness],
+) -> Harness {
+    last_used
+        .map(|kind| Harness::from_typed(&kind))
+        .filter(|harness| installed.contains(harness))
+        .or_else(|| {
+            override_kind
+                .map(|kind| Harness::from_typed(&kind))
+                .filter(|harness| !harness.kind().is_empty())
+        })
+        .or_else(|| {
+            Harness::KNOWN
+                .iter()
+                .find(|harness| installed.contains(harness))
+                .cloned()
+        })
+        .unwrap_or_else(|| Harness::KNOWN[0].clone())
+}
+
+/// The harness kind in `last-harness.json` in Corgi's state directory, which
+/// the Herdr TUI's launches recorded. Nothing on herdr-core writes it yet, so
+/// it names the last spawn made there, if any. Tests read none, so they
+/// never depend on the developer's own state.
+fn last_spawn_harness() -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
+    read_last_harness(&corgi_state_dir()?.join("last-harness.json"))
+}
+
+/// The kind recorded in the file at `path` (`{"harness":"claude"}`), or
+/// `None` when there is no file, it cannot be read or parsed, or it names no
+/// harness.
+fn read_last_harness(path: &Path) -> Option<String> {
+    let record: Value = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
+    let kind = Harness::from_typed(record.get("harness")?.as_str()?)
+        .kind()
+        .to_string();
+    (!kind.is_empty()).then_some(kind)
 }
 
 #[cfg(test)]
@@ -752,22 +712,78 @@ mod tests {
         );
     }
     #[test]
-    fn opencode_model_parser_accepts_colored_rows_and_deduplicates() {
-        let models = crate::harness::parse_opencode_models(
-            "\u{1b}[36mopenai/gpt-5.6-sol\u{1b}[0m\nopenrouter/anthropic/claude-sonnet\nopenai/gpt-5.6-sol\n",
-        );
-
-        assert_eq!(
-            models,
-            ["openai/gpt-5.6-sol", "openrouter/anthropic/claude-sonnet"]
-        );
-    }
-    #[test]
     fn only_a_chosen_model_reaches_the_agent_command_line() {
         assert!(Harness::Claude.model_args("  ").is_empty());
         assert_eq!(
             Harness::Claude.model_args(" opus[1m] "),
             ["--model", "opus[1m]"]
         );
+    }
+
+    #[test]
+    fn default_harness_prefers_last_used_then_override_then_installed_cli() {
+        let both = [Harness::Codex, Harness::Claude];
+        // The last spawn wins over the override and the installed order.
+        assert_eq!(
+            default_harness_from(Some("claude".into()), Some("codex".into()), &both),
+            Harness::Claude
+        );
+        assert_eq!(
+            default_harness_from(Some(" Codex ".into()), Some("claude".into()), &both),
+            Harness::Codex
+        );
+        // A last-used harness that is gone falls back to the override, then
+        // to the installed order.
+        assert_eq!(
+            default_harness_from(
+                Some("claude".into()),
+                Some("opencode".into()),
+                &[Harness::Codex]
+            ),
+            Harness::OpenCode
+        );
+        assert_eq!(
+            default_harness_from(Some("claude".into()), None, &[Harness::OpenCode]),
+            Harness::OpenCode
+        );
+        assert_eq!(
+            default_harness_from(Some("aider".into()), None, &both),
+            Harness::Codex
+        );
+        assert_eq!(
+            default_harness_from(Some("claude".into()), None, &[]),
+            Harness::Codex
+        );
+        // With nothing recorded: the override, then the first installed.
+        assert_eq!(
+            default_harness_from(None, Some(" Claude ".into()), &[Harness::Codex]),
+            Harness::Claude
+        );
+        assert_eq!(
+            default_harness_from(None, Some(String::new()), &[Harness::Claude]),
+            Harness::Claude
+        );
+        assert_eq!(
+            default_harness_from(None, None, &[Harness::OpenCode, Harness::Codex]),
+            Harness::Codex
+        );
+        assert_eq!(
+            default_harness_from(None, None, &[Harness::OpenCode]),
+            Harness::OpenCode
+        );
+        assert_eq!(default_harness_from(None, None, &[]), Harness::Codex);
+    }
+
+    #[test]
+    fn the_last_harness_file_names_a_harness_or_nothing() {
+        let scratch = crate::test_support::ScratchDir::new("last-harness");
+        let path = scratch.join("last-harness.json");
+        assert_eq!(read_last_harness(&path), None);
+        fs::write(&path, r#"{"harness":" Claude "}"#).unwrap();
+        assert_eq!(read_last_harness(&path).as_deref(), Some("claude"));
+        for corrupt in ["", "{", "{}", r#"{"harness":""}"#, r#"{"harness":7}"#] {
+            fs::write(&path, corrupt).unwrap();
+            assert_eq!(read_last_harness(&path), None, "{corrupt:?}");
+        }
     }
 }

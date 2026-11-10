@@ -16,7 +16,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::{
-    choices::{Choice, ChoiceList, FreeText},
+    choices::{Choice, ChoiceList},
+    harness::{EFFORT_LEVELS, Harness, default_harness},
     hc::{self, HcClient},
     launch::{SUPERVISOR_HOME_REFUSAL, create_project, dashboard_supervisor_plan, supervisor_plan},
     model::{DashboardAgent, WorkspaceInfo, WorkspaceWorktreeInfo},
@@ -26,12 +27,7 @@ use crate::{
     supervisor,
 };
 
-use crate::harness::Harness;
-
-use super::{
-    catalog::{EFFORT_LEVELS, default_harness},
-    hc_cli::{self, Shell, Started, hc_project_root},
-};
+use super::hc_cli::{self, Shell, Started, hc_project_root};
 
 pub const PROJECTS_USAGE: &str = "\
 Usage: corgi projects --json [--query TEXT] [--open DIR]...
@@ -140,7 +136,7 @@ pub(crate) fn projects_value(
         .collect();
     let known = without_duplicates(known_projects(agents, &workspaces, memory));
     let parent = new_project_parent(&known);
-    let mut list = ChoiceList::new(project_choices(&known), "", FreeText::Directory);
+    let mut list = ChoiceList::new(project_choices(&known));
     if let Some(parent) = &parent {
         list = list.with_new_project_parent(parent.clone());
     }
@@ -236,7 +232,7 @@ fn parse_open_options(args: &[String]) -> Result<OpenOptions> {
     if let Some(harness) = &options.harness {
         anyhow::ensure!(
             harness.supports_supervisor(),
-            super::launch::supervisor_harness_error(harness)
+            crate::launch::supervisor_harness_error(harness)
         );
     }
     if let Some(effort) = &options.effort {

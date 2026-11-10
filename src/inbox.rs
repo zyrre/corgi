@@ -155,14 +155,6 @@ impl Item {
         self.report.is_some() || self.report_file.is_some()
     }
 
-    /// The item's report in full, read from its file when it has one there.
-    pub fn report_text(&self, dir: &Path) -> Option<String> {
-        self.try_report_text(dir).unwrap_or_else(|error| {
-            eprintln!("Cannot read private inbox report: {error:#}");
-            None
-        })
-    }
-
     pub fn try_report_text(&self, dir: &Path) -> Result<Option<String>> {
         privacy::repair(dir)?;
         if let Some(report) = &self.report {
@@ -1000,11 +992,19 @@ mod tests {
         assert_eq!(prompt_text(&[&big]), big.text);
         let inbox = Inbox::read(&dir);
         assert_eq!(
-            inbox.newest_report("w-radar").unwrap().report_text(&dir),
+            inbox
+                .newest_report("w-radar")
+                .unwrap()
+                .try_report_text(&dir)
+                .unwrap(),
             Some(long)
         );
         assert_eq!(
-            inbox.newest_report("w-forecast").unwrap().report_text(&dir),
+            inbox
+                .newest_report("w-forecast")
+                .unwrap()
+                .try_report_text(&dir)
+                .unwrap(),
             Some(short)
         );
         assert!(inbox.newest_report("w-nobody").is_none());

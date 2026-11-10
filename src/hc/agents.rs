@@ -13,16 +13,13 @@ use std::{collections::BTreeMap, path::Path};
 use anyhow::Result;
 
 use crate::{
-    activity::message_from_state,
     launch::CORGI_REQUEST_TOKEN,
-    model::{Activity, ActivityKind, AgentInfo, AgentSession, AgentState, DashboardAgent},
+    model::{AgentInfo, AgentSession, AgentState, DashboardAgent},
     paths::{dir_name, is_home},
-    refresh::sort_agents,
-    rows::{NO_TOOL_YET, SCRATCH_GROUP, SUPERVISOR_NAME, checkout_label, task_summary},
+    rows::{SCRATCH_GROUP, SUPERVISOR_NAME, checkout_label, task_summary},
     session::SessionReader,
     supervisor::{self, MERGE_TOKEN},
     tag::{TagOptions, tag_agent_with},
-    time::LocalTime,
 };
 
 use super::{
@@ -75,12 +72,12 @@ pub fn dashboard_agents(terminals: &[Terminal], home: Option<&Path>) -> Vec<Dash
     agents
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn session_reader(home: Option<&Path>) -> SessionReader {
     home.map(SessionReader::in_home).unwrap_or_default()
 }
 
-#[cfg(not(any(test, feature = "test-support")))]
+#[cfg(not(test))]
 fn session_reader(_home: Option<&Path>) -> SessionReader {
     SessionReader::default()
 }
@@ -208,39 +205,25 @@ fn dashboard_agent(
         repo_name
     };
     let facts = sessions.facts(&info);
-    let (project, task) = if supervisor {
-        (SUPERVISOR_NAME.to_string(), SUPERVISOR_NAME.to_string())
+    let task = if supervisor {
+        SUPERVISOR_NAME.to_string()
     } else {
-        let task = task_summary(&info, None, &in_project, None, facts.task.as_deref());
-        (in_project, task)
+        task_summary(&info, None, &in_project, None, facts.task.as_deref())
     };
-    let message = facts
-        .message
-        .unwrap_or_else(|| message_from_state(info.state));
-    let tool = facts.tool.unwrap_or_else(|| Activity {
-        kind: ActivityKind::Ready,
-        text: NO_TOOL_YET.into(),
-    });
     Some(DashboardAgent {
         project_group,
-        project,
         project_root: root,
         worktree_checkout,
-        worktree_label,
         task,
         model: facts.model,
         effort: facts.effort,
         context_percent: facts.context_percent,
         context_tokens: facts.context_tokens,
         cache: facts.cache,
-        last_activity: facts.last_activity.map(LocalTime::at),
-        message,
-        tool,
         supervisor,
         scratch,
         exited: supervisor && shell_in_front(terminal),
         info,
-        ..DashboardAgent::default()
     })
 }
 
@@ -277,4 +260,43 @@ fn write_tag(client: &HcClient, address: &str, at: Option<&str>) -> Result<()> {
         None => [(TAG_LABEL, ""), (TAG_AT_LABEL, "")],
     };
     client.label(address, &labels).map(drop)
+}
+
+/// Keeps related worktree sessions together, each project led by its
+/// supervisor, and the scratch sessions after every project. Within a project
+/// the rest follow their live state, the ones needing attention first:
+/// blocked, working, done, idle, then unknown. Agents sharing a state are
+/// ordered by when they entered it, the most recent first
+/// (`state_change_seq`), then by name, then by terminal address.
+fn sort_agents(agents: &mut [DashboardAgent]) {
+    agents.sort_by(|left, right| {
+        left.scratch
+            .cmp(&right.scratch)
+            .then_with(|| {
+                left.project_group
+                    .to_lowercase()
+                    .cmp(&right.project_group.to_lowercase())
+            })
+            .then_with(|| right.supervisor.cmp(&left.supervisor))
+            .then_with(|| state_rank(left.info.state).cmp(&state_rank(right.info.state)))
+            .then_with(|| right.info.state_change_seq.cmp(&left.info.state_change_seq))
+            .then_with(|| {
+                left.info
+                    .display_name()
+                    .to_lowercase()
+                    .cmp(&right.info.display_name().to_lowercase())
+            })
+            .then_with(|| left.info.pane_id.cmp(&right.info.pane_id))
+    });
+}
+
+/// Position of a state within a project, the most urgent first.
+fn state_rank(state: AgentState) -> u8 {
+    match state {
+        AgentState::Blocked => 0,
+        AgentState::Working => 1,
+        AgentState::Done => 2,
+        AgentState::Idle => 3,
+        AgentState::Unknown => 4,
+    }
 }

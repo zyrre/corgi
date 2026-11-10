@@ -30,12 +30,11 @@ use crate::{
     git::{git_output, trust_root},
     harness::{CODEX_DEVELOPER_INSTRUCTIONS, Harness},
     launch::{Checkout, LaunchPlan, Role, launch_args},
-    paths::{dir_name, home, is_home},
+    paths::{dir_name, home, is_home, project_root_digest},
     progress::Progress,
-    project_main::project_root_digest,
     projects::is_created_project,
     rows::SUPERVISOR_NAME,
-    supervisor::{self, Backend, Prepared},
+    supervisor::{self, Prepared},
     time::unix_now,
 };
 
@@ -255,7 +254,7 @@ fn start_supervisor(
     place: Place,
     progress: &mut dyn Progress,
 ) -> Result<Launched> {
-    let prepare = |root: &str| supervisor::prepare_for(root, corgi_bin, Backend::Hc);
+    let prepare = |root: &str| supervisor::prepare(root, corgi_bin);
     start_supervisor_with(client, plan, place, &prepare, progress)
 }
 
@@ -328,7 +327,6 @@ pub(super) fn start_supervisor_with(
         shell_line(&agent_argv(&plan.project, None, &resume))
     });
 
-    progress.step(0);
     let address = match &existing {
         Some(terminal) => {
             let address = terminal.address.clone();
@@ -385,7 +383,6 @@ pub(super) fn start_supervisor_with(
             address
         }
     };
-    progress.step(1);
     progress.report(format!(
         "Starting {} in {address} as {}…",
         plan.harness, plan.name
@@ -399,7 +396,6 @@ pub(super) fn start_supervisor_with(
         return Err(error.context(format!("type the supervisor's command into {address}")));
     }
     let terminal = wait_for_agent(client, &address)?;
-    progress.step(2);
     // Only Claude Code asks on screen; Codex takes its answer on the
     // command line.
     if plan.harness == Harness::Claude {
@@ -561,7 +557,6 @@ pub fn launch_worker(
             shell_line(&agent_argv(&cwd, None, &resume)),
         ));
     }
-    progress.step(1);
     progress.report(format!("Starting {} as {}…", plan.harness, plan.name));
     // Kept, so that a core stop or a reboot leaves a shell in its place,
     // which the daemon gives the resume line.
@@ -573,7 +568,6 @@ pub fn launch_worker(
         argv: agent_argv(&cwd, None, &command),
     })?;
     mark_pid(client, &terminal.address);
-    progress.step(2);
     // Only Claude Code asks on screen; Codex takes its answer on the
     // command line.
     if plan.harness == Harness::Claude {

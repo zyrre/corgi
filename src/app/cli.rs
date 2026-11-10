@@ -1,6 +1,6 @@
-//! The command-line tools: `corgi spawn`, `corgi supervisor`, `corgi fleet`,
-//! `corgi digest`, `corgi report`, `corgi notify`, `corgi inbox`,
-//! `corgi recovery`, `corgi tag` and `corgi role`.
+//! The command-line tools a supervisor and the user run: `corgi spawn`,
+//! `corgi supervisor`, `corgi fleet`, `corgi digest`, `corgi report`,
+//! `corgi notify`, `corgi inbox`, `corgi tag` and `corgi role`.
 
 use std::{
     env, fs, io,
@@ -14,11 +14,12 @@ use crate::{
         self,
         memory::{DigestLookup, corgi_bin_text, digest_lookup, markdown_files},
     },
-    git::{git_current_branch, git_output, trust_root},
-    harness::Harness,
-    herdr::{HerdrClient, METADATA_VALUE_MAX_CHARS},
+    git::{git_current_branch, git_output},
+    harness::{EFFORT_LEVELS, Harness},
+    hc::{self, HcClient},
     inbox::{self, Inbox, Item, Kind},
-    model::{PromptCache, PromptCacheKind, cache_countdown, compact_tokens},
+    launch::{CORGI_REQUEST_TOKEN, Checkout, SUPERVISOR_HOME_REFUSAL, supervisor_harness_error},
+    model::{DashboardAgent, PromptCache, PromptCacheKind, cache_countdown, compact_tokens},
     paths::{corgi_state_dir, expand_home, is_home},
     session::SessionReader,
     supervisor::{OLD_WAKE_PREFIX, WAKE_PREFIX},
@@ -26,36 +27,23 @@ use crate::{
     time::unix_now,
 };
 
-use crate::backend::Backend;
-
-use super::{
-    App,
-    catalog::{EFFORT_LEVELS, default_harness},
-    hc_cli,
-    launch::{
-        CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL,
-        calling_supervisor_harness, launch_agent, sanitize_agent_name, supervisor_harness_error,
-        supervisor_plan, unique_agent_name,
-    },
-    markers,
-    progress::Stderr,
-    project_main::{CORGI_PROJECT_MAIN_TAB_TOKEN, project_root_of},
-};
+use super::hc_cli::{self, hc_project_root};
 
 pub const SPAWN_USAGE: &str = "\
 Usage: corgi spawn [OPTIONS] [-- AGENT_ARGS...] < task.md
 
-Starts one agent the way the dashboard's new-agent form does and prints it as
+Starts one agent in a herdr-core (hc) terminal of its own and prints it as
 JSON. The task is read from stdin, or from --task-file, never from arguments.
 
 Options:
   --project PATH     Project directory (default: the current directory)
-  --harness KIND     Agent CLI, as Herdr names it (default: the calling
-                     supervisor's own, else as in the form)
+  --harness KIND     Agent CLI: claude, codex, opencode, … (default: the
+                     calling supervisor's own, else the harness of the last
+                     spawn, else the first one installed)
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max (Codex and Claude Code)
-  --checkout MODE    worktree (default), directory, or root: the project
-                     workspace's own root tab in the primary checkout. A
+  --checkout MODE    worktree (default), directory, or root: the project's
+                     primary checkout. A
                      worktree is refused, before anything starts, for a
                      project outside a Git work tree (pass --project, or
                      --checkout directory to run there without one), and
@@ -69,18 +57,18 @@ Options:
                      and start nothing. ID is 1 to 80 ASCII letters, digits,
                      '.', '_' or '-', such as a brief id; a retry made while
                      the first spawn still runs waits for it
-  --backend B        herdr (a Herdr TUI pane) or hc (a herdr-core terminal,
-                     for the Herdr app). Default: the one spawn runs in, else
-                     hc unless a Herdr TUI is running
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
 /// The characters a `--request-id` may have besides ASCII letters and
-/// digits. The id is stored verbatim as a Herdr metadata token value.
+/// digits. The id is stored verbatim as a label of the worker's terminal.
 const REQUEST_ID_PUNCTUATION: [char; 3] = ['.', '_', '-'];
 
+/// The longest `--request-id`, in characters.
+const REQUEST_ID_MAX_CHARS: usize = 80;
+
 /// What `corgi spawn` was asked for, before anything is resolved against
-/// Herdr or the file system.
+/// hc or the file system.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct SpawnOptions {
     pub(super) project: Option<String>,
@@ -92,13 +80,13 @@ pub(super) struct SpawnOptions {
     pub(super) task_file: Option<String>,
     pub(super) request_id: Option<String>,
     pub(super) agent_args: Vec<String>,
-    /// Where to start the agent, when `--backend` says.
-    pub(super) backend: Option<Backend>,
     /// The existing hc terminal `corgi supervisor --terminal` starts in.
     pub(super) terminal: Option<String>,
 }
 
-fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
+/// The options of `corgi spawn` and `corgi supervisor`, which take the same
+/// ones; `usage` is the command's own, for an option it does not know.
+fn parse_spawn_options(args: &[String], usage: &str) -> Result<SpawnOptions> {
     let mut options = SpawnOptions::default();
     let mut args = args.iter();
     while let Some(flag) = args.next() {
@@ -122,18 +110,11 @@ fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
             "--task-file" => options.task_file = Some(value()?),
             "--request-id" => options.request_id = Some(valid_request_id(value()?)?),
             "--terminal" => options.terminal = Some(value()?.trim().to_string()),
-            "--backend" => {
-                let name = value()?;
-                options.backend = Some(
-                    Backend::from_name(&name)
-                        .with_context(|| format!("--backend must be herdr or hc, not {name:?}"))?,
-                );
-            }
             "--" => {
                 options.agent_args = args.by_ref().cloned().collect();
                 break;
             }
-            other => bail!("unknown option {other:?}\n\n{SPAWN_USAGE}"),
+            other => bail!("unknown option {other:?}\n\n{usage}"),
         }
     }
     if !options.effort.is_empty() {
@@ -152,13 +133,13 @@ fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
     Ok(options)
 }
 
-/// `id` if it can be a `--request-id`: Herdr keeps it whole as a token value
-/// and it needs no quoting anywhere.
+/// `id` if it can be a `--request-id`: short enough to keep whole as a label
+/// and in need of no quoting anywhere.
 fn valid_request_id(id: String) -> Result<String> {
     anyhow::ensure!(!id.is_empty(), "--request-id must not be empty");
     anyhow::ensure!(
-        id.chars().count() <= METADATA_VALUE_MAX_CHARS,
-        "--request-id must be at most {METADATA_VALUE_MAX_CHARS} characters"
+        id.chars().count() <= REQUEST_ID_MAX_CHARS,
+        "--request-id must be at most {REQUEST_ID_MAX_CHARS} characters"
     );
     anyhow::ensure!(
         id.chars()
@@ -168,18 +149,17 @@ fn valid_request_id(id: String) -> Result<String> {
     Ok(id)
 }
 
-/// `corgi spawn`: starts one agent through the same launch as the new-agent
-/// form, for a caller without a dashboard, such as a supervisor agent. It runs
-/// inside Herdr and uses the injected socket. Progress goes to stderr and the
-/// started agent to stdout as one JSON object.
+/// `corgi spawn`: starts one worker on hc, for a supervisor agent or a person.
+/// Progress goes to stderr and the started agent to stdout as one JSON
+/// object.
 pub fn spawn(args: &[String]) -> Result<()> {
-    let options = parse_spawn_options(args)?;
+    let options = parse_spawn_options(args, SPAWN_USAGE)?;
     anyhow::ensure!(
         options.terminal.is_none(),
         "--terminal is for corgi supervisor; a worker gets a terminal of its own"
     );
     let project = existing_project_dir(options.project.as_deref())?;
-    // Refused before stdin is read, Herdr is asked anything, or a retry's
+    // Refused before stdin is read, hc is asked anything, or a retry's
     // request id is looked up: a refused spawn starts nothing, so a retry
     // that is refused again misses no worker.
     if let Some(refusal) = spawn_project_refusal(
@@ -192,67 +172,14 @@ pub fn spawn(args: &[String]) -> Result<()> {
     }
     let prompt = read_task(options.task_file.as_deref(), true)?;
     anyhow::ensure!(!prompt.is_empty(), "the task is empty\n\n{SPAWN_USAGE}");
-    if hc_cli::launch_backend(options.backend) == Backend::Hc {
-        return print_launch(&hc_cli::spawn(options, project, prompt)?);
-    }
-
-    let client = HerdrClient::from_env()?;
-    // With a request id, the project's spawn lock is held until this spawn
-    // has started its worker, so that a retry waits for it and then finds
-    // that worker, before any checkout is made.
-    let request = match options.request_id.as_deref() {
-        Some(id) => {
-            let root = project_root_of(&client, &project)?;
-            let lock = markers::spawn_lock(&client, &root, || {
-                eprintln!("Waiting for another spawn in {root} to finish…");
-            })?;
-            Some((id, root, lock))
-        }
-        None => None,
-    };
-    let app = refreshed_app(client.clone())?;
-    if let Some((id, root, _lock)) = &request
-        && let Some(existing) = requested_agent(&app, root, id)
-    {
-        eprintln!("An agent spawned with request id {id} is already running");
-        return print_launch(&existing);
-    }
-    let pane_id = env::var("HERDR_PANE_ID").ok();
-    if let Some(warning) = calling_supervisor_state_conflict(&app, pane_id.as_deref()) {
-        eprintln!("warning: {warning}");
-    }
-    let supervisor_harness = calling_supervisor_harness(&app.agents, pane_id.as_deref());
-    let harness = spawn_harness(options.harness, supervisor_harness, default_harness);
-    anyhow::ensure!(
-        options.effort.is_empty() || harness.supports_effort(),
-        "{harness} has no effort control; only codex and claude take --effort"
-    );
-    let name = match options.name.as_deref() {
-        Some(requested) => free_agent_name(&client, requested)?,
-        None => unique_agent_name(&app.agents, &project),
-    };
-    let plan = LaunchPlan {
-        name,
-        harness,
-        model: options.model,
-        effort: options.effort,
-        prompt,
-        project,
-        new_project: false,
-        checkout: options.checkout,
-        extra_args: options.agent_args,
-        role: Role::Worker,
-        request_id: options.request_id.clone(),
-    };
-    print_launch(&run_launch(client, app, plan)?)
+    print_launch(&hc_cli::spawn(options, project, prompt)?)
 }
 
 /// Why `corgi spawn` must not start a worker in `project` with `checkout`,
 /// telling the caller how to fix the command, or `None` when it may. A worker
 /// never belongs in Corgi's state directory `state_dir` (a supervisor that
 /// ran spawn from its own would get one there), and a worktree needs a Git
-/// work tree: the new-agent form falls back to a plain workspace outside Git,
-/// spawn does not. The home directory is the scratch agent's and allowed.
+/// work tree. The home directory is the scratch agent's and allowed.
 fn spawn_project_refusal(
     project: &Path,
     checkout: Checkout,
@@ -290,52 +217,8 @@ fn in_git_work_tree(dir: &Path) -> bool {
     git_output(dir, &["rev-parse", "--is-inside-work-tree"]).is_ok_and(|out| out.trim() == "true")
 }
 
-/// The running agent of the project at `root` that a spawn with request id
-/// `id` started, as the JSON a fresh spawn prints, marked `"existing"`.
-pub(super) fn requested_agent(app: &App, root: &str, id: &str) -> Option<serde_json::Value> {
-    let agent = app.agents.iter().find(|agent| {
-        agent.project_root == root
-            && agent
-                .info
-                .tokens
-                .get(CORGI_REQUEST_TOKEN)
-                .map(String::as_str)
-                == Some(id)
-    })?;
-    let info = &agent.info;
-    let root_tab = app.workspaces.iter().any(|workspace| {
-        workspace.workspace_id == info.workspace_id
-            && workspace.tokens.get(CORGI_PROJECT_MAIN_TAB_TOKEN) == Some(&info.tab_id)
-    });
-    let checkout = if agent.worktree_checkout.is_some() {
-        Checkout::Worktree
-    } else if root_tab {
-        Checkout::ProjectRoot
-    } else {
-        Checkout::Directory
-    };
-    Some(serde_json::json!({
-        "name": info.name.as_deref().unwrap_or_else(|| info.display_name()),
-        "pane_id": info.pane_id,
-        "workspace_id": info.workspace_id,
-        "tab_id": info.tab_id,
-        "cwd": info.cwd,
-        "kind": info.kind(),
-        "model": agent.model.as_deref().unwrap_or_default(),
-        "effort": agent.effort.as_deref().unwrap_or_default(),
-        "checkout": checkout.value(),
-        "supervisor": agent.supervisor,
-        "location": format!(
-            "already running in {} ({})",
-            info.cwd(),
-            info.state.label().to_lowercase()
-        ),
-        "existing": true,
-    }))
-}
-
 /// The harness `corgi spawn` starts: the one asked for, else the calling
-/// supervisor's own, else the default the new-agent form would preset.
+/// supervisor's own, else the default.
 pub(super) fn spawn_harness(
     requested: Option<Harness>,
     supervisor: Option<Harness>,
@@ -344,37 +227,22 @@ pub(super) fn spawn_harness(
     requested.or(supervisor).unwrap_or_else(default)
 }
 
-/// The warning about pre-rename state beside the state directory of the
-/// supervisor in `pane_id`, when a supervisor is the one spawning, so that it sees
-/// it and can tell the user.
-fn calling_supervisor_state_conflict(app: &App, pane_id: Option<&str>) -> Option<String> {
-    let pane_id = pane_id?;
-    app.agents
-        .iter()
-        .find(|agent| agent.supervisor && agent.info.pane_id == pane_id)
-        .and_then(|agent| crate::supervisor::state_dir_conflict(&agent.project_root))
-}
-
 pub const SUPERVISOR_USAGE: &str = "\
 Usage: corgi supervisor [PROJECT] [OPTIONS] [-- AGENT_ARGS...] [< task.md]
 
 Starts the supervisor of PROJECT (default: the project containing the current
-directory), the agent that directs its workers, in the root tab of its Corgi
-workspace, and prints it as JSON. A task on stdin or in --task-file becomes
-its first request; without one the supervisor greets you with the state of
-the project.
+directory), the agent that directs its workers, in a kept herdr-core (hc)
+shell terminal in the project's primary checkout, and prints it as JSON. A
+task on stdin or in --task-file becomes its first request; without one the
+supervisor greets you with the state of the project.
 
 Options:
   --harness KIND     claude (default) or codex
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max
-  --name NAME        Agent name (default: supervisor-<project>, and on hc
-                     <project>-supervisor)
+  --name NAME        Agent name (default: <project>-supervisor)
   --task-file PATH   Read the first request from PATH
-  --backend B        herdr (a Herdr TUI pane) or hc (a kept herdr-core shell
-                     terminal, for the Herdr app). Default: the one this
-                     runs in, else hc unless a Herdr TUI is running
-  --terminal T       On hc, start in the existing terminal T (an address such
+  --terminal T       Start in the existing terminal T (an address such
                      as t7, or a name) instead of a new one: a shell waiting
                      at its prompt, such as a tab open in the Herdr app. It
                      becomes the project's supervisor terminal, and the space
@@ -384,14 +252,13 @@ Options:
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
-/// `corgi supervisor`: launches a project's supervisor, the way the new-agent
-/// form does for a project with no agent sessions.
+/// `corgi supervisor`: launches a project's supervisor.
 pub fn supervisor_command(args: &[String]) -> Result<()> {
     let (positional, args) = match args.first() {
         Some(first) if !first.starts_with('-') => (Some(first.as_str()), &args[1..]),
         _ => (None, args),
     };
-    let options = parse_spawn_options(args)?;
+    let options = parse_spawn_options(args, SUPERVISOR_USAGE)?;
     anyhow::ensure!(
         options.request_id.is_none(),
         "--request-id is for corgi spawn; a project has one supervisor anyway"
@@ -407,33 +274,7 @@ pub fn supervisor_command(args: &[String]) -> Result<()> {
     let project = existing_project_dir(positional.or(options.project.as_deref()))?;
     anyhow::ensure!(!is_home(&project), SUPERVISOR_HOME_REFUSAL);
     let task = read_task(options.task_file.as_deref(), false)?;
-    // An existing terminal is one of hc's.
-    anyhow::ensure!(
-        options.terminal.is_none() || options.backend != Some(Backend::Herdr),
-        "--terminal names a herdr-core terminal; it does not go with --backend herdr"
-    );
-    let backend = options
-        .backend
-        .or(options.terminal.as_ref().map(|_| Backend::Hc));
-    if hc_cli::launch_backend(backend) == Backend::Hc {
-        return print_launch(&hc_cli::supervisor(&options, harness, &project, task)?);
-    }
-
-    let (client, app) = connected_app()?;
-    let root = project_root_of(&client, &project)?;
-    let mut plan = supervisor_plan(
-        &app.agents,
-        &root,
-        harness,
-        options.model,
-        options.effort,
-        task,
-    )?;
-    if let Some(requested) = options.name.as_deref() {
-        plan.name = free_agent_name(&client, requested)?;
-    }
-    plan.extra_args = options.agent_args;
-    print_launch(&run_launch(client, app, plan)?)
+    print_launch(&hc_cli::supervisor(&options, harness, &project, task)?)
 }
 
 pub const FLEET_USAGE: &str = "\
@@ -447,8 +288,8 @@ cold 180k once it has lapsed, with the context tokens the next prompt re-reads
 at the full input price; warm? and cold? when the lifetime is only estimated
 (Codex), so the cache may outlive it; - when unknown. TAG is merge for an agent
 a supervisor tagged ready to merge (corgi tag) that still rests where it was
-tagged, else -. When the project's supervisor has missed inbox items, or Corgi
-refuses to type into it, a line on stderr says so.";
+tagged, else -. When the project's supervisor has missed inbox items, a line
+on stderr says so.";
 
 /// `corgi fleet`: one tab-separated row per agent of a project (default: the
 /// project containing the current directory), for a supervisor to read.
@@ -456,24 +297,18 @@ pub fn fleet(args: &[String]) -> Result<()> {
     anyhow::ensure!(args.len() <= 1, "Usage: corgi fleet [PROJECT]");
     let project = existing_project_dir(args.first().map(String::as_str))?;
     let seen = hc_cli::seen()?;
-    let root = seen.root(&project)?;
+    let root = hc_project_root(&project);
     println!("NAME\tROLE\tSTATE\tTASK\tMODEL\tCTX\tCACHE\tCWD\tTAG");
-    for row in fleet_rows_of(&seen.agents(), &root) {
+    for row in fleet_rows(&seen.agents, &root) {
         println!("{row}");
     }
     print_inbox_footer(&root);
     Ok(())
 }
 
-/// The rows `corgi fleet` prints for the agents of the project at `root`.
-#[cfg(test)]
-pub(super) fn fleet_rows(app: &App, root: &str) -> Vec<String> {
-    fleet_rows_of(&app.agents, root)
-}
-
 /// The rows `corgi fleet` prints for those of `agents` in the project at
 /// `root`.
-pub(super) fn fleet_rows_of(agents: &[crate::model::DashboardAgent], root: &str) -> Vec<String> {
+fn fleet_rows(agents: &[DashboardAgent], root: &str) -> Vec<String> {
     let field = |text: &str| text.replace(['\t', '\n'], " ");
     let now = unix_now();
     agents
@@ -504,8 +339,8 @@ pub(super) fn fleet_rows_of(agents: &[crate::model::DashboardAgent], root: &str)
         .collect()
 }
 
-/// The CACHE column of `corgi fleet`: the status bar's cache field in plain
-/// words for an agent to read. A `?` marks an estimated lifetime, which the
+/// The CACHE column of `corgi fleet`: the prompt cache in plain words for an
+/// agent to read. A `?` marks an estimated lifetime, which the
 /// cache may outlive, so neither warm nor cold is certain.
 fn fleet_cache(cache: &PromptCache, now: u64) -> String {
     let mark = if cache.kind == PromptCacheKind::Estimated {
@@ -523,10 +358,10 @@ pub const TAG_USAGE: &str = "\
 Usage: corgi tag NAME merge [--project PATH]
        corgi tag NAME --clear [--project PATH]
 
-Tags the agent NAME (a Herdr agent name or pane ID) of PROJECT (default: the
-project containing the current directory) ready for the user to merge, or
-clears its tag. The dashboard then shows the agent, while it rests, with a
-MERGE badge instead of DONE. A tag is refused for an agent that is not done
+Tags the agent NAME (its name or its terminal's address) of PROJECT (default:
+the project containing the current directory) ready for the user to merge, or
+clears its tag. The Herdr app's Projects list then shows the agent, while it
+rests, with a MERGE mark instead of DONE. A tag is refused for an agent that is not done
 or idle, or whose checkout has no commits ahead of the branch checked out in
 the project's primary checkout. The tag goes away by itself when the user
 merges the branch in Corgi, or once the agent works again.
@@ -566,12 +401,12 @@ fn parse_tag_options(args: &[String]) -> Result<TagOptions> {
 }
 
 /// `corgi tag`: a supervisor tags one of its project's agents ready for the user
-/// to merge, or clears the tag, for the dashboard to show.
+/// to merge, or clears the tag, for the Projects list to show.
 pub fn tag_command(args: &[String]) -> Result<()> {
     let options = parse_tag_options(args)?;
     let project = existing_project_dir(options.project.as_deref())?;
     let seen = hc_cli::seen()?;
-    let root = seen.root(&project)?;
+    let root = hc_project_root(&project);
     println!("{}", seen.tag(&root, &options)?);
     Ok(())
 }
@@ -648,27 +483,23 @@ pub fn digest(args: &[String]) -> Result<()> {
         );
         lookup = Some(make(value.clone()));
     }
-    let project = existing_project_dir(project)?;
-    let seen = hc_cli::seen()?;
-    let root = seen.root(&project)?;
+    let root = project_root(project)?;
     let state_dir = crate::supervisor::state_dir(&root)?;
+    // A lookup reads the state directory alone, so it needs no running core.
     if let Some(lookup) = lookup {
         print!("{}", digest_lookup(&state_dir, &root, lookup)?);
         return Ok(());
     }
 
-    print!("{}", digest_summary(&root, &state_dir, &seen.agents()));
+    let seen = hc_cli::seen()?;
+    print!("{}", digest_summary(&root, &state_dir, &seen.agents));
     print_inbox_footer(&root);
     Ok(())
 }
 
 /// `corgi digest`'s summary of the memory of `root`'s supervisor in
 /// `state_dir`, with `agents` as the project's running fleet.
-pub(crate) fn digest_summary(
-    root: &str,
-    state_dir: &Path,
-    agents: &[crate::model::DashboardAgent],
-) -> String {
+fn digest_summary(root: &str, state_dir: &Path, agents: &[DashboardAgent]) -> String {
     let read = |name: &str| fs::read_to_string(state_dir.join(name)).ok();
     let decisions = read("decisions.md").unwrap_or_default();
     let state = state_dir.to_string_lossy();
@@ -716,12 +547,13 @@ pub(crate) fn digest_summary(
 pub const REPORT_USAGE: &str = "\
 Usage: corgi report NAME
 
-Prints, in full, the report the agent NAME (a Herdr agent name or pane ID)
-left. For a running agent: the one the Corgi dashboard kept in its supervisor's
-inbox when the agent last stopped, if that is its current state, else the
-newest thing it said, which for a worker that followed its brief is its
-report, or its screen when its harness writes no readable transcript. For
-an agent whose pane is gone: the newest report kept in any supervisor's inbox.
+Prints, in full, the report the agent NAME (its name or its terminal's
+address) left. For a running agent: the one corgi daemon kept in its
+supervisor's inbox when the agent last stopped, if that is its current state,
+else the newest thing it said, which for a worker that followed its brief is
+its report, or its screen when its harness writes no readable transcript. For
+an agent whose terminal is gone: the newest report kept in any supervisor's
+inbox.
 When the supervisor of the current directory's project has missed inbox items, a
 line on stderr says so.";
 
@@ -732,12 +564,12 @@ pub fn report(args: &[String]) -> Result<()> {
         bail!("Usage: corgi report NAME");
     };
     let seen = hc_cli::seen().ok();
-    let running = seen.as_ref().and_then(|seen| seen.find(target));
-    let printed = match (&seen, running) {
-        (Some(seen), Some((agent, screen))) => {
-            print_running_report(&seen.agents(), &screen, &agent, target)
-        }
-        _ => inbox_report(target)?
+    let running = seen
+        .as_ref()
+        .and_then(|seen| Some((seen, seen.find(target)?)));
+    let printed = match running {
+        Some((seen, agent)) => print_running_report(&seen.agents, &seen.client, agent, target),
+        None => inbox_report(target)?
             .with_context(|| format!("no running agent named {target}, and no report kept for it"))
             .and_then(|(dir, item)| print_kept_report(target, &dir, &item)),
     };
@@ -748,13 +580,13 @@ pub fn report(args: &[String]) -> Result<()> {
 }
 
 /// Prints the report of the running `agent`: the one kept in its own
-/// project's inbox when it is for this pane and its current state change,
+/// project's inbox when it is for this terminal and its current state change,
 /// so it is never another agent's of the same name or one it has since
 /// said more than; else the newest thing it said, or its screen.
 fn print_running_report(
-    agents: &[crate::model::DashboardAgent],
-    screen: &hc_cli::Screen,
-    agent: &crate::model::DashboardAgent,
+    agents: &[DashboardAgent],
+    client: &HcClient,
+    agent: &DashboardAgent,
     target: &str,
 ) -> Result<()> {
     let info = &agent.info;
@@ -773,18 +605,14 @@ fn print_running_report(
         println!("{}", entry.text);
     } else {
         eprintln!("(no readable transcript for {target}; showing its screen)");
-        println!("{}", screen.read(&info.pane_id, 120)?.trim_end());
+        println!("{}", client.read(&info.pane_id, 120)?.trim_end());
     }
     Ok(())
 }
 
 /// The report `inbox` keeps of the running `agent`, named `name`, if it is
-/// of its project and pane and of its current state change.
-fn current_report<'a>(
-    inbox: &'a Inbox,
-    agent: &crate::model::DashboardAgent,
-    name: &str,
-) -> Option<&'a Item> {
+/// of its project and terminal and of its current state change.
+fn current_report<'a>(inbox: &'a Inbox, agent: &DashboardAgent, name: &str) -> Option<&'a Item> {
     let info = &agent.info;
     inbox.newest_report(name).filter(|item| {
         item.is_for(&agent.project_root)
@@ -807,7 +635,7 @@ fn print_kept_report(name: &str, dir: &std::path::Path, item: &Item) -> Result<(
 }
 
 /// The newest report of the agent `name` kept in any supervisor's inbox, with
-/// the state directory it is in, for an agent whose pane is gone.
+/// the state directory it is in, for an agent whose terminal is gone.
 fn inbox_report(name: &str) -> Result<Option<(PathBuf, Item)>> {
     let Some(base) = corgi_state_dir() else {
         return Ok(None);
@@ -825,11 +653,11 @@ pub const NOTIFY_USAGE: &str = "\
 Usage: corgi notify [PROJECT] [OPTIONS] < text
 
 Adds an item to the inbox of the supervisor of PROJECT (default: the project
-containing the current directory), the one way anything but the dashboard
-reaches a supervisor. The Corgi dashboard that wakes supervisors types it
-into the supervisor's input box once the supervisor is between turns and its
-box holds no draft, together with any other undelivered items, and records
-it delivered; it survives the dashboard closing or restarting meanwhile. The
+containing the current directory), the one way anything but Corgi itself
+reaches a supervisor. corgi daemon types it into the supervisor's input box
+once the supervisor is between turns and its box holds no draft, together
+with any other undelivered items, and records it delivered; it survives the
+daemon stopping or restarting meanwhile. The
 text is read from stdin, and gets a leading [Corgi] when it has none (a
 leading [corgi], as Corgi wrote it before, becomes [Corgi]). Prints the item's
 id and inbox as JSON.
@@ -844,8 +672,8 @@ Options:
   --report-file PATH  The agent's report, kept with the item, which
                       corgi report NAME then prints";
 
-/// `corgi notify`: adds an item to a supervisor's inbox through the same code the
-/// dashboard uses, for scripts and hooks.
+/// `corgi notify`: adds an item to a supervisor's inbox through the same code
+/// the daemon uses, for scripts.
 pub fn notify(args: &[String]) -> Result<()> {
     let mut project = None;
     let mut item = Item {
@@ -914,8 +742,8 @@ pub const ROLE_USAGE: &str = "\
 Usage: corgi role handover [PROJECT]
 
 Prints the part of the supervisor's role it reads only when it needs it.
-handover: how a supervisor hands over to a fresh session when the Corgi
-dashboard asks it to, with the paths of the state directory of PROJECT's
+handover: how a supervisor hands over to a fresh session when Corgi asks it
+to, with the paths of the state directory of PROJECT's
 supervisor (default: the project containing the current directory) and of
 this Corgi binary filled in. Reads only.";
 
@@ -951,15 +779,15 @@ pub const INBOX_USAGE: &str = "\
 Usage: corgi inbox [PROJECT] [--delivered] [--take]
 
 Prints the undelivered items in the inbox of the supervisor of PROJECT (default:
-the project containing the current directory), oldest first: what the Corgi
-dashboard has not typed into the supervisor's input box yet, each with its report
-or where to find it. Printing marks nothing delivered, so the dashboard still
+the project containing the current directory), oldest first: what corgi
+daemon has not typed into the supervisor's input box yet, each with its report
+or where to find it. Printing marks nothing delivered, so the daemon still
 types them in. A supervisor handing over leaves them to its successor.
 
 Options:
   --delivered  Also print the newest delivered items
   --take       Record the printed undelivered items delivered, so the
-               dashboard does not type them in again: for the supervisor, which
+               daemon does not type them in again: for the supervisor, which
                acts on them now";
 
 /// The most undelivered items `corgi inbox` prints, the newest.
@@ -988,14 +816,6 @@ pub fn inbox_command(args: &[String]) -> Result<()> {
     let inbox = Inbox::try_read(&dir)?;
     let (text, shown) = inbox_text(&inbox, &dir, &root, delivered);
     print!("{text}");
-    for note in HerdrClient::from_env()
-        .ok()
-        .into_iter()
-        .flat_map(|client| [held_note(&client, &root), refused_note(&client, &root)])
-        .flatten()
-    {
-        println!("{note}");
-    }
     if take {
         let ids: Vec<String> = shown.iter().map(|item| item.id.clone()).collect();
         inbox::mark_delivered(&dir, &ids, "corgi inbox --take")?;
@@ -1083,155 +903,24 @@ fn inbox_entry(item: &Item, corgi_bin: &str, budget: Option<&mut usize>) -> Stri
 }
 
 /// Prints, on stderr, that the supervisor of the project at `root` has missed
-/// inbox items, if it does: any undelivered while neither Herdr's hooks nor
-/// a dashboard deliver (in an hc terminal, while no `corgi daemon` runs for
-/// its core), else those that have waited minutes, not just for the
-/// supervisor's turn.
+/// inbox items, if it does: any undelivered while nothing delivers them (no
+/// `corgi daemon` runs for the core of the terminal this runs in), else
+/// those that have waited minutes, not just for the supervisor's turn.
 fn print_inbox_footer(root: &str) {
-    let client = HerdrClient::from_env().ok();
-    let delivering = client.as_ref().is_some_and(super::waker::inboxes_delivered)
-        || (crate::backend::Caller::from_env() == crate::backend::Caller::Hc
-            && crate::hc::expected_socket()
-                .is_some_and(|socket| crate::hc::daemon::running(&socket).running));
-    for note in client
-        .iter()
-        .flat_map(|client| [held_note(client, root), refused_note(client, root)])
-        .flatten()
+    let delivering = hc::in_terminal()
+        && hc::expected_socket().is_some_and(|socket| hc::daemon::running(&socket).running);
+    if let Some(footer) = crate::supervisor::state_dir(root)
+        .ok()
+        .and_then(|dir| inbox::footer(&dir, &corgi_bin_text(), root, delivering, unix_now()))
     {
-        eprintln!("{note}");
-    }
-    if let Some(footer) = crate::supervisor::state_dir(root).ok().and_then(|dir| {
-        inbox::footer(
-            &dir,
-            &corgi_bin_text(),
-            root,
-            delivering,
-            crate::time::unix_now(),
-        )
-    }) {
         eprintln!("{footer}");
     }
 }
 
-/// The line saying that the inbox of the project at `root` is held, if it
-/// is: Herdr never confirmed a delivery of some of its items, which may be in
-/// the supervisor's box already, so Corgi types nothing more in until they are
-/// read.
-fn held_note(client: &HerdrClient, root: &str) -> Option<String> {
-    let held = super::waker::Inboxes::default().held(client, root).len();
-    (held > 0).then(|| {
-        format!(
-            "{held} inbox item(s) held: Corgi could not tell whether they reached the \
-             supervisor, so it types nothing more in for this project; read them with \
-             {} inbox {root} --take",
-            corgi_bin_text()
-        )
-    })
-}
-
-/// The line saying that Corgi refuses to type into the supervisor of the project
-/// at `root`, if it does, and why.
-fn refused_note(client: &HerdrClient, root: &str) -> Option<String> {
-    let reason = crate::recovery::project_refusal(client, root)?;
-    let waiting = super::waker::Inboxes::default().undelivered(root);
-    Some(refused_text(&reason, waiting))
-}
-
-fn refused_text(reason: &str, waiting: usize) -> String {
-    format!(
-        "Wakes are refused for this project's supervisor: {reason}. {waiting} inbox item(s) \
-         wait; {} recovery lists what is held",
-        corgi_bin_text()
-    )
-}
-
-pub const RECOVERY_USAGE: &str = "\
-Usage: corgi recovery
-       corgi recovery release SESSION [--running]
-
-Lists the recovered supervisor sessions whose coordination is held on this
-Herdr session, one tab-separated row each under a header line: SESSION (its
-harness and native ID), PROJECT, FROM (restored, or saved when a save of another
-boot only names it) and PANE (where it runs, or - when it does not). A line on
-stderr names each project whose running supervisor Corgi refuses to type into.
-
-A hold binds to the session it names, so one whose session is gone stops
-nothing: a newly started supervisor of its project is not held. It stays listed
-until released. A session restored and running stays held until it is continued
-on purpose.
-
-Commands:
-  release SESSION  Release one hold, as SESSION is listed. Nothing is typed in,
-                   and a stop seen during the hold is not replayed
-
-Options:
-  --running  Also release a session that is running, which lets Corgi wake it";
-
-/// `corgi recovery`: lists the held sessions, or releases one.
-pub fn recovery_command(args: &[String]) -> Result<()> {
-    let client = HerdrClient::from_env()?;
-    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        [] => {
-            let store = crate::recovery::Store::for_client(&client)
-                .context("recovery storage unavailable")?;
-            let scope = client.socket_path().to_string_lossy();
-            let held = crate::recovery::held_sessions(&store, &scope)?;
-            let live = client.snapshot()?;
-            print!("{}", recovery_rows(&held, &live.agents));
-            let mut projects: Vec<&str> = held.iter().map(|hold| hold.project.as_str()).collect();
-            projects.dedup();
-            for project in projects {
-                if let Some(reason) = crate::recovery::project_refusal(&client, project) {
-                    eprintln!("Wakes are refused for {project}'s supervisor: {reason}");
-                }
-            }
-            Ok(())
-        }
-        ["release", session] => release_held(&client, session, false),
-        ["release", session, "--running"] | ["release", "--running", session] => {
-            release_held(&client, session, true)
-        }
-        _ => bail!("{RECOVERY_USAGE}"),
-    }
-}
-
-fn release_held(client: &HerdrClient, session: &str, running: bool) -> Result<()> {
-    crate::recovery::release_session(client, session, running)?;
-    println!("Released {session}.");
-    Ok(())
-}
-
-/// What `corgi recovery` prints of the holds `held`, with `live` running.
-fn recovery_rows(
-    held: &[crate::recovery::HeldSession],
-    live: &[crate::model::AgentInfo],
-) -> String {
-    if held.is_empty() {
-        return "No recovered session is held.\n".into();
-    }
-    let mut out = String::from("SESSION\tPROJECT\tFROM\tPANE\n");
-    for hold in held {
-        let pane = live
-            .iter()
-            .find(|agent| crate::recovery::session_key(agent).as_deref() == Some(&hold.key))
-            .map_or("-", |agent| agent.pane_id.as_str());
-        let from = if hold.restored { "restored" } else { "saved" };
-        out.push_str(&format!("{}\t{}\t{from}\t{pane}\n", hold.key, hold.project));
-    }
-    out
-}
-
 /// The root of `project` (default: the current directory): its
-/// repository's primary checkout, as Herdr reports it, or as Git does when
-/// Herdr cannot be asked.
+/// repository's primary checkout, as hc's labels hold it.
 fn project_root(project: Option<&str>) -> Result<String> {
-    let project = existing_project_dir(project)?;
-    if let Ok(client) = HerdrClient::from_env()
-        && let Ok(root) = project_root_of(&client, &project)
-    {
-        return Ok(root);
-    }
-    Ok(trust_root(&project).to_string_lossy().into_owned())
+    Ok(hc_project_root(&existing_project_dir(project)?))
 }
 
 /// The task for a command-line launch, from `task_file` or else stdin. A
@@ -1270,62 +959,6 @@ pub(super) fn existing_project_dir(project: Option<&str>) -> Result<PathBuf> {
     Ok(project)
 }
 
-/// A client for the injected Herdr socket and an app that has read one
-/// snapshot. The caller is an agent pane, not a dashboard, so its own agent
-/// is listed like any other and its name counts as taken.
-pub(super) fn connected_app() -> Result<(HerdrClient, App)> {
-    let client = HerdrClient::from_env()?;
-    Ok((client.clone(), refreshed_app(client)?))
-}
-
-/// An app on `client` that has read one snapshot.
-pub(super) fn refreshed_app(client: HerdrClient) -> Result<App> {
-    let mut app = App::headless(client);
-    app.refresh();
-    anyhow::ensure!(app.connected, "Herdr is unavailable: {}", app.status);
-    Ok(app)
-}
-
-/// `requested` as a Herdr agent name no live agent has.
-fn free_agent_name(client: &HerdrClient, requested: &str) -> Result<String> {
-    let name = sanitize_agent_name(requested);
-    anyhow::ensure!(
-        !client
-            .snapshot()?
-            .agents
-            .iter()
-            .any(|agent| agent.name.as_deref() == Some(name.as_str())),
-        "an agent named {name} is already running"
-    );
-    Ok(name)
-}
-
-/// Runs a command-line launch, with its progress on stderr, and returns the
-/// started agent as the JSON object the command prints.
-fn run_launch(client: HerdrClient, mut app: App, plan: LaunchPlan) -> Result<serde_json::Value> {
-    let launched = launch_agent(
-        &client,
-        &plan,
-        &mut Stderr {
-            projects: &mut app.projects,
-        },
-    )?;
-    let agent = &launched.agent;
-    Ok(serde_json::json!({
-        "name": plan.name,
-        "pane_id": agent.pane_id,
-        "workspace_id": agent.workspace_id,
-        "tab_id": agent.tab_id,
-        "cwd": agent.cwd,
-        "kind": plan.harness.kind(),
-        "model": plan.model,
-        "effort": plan.effort,
-        "checkout": launched.checkout.value(),
-        "supervisor": matches!(plan.role, Role::Supervisor { .. }),
-        "location": launched.location,
-    }))
-}
-
 fn print_launch(started: &serde_json::Value) -> Result<()> {
     serde_json::to_writer(io::stdout(), started)?;
     println!();
@@ -1335,44 +968,6 @@ fn print_launch(started: &serde_json::Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn corgi_recovery_lists_each_hold_and_where_its_session_runs() {
-        use crate::recovery::HeldSession;
-        assert_eq!(recovery_rows(&[], &[]), "No recovered session is held.\n");
-        let hold = |key: &str, restored| HeldSession {
-            key: key.into(),
-            project: "/repos/weather".into(),
-            restored,
-            snapshots: Vec::new(),
-        };
-        let running = crate::model::AgentInfo {
-            agent: Some("codex".into()),
-            pane_id: "w1:p1".into(),
-            agent_session: Some(crate::model::AgentSession {
-                value: "a".into(),
-                kind: "id".into(),
-                agent: "codex".into(),
-                source: "test".into(),
-            }),
-            ..Default::default()
-        };
-        assert_eq!(
-            recovery_rows(&[hold("codex:a", true), hold("codex:b", false)], &[running]),
-            "SESSION\tPROJECT\tFROM\tPANE\n\
-             codex:a\t/repos/weather\trestored\tw1:p1\n\
-             codex:b\t/repos/weather\tsaved\t-\n"
-        );
-    }
-
-    #[test]
-    fn a_refused_delivery_says_why_and_what_waits() {
-        let note = refused_text("this recovered session is held", 3);
-        assert!(note.contains("refused"), "{note}");
-        assert!(note.contains("this recovered session is held"), "{note}");
-        assert!(note.contains("3 inbox item(s)"), "{note}");
-        assert!(note.contains("recovery lists what is held"), "{note}");
-    }
 
     #[test]
     fn fleet_shows_whether_a_prompt_cache_is_warm_or_what_it_costs_cold() {
@@ -1419,7 +1014,7 @@ mod tests {
         if !crate::paths::home().is_some_and(|home| home.is_dir()) {
             return;
         }
-        // Refused before stdin is read or Herdr is asked anything.
+        // Refused before stdin is read or hc is asked anything.
         let refused = supervisor_command(&["~".to_string()]).expect_err("no supervisor for ~");
         assert!(refused.to_string().contains("not a project"), "{refused}");
     }
@@ -1562,20 +1157,26 @@ mod tests {
     }
 
     #[test]
-    fn spawn_options_default_to_the_forms_choices_and_reject_what_it_would() {
+    fn spawn_options_default_to_nothing_asked_and_reject_what_cannot_be() {
         let args = |line: &str| {
             line.split_whitespace()
                 .map(String::from)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(parse_spawn_options(&[]).unwrap(), SpawnOptions::default());
+        assert_eq!(
+            parse_spawn_options(&[], SPAWN_USAGE).unwrap(),
+            SpawnOptions::default()
+        );
 
-        let options = parse_spawn_options(&args(
-            "--project ~/repos/corgi --harness Claude --model opus --effort HIGH \
-             --checkout directory --name fix-cache --task-file brief.md \
-             --request-id 20261002-fix-cache --backend hc --terminal t7 \
-             -- --append-system-prompt-file role.md --name x",
-        ))
+        let options = parse_spawn_options(
+            &args(
+                "--project ~/repos/corgi --harness Claude --model opus --effort HIGH \
+                 --checkout directory --name fix-cache --task-file brief.md \
+                 --request-id 20261002-fix-cache --terminal t7 \
+                 -- --append-system-prompt-file role.md --name x",
+            ),
+            SPAWN_USAGE,
+        )
         .unwrap();
         assert_eq!(
             options,
@@ -1589,12 +1190,11 @@ mod tests {
                 task_file: Some("brief.md".into()),
                 request_id: Some("20261002-fix-cache".into()),
                 agent_args: args("--append-system-prompt-file role.md --name x"),
-                backend: Some(Backend::Hc),
                 terminal: Some("t7".into()),
             }
         );
         assert_eq!(
-            parse_spawn_options(&args("--checkout root"))
+            parse_spawn_options(&args("--checkout root"), SPAWN_USAGE)
                 .unwrap()
                 .checkout,
             Checkout::ProjectRoot
@@ -1607,12 +1207,11 @@ mod tests {
             "--harness gemini --effort high",
             "--task write-it",
             "--request-id",
-            "--backend tmux",
-            "--backend",
+            "--backend hc",
             "--terminal",
         ] {
             assert!(
-                parse_spawn_options(&args(bad)).is_err(),
+                parse_spawn_options(&args(bad), SPAWN_USAGE).is_err(),
                 "{bad} was accepted"
             );
         }
@@ -1753,9 +1352,9 @@ mod tests {
         let refused = valid_request_id(long).expect_err("81 characters");
         assert!(refused.to_string().contains("at most 80"), "{refused}");
         // The parser applies it, and the supervisor does not take one, which
-        // is refused before stdin is read or Herdr is asked anything.
+        // is refused before stdin is read or hc is asked anything.
         let args = ["--request-id".to_string(), "a b".to_string()];
-        assert!(parse_spawn_options(&args).is_err());
+        assert!(parse_spawn_options(&args, SPAWN_USAGE).is_err());
         let args = ["--request-id".to_string(), "20261002-corgi".to_string()];
         let refused = supervisor_command(&args).expect_err("no request id for a supervisor");
         assert!(refused.to_string().contains("for corgi spawn"), "{refused}");

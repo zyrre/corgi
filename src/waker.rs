@@ -15,21 +15,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     harness::Harness,
-    herdr::{HerdrClient, ReadSource},
     inbox::{self, Inbox, Item, Kind},
     job::Job,
+    launch::{CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role},
     model::{AgentState, DashboardAgent},
     paths::{dir_name, socket_state_file},
-    session::{SessionFacts, SessionReader, TurnState},
-    supervisor::{self, SUPERVISOR_TOKEN},
-    time::unix_now,
-};
-
-use crate::{
-    draft,
-    launch::{CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role, launch_agent},
-    markers,
-    progress::Silent,
+    session::{SessionFacts, TurnState},
+    supervisor,
 };
 
 pub mod hc;
@@ -67,25 +59,6 @@ pub struct SupervisorWaker {
     lock: Option<fs::File>,
     /// The wake lock to take in place of the Herdr socket's, as a test sets.
     lock_path: Option<PathBuf>,
-    /// Whether the lock is kept from one pass to the next, as `corgi hook`
-    /// keeps it while it goes round, rather than given up at each pass's end.
-    hold: bool,
-    /// Whether this waker can time a rest. Every request for a supervisor on
-    /// Claude Code or Codex waits for its prompt cache to be about to lapse,
-    /// which needs one, and Herdr's hooks run only when something happens, so
-    /// only a dashboard asks. A hook still goes on with a handover a
-    /// dashboard started: it replaces the supervisor once its note is
-    /// written, and a request made by either is one handover. A supervisor on
-    /// a harness with no known cache life has none to wait for, so a hook
-    /// asks for it at its first rest past the context threshold too
-    /// ([`supervisor::Cache`]).
-    idle_handover: bool,
-    /// A dashboard's share of `wake/<socket>.open`, held for as long as it
-    /// runs, which tells the command-line tools a dashboard is open
-    /// ([`dashboard_open`]).
-    presence: Option<fs::File>,
-    /// The Corgi binary the wake messages name.
-    corgi_bin: Option<PathBuf>,
     /// The supervisors' inboxes, whose base directory, when a test sets one,
     /// also holds the record of the agents followed.
     inboxes: Inboxes,
@@ -113,24 +86,24 @@ pub struct SupervisorWaker {
     /// Replacements running in the background, by project root, each ending
     /// with its status line or error.
     replacements: Vec<(String, Job<Result<String>>)>,
-    /// Recovery holds suppress outgoing work while preserving observed baselines.
-    recovery_held: HashSet<String>,
-    recovery_store: Option<crate::recovery::Store>,
-    /// Pause all's marks, as this pass took them up (`pause::Holds`): the
-    /// panes whose stops wake no one and whose supervisor gets nothing, and
-    /// the projects whose supervisor's handover is kept while it is away.
-    paused: crate::pause::Holds,
-    /// On hc, the file `corgi pause` keeps its pause in
+    /// What `corgi pause` holds, as this pass took it up.
+    paused: Paused,
+    /// The file `corgi pause` keeps its pause in
     /// (`hc::pause::record_path`), and whether a pause was in force at the
     /// last pass.
     hc_pause: Option<PathBuf>,
     hc_paused: bool,
     /// The pauses before reading a report again ([`REPORT_REREADS`]).
     report_rereads: &'static [Duration],
-    /// Where the supervisors and their workers run, which the wakes' lines
-    /// name commands for: the Herdr TUI, unless the hc daemon made this
-    /// waker ([`SupervisorWaker::for_hc`]).
-    backend: crate::backend::Backend,
+}
+
+/// What a pass holds back for the agents `corgi pause` stopped: the
+/// terminals whose stops wake no one, and the projects whose supervisor's
+/// handover record is kept while it is away.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Paused {
+    panes: HashSet<String>,
+    roots: HashSet<String>,
 }
 
 impl Default for SupervisorWaker {
@@ -138,10 +111,6 @@ impl Default for SupervisorWaker {
         Self {
             lock: None,
             lock_path: None,
-            hold: false,
-            idle_handover: true,
-            presence: None,
-            corgi_bin: None,
             inboxes: Inboxes::default(),
             socket: None,
             agents: BTreeMap::new(),
@@ -152,13 +121,10 @@ impl Default for SupervisorWaker {
             read: InboxCache::default(),
             handovers: HashMap::new(),
             replacements: Vec::new(),
-            recovery_held: HashSet::new(),
-            recovery_store: None,
-            paused: crate::pause::Holds::default(),
+            paused: Paused::default(),
             hc_pause: None,
             hc_paused: false,
             report_rereads: &REPORT_REREADS,
-            backend: crate::backend::Backend::Herdr,
         }
     }
 }
@@ -176,12 +142,11 @@ pub struct Inboxes {
 }
 
 impl Inboxes {
-    /// The file `name` of Corgi's state directory, or of the directory a
-    /// test keeps the state in instead.
-    pub fn state_file(&self, name: &str) -> Option<PathBuf> {
-        match &self.base {
-            Some(base) => Some(base.join(name)),
-            None => crate::paths::corgi_state_dir().map(|dir| dir.join(name)),
+    /// Inboxes kept under `base`, a directory per project.
+    #[cfg(test)]
+    pub fn in_dir(base: &Path) -> Self {
+        Self {
+            base: Some(base.to_path_buf()),
         }
     }
 
@@ -203,34 +168,6 @@ impl Inboxes {
         Ok(())
     }
 
-    /// The ids of `root`'s undelivered items that Corgi holds back on
-    /// `client`'s Herdr session: a delivery of them began and Herdr never
-    /// confirmed it, or a save of another boot listed them as on their way,
-    /// so they may already be in the supervisor's box. Until
-    /// they are read and recorded (`corgi inbox <project> --take`), nothing
-    /// more of the project is typed in.
-    pub fn held(&self, client: &HerdrClient, root: &str) -> Vec<String> {
-        let Some(store) = crate::recovery::Store::for_client(client) else {
-            return Vec::new();
-        };
-        let scope = client.socket_path().to_string_lossy();
-        let (Ok(held), Some(dir)) = (
-            crate::recovery::quarantined(&store, &scope, root),
-            self.dir(root),
-        ) else {
-            return Vec::new();
-        };
-        if held.is_empty() {
-            return held;
-        }
-        Inbox::read(&dir)
-            .undelivered_for(root)
-            .into_iter()
-            .filter(|item| held.contains(&item.id))
-            .map(|item| item.id.clone())
-            .collect()
-    }
-
     /// How many of `root`'s items have not been delivered.
     pub fn undelivered(&self, root: &str) -> usize {
         self.dir(root)
@@ -245,7 +182,7 @@ impl Inboxes {
     }
 
     /// The lines waiting for `root`'s supervisor, each as it goes out alone.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn pending_for(&self, root: &str) -> Vec<String> {
         let dir = self.dir(root).expect("inbox dir");
         Inbox::read(&dir)
@@ -269,7 +206,7 @@ struct InboxCache {
     /// taken.
     inboxes: HashMap<PathBuf, (Option<Option<InboxStamp>>, Inbox)>,
     /// How many times an inbox was read from disk.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     reads: usize,
 }
 
@@ -303,7 +240,7 @@ impl InboxCache {
                 .get(dir)
                 .is_some_and(|(seen, _)| *seen == stamp);
         if !unchanged {
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             {
                 self.reads += 1;
             }
@@ -403,15 +340,6 @@ struct HandoverAction {
 }
 
 impl SupervisorWaker {
-    /// Makes `path` this waker's wake lock, in place of its Herdr socket's,
-    /// and takes it if no other process holds it, as a test does to pin the
-    /// lock. Returns whether this waker holds it now; it does until the end
-    /// of the pass it is taken for, or until the waker goes.
-    pub fn lead(&mut self, path: &Path) -> bool {
-        self.lock_path = Some(path.to_path_buf());
-        self.take_lock(path)
-    }
-
     fn take_lock(&mut self, path: &Path) -> bool {
         if self.lock.is_none() {
             self.lock = fs::create_dir_all(path.parent().unwrap_or(path))
@@ -422,145 +350,16 @@ impl SupervisorWaker {
         self.lock.is_some()
     }
 
-    /// The wake lock of `client`'s Herdr session, or the one a test set.
-    fn lock_file(&self, client: &HerdrClient) -> Option<PathBuf> {
-        self.lock_path
-            .clone()
-            .or_else(|| wake_lock_path(client.socket_path()))
-    }
-
-    /// Starts a pass at waking the supervisors of `client`'s Herdr session:
-    /// takes the wake lock unless another process holds it, and if it got
-    /// it, clears the session's dirty flag and takes up what the last pass,
-    /// whoever's, left on disk. Returns whether this waker leads the pass;
-    /// one that does not must do nothing that only the leader may.
-    pub fn begin(&mut self, client: &HerdrClient) -> bool {
-        self.socket
-            .get_or_insert_with(|| client.socket_path().to_path_buf());
-        let Some(path) = self.lock_file(client) else {
-            return false;
-        };
-        if self.idle_handover && self.presence.is_none() {
-            let path = match &self.inboxes.base {
-                Some(base) => Some(base.join("open")),
-                None => presence_path(client.socket_path()),
-            };
-            self.presence = path.and_then(|path| {
-                let file = fs::File::create(path).ok()?;
-                file.try_lock_shared().ok()?;
-                Some(file)
-            });
-        }
-        if !self.take_lock(&path) {
-            return false;
-        }
-        if let Some(dirty) = self.dirty_file() {
-            let _ = fs::remove_file(dirty);
-        }
-        self.take_up();
-        true
-    }
-
-    /// Ends a pass: writes where the handovers stand, and gives up the wake
-    /// lock unless it is held across passes ([`Self::hold`]). Returns whether
-    /// another process asked for a pass while this one ran, by marking the
-    /// state dirty ([`Self::mark_dirty`]), so the caller goes round again.
-    pub fn end(&mut self) -> bool {
-        if self.lock.is_none() {
-            return false;
-        }
-        if let Err(error) = self.save_handovers() {
-            eprintln!("corgi: could not save the supervisors' handovers: {error:#}");
-        }
-        if !self.hold {
-            self.release();
-        }
-        self.is_dirty()
-    }
-
-    /// Takes the wake lock of `client`'s Herdr session and keeps it across
-    /// passes until [`Self::release`], as `corgi hook` does while it goes
-    /// round. Returns whether it got it.
-    pub fn hold(&mut self, client: &HerdrClient) -> bool {
-        self.socket
-            .get_or_insert_with(|| client.socket_path().to_path_buf());
-        let held = self
-            .lock_file(client)
-            .is_some_and(|path| self.take_lock(&path));
-        self.hold = held;
-        held
-    }
-
-    /// Gives up the wake lock at once. Closing the file alone may not: a
-    /// child process spawned on another thread at that moment briefly holds
-    /// a copy of the descriptor, and with it the lock, so the next process
-    /// would find it still taken.
-    pub fn release(&mut self) {
-        self.hold = false;
-        if let Some(lock) = self.lock.take() {
-            let _ = lock.unlock();
-        }
-    }
-
-    /// Gives up the wake lock and the dashboard's presence, as the waker
-    /// goes.
-    fn close(&mut self) {
-        self.release();
-        if let Some(presence) = self.presence.take() {
-            let _ = presence.unlock();
-        }
-    }
-
-    /// Whether this waker holds the wake lock, between [`Self::begin`] and
-    /// [`Self::end`].
+    /// Whether this waker holds the wake lock.
     pub fn leading(&self) -> bool {
         self.lock.is_some()
-    }
-
-    /// Leaves asking for handovers of Claude Code and Codex supervisors to
-    /// dashboards: both triggers wait for the supervisor's prompt cache to be
-    /// about to lapse, and Herdr runs a hook only when something happens, so
-    /// no hook can time a rest. Such a hook's pass asks for nothing, though it
-    /// still follows a handover a dashboard began. A harness with no known
-    /// cache life is unaffected: its handover is not timed.
-    pub fn without_idle_handover(mut self) -> Self {
-        self.idle_handover = false;
-        self
     }
 
     /// Whether a supervisor's replacement this waker started still runs.
     pub fn replacing(&self) -> bool {
         self.replacements
             .iter()
-            .any(|(_, replacement)| replacement.is_running() && !replacement.is_finished())
-    }
-
-    /// Asks for a pass at waking the supervisors of `client`'s Herdr
-    /// session, for when its wake lock may be taken: the pass that holds it
-    /// goes round again when it ends ([`Self::end`]), and the next pass to
-    /// begin clears the flag. Returns whether the flag could be set.
-    pub fn mark_dirty(&mut self, client: &HerdrClient) -> bool {
-        self.socket
-            .get_or_insert_with(|| client.socket_path().to_path_buf());
-        self.dirty_file().is_some_and(|path| {
-            path.parent()
-                .is_some_and(|dir| fs::create_dir_all(dir).is_ok())
-                && fs::write(&path, b"").is_ok()
-        })
-    }
-
-    /// Whether a pass was asked for ([`Self::mark_dirty`]) that none has
-    /// begun since.
-    pub fn is_dirty(&self) -> bool {
-        self.dirty_file().is_some_and(|path| path.exists())
-    }
-
-    /// The dirty flag of this waker's Herdr session, `wake/<socket>.dirty`.
-    fn dirty_file(&self) -> Option<PathBuf> {
-        match &self.inboxes.base {
-            Some(base) => Some(base.join("dirty")),
-            None => dirty_path(self.socket.as_deref()?),
-        }
+            .any(|(_, replacement)| replacement.is_working())
     }
 
     /// Takes up what the last pass left on disk: the agents followed and the
@@ -617,32 +416,16 @@ impl SupervisorWaker {
             .is_some_and(supervisor::Handover::in_progress)
     }
 
-    /// A waker that delivers from `inboxes`, picking up from the record the
-    /// dashboard that led before left. A refresh that panicked lost its
-    /// waker, and the next one starts again with this.
-    pub fn with_inboxes(inboxes: Inboxes) -> Self {
-        let mut waker = Self::default();
-        waker.inboxes = inboxes;
-        waker
-    }
-
     /// A waker that keeps its inboxes, its record, its handovers, its
     /// dirty flag and its wake lock under `base`, and reads a report again
     /// as often as any other but without pausing.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn in_dir(base: &Path) -> Self {
-        let mut waker = Self::with_inboxes(Inboxes {
-            base: Some(base.to_path_buf()),
-        });
+        let mut waker = Self::default();
+        waker.inboxes = Inboxes::in_dir(base);
         waker.lock_path = Some(base.join("wake.lock"));
         waker.report_rereads = &[Duration::ZERO; REPORT_REREADS.len()];
         waker
-    }
-
-    /// The inboxes this waker delivers from, for adding to them while it is
-    /// away in a refresh.
-    pub fn inboxes(&self) -> Inboxes {
-        self.inboxes.clone()
     }
 
     /// The state directory holding the inbox of `root`'s supervisor.
@@ -750,7 +533,6 @@ impl SupervisorWaker {
             self.agents.insert(name.to_string(), next);
             let root = agent.project_root.as_str();
             if let Some(state) = woke
-                && !self.recovery_held.contains(root)
                 && !self.paused.panes.contains(pane)
                 && (supervisors.contains(root) || self.handing_over(root) || own(agent))
             {
@@ -797,7 +579,7 @@ impl SupervisorWaker {
             {
                 continue;
             }
-            let item = wake_item(&stop, report, corgi_bin, self.backend);
+            let item = wake_item(&stop, report, corgi_bin);
             if let Err(failed) = self.notify(item) {
                 let name = stop.name;
                 error = Some(format!(
@@ -832,7 +614,7 @@ impl SupervisorWaker {
     }
 
     /// The lines waiting for `root`'s supervisor, each as it goes out alone.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn pending_for(&self, root: &str) -> Vec<String> {
         self.inboxes.pending_for(root)
     }
@@ -996,197 +778,21 @@ impl SupervisorWaker {
                 continue;
             }
             let ids: Vec<String> = pending.iter().map(|item| item.id.clone()).collect();
-            let scope = self
-                .socket
-                .as_deref()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let session = crate::recovery::session_key(&agent.info);
-            if let Some(store) = &self.recovery_store
-                && let Err(failed) =
-                    crate::recovery::begin_delivery(store, &scope, root, session.as_deref(), &ids)
-            {
-                // It lasts as long as its cause, so `recovery::mark_refused`
-                // and `refused_note` keep saying so past this status line.
-                error = Some(format!("Coordination: {failed}"));
-                continue;
-            }
             match prompt(supervisor, &inbox::prompt_text(&pending)).into() {
                 Delivery::Sent => {}
-                // Herdr typed nothing: the items stay undelivered, and go
-                // out at a later pass once the supervisor takes prompts.
-                Delivery::Refused => {
-                    if let Some(store) = &self.recovery_store {
-                        let _ = crate::recovery::abort_delivery(store, &scope, root, &ids);
-                    }
-                    continue;
-                }
-                // It may have been typed: the items stay quarantined.
-                Delivery::Unknown => continue,
+                // Nothing was typed, or it may have been: either way the
+                // items stay undelivered, and go out at a later pass.
+                Delivery::Refused | Delivery::Unknown => continue,
             }
             if let Err(failed) = inbox::mark_delivered(&dir, &ids, supervisor) {
                 unrecorded.extend(ids);
                 error = Some(format!(
                     "Could not record the delivery to {supervisor}: {failed:#}"
                 ));
-            } else if let Some(store) = &self.recovery_store {
-                let _ = crate::recovery::finish_delivery(store, &scope, root, &ids);
             }
         }
         self.read.retain(&dirs);
         error
-    }
-
-    /// Takes one refresh's agents: tells each project's supervisor about its
-    /// agents that stopped since the last one, and hands supervisors whose
-    /// handover is due over to fresh sessions, when this dashboard is
-    /// the one that wakes supervisors. Returns the status line to show, if any.
-    fn tick(
-        &mut self,
-        client: &HerdrClient,
-        agents: &[DashboardAgent],
-        report: impl FnMut(&DashboardAgent) -> Capture,
-    ) -> Option<String> {
-        if !self.leading() {
-            return None;
-        }
-        // Check durable recovery holds before observation can enqueue stop
-        // reports, before handover, and before any inbox delivery. A malformed
-        // hold record fails closed rather than waking a restored supervisor.
-        let held = match crate::recovery::held_projects(client, agents) {
-            Ok(held) => held,
-            Err(_) => {
-                return Some(
-                    "Recovery state could not be read; supervisor coordination held".into(),
-                );
-            }
-        };
-        self.recovery_held = held.iter().cloned().collect();
-        self.recovery_store = crate::recovery::Store::for_client(client);
-        // Paused agents too: their stops are followed and wake no one, and
-        // a paused supervisor is neither typed into nor handed over.
-        self.paused = crate::pause::Holds::read(client);
-        let available: Vec<_> = agents
-            .iter()
-            .filter(|a| {
-                !held.contains(&a.project_root) && !self.paused.panes.contains(&a.info.pane_id)
-            })
-            .cloned()
-            .collect();
-        self.socket
-            .get_or_insert_with(|| client.socket_path().to_path_buf());
-        let corgi_bin = self.corgi_bin.get_or_insert_with(|| {
-            let installed = client.plugin_root(supervisor::PLUGIN_ID).ok().flatten();
-            supervisor::corgi_bin(installed.as_deref()).unwrap_or_else(|_| PathBuf::from("corgi"))
-        });
-        let corgi_bin = corgi_bin.clone();
-        let mut status = self.observe(agents, &corgi_bin, report);
-        // What this pass followed is recorded: a paused agent seen back now
-        // is taken up from here, and its mark goes.
-        if !self.paused.is_empty() {
-            crate::pause::settle(client, agents, unix_now());
-        }
-        let mut finished = Vec::new();
-        self.replacements.retain_mut(|(root, replacement)| {
-            let Some(outcome) = replacement.outcome() else {
-                return true;
-            };
-            // A panicking replacement still reports, or the handover would
-            // stay in progress for good.
-            let result =
-                outcome.unwrap_or_else(|_| Err(anyhow::anyhow!("the replacement panicked")));
-            finished.push((std::mem::take(root), result));
-            false
-        });
-        for (root, result) in finished {
-            self.replaced(&root, result.is_ok(), agents);
-            status =
-                Some(result.unwrap_or_else(|error| {
-                    format!("The supervisor's handover failed: {error:#}")
-                }));
-        }
-        let percent = supervisor::handover_percent();
-        let idle_handover = self.idle_handover;
-        let actions = self.hand_over(
-            &available,
-            percent,
-            |harness| supervisor::Cache::of(harness, idle_handover),
-            unix_now(),
-            |root, at| {
-                supervisor::state_dir(root)
-                    .is_ok_and(|dir| supervisor::note_written_since(&dir, at))
-            },
-            |supervisor| holds_draft(client, supervisor),
-        );
-        for action in actions {
-            let name = &action.name;
-            let Some(step) = action.step else {
-                report_tokens(client, &action, action.token.as_deref());
-                continue;
-            };
-            match step {
-                supervisor::HandoverStep::Ask(at, trigger) => {
-                    let asked = supervisor::state_dir(&action.root).and_then(|dir| {
-                        client.prompt_agent(
-                            name,
-                            &supervisor::handover_request(&corgi_bin, &action.root, &dir, trigger),
-                        )
-                    });
-                    status = Some(match asked {
-                        Ok(_) => {
-                            let asked = format!("{at} {}", action.session);
-                            report_tokens(client, &action, Some(&asked));
-                            match trigger {
-                                supervisor::Trigger::Full(percent) => format!(
-                                    "{name}'s context is past {percent}% and its prompt cache is about to expire: asked for its handover note"
-                                ),
-                                supervisor::Trigger::Tokens(tokens) => format!(
-                                    "{name}'s context is past {}k tokens and its prompt cache is about to expire: asked for its handover note",
-                                    tokens / 1000
-                                ),
-                                supervisor::Trigger::Idle(minutes) => format!(
-                                    "{name} has been idle {minutes} min, its prompt cache about to expire: asked for its handover note"
-                                ),
-                                supervisor::Trigger::Update => format!(
-                                    "{name} worked after writing its handover note: asked to bring it up to date"
-                                ),
-                            }
-                        }
-                        Err(error) => {
-                            if let Some(handover) = self.handovers.get_mut(&action.root) {
-                                handover.unsent(action.change);
-                            }
-                            format!("Could not ask {name} for its handover note: {error:#}")
-                        }
-                    });
-                }
-                supervisor::HandoverStep::Replace => {
-                    status = Some(format!("Replacing {name} with a fresh session…"));
-                    let client = client.clone();
-                    let root = action.root.clone();
-                    let replacement = Job::spawn(move |_| replace_supervisor(&client, &action));
-                    self.replacements.push((root, replacement));
-                }
-                supervisor::HandoverStep::NoNote => {
-                    status = Some(format!(
-                        "{name} wrote no handover note: it keeps its session, and is asked again after a later turn"
-                    ));
-                }
-            }
-        }
-        let undelivered = self.deliver(
-            &available,
-            |supervisor| holds_draft(client, supervisor),
-            |supervisor, text| Delivery::of(&client.prompt_agent(supervisor, text)),
-        );
-        status.or(undelivered).or_else(|| {
-            (!held.is_empty()).then(|| {
-                format!(
-                    "{} recovered project(s): coordination held · S sessions",
-                    held.len()
-                )
-            })
-        })
     }
 }
 
@@ -1205,31 +811,9 @@ pub enum Delivery {
     Unknown,
 }
 
-/// The codes with which Herdr's `agent.prompt` refuses before it writes
-/// anything to the pane (Herdr 0.9's `queue_agent_prompt`).
-const REFUSED_BEFORE_WRITING: [&str; 5] = [
-    "agent_not_found",
-    "agent_target_ambiguous",
-    "agent_blocked",
-    "agent_not_ready",
-    "empty_agent_prompt",
-];
-
-impl Delivery {
-    /// How the `agent.prompt` that returned `result` went.
-    pub fn of<T>(result: &Result<T>) -> Self {
-        match result {
-            Ok(_) => Self::Sent,
-            Err(error) => match crate::herdr::HerdrError::code_of(error) {
-                Some(code) if REFUSED_BEFORE_WRITING.contains(&code) => Self::Refused,
-                _ => Self::Unknown,
-            },
-        }
-    }
-}
-
 /// `true` is a prompt typed in, and `false` one that may have been: the
 /// tests' prompts, which say only whether they went.
+#[cfg(test)]
 impl From<bool> for Delivery {
     fn from(sent: bool) -> Self {
         if sent { Self::Sent } else { Self::Unknown }
@@ -1246,62 +830,32 @@ fn own(agent: &DashboardAgent) -> bool {
 /// the report goes out with it instead. Its id names the agent's pane, run of
 /// state changes and state change, so the same stop is never added twice and
 /// a later one never taken for it.
-fn wake_item(
-    stop: &Stop<'_>,
-    report: Option<Captured>,
-    corgi_bin: &Path,
-    backend: crate::backend::Backend,
-) -> Item {
+fn wake_item(stop: &Stop<'_>, report: Option<Captured>, corgi_bin: &Path) -> Item {
     let Stop {
         agent, name, state, ..
     } = stop;
     let (pane, change) = (&agent.info.pane_id, agent.info.state_change_seq);
     let label = state.label().to_lowercase();
-    let source = match backend {
-        crate::backend::Backend::Herdr => "dashboard",
-        crate::backend::Backend::Hc => "daemon",
-    };
     Item {
         id: inbox::file_safe(&format!(
             "wake-{name}-{pane}-{}-{change}-{label}",
             stop.since
         )),
         project: agent.project_root.clone(),
-        source: source.into(),
+        source: "daemon".into(),
         kind: Kind::Wake,
         agent: Some(name.to_string()),
         state: Some(label),
         pane: Some(pane.clone()),
         change: Some(change),
         key: name.to_string(),
-        text: supervisor::wake_message_on(corgi_bin, name, *state, backend),
+        text: supervisor::wake_message(corgi_bin, name, *state),
         own: own(agent),
         request: agent.info.tokens.get(CORGI_REQUEST_TOKEN).cloned(),
         said: report.as_ref().is_some_and(|report| report.transcript),
         report: report.map(|report| report.text),
         ..Item::default()
     }
-}
-
-/// The report of `agent`, as `corgi report` prints it: the newest thing it
-/// said, from its transcript, or its screen when its harness writes none.
-fn captured_report(
-    sessions: &mut SessionReader,
-    client: &HerdrClient,
-    agent: &DashboardAgent,
-) -> Capture {
-    if let Some(capture) = transcript_report(&sessions.facts(&agent.info)) {
-        return capture;
-    }
-    client
-        .read_agent(&agent.info.pane_id, ReadSource::RecentUnwrapped, Some(120))
-        .ok()
-        .map(|read| Captured {
-            text: read.text.trim_end().to_string(),
-            transcript: false,
-        })
-        .filter(|report| !report.text.trim().is_empty())
-        .into()
 }
 
 /// The report a transcript's `facts` give, if they give one: the newest
@@ -1326,56 +880,15 @@ fn transcript_report(facts: &SessionFacts) -> Option<Capture> {
     }
 }
 
-/// Whether the user is writing in `supervisor`'s input box, so that nothing is
-/// typed into their draft. A screen that cannot be read, or a harness whose
-/// box Corgi does not know, counts as no draft: the text goes out as it did
-/// before this check, rather than waiting for good.
-fn holds_draft(client: &HerdrClient, supervisor: &DashboardAgent) -> bool {
-    let screen = client
-        .read_agent_styled(&supervisor.info.pane_id)
-        .map(|read| read.text);
-    screen_holds_draft(screen, &supervisor.info.harness())
-}
-
-/// Whether `screen`, as read from a `harness` supervisor's pane, shows a draft.
-fn screen_holds_draft(screen: Result<String>, harness: &Harness) -> bool {
-    screen
-        .ok()
-        .and_then(|screen| draft::holds_draft(harness, &screen))
-        .unwrap_or(false)
-}
-
-/// Keeps a supervisor's handover tokens on its pane: its `handover` request,
-/// if it has one, and its baseline. The marker goes with them, so the supervisor
-/// keeps it whether Herdr merges tokens or replaces them, and all of them go
-/// into Corgi's record of its marks.
-fn report_tokens(client: &HerdrClient, action: &HandoverAction, handover: Option<&str>) {
-    let baseline = action
-        .baseline
-        .map(|baseline| format!("{baseline} {}", action.session));
-    let tokens: Vec<(&str, &str)> = [
-        Some((SUPERVISOR_TOKEN, action.name.as_str())),
-        handover.map(|handover| (supervisor::HANDOVER_TOKEN, handover)),
-        baseline
-            .as_deref()
-            .map(|baseline| (supervisor::BASELINE_TOKEN, baseline)),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let _ = markers::mark_pane(
-        client,
-        &action.pane_id,
-        &action.name,
-        Some(&action.session),
-        &tokens,
-    );
-}
-
-/// Gives up the wake lock and the presence at once ([`SupervisorWaker::release`]).
+/// Gives up the wake lock at once. Closing the file alone may not: a child
+/// process spawned on another thread at that moment briefly holds a copy of
+/// the descriptor, and with it the lock, so the next process would find it
+/// still taken.
 impl Drop for SupervisorWaker {
     fn drop(&mut self) {
-        self.close();
+        if let Some(lock) = self.lock.take() {
+            let _ = lock.unlock();
+        }
     }
 }
 
@@ -1403,7 +916,6 @@ fn successor_plan(action: &HandoverAction, launch: supervisor::Launch) -> Launch
         effort: launch.effort,
         prompt: String::new(),
         project: PathBuf::from(&action.root),
-        new_project: false,
         checkout: Checkout::ProjectRoot,
         extra_args: launch.extra_args,
         role: Role::Supervisor {
@@ -1413,122 +925,11 @@ fn successor_plan(action: &HandoverAction, launch: supervisor::Launch) -> Launch
     }
 }
 
-/// Replaces the supervisor that handed over in `action` with a fresh session
-/// in the same pane: the old one exits through its harness's own command,
-/// which leaves its transcript on disk and its pane at the shell, and the new
-/// one starts there under the same name, marked as the supervisor, the way it
-/// was launched, and with a first prompt that takes up the note.
-fn replace_supervisor(client: &HerdrClient, action: &HandoverAction) -> Result<String> {
-    let HandoverAction {
-        root,
-        name,
-        pane_id,
-        harness,
-        ..
-    } = action;
-    // Its pane is about to be at its shell on purpose: it offers no Resume
-    // of the old session meanwhile, and its successor's launch is recorded.
-    crate::restart::forget(client, pane_id);
-    client
-        .prompt_agent(name, harness.exit_command())
-        .with_context(|| format!("ask {name} to exit"))?;
-    let exited = (0..SUPERVISOR_EXIT_POLLS).any(|_| {
-        thread::sleep(SUPERVISOR_EXIT_POLL_DELAY);
-        client.snapshot().is_ok_and(|snapshot| {
-            !snapshot
-                .agents
-                .iter()
-                .any(|agent| agent.pane_id == *pane_id && agent.name.as_deref() == Some(name))
-        })
-    });
-    anyhow::ensure!(
-        exited,
-        "{name} did not exit; it keeps running, with its handover note in place"
-    );
-    let plan = successor_plan(
-        action,
-        supervisor::launch_of(&supervisor::state_dir(root)?, harness),
-    );
-    launch_agent(client, &plan, &mut Silent)
-        .with_context(|| format!("{name} exited, but its successor did not start"))?;
-    Ok(format!("{name} handed over to a fresh session"))
-}
-
 /// The lock that makes one dashboard per Herdr socket the one that wakes
 /// supervisors, named after the socket so that dashboards of other Herdr
 /// sessions wake their own.
 fn wake_lock_path(socket: &Path) -> Option<PathBuf> {
     socket_state_file("wake", socket, "lock")
-}
-
-/// What every open dashboard holds a share of, `wake/<socket>.open`.
-fn presence_path(socket: &Path) -> Option<PathBuf> {
-    let path = socket_state_file("wake", socket, "open")?;
-    fs::create_dir_all(path.parent()?).ok()?;
-    Some(path)
-}
-
-/// Whether a dashboard of this Corgi is open on the Herdr session at
-/// `socket`: one holds a share of its presence lock.
-pub fn dashboard_open(socket: &Path) -> bool {
-    let Some(file) = socket_state_file("wake", socket, "open").and_then(|p| fs::File::open(p).ok())
-    else {
-        return false;
-    };
-    match file.try_lock() {
-        Ok(()) => {
-            let _ = file.unlock();
-            false
-        }
-        Err(_) => true,
-    }
-}
-
-/// Whether the supervisors' inboxes on `client`'s Herdr session are being
-/// delivered: Corgi's plugin has its hooks registered with Herdr, or a
-/// dashboard is open, of this Corgi or of an older one (which held the wake
-/// lock for as long as it ran).
-pub fn inboxes_delivered(client: &HerdrClient) -> bool {
-    let socket = client.socket_path();
-    wake_lock_held(socket)
-        || dashboard_open(socket)
-        || client.plugin_hooks(supervisor::PLUGIN_ID).unwrap_or(false)
-}
-
-/// The dirty flag of the Herdr session at `socket`, `wake/<socket>.dirty`.
-fn dirty_path(socket: &Path) -> Option<PathBuf> {
-    socket_state_file("wake", socket, "dirty")
-}
-
-/// Whether a process holds the wake lock of the Herdr session at `socket`:
-/// a dashboard of an older Corgi, which held it for as long as it ran, or a
-/// pass at waking under way. Trying the lock holds it only for that moment,
-/// and a lock nobody ever took is free.
-pub fn wake_lock_held(socket: &Path) -> bool {
-    let Some(file) = wake_lock_path(socket).and_then(|path| fs::File::open(path).ok()) else {
-        return false;
-    };
-    match file.try_lock() {
-        Ok(()) => {
-            let _ = file.unlock();
-            false
-        }
-        Err(_) => true,
-    }
-}
-
-/// Tells each project's supervisor about its `agents` that stopped since the
-/// last refresh, and hands supervisors whose handover is due over to fresh
-/// sessions, when this dashboard is the one that wakes supervisors. Reports
-/// are read with `sessions`. Returns the status line to show, if any.
-pub fn wake_supervisors(
-    waker: &mut SupervisorWaker,
-    client: &HerdrClient,
-    sessions: &mut SessionReader,
-    agents: &[DashboardAgent],
-) -> Option<String> {
-    let report = |agent: &DashboardAgent| captured_report(sessions, client, agent);
-    waker.tick(client, agents, report)
 }
 
 #[cfg(test)]
@@ -1538,6 +939,7 @@ mod tests {
     use crate::{
         launch::launch_args,
         model::{AgentInfo, AgentState, DashboardAgent},
+        session::SessionReader,
     };
 
     use super::*;
@@ -1720,14 +1122,13 @@ mod tests {
     }
 
     #[test]
-    fn a_dashboard_taking_over_the_wake_lock_resends_nothing_delivered() {
+    fn a_waker_taking_over_the_wake_lock_resends_nothing_delivered() {
         use AgentState::{Done, Idle, Working};
         let scratch = ScratchDir::new("waker-takeover");
-        let lock = scratch.join("wake.lock");
         let mut leader = SupervisorWaker::in_dir(&scratch);
         let mut other = SupervisorWaker::in_dir(&scratch);
-        assert!(leader.lead(&lock));
-        assert!(!other.lead(&lock));
+        assert!(leader.lead_hc());
+        assert!(!other.lead_hc());
         let agents = |state, change| {
             [
                 weather_supervisor(Idle),
@@ -1740,7 +1141,7 @@ mod tests {
             1
         );
         drop(leader);
-        assert!(other.lead(&lock));
+        assert!(other.lead_hc());
         assert!(wake_refresh(&mut other, &agents(Done, 2), None, false).is_empty());
         // It goes on from the leader's record: the next stop is news.
         wake_refresh(&mut other, &agents(Working, 3), None, false);
@@ -2050,7 +1451,11 @@ mod tests {
         let dir = scratch.join("weather");
         let inbox = Inbox::read(&dir);
         assert_eq!(
-            inbox.newest_report("w-radar").unwrap().report_text(&dir),
+            inbox
+                .newest_report("w-radar")
+                .unwrap()
+                .try_report_text(&dir)
+                .unwrap(),
             Some(long.clone())
         );
         // It is kept for good too, named by its time and request id.
@@ -2173,82 +1578,6 @@ mod tests {
     }
 
     #[test]
-    fn a_renamed_supervisor_receives_wakes_and_keeps_its_handover_session() {
-        let scratch = ScratchDir::new("waker");
-        use AgentState::{Done, Idle, Working};
-        let root = "/repos/weather";
-        let mut owner = project_agent("supervisor-weather", root, false, Idle);
-        owner.info.agent_session = Some(crate::model::AgentSession {
-            value: "s1".into(),
-            ..Default::default()
-        });
-        owner
-            .info
-            .tokens
-            .insert(SUPERVISOR_TOKEN.into(), supervisor::marker("", Some("s1")));
-        owner.supervisor = supervisor::is_supervisor(&owner.info);
-        let mut waker = SupervisorWaker::in_dir(&scratch);
-        waker.observe(
-            &[owner.clone(), project_agent("worker", root, false, Working)],
-            Path::new("/opt/corgi"),
-            |_| None,
-        );
-        owner.info.name = Some("renamed-task".into());
-        owner.supervisor = supervisor::is_supervisor(&owner.info);
-        let agents = [owner.clone(), project_agent("worker", root, false, Done)];
-        waker.observe(&agents, Path::new("/opt/corgi"), |_| None);
-        let mut recipients = Vec::new();
-        waker.deliver(
-            &agents,
-            |_| false,
-            |name, _| {
-                recipients.push(name.to_string());
-                true
-            },
-        );
-        assert_eq!(recipients, ["renamed-task"]);
-
-        owner.context_percent = Some(80);
-        let actions = waker.hand_over(
-            &[owner],
-            50,
-            |_| supervisor::Cache::Expires(0),
-            100,
-            |_, _| false,
-            |_| false,
-        );
-        assert_eq!(actions.len(), 1);
-        let action = &actions[0];
-        assert_eq!(action.name, "renamed-task");
-        assert_eq!(action.session, "s1");
-        assert_eq!(
-            action.step,
-            Some(supervisor::HandoverStep::Ask(
-                100,
-                supervisor::Trigger::Full(50)
-            ))
-        );
-        let (socket, server) = crate::test_support::fake_herdr("renamed-handover", |listener| {
-            crate::test_support::answer(&listener, |request| {
-                assert_eq!(request["method"], "pane.report_metadata");
-                assert_eq!(request["params"]["tokens"][SUPERVISOR_TOKEN], "session:s1");
-                assert_eq!(
-                    request["params"]["tokens"][supervisor::HANDOVER_TOKEN],
-                    "100 s1"
-                );
-                serde_json::json!({"result": {"type": "ok"}})
-            });
-        });
-        report_tokens(
-            &HerdrClient::from_socket_path(&socket),
-            action,
-            Some("100 s1"),
-        );
-        server.join().unwrap();
-        fs::remove_file(socket).unwrap();
-    }
-
-    #[test]
     fn a_scratch_agent_wakes_no_supervisor_and_none_is_handed_over_in_home() {
         let dir = ScratchDir::new("waker");
         use AgentState::{Done, Working};
@@ -2290,77 +1619,6 @@ mod tests {
     }
 
     #[test]
-    fn a_wake_waits_while_the_user_writes_in_the_supervisors_input_box() {
-        use AgentState::{Done, Working};
-        let screen = |name: &str| {
-            fs::read_to_string(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("src/fixtures/input_box")
-                    .join(name),
-            )
-            .map_err(anyhow::Error::from)
-        };
-        for (harness, draft, empty) in [
-            ("claude", "claude_draft.ansi", "claude_suggestion.ansi"),
-            ("claude", "claude_pasted_text.ansi", "claude_empty.ansi"),
-            (
-                "codex",
-                "codex_multiline_draft.ansi",
-                "codex_placeholder.ansi",
-            ),
-        ] {
-            let corgi_bin = Path::new("/opt/corgi");
-            let scratch = ScratchDir::new("waker");
-            let mut waker = SupervisorWaker::in_dir(&scratch);
-            let mut sent = Vec::new();
-            let mut refresh = |worker, shown: Result<String>| {
-                let mut supervisor =
-                    project_agent("supervisor-weather", "/repos/weather", true, Done);
-                supervisor.info.agent = Some(harness.into());
-                let agents = [
-                    supervisor,
-                    project_agent("w-forecast", "/repos/weather", false, worker),
-                ];
-                waker.observe(&agents, corgi_bin, |_| None);
-                let mut shown = Some(shown);
-                waker.deliver(
-                    &agents,
-                    |supervisor| {
-                        let screen = shown.take().expect("one read per refresh");
-                        screen_holds_draft(screen, &supervisor.info.harness())
-                    },
-                    |_, text| {
-                        sent.push(text.to_string());
-                        true
-                    },
-                );
-                sent.len()
-            };
-            assert_eq!(refresh(Working, screen(draft)), 0);
-            // The worker stops while the user writes: the wake waits.
-            assert_eq!(refresh(Done, screen(draft)), 0, "{draft}");
-            assert_eq!(refresh(Done, screen(draft)), 0, "{draft}");
-            // The box is empty, or shows only what the harness suggests.
-            assert_eq!(refresh(Done, screen(empty)), 1, "{empty}");
-            assert_eq!(refresh(Done, screen(empty)), 1, "sent once");
-            assert_eq!(
-                sent,
-                ["[Corgi] w-forecast is done. Run: /opt/corgi report w-forecast"]
-            );
-        }
-    }
-
-    #[test]
-    fn a_screen_that_cannot_be_read_or_understood_holds_nothing_back() {
-        let unreadable = Err(anyhow::anyhow!("agent_not_found"));
-        assert!(!screen_holds_draft(unreadable, &Harness::Claude));
-        let draft = "────\n❯ fix it\n────".to_string();
-        assert!(screen_holds_draft(Ok(draft.clone()), &Harness::Claude));
-        assert!(!screen_holds_draft(Ok(draft), &Harness::Gemini));
-        assert!(!screen_holds_draft(Ok("$ ".into()), &Harness::Codex));
-    }
-
-    #[test]
     fn a_handover_request_waits_while_the_user_writes_in_the_supervisors_input_box() {
         let scratch = ScratchDir::new("waker");
         use crate::supervisor::{HandoverStep::Ask, Trigger::Full};
@@ -2393,88 +1651,6 @@ mod tests {
         assert_eq!(steps(1, true), []);
         assert_eq!(steps(2, true), []);
         assert_eq!(steps(3, false), [Ask(3, Full(50))]);
-    }
-
-    #[test]
-    fn the_replacement_waits_while_the_user_writes_in_the_supervisors_input_box() {
-        let scratch = ScratchDir::new("waker");
-        use crate::supervisor::{HandoverStep::Replace, Trigger::Full};
-        use AgentState::{Done, Idle, Working};
-        let screen = |name: &str| {
-            fs::read_to_string(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("src/fixtures/input_box")
-                    .join(name),
-            )
-            .map_err(anyhow::Error::from)
-        };
-        let supervisor = |state, change| {
-            let mut agent = project_agent("supervisor-weather", "/repos/weather", true, state);
-            agent.info.agent = Some("claude".into());
-            agent.info.state_change_seq = change;
-            agent.info.agent_session = Some(crate::model::AgentSession {
-                value: "s1".into(),
-                ..Default::default()
-            });
-            agent.context_percent = Some(70);
-            agent
-        };
-        // The screen each refresh shows; `None` means it is never read.
-        let run = |screens: Vec<(AgentState, u64, u64, Option<Result<String>>)>| {
-            let mut waker = SupervisorWaker::in_dir(&scratch);
-            let mut steps = Vec::new();
-            for (state, change, now, mut shown) in screens {
-                let agents = [supervisor(state, change)];
-                steps.push(
-                    waker
-                        .hand_over(
-                            &agents,
-                            50,
-                            |_| supervisor::Cache::Expires(0),
-                            now,
-                            |_, _| true,
-                            |supervisor| {
-                                let screen = shown.take().expect("read only when due");
-                                screen_holds_draft(screen, &supervisor.info.harness())
-                            },
-                        )
-                        .into_iter()
-                        .find_map(|action| action.step),
-                );
-            }
-            steps
-        };
-        let empty = || Some(screen("claude_empty.ansi"));
-        let draft = || Some(screen("claude_draft.ansi"));
-        let late = 1_000;
-        assert_eq!(
-            run(vec![
-                (Idle, 1, 10, empty()),
-                (Working, 2, 11, None),
-                // The note is there, but so is the user's draft, long past
-                // the two minutes a request has to be taken up.
-                (Done, 3, 12, draft()),
-                (Done, 3, late, draft()),
-                (Done, 3, late + 1, Some(screen("claude_suggestion.ansi"))),
-            ]),
-            [
-                Some(crate::supervisor::HandoverStep::Ask(10, Full(50))),
-                None,
-                None,
-                None,
-                Some(Replace)
-            ]
-        );
-        // A screen that cannot be read does not hold the replacement back.
-        let unreadable = || Some(Err(anyhow::anyhow!("agent_not_found")));
-        assert_eq!(
-            run(vec![
-                (Idle, 1, 10, empty()),
-                (Working, 2, 11, None),
-                (Done, 3, 12, unreadable()),
-            ])[2],
-            Some(Replace)
-        );
     }
 
     #[test]
@@ -2815,327 +1991,21 @@ mod tests {
     }
 
     #[test]
-    fn one_dashboard_per_herdr_socket_wakes_supervisors() {
+    fn one_waker_per_core_wakes_supervisors() {
         let scratch = ScratchDir::new("waker");
-        let lock = std::env::temp_dir()
-            .join(format!("corgi-wake-test-{}", std::process::id()))
-            .join("herdr.lock");
         let mut first = SupervisorWaker::in_dir(&scratch);
         let mut second = SupervisorWaker::in_dir(&scratch);
-        assert!(first.lead(&lock));
-        assert!(!second.lead(&lock));
-        assert!(first.lead(&lock));
-        // When the leader goes, another dashboard takes over.
+        assert!(first.lead_hc());
+        assert!(!second.lead_hc());
+        assert!(first.lead_hc());
+        // When the leader goes, another waker takes over.
         drop(first);
-        assert!(second.lead(&lock));
-        fs::remove_dir_all(lock.parent().expect("lock dir")).ok();
+        assert!(second.lead_hc());
         assert_eq!(
-            wake_lock_path(Path::new("/tmp/herdr.sock"))
+            wake_lock_path(Path::new("/tmp/hc.sock"))
                 .and_then(|path| path.file_name().map(|name| name.to_owned())),
-            Some("_tmp_herdr_sock.lock".into())
+            Some("_tmp_hc_sock.lock".into())
         );
-    }
-
-    #[test]
-    fn a_pass_takes_up_the_handovers_and_agents_the_last_pass_left() {
-        use AgentState::{Idle, Working};
-        let scratch = ScratchDir::new("waker-passes");
-        let client = HerdrClient::from_socket_path(crate::test_support::UNUSED_SOCKET);
-        let mut supervisor = weather_supervisor(Idle);
-        supervisor.info.tokens.insert(
-            SUPERVISOR_TOKEN.into(),
-            supervisor::marker("supervisor-weather", Some("s1")),
-        );
-        supervisor.info.agent_session = Some(crate::model::AgentSession {
-            value: "s1".into(),
-            ..Default::default()
-        });
-        supervisor.context_percent = Some(80);
-        supervisor.info.agent = Some("claude".into());
-        let agents = [supervisor, weather_worker("w-radar", Working, 1, false)];
-
-        // A hook's pass, which cannot time a rest, asks a full Claude Code
-        // supervisor for nothing, however long it has rested.
-        let mut hook = SupervisorWaker::in_dir(&scratch).without_idle_handover();
-        assert!(hook.begin(&client));
-        hook.observe(&agents, Path::new("/opt/corgi"), |_| None);
-        for now in [1_000, 1_000_000] {
-            let actions = hook.hand_over(
-                &agents,
-                50,
-                |harness| supervisor::Cache::of(harness, false),
-                now,
-                |_, _| false,
-                |_| false,
-            );
-            assert!(actions.iter().all(|action| action.step.is_none()));
-        }
-        hook.end();
-        drop(hook);
-
-        // A dashboard's pass, which has one, asks the supervisor that has
-        // rested that long for its note.
-        let mut leader = SupervisorWaker::in_dir(&scratch);
-        assert!(leader.begin(&client));
-        leader.observe(&agents, Path::new("/opt/corgi"), |_| None);
-        let actions = leader.hand_over(
-            &agents,
-            50,
-            |_| supervisor::Cache::Expires(500),
-            1_000_000 + 500,
-            |_, _| false,
-            |_| false,
-        );
-        assert!(matches!(
-            actions[0].step,
-            Some(supervisor::HandoverStep::Ask(1_000_500, _))
-        ));
-        // Only one pass at a time.
-        let mut dashboard = SupervisorWaker::in_dir(&scratch);
-        assert!(!dashboard.begin(&client));
-        assert!(!dashboard.end() && !dashboard.leading());
-        // A dashboard that tried meanwhile marked it dirty.
-        assert!(dashboard.mark_dirty(&client));
-        assert!(leader.end(), "the leader goes round again");
-        drop(leader);
-
-        // The dashboard's next pass goes on from there: the request is the
-        // one being answered, and the worker is followed.
-        assert!(dashboard.begin(&client));
-        assert!(!dashboard.is_dirty(), "a pass that begins clears the flag");
-        assert!(dashboard.handing_over("/repos/weather"));
-        assert_eq!(dashboard.agents["w-radar"].change, 1);
-        assert!(!dashboard.end());
-        assert!(!dashboard.leading(), "a dashboard gives the lock up");
-    }
-
-    #[test]
-    fn a_hook_hands_over_a_full_supervisor_whose_harness_has_no_idle_time() {
-        use AgentState::Idle;
-        let scratch = ScratchDir::new("waker-untimed");
-        let supervisor = |kind: &str, percent| {
-            let mut supervisor = weather_supervisor(Idle);
-            supervisor.info.agent = Some(kind.into());
-            supervisor.info.tokens.insert(
-                SUPERVISOR_TOKEN.into(),
-                supervisor::marker("supervisor-weather", Some("s1")),
-            );
-            supervisor.info.agent_session = Some(crate::model::AgentSession {
-                value: "s1".into(),
-                ..Default::default()
-            });
-            supervisor.context_percent = Some(percent);
-            supervisor
-        };
-        let step = |kind: &str, percent| {
-            // A hook's waker, whose cache is timed for no harness.
-            let mut hook = SupervisorWaker::in_dir(&scratch).without_idle_handover();
-            let agents = [supervisor(kind, percent)];
-            let mut actions = hook.hand_over(
-                &agents,
-                50,
-                |harness| supervisor::Cache::of(harness, false),
-                1_000,
-                |_, _| false,
-                |_| false,
-            );
-            actions.pop().and_then(|action| action.step)
-        };
-        let ask = Some(supervisor::HandoverStep::Ask(
-            1_000,
-            supervisor::Trigger::Full(50),
-        ));
-        // With no cache life known there is no cache to wait for: percent alone.
-        assert_eq!(step("gemini", 80), ask);
-        assert_eq!(step("gemini", 49), None);
-        // Claude Code and Codex have one, which a hook cannot time.
-        assert_eq!(step("claude", 80), None);
-        assert_eq!(step("codex", 80), None);
-    }
-
-    #[test]
-    fn next_boot_recovery_hold_precedes_wakes_and_keeps_observation_baselines() {
-        let (scratch, client, saved, mut agents) = crate::recovery::fixture::hold_fixture();
-        let store = crate::recovery::Store::for_client(&client).unwrap();
-        store.save(&saved).unwrap();
-        for agent in &mut agents {
-            agent.info.state = AgentState::Idle;
-        }
-        let mut worker = weather_worker("fixture-worker", AgentState::Working, 1, true);
-        worker.project_root = agents[0].project_root.clone();
-        agents.push(worker);
-        let mut waker = SupervisorWaker::in_dir(&scratch.join("inboxes"));
-        waker.corgi_bin = Some("/usr/bin/true".into());
-        assert!(waker.lead(&scratch.join("test.lock")));
-        // No server: any handover/metadata/prompt API call would fail. A report
-        // callback must not be invoked for a stop while coordination is held.
-        waker.tick(&client, &agents, |_| panic!("held report captured"));
-        agents.last_mut().unwrap().info.state = AgentState::Done;
-        agents.last_mut().unwrap().info.state_change_seq = 2;
-        let status = waker.tick(&client, &agents, |_| panic!("held report captured"));
-        assert!(status.unwrap().contains("held"));
-        assert_eq!(waker.recovery_held.len(), 2);
-        assert_eq!(waker.agents["fixture-worker"].change, 2);
-        assert!(
-            waker
-                .inboxes
-                .pending_for(&agents[0].project_root)
-                .is_empty()
-        );
-        let held = crate::recovery::held_projects(&client, &agents).unwrap();
-        crate::recovery::continue_coordination(&client, &held).unwrap();
-        waker.recovery_held.clear();
-        assert!(
-            waker
-                .observe(&agents, Path::new("/usr/bin/true"), |_| -> Capture {
-                    panic!("old stop replayed")
-                })
-                .is_none()
-        );
-        assert!(
-            waker
-                .inboxes
-                .pending_for(&agents[0].project_root)
-                .is_empty()
-        );
-    }
-
-    /// A waker with an inbox item waiting for the fixture's first project,
-    /// whose saved supervisor is `agents[0]`, and what it types there.
-    fn deliver_with_old_snapshot(session: &str) -> (Vec<String>, Option<String>, Vec<String>) {
-        let (scratch, client, saved, mut agents) = crate::recovery::fixture::hold_fixture();
-        let store = crate::recovery::Store::for_client(&client).unwrap();
-        store.save(&saved).unwrap();
-        let root = agents[0].project_root.clone();
-        agents.truncate(1);
-        agents[0].info.name = Some("supervisor-p".into());
-        agents[0].info.state = AgentState::Idle;
-        if let Some(identity) = &mut agents[0].info.agent_session {
-            identity.value = session.into();
-        }
-        let mut waker = SupervisorWaker::in_dir(&scratch.join("inboxes"));
-        waker.recovery_store = Some(store);
-        waker.socket = Some(client.socket_path().to_path_buf());
-        waker
-            .inboxes
-            .notify(Item {
-                project: root.clone(),
-                source: "notify".into(),
-                kind: Kind::Note,
-                key: "a-wake".into(),
-                text: "[Corgi] a wake".into(),
-                ..Item::default()
-            })
-            .unwrap();
-        let mut sent = Vec::new();
-        let error = waker.deliver(
-            &agents,
-            |_| false,
-            |supervisor, text| {
-                sent.push(format!("{supervisor}: {text}"));
-                Delivery::Sent
-            },
-        );
-        (sent, error, waker.inboxes.pending_for(&root))
-    }
-
-    #[test]
-    fn a_new_supervisor_session_gets_its_wakes_despite_an_old_snapshot_of_its_project() {
-        let (sent, error, pending) =
-            deliver_with_old_snapshot("00000000-0000-4000-8000-0000000000aa");
-        assert_eq!(error, None);
-        assert_eq!(sent.len(), 1);
-        assert!(sent[0].contains("[Corgi] a wake"), "{sent:?}");
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn a_session_the_old_snapshot_names_gets_nothing_and_its_wakes_wait() {
-        let (sent, error, pending) = deliver_with_old_snapshot(crate::recovery::fixture::CODEX_ID);
-        assert!(sent.is_empty());
-        assert!(error.unwrap().contains("delivery refused"));
-        assert_eq!(pending.len(), 1);
-    }
-
-    /// Marks `panes` paused in `client`'s launch record, as Pause all does,
-    /// the first a supervisor's.
-    fn pause(client: &HerdrClient, panes: &[&str], resuming: bool) {
-        let path = crate::restart::record_path(client).unwrap();
-        crate::restart::update(&path, |record| {
-            for (index, pane) in panes.iter().enumerate() {
-                let entry = record.panes.entry(pane.to_string()).or_default();
-                entry.kind = "claude".into();
-                entry.session = Some("s1".into());
-                entry.paused = Some(crate::restart::Paused {
-                    at: unix_now(),
-                    project_root: "/repos/weather".into(),
-                    supervisor: index == 0,
-                    resuming,
-                });
-            }
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn paused_agents_wake_no_one_as_they_stop_or_come_back_and_no_handover_starts() {
-        use AgentState::{Idle, Working};
-        let scratch = ScratchDir::new("waker-pause");
-        let client = HerdrClient::from_socket_path(crate::test_support::UNUSED_SOCKET)
-            .with_marker_record(scratch.join("markers.json"));
-        let mut supervisor = weather_supervisor(Idle);
-        supervisor.info.tokens.insert(
-            SUPERVISOR_TOKEN.into(),
-            supervisor::marker("supervisor-weather", Some("s1")),
-        );
-        supervisor.info.agent_session = Some(crate::model::AgentSession {
-            value: "s1".into(),
-            ..Default::default()
-        });
-        // Past the threshold: unpaused, it would be asked for its note.
-        supervisor.context_percent = Some(80);
-        let agents = |state, change| {
-            vec![
-                supervisor.clone(),
-                weather_worker("w-radar", state, change, true),
-                weather_worker("w-cache", state, change, false),
-            ]
-        };
-        // Each pass a hook's: a new process that takes up what the last left.
-        // Returns its status, whether a handover runs, and what waits for
-        // the supervisor.
-        let pass = |agents: &[DashboardAgent]| {
-            let mut waker = SupervisorWaker::in_dir(&scratch.join("inboxes"));
-            waker.corgi_bin = Some("/opt/corgi".into());
-            assert!(waker.lead(&scratch.join("test.lock")));
-            let status = waker.tick(&client, agents, |_| Capture::Found(None));
-            (
-                status,
-                waker.handing_over("/repos/weather"),
-                waker.inboxes.pending_for("/repos/weather").len(),
-            )
-        };
-        let panes = ["supervisor-weather:p1", "w-radar:p1", "w-cache:p1"];
-        pass(&agents(Working, 1));
-        pause(&client, &panes, false);
-        // Interrupted with Esc, then exited: neither wakes nor hands over.
-        assert_eq!(pass(&agents(Idle, 2)), (None, false, 0));
-        assert_eq!(pass(&[]), (None, false, 0));
-
-        // Resume all: each comes back resting, which is no news.
-        pause(&client, &panes, true);
-        assert_eq!(pass(&agents(Idle, 1)).2, 0);
-        assert!(
-            crate::restart::read(&client)
-                .panes
-                .values()
-                .all(|entry| entry.paused.is_none()),
-            "the marks go once the agents were seen back"
-        );
-        // From then on a stop wakes the supervisor as before.
-        pass(&agents(Working, 2));
-        let (_, _, pending) = pass(&agents(Idle, 3));
-        assert_eq!(pending, 2);
     }
 
     #[test]

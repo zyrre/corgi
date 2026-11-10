@@ -113,21 +113,6 @@ impl ProjectMemory {
         self.save();
     }
 
-    /// Records a project seen open in Herdr without changing the order of the
-    /// ones already known, so a refresh never reshuffles the project list.
-    pub fn note(&mut self, root: &str) {
-        let root = root.trim();
-        if root.is_empty()
-            || self.roots.iter().any(|known| known == root)
-            || is_inside(root, self.state_dir.as_deref())
-        {
-            return;
-        }
-        self.roots.push(root.to_string());
-        self.roots.truncate(REMEMBERED_LIMIT);
-        self.save();
-    }
-
     /// Writes the list to its file, without the directories that no longer
     /// exist.
     fn save(&mut self) {
@@ -461,11 +446,11 @@ mod tests {
         });
         let mut memory = ProjectMemory::load_from(Some(file.clone()), None);
 
-        memory.note(&a);
-        memory.note(&b);
+        memory.remember(&a);
         memory.remember(&b);
         memory.remember(&c);
-        memory.note(&a);
+        memory.remember(&b);
+        memory.remember(&c);
 
         let text = fs::read_to_string(&file).expect("memory file written");
         assert_eq!(text, format!("{c}\n{b}\n{a}\n"));
@@ -503,17 +488,17 @@ mod tests {
         // What is inside the state directory is left out as the file is read.
         let mut memory = ProjectMemory::load_from(Some(file.clone()), Some(state.clone()));
         assert_eq!(memory.roots(), [text(&kept), text(&gone)]);
-        // ... and never noted or remembered.
-        memory.note(&text(&supervisor));
+        // ... and never remembered.
+        memory.remember(&text(&supervisor));
         memory.remember(&text(&state));
         assert_eq!(memory.roots(), [text(&kept), text(&gone)]);
 
         // A save drops the directory that is gone.
-        memory.note(&text(&other));
-        assert_eq!(memory.roots(), [text(&kept), text(&other)]);
+        memory.remember(&text(&other));
+        assert_eq!(memory.roots(), [text(&other), text(&kept)]);
         assert_eq!(
             fs::read_to_string(&file).expect("memory file"),
-            format!("{}\n{}\n", text(&kept), text(&other))
+            format!("{}\n{}\n", text(&other), text(&kept))
         );
     }
 

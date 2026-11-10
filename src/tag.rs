@@ -1,5 +1,5 @@
 //! `corgi tag`: a supervisor tags one of its project's agents ready for the
-//! user to merge, or clears the tag, for the dashboard to show.
+//! user to merge, or clears the tag, for the Projects list to show.
 
 use std::{fs, path::Path};
 
@@ -8,9 +8,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     digest,
     git::{git_current_branch, git_output},
-    herdr::HerdrClient,
     launch::CORGI_REQUEST_TOKEN,
-    markers,
     model::{AgentState, DashboardAgent},
     supervisor,
 };
@@ -24,28 +22,8 @@ pub struct TagOptions {
     pub project: Option<String>,
 }
 
-/// Tags or untags the agent `options` names among the agents of the project
-/// at `root`, and says what was done.
-pub fn tag_agent(
-    client: &HerdrClient,
-    agents: &[DashboardAgent],
-    root: &str,
-    options: &TagOptions,
-) -> Result<String> {
-    tag_agent_with(agents, root, options, |agent, value| {
-        let info = &agent.info;
-        let name = info.name.as_deref().unwrap_or(options.name.as_str());
-        markers::tag_pane(
-            client,
-            &info.pane_id,
-            name,
-            markers::session_of(info),
-            value,
-        )
-    })
-}
-
-/// [`tag_agent`] with the tag written by `write`: given the agent, and the
+/// Tags the agent `options` names, of the project at `root`, ready to merge,
+/// or clears its tag, as `write` writes it: given the agent, and the
 /// [`supervisor::MERGE_TOKEN`] value to tag it with, or `None` to clear its
 /// tag. Every check is made before `write` is called.
 pub fn tag_agent_with(

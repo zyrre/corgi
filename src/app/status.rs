@@ -36,14 +36,15 @@ use crate::{
     time::{rfc3339_utc, unix_now},
 };
 
-use super::{
-    hc_cli::hc_project_root,
+use crate::{
     launch::CORGI_REQUEST_TOKEN,
     merge::{
-        ConflictHelp, MergeError, Upstream, abort_merge, conflict_item, handoff, merge_form,
-        project_supervisor, push_failed_item, refused_form, run_merge, tell_supervisor_about_merge,
+        MergeError, Upstream, abort_merge, conflict_item, failed_form, merge_failed_item,
+        merge_form, project_supervisor, push_failed_item, run_merge, tell_supervisor_about_merge,
     },
 };
+
+use super::hc_cli::hc_project_root;
 
 /// The version of `corgi status --json`'s shape: fields may be added under
 /// it, and a rename or removal bumps it. Version 2 reads hc alone: the
@@ -623,11 +624,7 @@ pub(crate) fn ask_supervisor(
     let Some(index) = worker_index(agents, name, root) else {
         return MergeOutcome::refused("no-agent", format!("No worker {name} runs in {root}"));
     };
-    let Some(form) = refused_form(
-        &agents[index],
-        error.to_string(),
-        ConflictHelp::NoSupervisor,
-    ) else {
+    let Some(form) = failed_form(&agents[index]) else {
         return MergeOutcome::refused(
             "unavailable",
             "Merge is available only for an agent in a linked worktree".into(),
@@ -647,15 +644,10 @@ pub(crate) fn ask_supervisor(
                 form.target_branch
             ),
         ),
-        None => match handoff(&form, &supervisor, Some(error)) {
-            Some(handoff) => (handoff.item, handoff.status),
-            None => {
-                return MergeOutcome::refused(
-                    "failed",
-                    "this merge has not failed, so there is nothing to fix".into(),
-                );
-            }
-        },
+        None => (
+            merge_failed_item(&form, error),
+            format!("Asked {supervisor} to fix the merge of {}", form.agent),
+        ),
     };
     match inboxes.notify(item) {
         Ok(()) => MergeOutcome {
@@ -882,7 +874,7 @@ mod tests {
         let busy = git_worktree(&app, &scratch.join("busy"), "worktree/busy");
         let root = app.to_string_lossy().into_owned();
         supervisor_state(&base, &app);
-        let inboxes = crate::waker::SupervisorWaker::in_dir(&base).inboxes();
+        let inboxes = crate::waker::Inboxes::in_dir(&base);
         let project = |role| [(PROJECT_LABEL, root.as_str()), (ROLE_LABEL, role)];
         let terminals = [
             // A worker tagged where it rests now: ready to merge.
@@ -960,7 +952,7 @@ mod tests {
         let base = scratch.join("state");
         let app = git_repo(&scratch.join("app"));
         supervisor_state(&base, &app);
-        let inboxes = crate::waker::SupervisorWaker::in_dir(&base).inboxes();
+        let inboxes = crate::waker::Inboxes::in_dir(&base);
         let remembered = [app.to_string_lossy().into_owned()];
         let value = status_value(&[], &remembered, &inboxes, (false, None), None, NOW);
         assert_eq!(value["hc"], json!({"running": false, "error": null}));
@@ -1022,7 +1014,7 @@ mod tests {
             "# Backlog\n\n## One\nfirst\n## Two\n",
         )
         .unwrap();
-        let inboxes = crate::waker::SupervisorWaker::in_dir(&base).inboxes();
+        let inboxes = crate::waker::Inboxes::in_dir(&base);
         inboxes
             .notify(crate::inbox::Item {
                 project: app.to_string_lossy().into_owned(),
@@ -1210,7 +1202,7 @@ mod tests {
             merge_agent(
                 &client,
                 agents,
-                &crate::waker::SupervisorWaker::in_dir(&self.state).inboxes(),
+                &crate::waker::Inboxes::in_dir(&self.state),
                 "w-fix",
                 &self.root(),
                 upstream,
@@ -1219,9 +1211,7 @@ mod tests {
 
         /// The lines waiting for the project's supervisor.
         fn pending(&self) -> Vec<String> {
-            crate::waker::SupervisorWaker::in_dir(&self.state)
-                .inboxes()
-                .pending_for(&self.root())
+            crate::waker::Inboxes::in_dir(&self.state).pending_for(&self.root())
         }
 
         fn head(&self, rev: &str) -> String {
@@ -1332,7 +1322,7 @@ mod tests {
         let outcome = merge_agent(
             &client,
             &mut agents,
-            &crate::waker::SupervisorWaker::in_dir(&project.state).inboxes(),
+            &crate::waker::Inboxes::in_dir(&project.state),
             "w-fix",
             &project.root(),
             Upstream::checked,
@@ -1379,7 +1369,7 @@ mod tests {
     fn the_supervisor_is_asked_to_fix_a_failed_merge_only_while_one_runs() {
         let project = Mergeable::new("status-merge-ask");
         supervisor_state(&project.state, &project.repo);
-        let inboxes = crate::waker::SupervisorWaker::in_dir(&project.state).inboxes();
+        let inboxes = crate::waker::Inboxes::in_dir(&project.state);
         let error = "the primary checkout has uncommitted changes: M status.txt";
         let ask = |agents: &[DashboardAgent], name: &str, landed: Option<&str>| {
             ask_supervisor(agents, &inboxes, name, &project.root(), error, landed)

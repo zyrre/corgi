@@ -54,19 +54,17 @@ mod text;
 use std::{
     collections::{HashMap, HashSet, hash_map::Entry},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
 use self::{
     claude::{
-        ClaudeFile, ClaudeWindowSettings, claude_disable_long_context_env, claude_events,
-        claude_window_settings,
+        ClaudeFile, ClaudeWindowSettings, claude_disable_long_context_env, claude_window_settings,
     },
-    codex::{CodexFile, codex_events},
+    codex::CodexFile,
     locate::{Search, claude_transcript, codex_rollout},
-    tail::{Tail, file_length},
-    text::{Entries, Events},
+    tail::file_length,
 };
 use crate::{
     harness::{SessionFormat, claude_config_dirs},
@@ -91,13 +89,6 @@ const MISS_RETRY: Duration = Duration::from_secs(5);
 /// sessions tree before searching all of it again, for a session resumed from
 /// an older day in the meantime.
 const FULL_SEARCH_RETRY: Duration = Duration::from_secs(60);
-/// Entries the expanded transcript view reads, newest first. A few more than
-/// the tallest terminal can show, so scrolling back has somewhere to go.
-const TRANSCRIPT_ENTRIES: usize = 60;
-/// Tail of a session file the expanded view reads when it first opens. Unlike
-/// the row scan this window never grows: a predictable cost matters more than
-/// reaching the very oldest turn.
-const TRANSCRIPT_TAIL_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionFacts {
@@ -112,19 +103,11 @@ pub struct SessionFacts {
     /// When the prompt cache holding that context lapses, and how much it then
     /// costs to rebuild. Only Claude Code records enough to say.
     pub cache: Option<PromptCache>,
-    /// Unix seconds of the newest timestamped record of the session: when
-    /// the agent last did anything, or stopped.
-    pub last_activity: Option<u64>,
     /// The first human prompt in this session. This is a cross-harness fallback
     /// for a generated task title that is not available yet.
     pub task: Option<String>,
-    /// The newest thing said in the session: the user's prompt, the
-    /// assistant's reply, or the assistant's thinking, whichever came last.
-    pub message: Option<Activity>,
-    /// The newest tool call, with its whole argument.
-    pub tool: Option<Activity>,
-    /// The same newest thing said as `message`, but whole rather than cut to
-    /// a dashboard row: the source of `corgi report`.
+    /// The newest assistant reply or question, whole: the source of `corgi
+    /// report` and of the report a wake quotes.
     pub report: Option<Activity>,
     /// How the newest turn stands in the file, which says whether `report`
     /// is that turn's: unknown when the file shows no prompt, reply or tool
@@ -161,7 +144,6 @@ pub enum TurnState {
 pub struct SessionReader {
     files: HashMap<String, Lookup>,
     parsed: HashMap<PathBuf, ParsedFacts>,
-    transcripts: HashMap<PathBuf, ParsedTranscript>,
     /// What Claude Code's settings say about its window, read once per reader.
     claude_window_settings: OnceLock<ClaudeWindowSettings>,
     /// The directory session files are looked for under, when it is not
@@ -199,16 +181,6 @@ enum HarnessFile {
     Codex(CodexFile),
 }
 
-/// The transcript entries of one session file, as of the length it had when
-/// read. The entries are shared, so handing them out every refresh copies
-/// nothing.
-#[derive(Debug, Default)]
-struct ParsedTranscript {
-    length: Option<u64>,
-    entries: Arc<[Activity]>,
-    tail: Tail<Entries>,
-}
-
 impl SessionReader {
     /// A reader for lookups among `live`, the agent panes now running, so an
     /// unidentified pane is not given the transcript of another one of them.
@@ -220,7 +192,7 @@ impl SessionReader {
 
     /// A reader that looks for session files under `home` in place of
     /// `$HOME`, which holds no Claude Code settings.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub fn in_home(home: &Path) -> Self {
         Self {
             home: Some(home.to_path_buf()),
@@ -274,35 +246,6 @@ impl SessionReader {
         parsed.facts.clone()
     }
 
-    /// The newest conversation entries of one agent, newest first: what each
-    /// side said and every tool call and command in between. Empty when the
-    /// CLI writes no session file or it cannot be read.
-    ///
-    /// The agent's own reasoning is left out. It is the bulk of a modern
-    /// transcript and would push the turns the reader came for off the view.
-    pub fn transcript(&mut self, info: &AgentInfo) -> Arc<[Activity]> {
-        let events: Events = match info.harness().session_format() {
-            Some(SessionFormat::Claude) => claude_events,
-            Some(SessionFormat::Codex) => codex_events,
-            None => return Arc::default(),
-        };
-        let Some(path) = self.session_file(info) else {
-            return Arc::default();
-        };
-        let length = file_length(&path);
-        let transcript = self.transcripts.entry(path.clone()).or_default();
-        if transcript.length != Some(length) {
-            transcript
-                .tail
-                .update(&path, &[TRANSCRIPT_TAIL_BYTES], |record| {
-                    Entries::of(record, events)
-                });
-            transcript.entries = transcript.tail.found().newest_first().cloned().collect();
-            transcript.length = Some(length);
-        }
-        Arc::clone(&transcript.entries)
-    }
-
     /// Forgets the sessions of panes that are gone, so a long-lived dashboard
     /// does not accumulate the transcripts of closed agents, and notes which
     /// working directories the live Claude Code panes share.
@@ -323,7 +266,6 @@ impl SessionReader {
             .filter_map(|lookup| lookup.path.as_ref())
             .collect();
         self.parsed.retain(|path, _| paths.contains(path));
-        self.transcripts.retain(|path, _| paths.contains(path));
     }
 
     fn session_file(&mut self, info: &AgentInfo) -> Option<PathBuf> {

@@ -41,17 +41,6 @@ pub fn expand_home(typed: &str) -> String {
     }
 }
 
-/// `path` with the home directory shortened to `~`, as people write it.
-pub fn tilde(path: &str) -> String {
-    match home_text() {
-        Some(home) if home != "/" => match path.strip_prefix(home.as_str()) {
-            Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
-            _ => path.to_string(),
-        },
-        _ => path.to_string(),
-    }
-}
-
 /// Whether `path` is the home directory itself, not one of its
 /// subdirectories: `~`, `$HOME` and a spelling with a trailing `/` or through
 /// a symlink all are. The home directory is where scratch agents run, and it
@@ -96,6 +85,18 @@ pub fn spelled(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+/// A fixed-length digest of a project directory: 64-bit FNV-1a over its
+/// UTF-8 bytes, in hex behind the algorithm's name. It must read the same in
+/// every Corgi build, which rules out std's `DefaultHasher`. It only names
+/// a project in a terminal's label and a lock file, so it need not resist
+/// forgery.
+pub fn project_root_digest(root: &str) -> String {
+    let hash = root.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("fnv1a64:{hash:016x}")
 }
 
 #[cfg(test)]

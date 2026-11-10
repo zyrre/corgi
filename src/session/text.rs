@@ -2,14 +2,14 @@
 //! conversation and transcript they feed, and the text and tool helpers that
 //! shape them for display.
 
-use std::{borrow::Cow, collections::VecDeque, path::Path, sync::LazyLock};
+use std::{borrow::Cow, path::Path, sync::LazyLock};
 
 use regex::Regex;
 use serde_json::Value;
 
-use super::{TRANSCRIPT_ENTRIES, TurnState, tail::Fold};
+use super::TurnState;
 use crate::{
-    activity::{MAX_MESSAGE_CHARS, MAX_TOOL_CHARS, MAX_TRANSCRIPT_CHARS, describe, describe_block},
+    activity::{MAX_MESSAGE_CHARS, describe, describe_block},
     model::{Activity, ActivityKind},
 };
 
@@ -18,9 +18,6 @@ use crate::{
 pub static PASTED_CONTENT_TAG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"</?pasted_content(?:\s[^>]*)?>").expect("valid pasted content regex")
 });
-
-/// Reduces one session record to its events, in the order it holds them.
-pub type Events = for<'a> fn(&'a Value, &mut dyn FnMut(Event<'a>));
 
 /// One thing a session record holds: something said, or a tool call.
 #[derive(Debug)]
@@ -31,8 +28,6 @@ pub struct Event<'a> {
     call: bool,
     /// Whether the row reads it, as the newest message or tool.
     in_row: bool,
-    /// Whether the expanded transcript lists it.
-    in_transcript: bool,
     /// A turn's start or end the record marks without saying anything
     /// either view shows.
     mark: Option<Mark>,
@@ -52,7 +47,6 @@ impl<'a> Event<'a> {
             text: text.into(),
             call: false,
             in_row: true,
-            in_transcript: true,
             mark: None,
         }
     }
@@ -62,7 +56,6 @@ impl<'a> Event<'a> {
         Self {
             mark: Some(mark),
             in_row: false,
-            in_transcript: false,
             ..Self::said(ActivityKind::Prompt, "")
         }
     }
@@ -71,15 +64,6 @@ impl<'a> Event<'a> {
         Self {
             call: true,
             ..Self::said(kind, text)
-        }
-    }
-
-    /// Shown in the row but not listed in the transcript: the agent's
-    /// reasoning, or an echo of a record the transcript already lists.
-    pub fn row_only(self) -> Self {
-        Self {
-            in_transcript: false,
-            ..self
         }
     }
 
@@ -151,16 +135,6 @@ impl Conversation {
 
     pub fn complete(&self) -> bool {
         self.said.is_some() && self.called.is_some()
-    }
-
-    pub fn message(&self) -> Option<Activity> {
-        let (kind, text) = self.said.as_ref()?;
-        Some(describe(*kind, text, MAX_MESSAGE_CHARS))
-    }
-
-    pub fn tool(&self) -> Option<Activity> {
-        let (kind, text) = self.called.as_ref()?;
-        Some(describe(*kind, text, MAX_TOOL_CHARS))
     }
 
     /// The newest assistant reply or question, whole: `corgi report`'s
@@ -235,57 +209,6 @@ impl Turn {
             (_, true) => TurnState::Silent,
             _ => TurnState::Open,
         })
-    }
-}
-
-/// The newest entries of the expanded transcript, oldest first.
-#[derive(Debug, Default)]
-pub struct Entries(VecDeque<Activity>);
-
-impl Entries {
-    pub fn of(record: &Value, events: Events) -> Self {
-        let mut entries = Self::default();
-        events(record, &mut |event| entries.see(&event));
-        entries
-    }
-
-    /// Appends one entry, skipping empty text and a turn identical to the one
-    /// just before it. Both CLIs record some turns twice, and the same command
-    /// repeated a moment later reads as noise rather than history.
-    pub fn see(&mut self, event: &Event) {
-        if !event.in_transcript || event.text.trim().is_empty() {
-            return;
-        }
-        let entry = describe_block(event.kind, &event.text, MAX_TRANSCRIPT_CHARS);
-        if self.0.back() == Some(&entry) {
-            return;
-        }
-        self.0.push_back(entry);
-        if self.0.len() > TRANSCRIPT_ENTRIES {
-            self.0.pop_front();
-        }
-    }
-
-    pub fn newest_first(&self) -> impl Iterator<Item = &Activity> {
-        self.0.iter().rev()
-    }
-}
-
-impl Fold for Entries {
-    fn or(mut self, older: Self) -> Self {
-        for entry in older.0.into_iter().rev() {
-            if self.complete() {
-                break;
-            }
-            if self.0.front() != Some(&entry) {
-                self.0.push_front(entry);
-            }
-        }
-        self
-    }
-
-    fn complete(&self) -> bool {
-        self.0.len() >= TRANSCRIPT_ENTRIES
     }
 }
 
