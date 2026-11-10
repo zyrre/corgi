@@ -7,8 +7,9 @@
 // spaces on its worktrees grouped under it by git. Under a project, one row
 // per agent in it, its supervisor first: Corgi's agents with their task and
 // role from `corgi status --json`, and agents started by hand with their own
-// title. A worktree's space with no agent keeps its plain row. Spaces outside
-// any repository (the Corgi space, ~, other folders) show as spaces, with
+// title. A row reads task, harness, state, worktree, and is cut from the
+// right. A worktree's space with no agent keeps its plain row. Spaces outside
+// any repository (~, other folders) show as spaces, with
 // their agents under them. Click a space to show it and an agent to show its
 // terminal; right-click for the space's menu; drag a space to reorder. The
 // command `projects.open` does what the + does, for a key of the person's
@@ -63,9 +64,11 @@ const FALLBACK = 60000;
 // How often Corgi's status is read again besides when the live agents
 // change: as often as the Corgi mod reads it, never more.
 const POLL_MS = 5000;
-// The least an agent's task keeps of its row, so that a long worktree name
-// never squeezes it out: the task is cut first, down to this, then the name.
-const TASK_MIN = 64;
+// How much sooner than its task an agent's worktree name gives way when a
+// row is too wide: flex takes the overflow from each in proportion to this
+// times its width, so the name is cut down to nothing before the task
+// loses a letter.
+const WORKTREE_YIELDS = 1000;
 // How many suggestions "Open project" shows at once.
 const SUGGESTIONS = 8;
 // Starting a supervisor waits for its shell, its agent and a folder-trust
@@ -96,6 +99,10 @@ function stateMark(t, status) {
   // Not an agent that reports: a supervisor's shell after its agent exited.
   return div().size(7).mx(3).flex_none();
 }
+
+// What the field says with no corgi to ask, and with one too old to answer.
+const NO_CORGI = "The corgi command was not found. Install Corgi: run herdr-app/install.sh from its repository.";
+const OLD_CORGI = "This corgi is older than the Projects list. Update Corgi: run herdr-app/install.sh from its repository again.";
 
 // Corgi's word for an agent's state as one of the app's, or null.
 const STATUS = { working: "working", blocked: "blocked", done: "done", idle: "idle" };
@@ -316,13 +323,13 @@ export default class Projects extends View {
       let rows = null;
       let failure = null;
       if (!this.corgi) await this.status();
-      if (!this.corgi) failure = "Corgi's command-line tool was not found. Open the Corgi space: it installs it.";
+      if (!this.corgi) failure = NO_CORGI;
       else {
         try {
           const args = ["projects", "--json", "--query", query, ...this.openFolders().flatMap((dir) => ["--open", dir])];
           const r = await exec(this.corgi, args, { timeout: 20000 });
           if (r.code === 0) rows = JSON.parse(r.stdout).projects ?? [];
-          else failure = /unknown command/.test(r.stderr) ? "This corgi is older than the Projects list. Update Corgi (the Corgi space does it)." : oneLine(r.stderr) || `corgi projects exited with ${r.code}`;
+          else failure = /unknown command/.test(r.stderr) ? OLD_CORGI : oneLine(r.stderr) || `corgi projects exited with ${r.code}`;
         } catch (e) {
           failure = `corgi projects did not answer: ${e}`;
         }
@@ -384,7 +391,7 @@ export default class Projects extends View {
       return;
     }
     if (!this.corgi) {
-      this.problem = "Corgi's command-line tool was not found. Open the Corgi space: it installs it.";
+      this.problem = NO_CORGI;
       cx.notify();
       return;
     }
@@ -941,9 +948,11 @@ export default class Projects extends View {
       );
   }
 
-  // One agent, on one line: its harness's icon, its task, the worktree it
-  // works in (nothing on the primary checkout) and its state. Too long, the
-  // task is cut first, down to a few letters, then the worktree's name.
+  // One agent, on one line, left to right: its task, its harness's icon,
+  // its state, and the worktree it works in (nothing on the primary
+  // checkout). Too wide, it is cut from the right: the worktree's name
+  // first, down to nothing, and only then the task; the icon and the state
+  // stay whole.
   // `on`: lit, as the agent with the focus or for its space, which is shown.
   agent(a, { w, g, at, tree }, on, t) {
     const worktree = a.corgi?.worktree ? base(a.corgi.worktree) : tree && g?.linked && at ? base(at) : "";
@@ -963,10 +972,10 @@ export default class Projects extends View {
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click(() => run("agent.focus", { terminal: a.address }))
       .on_mouse_down("right", () => this.menu(w))
-      .child(pic ?? div().size(14).flex_none())
-      .child(div().flex_1().min_w(TASK_MIN).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
-      .when(Boolean(worktree), (el) => el.child(div().min_w(0).truncate().text_size(11).text_color(t.dim).child(worktree)))
-      .child(h_flex().w(14).flex_none().items_center().justify_center().child(stateMark(t, a.status)));
+      .child(div().flex_shrink(1).min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
+      .when(Boolean(pic), (el) => el.child(pic))
+      .child(h_flex().w(14).flex_none().items_center().justify_center().child(stateMark(t, a.status)))
+      .when(Boolean(worktree), (el) => el.child(div().flex_shrink(WORKTREE_YIELDS).min_w(0).truncate().text_size(11).text_color(t.dim).child(worktree)));
   }
 
   // A space in the rail: its number, and the most urgent state in it.

@@ -541,3 +541,34 @@ fn what_corgi_types_into_a_terminal_is_never_marked_as_an_agents_message() {
         "{callers:?}"
     );
 }
+
+#[test]
+fn app_space_makes_nothing_without_a_window_and_leaves_no_note_for_the_daemon() {
+    // The Corgi space is made by hand only: no window, no space, and the
+    // note an earlier corgi left for its daemon to make one from is deleted.
+    let world = World::new("space");
+    let home = world.private.join("app");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(world.state()).unwrap();
+    let note = world.state().join("app-space.json");
+    fs::write(
+        &note,
+        json!({ "bin": "/usr/bin/true", "home": home }).to_string(),
+    )
+    .unwrap();
+    let home_text = home.to_string_lossy().into_owned();
+    let output = world.corgi(&["app-space", "--home", &home_text, "--app", "/usr/bin/false"]);
+    assert_eq!(output.status.code(), Some(1));
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        said.contains("the Herdr app's window is not open")
+            && said.contains("run corgi app-space again"),
+        "{said}"
+    );
+    assert!(!note.exists());
+    let left: Vec<_> = fs::read_dir(world.state())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+}

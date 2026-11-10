@@ -26,7 +26,7 @@ Commands:
   edit        Open the focused or selected agent's checkout in your editor
   hook        What Herdr runs on its start and on agents' events
   daemon      Wake supervisors on herdr-core (the Herdr app), as a service
-  app-space   Make the Herdr app's Corgi space, or remove it
+  app-space   Make the Herdr app's Corgi space by hand, or remove it
   app-layout  Build the Herdr app's Corgi layout from Herdr's own, or remove it
   projects    List the projects to offer for Open project, as JSON
   open        Open a project: name its supervisor's terminal, or start it

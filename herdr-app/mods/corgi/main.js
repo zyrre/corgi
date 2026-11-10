@@ -1,9 +1,10 @@
 // Corgi for the Herdr app (io.github.zyrre.corgi): each project's supervisor,
 // workers and open questions on herdr-core, and whether `corgi daemon` runs,
 // from `corgi status --json`. It only reads, and merges a worker's branch when
-// asked; it never wakes or types into an agent. It is the only tab of the
-// Corgi space, which `corgi app-space` makes; clicking an agent shows it. When
-// it starts it has corgi build Corgi's layout again if Herdr's has changed.
+// asked; it never wakes or types into an agent. Clicking an agent shows it.
+// It docks nowhere by itself: `corgi app-space`, run by hand, makes a space
+// named Corgi whose only tab shows it. When it starts it has corgi build
+// Corgi's layout again if Herdr's has changed.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { agents, exec, home, appHome, readTextFile, watchFolder, theme, run, notify } from "herdr";

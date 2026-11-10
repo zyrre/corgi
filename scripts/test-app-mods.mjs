@@ -384,7 +384,7 @@ async function projects(w) {
       'W', 'weather',
       'Supervisor',
       'Fix the cache so that it holds', 'worktree-calm-forest-4f96',
-      'Review the cache fix', 'worktree-calm-forest-4f96', '!',
+      'Review the cache fix', '!', 'worktree-calm-forest-4f96',
       'Write the docs', 'worktree-sunny-field-529d',
       'worktree-quiet-lake-0a1b',
       '~', '~',
@@ -397,19 +397,33 @@ async function projects(w) {
   // agent.next and agent.prev follow the list.
   assert.deepEqual(w.agentOrder, ['t2', 't3', 't4', 't5', 't7']);
 
-  // One line each: the task takes what is left and is cut first, but never
-  // to nothing; then the worktree's name is cut.
+  // One line each, left to right: the task, the harness's icon, the state,
+  // the worktree's name. Too wide, it is cut from the right: the worktree's
+  // name gives way first, down to nothing, and only then the task; the icon
+  // and the state keep their width.
   const row = byId(root, 'agent-t3');
-  const [pic, task, worktree, state] = row.children.map(kept);
-  assert.ok('truncate' in task.calls && 'flex_1' in task.calls, 'the task is cut with an ellipsis');
-  assert.deepEqual(task.calls.min_w, [64]);
-  assert.ok('truncate' in worktree.calls && !('flex_none' in worktree.calls), 'then the worktree');
-  assert.deepEqual(worktree.calls.min_w, [0]);
+  assert.equal(row.children.length, 4);
+  const [task, pic, state, worktree] = row.children.map(kept);
+  assert.deepEqual(texts(task), ['Fix the cache so that it holds']);
+  assert.deepEqual(texts(worktree), ['worktree-calm-forest-4f96']);
+  for (const [name, text] of [['task', task], ['worktree', worktree]]) {
+    assert.ok('truncate' in text.calls, `the ${name} is cut with an ellipsis`);
+    assert.deepEqual(text.calls.min_w, [0], `the ${name} can be cut to nothing`);
+    assert.ok(!('flex_1' in text.calls || 'flex_auto' in text.calls || 'flex_grow' in text.calls), `the ${name} does not spread`);
+  }
+  // The overflow is taken from each in proportion to its factor and width.
+  assert.deepEqual(task.calls.flex_shrink, [1]);
+  assert.ok(worktree.calls.flex_shrink[0] >= 1000, 'the worktree gives way long before the task');
+  assert.ok('flex_none' in pic.calls && 'flex_none' in state.calls, 'the icon and the state stay whole');
   // The harness's icon, and the spinner of a working agent.
   assert.deepEqual(pic.args, ['icons/claude.svg']);
   assert.deepEqual(kept(state.children[0]).args, ['mods/workspace-chrome/spinner.svg']);
   assert.ok('spin' in kept(state.children[0]).calls);
-  assert.deepEqual(texts(byId(root, 'agent-t4')).slice(-1), ['!'], 'a blocked agent');
+  assert.deepEqual(texts(byId(root, 'agent-t4')), ['Review the cache fix', '!', 'worktree-calm-forest-4f96'], 'a blocked agent');
+  // An agent whose program has no icon keeps the order of the rest.
+  w.agents[2].program = { ...CLAUDE, icon: null };
+  assert.deepEqual(byId(mod.render(), 'agent-t4').children.map((child) => texts(child).join('')), ['Review the cache fix', '!', 'worktree-calm-forest-4f96']);
+  w.agents[2].program = CLAUDE;
   // On the primary checkout there is no worktree to name.
   assert.deepEqual(texts(byId(root, 'agent-t2')), ['Supervisor']);
 
@@ -461,7 +475,7 @@ async function projects(w) {
   const drawn = texts(mod.render());
   assert.deepEqual(
     drawn.slice(3),
-    ['W', 'weather', 'Weather supervisor', 'Fixing the cache', 'worktree-calm-forest-4f96', 'Review the cache fix', 'worktree-calm-forest-4f96', '!', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code'],
+    ['W', 'weather', 'Weather supervisor', 'Fixing the cache', 'worktree-calm-forest-4f96', 'Review the cache fix', '!', 'worktree-calm-forest-4f96', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code'],
     drawn.join(' | '),
   );
 }
@@ -657,7 +671,21 @@ const opens = (w) => w.execs.filter((call) => call[1] === 'open').map((call) => 
   const mod = await projects(w);
   click(mod.render(), 'project-open', mod.cx);
   await mod.settle();
-  assert.ok(texts(mod.render()).some((text) => text.startsWith('This corgi is older than the Projects list')));
+  const said = texts(mod.render()).find((text) => text.startsWith('This corgi is older than the Projects list'));
+  assert.ok(said, 'says so');
+  // The Corgi space, which used to install and update corgi, is retired.
+  assert.ok(said.includes('herdr-app/install.sh') && !said.includes('Corgi space'), said);
+}
+
+// With no corgi at all the field says how to get one.
+{
+  const w = window();
+  w.programs = [git];
+  const mod = await projects(w);
+  click(mod.render(), 'project-open', mod.cx);
+  await mod.settle();
+  const said = texts(mod.render()).find((text) => text.startsWith('The corgi command was not found'));
+  assert.ok(said && said.includes('herdr-app/install.sh') && !said.includes('Corgi space'), texts(mod.render()).join(' | '));
 }
 
 // --- Corgi's layout, rebuilt when Herdr's changed ----------------------------------------

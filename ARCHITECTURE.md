@@ -253,8 +253,10 @@ All of this is in the core, `crates/corgi-core/src/`.
   and the only source of the permission prompts a blocked CLI shows on screen.
 - `app_space.rs` finds, makes and removes the Herdr app's Corgi space (a
   space named `Corgi` whose only tab is the `corgi` mod) through `herdr-app
-  ls` and `herdr-app do`, and keeps the note of a pending one for
-  `corgi daemon`; `corgi app-space` (`src/app/app_space.rs`) runs it.
+  ls` and `herdr-app do`; `corgi app-space` (`src/app/app_space.rs`) runs
+  it, for a person who wants that space. The space is retired: neither the
+  install nor the daemon makes it, and the note an earlier version left for
+  the daemon to make it from is deleted, never read (`forget_pending`).
 - `app_layout.rs` builds the Herdr app's Corgi layout (`layouts/corgi.json`
   in the app's home) from Herdr's shipped `main`: the sidebar's `spaces`
   block shows Corgi's `projects` mod and its `agents` block is gone. The
@@ -2518,14 +2520,15 @@ socket's.
   types the harness's exit command, waits for the shell in front, and
   starts the successor in the same terminal with the takeover prompt. Its
   workers, terminals of their own, keep running.
-- **Spaces** are not the daemon's: it never names, makes or moves a
-  project's or a worker's space of the app (a named space would keep its
-  name instead of following its repository's). The one exception is the
-  Corgi space (`app_space.rs`): when `corgi app-space` found the app's
-  window closed, it left `app-space.json` in Corgi's state directory, and
-  each pass with the window's socket answering makes the space through
-  `herdr-app ls`/`do` and deletes the note, so it is made once. That is
-  the only time the daemon talks to the app's window.
+- **Spaces** are not the daemon's: it never names, makes or moves a space
+  of the app (a named space would keep its name instead of following its
+  repository's), and it never talks to the app's window. It used to make
+  the Corgi space (`app_space.rs`) from a note `corgi app-space` left in
+  Corgi's state directory (`app-space.json`) when it found the window
+  closed. That space is retired, since Corgi's place in the app is the
+  Projects list: the daemon deletes such a note when it starts, and
+  `corgi app-space`, which makes the space only for a person who runs it,
+  needs the window open and leaves none.
 
 The app's sidebar is Corgi's in a layout of its own: `corgi app-layout`
 (`crates/corgi-core/src/app_layout.rs`) builds `layouts/corgi.json` from
@@ -2535,6 +2538,7 @@ Herdr's shipped layouts and mods are read-only (replaced whole on every
 start, an edited one moved aside), so `main` is never edited; the layout is
 rebuilt when `main` changed, by `herdr-app/install.sh` and by each of
 Corgi's mods when it starts, and nothing ever switches the window to it.
+The install puts the Corgi mod in the app's home too, and shows it nowhere.
 `herdr-app/RECIPE.md` describes the mods and the layout.
 
 `corgi daemon install` writes a LaunchAgent (`~/Library/LaunchAgents/

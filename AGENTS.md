@@ -434,20 +434,23 @@ shellcheck scripts/install.sh scripts/link-command.sh scripts/test-install herdr
 `herdr-app/mods/corgi/` is the Herdr app's Corgi mod and
 `herdr-app/mods/projects/` its Projects mod, the sidebar of the Corgi
 layout; `herdr-app/RECIPE.md` describes them for people and agents, and
-`herdr-app/install.sh` installs them with the CLI, runs `corgi app-layout`,
-which builds `layouts/corgi.json` from Herdr's shipped `main`
-(`crates/corgi-core/src/app_layout.rs`), and `corgi app-space`, which gives
-the Corgi mod a space of its own
-(`crates/corgi-core/src/app_space.rs`; the daemon makes a pending one once
-the window opens). Herdr's shipped layouts and mods
+`herdr-app/install.sh` installs them with the CLI and runs `corgi
+app-layout`, which builds `layouts/corgi.json` from Herdr's shipped `main`
+(`crates/corgi-core/src/app_layout.rs`). The Corgi space, a space named
+`Corgi` showing the Corgi mod, is retired (the user closed theirs on
+purpose; Corgi's features in the app go into the Projects mod): neither the
+install nor `corgi daemon` makes it, and nothing may bring it back by
+itself. `corgi app-space` (`crates/corgi-core/src/app_space.rs`) still
+makes it for a person who runs it, and `remove` closes it. Herdr's shipped
+layouts and mods
 (`~/.config/herdr-app/layouts/main.json`, `mods/spaces`, `mods/agents`, …)
 are read-only: Herdr replaces them on every start and moves an edited one
 aside, so never edit them, and never switch the user's window to another
 layout without being asked to. The Projects mod began as a copy of Herdr's
 `spaces` and is Corgi's own: it follows no later version of it.
 
-Test the Corgi space against a fake `herdr-app` (its tests do), not the
-user's app: on the real one, touch only a space named `Corgi`. The Corgi
+Test `corgi app-space` against a fake `herdr-app` (its tests do), never
+the user's app. The Corgi
 mod reads `corgi status --json` and runs `corgi merge`; both live in
 `src/app/status.rs` and see hc's agents alone, never the Herdr TUI's. The
 Projects mod reads the same status and runs `corgi projects` and `corgi
@@ -492,8 +495,8 @@ open, test whether the socket accepts a connection, not whether it exists.
 
 To try the installer and `corgi app-layout` for real without the user's app
 home, give them a scratch one holding a copy of the shipped
-`layouts/main.json`, and a scratch state directory, since `corgi app-space`
-notes a pending space in Corgi's state when that home has no window:
+`layouts/main.json`, and a scratch state directory, so that nothing of the
+run can land in Corgi's real state:
 `XDG_STATE_HOME=<scratch>/state sh herdr-app/install.sh --mod-only --home
 <scratch>/app`. It checks both mods with the real `herdr-app check` and
 builds the layout with the worktree's `target/release/corgi`; edit that

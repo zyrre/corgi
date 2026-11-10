@@ -1,6 +1,6 @@
 # Corgi
 
-Two mods and a layout. The **Corgi** mod is the Corgi space's overview: how
+Two mods and a layout. The **Corgi** mod is an overview: how
 each of your Corgi projects on herdr-core (`hc`), the Herdr app's backend,
 is doing: one block per project with its supervisor's state, its workers by
 state, the open questions waiting for you, the work ready to merge and the
@@ -15,24 +15,27 @@ The **Projects** mod is the sidebar of the **Corgi layout**, which is
 Herdr's own layout with one list where Herdr has its Spaces and Agents
 lists: your spaces, each repository with its agents under it, one line each
 (the agent's task, its harness's icon, its state and the worktree it works
-in), and a `+` that opens a project: type a name or a path, and Enter shows
+in, in that order), and a `+` that opens a project: type a name or a path, and Enter shows
 its supervisor or starts it.
 
-They need the `corgi` command-line tool, which the Corgi mod installs by
-itself; `herdr-app/install.sh` in the Corgi repository installs the tool,
-both mods, the layout and the Corgi space. The layout is not switched to:
-`herdr-app do layout.switch '{"name":"corgi"}'` shows it, and `"main"` shows
-Herdr's own again.
+They need the `corgi` command-line tool; `herdr-app/install.sh` in the
+Corgi repository installs the tool, both mods and the layout. The layout is
+not switched to: `herdr-app do layout.switch '{"name":"corgi"}'` shows it,
+and `"main"` shows Herdr's own again. The Corgi mod is installed but shown
+nowhere: the space it used to have, the Corgi space, is retired, since
+Corgi's place in the app is the Projects list. `corgi app-space`, run by
+hand, still makes that space for whoever wants the overview.
 
 <!-- preview.png is still to be made, from a look at the running window. -->
 
 ## What you see
 
-### The Corgi space's overview
+### The Corgi mod's overview
 
-The Corgi mod is the only tab of a space of its own, named `Corgi`, first in
-the list of spaces, so `ctrl-1` (`space.select:1`) comes back to it. It docks
-nowhere else (`mod.json`: `"place": "none"`). It fills the tab on the theme's
+The Corgi mod docks nowhere by itself (`mod.json`: `"place": "none"`) and no
+layout of Corgi's shows it: it is drawn where a person puts it, which
+`corgi app-space` does as the only tab of a space named `Corgi`, first in
+the list of spaces (see "The Corgi space"). It fills the tab on the theme's
 `surface`, text 13 px; the views' content is a column at most 960 px wide,
 centred in a wider tab.
 
@@ -101,19 +104,22 @@ The Projects mod fills its block on `chrome`, text 13 px:
   · Esc` with `New space` on its right.
 - **The list** (scrolls): the spaces in order, under a header per machine
   once one is not this computer, as Herdr's Spaces list has them.
-  - A space outside any repository (the Corgi space, `~`, another folder):
+  - A space outside any repository (`~`, another folder, a Corgi space):
     30 px, a colored 18 px avatar with its initial, its name.
   - A project, a repository: the space on its primary checkout, drawn the
     same way, with its branch and ahead/behind after the name only when
     unusual. Under it, indented 22 px, one 26 px row per agent in it and in
-    the spaces on its worktrees: the harness's icon (14 px; Claude's now,
-    Codex's or OpenCode's when it is one), the task in 12.5 px (medium
-    weight for `Supervisor`), the worktree's folder name in `dim` 11 px
-    (`worktree-calm-forest-4f96`; nothing on the primary checkout), and the
-    state: a spinning ring in `working`, a `!` tile in `blocked`, a dot in
-    `done`, a ring in `idle`. The supervisor is first; the rest keep the
-    app's order. One line each: when it is too long the task is cut with `…`
-    first, down to 64 px, then the worktree's name.
+    the spaces on its worktrees, which reads left to right: the task in
+    12.5 px (medium weight for `Supervisor`); the harness's icon (14 px;
+    Claude's now, Codex's or OpenCode's when it is one); the state, a
+    spinning ring in `working`, a `!` tile in `blocked`, a dot in `done`, a
+    ring in `idle`; and the worktree's folder name in `dim` 11 px
+    (`worktree-calm-forest-4f96`; nothing on the primary checkout). They
+    follow one another, 7 px apart, from the left; nothing is pushed to the
+    right edge. The supervisor is first; the rest keep the app's order. One
+    line each: a row too wide is cut from the right, the worktree's name
+    first, with `…`, down to nothing if need be, and only then the task;
+    the icon and the state stay whole.
   - A worktree's space with no agent in it keeps a 28 px row of its own
     under its project: a branch glyph and the space's name.
   - A space outside a repository with agents in it has their rows under it
@@ -304,28 +310,30 @@ The Projects list:
 
 ## The Corgi space
 
-- `corgi app-space` makes it, and `herdr-app/install.sh` runs that after the
-  mod is in place: `space.new {name: "Corgi", folder: ~, machine: ""}`
-  (the app has no command that makes a space around a mod, so it starts
-  with a shell), `tab.new {space, mod: "corgi", name: "Corgi"}`,
-  `tab.close` on the shell's tab, and `space.move {index: 1}`. If the mod's
-  tab cannot be made, the new space is closed again.
+Retired: the install does not make it, and neither does `corgi daemon`. It
+is a space named `Corgi` whose only tab shows the Corgi mod, for whoever
+wants the overview on screen.
+
+- `corgi app-space`, run by hand with the app's window open, makes it:
+  `space.new {name: "Corgi", folder: ~, machine: ""}` (the app has no
+  command that makes a space around a mod, so it starts with a shell),
+  `tab.new {space, mod: "corgi", name: "Corgi"}`, `tab.close` on the
+  shell's tab, and `space.move {index: 1}`. If the mod's tab cannot be
+  made, the new space is closed again. With the window closed it makes
+  nothing and says so.
 - A space named `Corgi` on this computer is the Corgi space (`herdr-app
-  ls`); with one there, nothing is made, so running the install again keeps
-  one. A space nobody named is called after its first terminal's repo, and
-  Corgi's own repo space is `corgi`, in lower case. A Corgi space that is
-  there is left where it is.
-- When the app's window is not open, `corgi app-space` notes the space as
-  pending (`app-space.json` in Corgi's state folder) and `corgi daemon`
-  makes it at its next pass with the window open (within a minute), then
-  forgets the note. It is made once: closing the space is the person's
-  choice, and nothing brings it back until the install runs again.
-- `herdr-app/install.sh --uninstall` runs `corgi app-space remove`: it
-  closes the tabs named `Corgi` with no terminals in Corgi spaces (the space
-  goes with its last tab; terminals the person opened there stay).
-- Spaces live in herdr-core per machine, so the space comes back after the
-  app restarts or updates; Herdr's updates replace its shipped layouts, not
-  spaces.
+  ls`); with one there, nothing is made. A space nobody named is called
+  after its first terminal's repo, and Corgi's own repo space is `corgi`,
+  in lower case. A Corgi space that is there is left where it is, by the
+  install too.
+- An earlier Corgi noted a space still to be made (`app-space.json` in
+  Corgi's state folder) for its daemon to make once the window opened. The
+  daemon now deletes that note when it starts and makes nothing; so does
+  `corgi app-space`.
+- `herdr-app/install.sh --uninstall` runs `corgi app-space remove`, since
+  the mod the space shows is going: it closes the tabs named `Corgi` with
+  no terminals in Corgi spaces (the space goes with its last tab; terminals
+  the person opened there stay).
 
 ## Watch out
 
@@ -342,7 +350,8 @@ The Projects list:
   and downloads the release binary only when it matches its pin, else
   builds it with `cargo build --release --locked` (minutes; `exec` waits at
   most 10 minutes). It never installs another version than the mod's own,
-  and it leaves the mod's folder alone. A failed install shows the error,
+  and it leaves the mod's folder alone (`--cli-only` does put the Projects
+  mod and the Corgi layout in place). A failed install shows the error,
   the installer's last lines and the command to run by hand, and is tried
   once per app start; `Retry` tries again.
 - `VERSION` in `main.js` is set by each Corgi release (the release refuses a
@@ -371,11 +380,14 @@ The Projects list:
 - An agent's row is found by its terminal's address in `corgi status
   --json`. Before the first read, and with no `corgi`, every agent shows by
   its own title; a row must never wait for Corgi.
-- The task is `flex_1` with a minimum width and the worktree's name a
-  plain shrinking element, both truncating: that order of giving way (the
-  task first, then the name) comes from the flex basis, not from anything
-  measured. A `\n` in a task starts a second line even when truncated:
-  join the lines first.
+- A row is cut from the right by flex alone, nothing is measured: the task
+  and the worktree's name both truncate with a minimum width of 0 and
+  neither grows; the task shrinks by a factor of 1 and the name by 1000,
+  and flex takes the overflow from each in proportion to its factor times
+  its width, so the name is gone before the task loses a letter. The icon
+  and the state do not shrink (`flex_none`). Giving the task `flex_1`
+  instead would make it the first to give way. A `\n` in a task starts a
+  second line even when truncated: join the lines first.
 - The field's keys (↑, ↓, Tab, Esc) are handled on the card around the
   input, which tracks a focus handle of its own; Enter is the input's
   `submit`. The input is focused when the field opens and once more a
@@ -401,11 +413,13 @@ The Projects list:
   still shows the layout it showed; after `herdr-app do layout.switch
   '{"name":"corgi"}'` the sidebar is one list titled Projects, with no
   Agents list under it.
-- Projects shows each repository with its agents in one-line rows (icon,
-  task, worktree, state) that cut with `…`, the supervisor first; a click on
-  one shows that agent's terminal; the Corgi space, `~` and a worktree with
-  no agent still have their rows; the narrow rail shows a cell per space
-  and `»` unfolds it.
+- Projects shows each repository with its agents in one-line rows (task,
+  icon, state, worktree), the supervisor first; in a sidebar too narrow for
+  a row, its worktree's name is cut with `…` and then gone before its task
+  is cut, and the icon and the state are whole; a click on a row shows that
+  agent's terminal; `~`, other folders and a worktree with no agent still
+  have their rows; the narrow rail shows a cell per space and `»` unfolds
+  it.
 - `+`, then typing, narrows the known projects and completes a path; Enter
   on a project whose supervisor runs shows it; Enter on one without starts
   its supervisor, in the shell that waits in its primary checkout when
@@ -416,11 +430,13 @@ The Projects list:
 - With `layouts/main.json` changed (in a scratch app home), the next start
   of either mod rebuilds `corgi.json` from it; with its sidebar's blocks
   gone, `corgi.json` stays as it was and the overview says why.
-- After `herdr-app/install.sh`, a `Corgi` space is first in the Spaces list
-  and its only tab shows the overview; running the install again leaves one
-  Corgi space; it is still there after the app is quit and reopened.
+- `herdr-app/install.sh` makes no space, and after it `corgi daemon` makes
+  none when the window opens, even with an old `app-space.json` in Corgi's
+  state folder, which is gone once the daemon has started. `corgi
+  app-space`, run by hand, puts a `Corgi` space first in the list with the
+  overview as its only tab, and run again leaves one.
 - Clicking an agent's card in a project's view shows that agent's
-  terminal; `ctrl-1` comes back to the Corgi space.
+  terminal.
 - The overview shows `Corgi daemon running · pid N` while `corgi daemon`
   runs, and the warning with `corgi daemon install` when it does not.
 - With `corgi` installed and supervisors running on herdr-core, the overview

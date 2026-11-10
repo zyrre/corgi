@@ -15,10 +15,11 @@
 //! 2. adds the wakes, moves the handovers on, and types each supervisor's
 //!    inbox in when it may be typed into ([`SupervisorWaker::tick_hc`]).
 //!
-//! It never names or makes a project's or a worker's space of the Herdr app:
-//! the app calls a space nobody named after where its first terminal is. The
-//! one space it makes is the Corgi space, once, when `corgi app-space` could
-//! not because the app's window was closed ([`app_space::make_pending`]).
+//! It never names or makes a space of the Herdr app: the app calls a space
+//! nobody named after where its first terminal is. An earlier daemon made
+//! the Corgi space when `corgi app-space` had found the app's window closed
+//! and left a note; this one deletes such a note when it starts
+//! ([`app_space::forget_pending`]) and never talks to the app's window.
 //!
 //! Passes also run on a timer: every few seconds while an inbox waits for a
 //! supervisor that rests (a draft in its box gives no event when it is
@@ -224,6 +225,9 @@ pub fn run(options: Options) -> Result<()> {
         options.socket.display(),
         options.corgi_bin.display()
     ));
+    if app_space::forget_pending() {
+        log("forgot a pending Corgi space: only corgi app-space, run by hand, makes one now");
+    }
     let mut daemon = Daemon {
         core: HcCore::new(options.client.clone(), options.corgi_bin.clone()),
         options,
@@ -369,9 +373,6 @@ impl Daemon {
         };
         self.known = terminals.iter().map(|t| t.address.clone()).collect();
         let mut said = self.resume(&terminals);
-        // The Corgi space `corgi app-space` could not make while the app's
-        // window was closed.
-        said.extend(app_space::make_pending());
         let agents = dashboard_agents(&terminals, None);
         said.extend(self.waker.tick_hc(
             &mut self.core,
