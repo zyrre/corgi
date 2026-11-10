@@ -706,6 +706,35 @@ the preview window, `fake/pause.json` and `fake/resume.json` (with
 `paused` and an agent's `"state": "paused", "paused": true` are what the
 list shows.
 
+The Projects mod also reads the Corgi of each other machine the window
+shows (`exec(…, { on })`, see RECIPE.md "How it behaves"): it runs merge,
+close and pause there, so every such call passes the worker's machine, and
+this computer's calls pass no `on` at all. In `scripts/test-app-mods.mjs`,
+`w.machineList` is what `hc machine ls` lists, `w.calls` keeps each
+program's options, and `labWindow` is a window with a second machine. To
+see another machine live, give the preview's core one that is a private
+core on this Mac, never the person's core or their machines list:
+
+- A scratch home (a short `/tmp` link, for the socket path) whose
+  `.local/bin` holds links to `hc` and `herdr-core` (`hc machine add`
+  checks for `herdr-core` there, `command -v herdr-core` else
+  `~/.local/bin/herdr-core`) and a canned `corgi` printing a status whose
+  terminals are that core's.
+- A `--via` wrapper that runs its last argument as `sh -c` under `env -i`
+  with that `HOME`, a `PATH` starting at its `.local/bin`, `HC_SESSION=lab`,
+  an `XDG_STATE_HOME` of its own and `SSH_CONNECTION` (as in "Testing
+  `corgi daemon`"). Start that core and its fake agents (`--label
+  herdr.space=…` makes the machine's spaces) in the same environment,
+  then `hc machine add --via <wrapper> --name lab --session lab` with the
+  preview's environment (the script's `hcp`). `exec --on lab` then runs in
+  the scratch home, so the mod finds the canned `corgi` on `PATH` there.
+- Afterwards `hc machine rm lab` on the preview's core, `hc kill` and `hc
+  rm` lab's terminals by address, `hc server stop` lab's core and check its
+  pid is gone: `hc server status` starts a stopped core again.
+- Lab's rows are under "This computer"'s in the window, which takes no
+  scroll from a script: a preview copy of the mod that adds `null` to
+  `this.folded` folds this computer's.
+
 ### After a merge
 
 After changes are merged into the primary checkout, one command, run in that

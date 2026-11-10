@@ -37,6 +37,12 @@
 // none working a click changes nothing and says so in a toast; agents that
 // did not stop, or did not come back, are listed in a card under the header.
 //
+// Another machine's spaces (Herdr's "Add machine") are under its own
+// header, with their agents' Corgi data from that machine's own corgi,
+// asked there through herdr-core (`exec` with `on`); a merge, a close, a
+// pull and a pause of its agents run there too. Plan usage and the last
+// line stay this computer's.
+//
 // It began as a copy of Herdr's `spaces` mod and is Corgi's own since.
 
 import { View, div, image, svg } from "gpui-kit";
@@ -86,6 +92,24 @@ const FALLBACK = 60000;
 // How often Corgi's status is read again besides when the live agents
 // change: as often as the Corgi mod reads it, never more.
 const POLL_MS = 5000;
+// Another machine's status is read as often, but no sooner than three
+// times its last read took: a slow machine is asked less often.
+const SLOW_FACTOR = 3;
+// A machine without corgi is looked at again this often (it may be installed).
+const LOCATE_MS = 60000;
+// Where corgi is on another machine, run there in `sh` (exec takes no
+// login shell): the path that machine's own Corgi install recorded for its
+// app, `corgi` on PATH, on its login shell's PATH, then the usual places.
+// Prints the first that is there, or exits 3.
+const LOCATE_CORGI = [
+  'try() { case "$1" in /*) if [ -x "$1" ]; then printf \'%s\\n\' "$1"; exit 0; fi ;; esac; }',
+  'app="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"',
+  'try "$(sed -n \'s/.*"corgi"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$app/mods/projects/config.json" "$app/mods/corgi/config.json" 2>/dev/null | head -n 1)"',
+  'try "$(command -v corgi)"',
+  'try "$("${SHELL:-/bin/sh}" -lc \'command -v corgi\' </dev/null 2>/dev/null | tail -n 1)"',
+  'for c in "$HOME/.local/bin/corgi" "$HOME/.local/share/corgi/target/release/corgi" "$HOME/.cargo/bin/corgi"; do try "$c"; done',
+  "exit 3",
+].join("\n");
 // How many suggestions "Open project" shows at once.
 const SUGGESTIONS = 8;
 // Starting a supervisor waits for its shell, its agent and a folder-trust
@@ -130,6 +154,11 @@ const tildePaths = (text) => {
 };
 // The where() of a listed row: the checkout its git was read in.
 const rowKey = (r) => JSON.stringify([r.w.machine ?? null, r.at]);
+// A Corgi project by its machine (null: this computer) and folder: two
+// machines may each have one in the same folder.
+const projectKey = (machine, dir) => JSON.stringify([machine ?? null, dir]);
+// " on lab" after an agent of another machine's, nothing for this computer's.
+const onMachine = (machine) => (machine ? ` on ${machine}` : "");
 
 // Why `git pull --ff-only` (result `r`) pulled nothing, in a line, for the
 // checkout whose git was `g`.
@@ -246,10 +275,11 @@ async function corgiCandidates() {
 // terminal, when that says something, else its tab's name, else its program.
 function ownTitle(row, tab) {
   const prog = row.program?.name;
-  // A shell's title is its folder or user@host: that says nothing of the work.
+  // A shell's title is its folder or user@host: that says nothing of the
+  // work; nor does another machine's untitled terminal's, its address.
   const raw = (row.title ?? "").trim();
   const live = clean(raw);
-  const telling = live && live !== prog && !/^[~/]|^[A-Za-z]:\\/.test(raw) && !live.includes("@") && live.toLowerCase() !== row.program?.key;
+  const telling = live && live !== prog && raw !== row.address && !/^[~/]|^[A-Za-z]:\\/.test(raw) && !live.includes("@") && live.toLowerCase() !== row.program?.key;
   if (telling) return oneLine(live);
   return tab?.named ? tab.name : prog || "agent";
 }
@@ -280,10 +310,19 @@ export default class Projects extends View {
     for (const state of Object.values(this.reconnecting)) state.busy = false;
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
 
-    // Corgi: its program, and what it says of each agent, by terminal.
+    // Corgi: its program here, and what it says of each agent, by terminal.
     this.corgi = null;
-    this.corgiAgents = new Map(); // terminal -> { role, task, worktree, state, project, ... }
-    this.corgiProjects = new Map(); // dir -> { base, supervisor, ... }
+    // What each machine's Corgi said last (null: this computer): { agents:
+    // terminal -> agent, projects: dir -> project, paused }. A machine whose
+    // Corgi did not answer has none: its rows show without Corgi's data.
+    this.seen = new Map();
+    // Corgi on the other machines, by name: { path (null: not found yet),
+    // missing, loading, last, took, located }.
+    this.remotes = {};
+    // Every machine's, together. An agent of another machine's is under
+    // its app address (`lab/t3`) and has its `machine`.
+    this.corgiAgents = new Map(); // address -> { role, task, worktree, state, project, machine, ... }
+    this.corgiProjects = new Map(); // projectKey(machine, dir) -> { base, supervisor, ... }
     this.build = null; // the corgi that answers: { version, commit, dirty, source, newer }
     this.daemon = null; // { running, pid, build, installed }
     // Plan usage, as `corgi usage --json` gives it: { now, providers }.
@@ -297,8 +336,8 @@ export default class Projects extends View {
     // through), shown under the project once the worker's row is gone. A
     // close that went through puts the card away.
     this.merge = null;
-    // What `corgi status` says of a pause: { any, agents }, null from a corgi
-    // that knows none (no button then).
+    // What `corgi status` says of a pause, every machine's together: { any,
+    // agents }, null when no machine's corgi knows one (no button then).
     this.paused = null;
     // A pause or resume under way, { verb, phase: "running", count }, or
     // one that left agents behind, { verb, phase: "failed", failed, message }.
@@ -335,14 +374,19 @@ export default class Projects extends View {
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
     this.refreshCorgi(cx);
-    cx.timer.every(POLL_MS, (cx) => this.refreshCorgi(cx));
+    cx.timer.every(POLL_MS, (cx) => {
+      this.refreshCorgi(cx);
+      this.refreshRemotes(cx);
+    });
     cx.timer.every(USAGE_POLL_MS, (cx) => this.refreshUsage(cx));
-    // Live agents changing is a sign Corgi's status did too; comparing is cheap.
+    // Live agents changing is a sign Corgi's status did too; comparing is
+    // cheap. Another machine's is read again only once its time has come.
     cx.timer.every(1000, (cx) => {
       const key = agents().map((a) => `${a.address}:${a.status}`).join(",");
       if (key !== this.agentKey) {
         this.agentKey = key;
         this.refreshCorgi(cx);
+        this.refreshRemotes(cx);
       }
     });
     // `projects.open`, from a key or `herdr-app do`.
@@ -387,23 +431,11 @@ export default class Projects extends View {
     this.loading = true;
     cx.spawn(async (cx) => {
       const status = await this.status();
-      const found = new Map();
-      for (const p of status?.projects ?? []) {
-        for (const a of p.agents ?? []) if (a.terminal) found.set(a.terminal, { ...a, project: p.dir });
-      }
-      this.corgiAgents = found;
-      this.corgiProjects = new Map((status?.projects ?? []).map((p) => [p.dir, p]));
+      // With no answer the pause stays as it was last said.
+      this.learn(null, status ?? { projects: [], paused: this.seen.get(null)?.paused ?? null });
       this.build = status?.corgi ?? null;
       this.daemon = status?.daemon ?? null;
-      this.paused = status ? (status.paused ?? null) : this.paused;
-      // A question about a worker that is gone, or no longer tagged, and a
-      // result with no row left to stand under, are put away; not a close,
-      // whose worker is meant to go.
-      const m = this.merge;
-      if (status && m && !["running", "asking", "closing", "closed"].includes(m.phase)) {
-        const worker = found.get(m.terminal);
-        if (!worker || (m.phase === "confirm" && worker.tag !== "merge")) this.merge = null;
-      }
+      if (status) this.dropGoneMerge(null);
       this.loading = false;
       // The first answer names the corgi to ask for usage too.
       if (status && !this.usage) this.refreshUsage(cx);
@@ -413,6 +445,128 @@ export default class Projects extends View {
         this.refreshCorgi(cx);
       }
     });
+  }
+
+  // Keeps what `machine`'s Corgi said (`status`), or forgets it (null), and
+  // puts every machine's together again.
+  learn(machine, status) {
+    if (!status) this.seen.delete(machine);
+    else {
+      const agents = new Map();
+      for (const p of status.projects ?? []) {
+        for (const a of p.agents ?? []) {
+          if (!a.terminal) continue;
+          // Corgi there names its own core's terminals; the app, `lab/t3`.
+          if (machine) agents.set(`${machine}/${a.terminal}`, { ...a, project: p.dir, machine });
+          else agents.set(a.terminal, { ...a, project: p.dir });
+        }
+      }
+      const projects = new Map((status.projects ?? []).map((p) => [p.dir, p]));
+      this.seen.set(machine, { agents, projects, paused: status.paused ?? null });
+    }
+    this.combine();
+  }
+
+  // Every machine's agents, projects and pause, together.
+  combine() {
+    this.corgiAgents = new Map();
+    this.corgiProjects = new Map();
+    let paused = null;
+    // This computer's first: its agents, then each other machine's.
+    for (const m of this.seenMachines()) {
+      const s = this.seen.get(m);
+      for (const [address, a] of s.agents) this.corgiAgents.set(address, a);
+      for (const [dir, p] of s.projects) this.corgiProjects.set(projectKey(m, dir), p);
+      if (s.paused) {
+        paused ??= { any: false, agents: [] };
+        paused.any ||= Boolean(s.paused.any);
+        paused.agents.push(...(s.paused.agents ?? []).map((a) => (m ? { ...a, machine: m } : a)));
+      }
+    }
+    this.paused = paused;
+  }
+
+  // A question about a worker that is gone, or no longer tagged, and a
+  // result with no row left to stand under, are put away once its
+  // machine's Corgi answers; not a close, whose worker is meant to go.
+  dropGoneMerge(machine) {
+    const m = this.merge;
+    if (!m || (m.machine ?? null) !== machine || ["running", "asking", "closing", "closed"].includes(m.phase)) return;
+    const worker = this.corgiAgents.get(m.terminal);
+    if (!worker || (m.phase === "confirm" && worker.tag !== "merge")) this.merge = null;
+  }
+
+  // The project an agent of Corgi's is in, from its machine's status.
+  projectOf(machine, dir) {
+    return this.corgiProjects.get(projectKey(machine, dir));
+  }
+
+  // The other machines whose Corgi is read: those connected now. One that
+  // went away or was removed is forgotten, and its rows show without data.
+  remoteMachines() {
+    const connected = this.machines.filter((m) => m.state === "connected").map((m) => m.name);
+    for (const m of [...this.seen.keys()]) if (m !== null && !connected.includes(m)) this.learn(m, null);
+    for (const m of Object.keys(this.remotes)) if (!this.machines.some((k) => k.name === m)) delete this.remotes[m];
+    return connected;
+  }
+
+  refreshRemotes(cx) {
+    for (const m of this.remoteMachines()) this.refreshRemote(m, cx);
+  }
+
+  // Where corgi is on `machine`: its path, or null when it has none.
+  // Rejects when the machine cannot be asked.
+  async locate(machine) {
+    const r = await exec("sh", ["-c", LOCATE_CORGI], { on: machine, timeout: 20000 });
+    const path = r.code === 0 ? r.stdout.trim().split("\n").pop() : "";
+    return path.startsWith("/") ? path : null;
+  }
+
+  // `corgi status --json` on another machine, through herdr-core: at most
+  // every POLL_MS, less often when the machine is slow to answer, and
+  // `now` (after a merge, close or pause there) whenever none is running.
+  refreshRemote(machine, cx, now = false) {
+    const r = (this.remotes[machine] ??= { path: null, missing: false, loading: false, last: 0, took: 0, located: 0 });
+    if (r.loading) return;
+    const at = Date.now();
+    if (!now && at - r.last < Math.max(POLL_MS, r.took * SLOW_FACTOR)) return;
+    if (!r.path && r.missing && at - r.located < LOCATE_MS) return;
+    r.loading = true;
+    r.last = at;
+    cx.spawn(async (cx) => {
+      let status = null;
+      try {
+        if (!r.path) {
+          r.located = Date.now();
+          r.path = await this.locate(machine);
+          r.missing = !r.path;
+        }
+        if (r.path) {
+          const res = await exec(r.path, ["status", "--json"], { on: machine, timeout: 20000 });
+          // Gone, or too old to know status: looked for again next time.
+          if (res.code === 0) status = JSON.parse(res.stdout);
+          else r.path = null;
+        }
+      } catch (_) {
+        // Away, corgi gone from there, or an answer that is not JSON: no
+        // data until it answers, and corgi is looked for again first.
+        r.path = null;
+      }
+      r.took = Date.now() - at;
+      r.loading = false;
+      // Gone meanwhile: nothing to keep.
+      if (this.machines.some((k) => k.name === machine && k.state === "connected")) {
+        this.learn(machine, status);
+        if (status) this.dropGoneMerge(machine);
+      }
+      cx.notify();
+    });
+  }
+
+  // Reads `machine`'s Corgi again after acting there.
+  refreshOn(machine, cx) {
+    if (machine) this.refreshRemote(machine, cx, true);
+    else this.refreshCorgi(cx);
   }
 
   // Plan usage from the corgi that answers status; a corgi too old to know
@@ -444,17 +598,20 @@ export default class Projects extends View {
     if (this.merge?.terminal === a.address && this.merge.phase === "confirm") this.merge = null;
     else {
       const c = a.corgi;
-      this.merge = { terminal: a.address, name: c.name, dir: c.project, branch: c.branch ?? c.name, base: this.corgiProjects.get(c.project)?.base ?? "the base branch", phase: "confirm" };
+      const machine = c.machine ?? null;
+      this.merge = { terminal: a.address, machine, name: c.name, dir: c.project, branch: c.branch ?? c.name, base: this.projectOf(machine, c.project)?.base ?? "the base branch", phase: "confirm" };
     }
     cx.notify();
   }
 
-  // What `corgi COMMAND ARGS` (merge, close) answered: its JSON, or a
-  // refusal saying why there is none.
-  async corgiJson(command, args, what, timeout = MERGE_TIMEOUT_MS) {
-    if (!this.corgi) return { result: "refused", message: NO_CORGI };
+  // What `corgi COMMAND ARGS` (merge, close, pause, resume) answered on
+  // `machine` (null: this computer): its JSON, or a refusal saying why
+  // there is none.
+  async corgiJson(command, args, what, timeout = MERGE_TIMEOUT_MS, machine = null) {
+    const path = machine ? this.remotes[machine]?.path : this.corgi;
+    if (!path) return { result: "refused", message: machine ? `Corgi isn't installed on ${machine}` : NO_CORGI };
     try {
-      const r = await exec(this.corgi, [command, ...args], { timeout });
+      const r = await exec(path, [command, ...args], machine ? { timeout, on: machine } : { timeout });
       try {
         return JSON.parse(r.stdout);
       } catch (_) {
@@ -465,8 +622,8 @@ export default class Projects extends View {
     }
   }
 
-  corgiMerge(args, what) {
-    return this.corgiJson("merge", args, what);
+  corgiMerge(m, args, what) {
+    return this.corgiJson("merge", args, what, MERGE_TIMEOUT_MS, m.machine ?? null);
   }
 
   // The merge the dashboard's m runs once confirmed, with its checks.
@@ -477,7 +634,7 @@ export default class Projects extends View {
     this.merge = { ...m, phase: "running", outcome: null, problem: null };
     cx.notify();
     cx.spawn(async (cx) => {
-      const outcome = await this.corgiMerge([m.name, "--project", m.dir, "--json", ...extra], "The merge");
+      const outcome = await this.corgiMerge(m, [m.name, "--project", m.dir, "--json", ...extra], "The merge");
       // Merged and pushed: the worker is done, so its close is offered.
       // Not after conflicts, a refusal or a failed push.
       const offer = outcome.result === "merged";
@@ -488,7 +645,7 @@ export default class Projects extends View {
         // The question is drawn after this: focus Close again once it is there.
         cx.timer.after(120, () => this.merge?.phase === "offer" && this.closeFocus.focus());
       }
-      this.refreshCorgi(cx);
+      this.refreshOn(m.machine ?? null, cx);
     });
   }
 
@@ -501,13 +658,13 @@ export default class Projects extends View {
     this.merge = { ...m, phase: "closing", closed: null };
     cx.notify();
     cx.spawn(async (cx) => {
-      const closed = await this.corgiJson("close", [m.name, "--project", m.dir, "--json", ...(force ? ["--force"] : [])], "The close");
+      const closed = await this.corgiJson("close", [m.name, "--project", m.dir, "--json", ...(force ? ["--force"] : [])], "The close", MERGE_TIMEOUT_MS, m.machine ?? null);
       // Closed: that ends it, and the card goes with the worker's row.
       // Only a refusal or a failure is left for the person.
       const dirty = closed.result === "refused" && closed.reason === "dirty";
       this.merge = closed.result === "closed" ? null : { ...m, phase: dirty ? "dirty" : "closed", closed };
       cx.notify();
-      this.refreshCorgi(cx);
+      this.refreshOn(m.machine ?? null, cx);
     });
   }
 
@@ -522,8 +679,8 @@ export default class Projects extends View {
 
   // Whether the project's supervisor runs, to be asked to fix a merge: an
   // inbox line would wait for one that does not.
-  supervised(dir) {
-    const supervisor = this.corgiProjects.get(dir)?.supervisor;
+  supervised(machine, dir) {
+    const supervisor = this.projectOf(machine, dir)?.supervisor;
     return Boolean(supervisor) && supervisor.state !== "exited";
   }
 
@@ -538,12 +695,12 @@ export default class Projects extends View {
     cx.spawn(async (cx) => {
       // A push that failed left the branch merged, at this commit.
       const landed = o.result === "push-failed" && o.commit ? ["--commit", o.commit] : [];
-      const answer = await this.corgiMerge([m.name, "--project", m.dir, "--json", "--ask-supervisor", o.error, ...landed], "Corgi");
+      const answer = await this.corgiMerge(m, [m.name, "--project", m.dir, "--json", "--ask-supervisor", o.error, ...landed], "Corgi");
       if (answer.result === "asked") this.merge = { ...m, phase: "asked", answer };
       // Not asked: the result stays, with why, and the button to try again.
       else this.merge = { ...m, phase: "result", problem: oneLine(answer.message) || "The supervisor could not be asked." };
       cx.notify();
-      this.refreshCorgi(cx);
+      this.refreshOn(m.machine ?? null, cx);
     });
   }
 
@@ -551,7 +708,7 @@ export default class Projects extends View {
   // merge, at the right of the row's second line. It keeps its width.
   mergeMark(a, t) {
     const busy = ["running", "asking", "closing"].includes(this.merge?.phase);
-    const base = this.corgiProjects.get(a.corgi.project)?.base ?? "the base branch";
+    const base = this.projectOf(a.corgi.machine ?? null, a.corgi.project)?.base ?? "the base branch";
     return div()
       .id(`merge-${a.address}`)
       .flex_none()
@@ -688,7 +845,7 @@ export default class Projects extends View {
     const retry = o.reason === "behind" ? ["Pull, merge + push", ["--pull"]] : o.reason === "fetch-failed" ? ["Merge + push without fetching", ["--skip-upstream"]] : null;
     // What failed, for a supervisor that runs to fix. A conflict went to it
     // already: `corgi merge` aborts one and hands it over by itself.
-    const askable = Boolean(o.error) && this.supervised(m.dir);
+    const askable = Boolean(o.error) && this.supervised(m.machine ?? null, m.dir);
     return panel
       .child(title)
       .child(said)
@@ -705,56 +862,80 @@ export default class Projects extends View {
 
   // --- Pause and resume ----------------------------------------------------------
 
-  // How many of Corgi's agents work now: as the window sees them, else as
+  // How many of Corgi's agents work now, on `machine` (null: this
+  // computer; left out: on every machine): as the window sees them, else as
   // Corgi's status last said.
-  workingCount() {
+  workingCount(machine) {
     const live = new Map(agents().map((a) => [a.address, a.status]));
     let n = 0;
-    for (const [address, c] of this.corgiAgents) if ((live.get(address) ?? c.state) === "working" && !c.paused) n++;
+    for (const [address, c] of this.corgiAgents) {
+      if (machine !== undefined && (c.machine ?? null) !== machine) continue;
+      if ((live.get(address) ?? c.state) === "working" && !c.paused) n++;
+    }
     return n;
   }
 
-  // The button: resumes while any agent is paused, else pauses the working
-  // ones at once. With none working nothing changes: a toast says so.
+  // The machines whose Corgi answered, this computer (null) first.
+  seenMachines() {
+    return [...this.seen.keys()].sort((a, b) => (a === null ? -1 : b === null ? 1 : a.localeCompare(b)));
+  }
+
+  // The button: resumes while any agent is paused, on each machine that has
+  // one, else pauses the working ones at once, on each machine where one
+  // works whose Corgi knows a pause. With none working nothing changes: a
+  // toast says so.
   pauseAgents(cx) {
     if (this.pausing?.phase === "running") return;
     if (this.paused?.any) {
-      this.runPause(cx, "resume", this.paused.agents?.length ?? 0);
+      const on = this.seenMachines().filter((m) => this.seen.get(m).paused?.any);
+      this.runPause(cx, "resume", this.paused.agents?.length ?? 0, on);
       return;
     }
-    const working = this.workingCount();
+    const on = this.seenMachines().filter((m) => this.seen.get(m).paused && this.workingCount(m) > 0);
+    const working = on.reduce((n, m) => n + this.workingCount(m), 0);
     if (!working) {
       this.nothingWorking();
       return;
     }
-    this.runPause(cx, "pause", working);
+    this.runPause(cx, "pause", working, on);
   }
 
   nothingWorking() {
     notify({ title: "No agents are working", body: "Nothing was paused.", level: "info", timeout: NOTE_MS });
   }
 
-  // Runs `corgi pause` or `corgi resume`, with `count` agents in its
-  // progress line; a card lists any agent it left behind.
-  runPause(cx, verb, count) {
+  // Runs `corgi pause` or `corgi resume` on each machine of `on` (null:
+  // this computer) at once, with `count` agents in its progress line; a
+  // card lists any agent it left behind, with the machine it is on.
+  runPause(cx, verb, count, on) {
     this.pausing = { verb, phase: "running", count };
     cx.notify();
     cx.spawn(async (cx) => {
-      const r = await this.corgiJson(verb, ["--json"], verb === "pause" ? "The pause" : "The resume", PAUSE_TIMEOUT_MS);
-      const failed = [...(r.failed ?? []), ...(r.left ?? [])];
-      if (verb === "pause" && r.result === "nothing" && !failed.length) {
+      const what = verb === "pause" ? "The pause" : "The resume";
+      const results = await Promise.all(on.map(async (m) => [m, await this.corgiJson(verb, ["--json"], what, PAUSE_TIMEOUT_MS, m)]));
+      const failed = results.flatMap(([m, r]) => [...(r.failed ?? []), ...(r.left ?? [])].map((f) => (m ? { ...f, machine: m } : f)));
+      const refused = results.filter(([, r]) => r.result === "refused");
+      // Of several machines, one that refused is a line of the card's.
+      const several = results.length > 1;
+      if (several) for (const [m, r] of refused) failed.push({ name: `Agents ${m ? `on ${m}` : "on this computer"}`, why: r.message ?? "" });
+      if (verb === "pause" && !failed.length && results.every(([, r]) => r.result === "nothing")) {
         this.pausing = null;
         this.nothingWorking();
-      } else if (failed.length || r.result === "refused") {
-        this.pausing = { verb, phase: "failed", failed, message: oneLine(r.message) };
+      } else if (failed.length || refused.length) {
+        this.pausing = { verb, phase: "failed", failed, message: several ? "" : oneLine(results[0][1].message) };
       } else this.pausing = null;
       // The button follows at once; the status read after confirms it. A
       // resume lets go of every mark, also of an agent that did not come back.
-      const stopped = r.paused ?? [];
-      if (verb === "pause" && stopped.length) this.paused = { any: true, agents: stopped.map((name) => ({ name })) };
-      if (verb === "resume" && r.result !== "refused") this.paused = { any: false, agents: [] };
+      for (const [m, r] of results) {
+        const seen = this.seen.get(m);
+        if (!seen) continue;
+        const stopped = r.paused ?? [];
+        if (verb === "pause" && stopped.length) seen.paused = { any: true, agents: stopped.map((name) => ({ name })) };
+        if (verb === "resume" && r.result !== "refused") seen.paused = { any: false, agents: [] };
+      }
+      this.combine();
       cx.notify();
-      this.refreshCorgi(cx);
+      for (const m of on) this.refreshOn(m, cx);
     });
   }
 
@@ -803,7 +984,7 @@ export default class Projects extends View {
     return box.border_color(t.blocked)
       .child(div().text_color(t.blocked).font_semibold().whitespace_normal().child(p.failed.length ? title : p.verb === "pause" ? "Nothing was paused" : "Nothing was resumed"))
       .when(!p.failed.length && Boolean(p.message), (el) => el.child(div().whitespace_normal().child(tildePaths(p.message))))
-      .children(p.failed.map((f, i) => div().id(`agents-pause-failed-${i}`).whitespace_normal().child(`${f.name}: ${tildePaths(oneLine(f.why))}`)))
+      .children(p.failed.map((f, i) => div().id(`agents-pause-failed-${i}`).whitespace_normal().child(`${f.name}${onMachine(f.machine)}: ${tildePaths(oneLine(f.why))}`)))
       .child(h_flex().gap(5).child(
         div().id("agents-pause-dismiss").px(8).h(22).flex().flex_none().items_center().rounded(5).bg(t.raised).cursor_pointer()
           .hover((s) => s.opacity(0.88))
@@ -1223,6 +1404,8 @@ export default class Projects extends View {
         const r = await hc(["machine", "ls", "--json"]);
         if (r.code === 0) this.machines = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary);
       } catch {}
+      // A machine just connected is read at once; one gone is forgotten.
+      this.refreshRemotes(cx);
       cx.notify();
     });
   }
@@ -1419,7 +1602,7 @@ export default class Projects extends View {
       }
       // A paused worker's terminal ended with its agent: its row stands
       // under its project's space until it is resumed.
-      const home = c.paused && sp.find((s) => !s.machine && place(s, ps) === c.project);
+      const home = c.paused && sp.find((s) => (s.machine ?? null) === (c.machine ?? null) && place(s, ps) === c.project);
       if (home) rows.push({ address, space: home.id, tab: null, status: null, program: null, title: "", focused: false });
     }
     const by = {};
@@ -1473,7 +1656,8 @@ export default class Projects extends View {
       // its project's agents instead.
       const m = this.merge;
       const closing = m?.phase === "closing" || m?.phase === "closed";
-      if (!panel && closing && (head.at === m.dir || members.some(({ a }) => a.corgi?.project === m.dir))) out.push(this.mergePanel(m, t));
+      const here = (head.w.machine ?? null) === (m?.machine ?? null);
+      if (!panel && closing && here && (head.at === m.dir || members.some(({ a }) => a.corgi?.project === m.dir))) out.push(this.mergePanel(m, t));
       for (const k of kids) {
         if ((by[k.w.id] ?? []).length) continue;
         out.push(this.row(k, t));
@@ -1551,7 +1735,11 @@ export default class Projects extends View {
         .when(!collapsed, (el) => el.child(svg("mods/workspace-chrome/plus.svg").size(12)).child("New space there"));
       if (!collapsed && rebuilt) return [head];
       const cell = collapsed ? railCell : (el) => el;
-      return [cell(head), ...(folded ? [] : mine.length ? draw(mine) : [loading(m) ? loadingRow(m) : cell(empty)])];
+      // Its rows show without Corgi's data: said once, under the header.
+      const noCorgi = !collapsed && m && connected && this.remotes[m]?.missing
+        ? [div().id(`machine-no-corgi-${m}`).flex_none().px(8).pb(4).text_size(10.5).text_color(t.dim).truncate().child(`Corgi isn't installed on ${m}`)]
+        : [];
+      return [cell(head), ...noCorgi, ...(folded ? [] : mine.length ? draw(mine) : [loading(m) ? loadingRow(m) : cell(empty)])];
     }));
   }
 

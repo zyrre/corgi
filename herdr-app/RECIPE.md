@@ -195,7 +195,10 @@ The Projects mod fills its block on `chrome`, text 13 px:
   when the sidebar is narrow (at its own 268 px `Esc closes` goes there),
   with `New space` on their right.
 - **The list** (scrolls): the spaces in order, under a header per machine
-  once one is not this computer, as Herdr's Spaces list has them.
+  once one is not this computer, as Herdr's Spaces list has them. Under
+  the header of a connected machine with no `corgi`, one line, 10.5 px in
+  `dim`, cut with `…`: `Corgi isn't installed on <machine>`; its rows show
+  as an agent started by hand shows, with no second-line data or `MERGE`.
   - A space outside any repository (`~`, another folder, a Corgi space):
     30 px, a colored 18 px avatar with its initial, its name.
   - A project, a repository: the space on its primary checkout, drawn the
@@ -347,6 +350,30 @@ The Projects list:
   Corgi mod, never more. Each space's git is read as Herdr's Spaces list
   reads it. Without a `corgi` it still lists every space and agent, by
   their own titles.
+- Another machine (added with Herdr's `Add machine`, reached by herdr-core
+  over ssh) has its own Corgi, which the list asks there with `exec(…, {
+  on: <machine> })`: each machine that `hc machine ls` says is
+  `connected`, every 5 seconds at most, and never sooner than three times
+  its last read took, so a slow machine is asked less often; a change in
+  the live agents reads it again only once that time has come. Its
+  `corgi` is found once, by a `sh -c` there: the path that machine's own
+  install wrote in its app's `mods/projects/config.json` (or
+  `mods/corgi/config.json`), `corgi` on the `PATH` exec has there, on its
+  login shell's `PATH` (`$SHELL -lc`), then `~/.local/bin/corgi`,
+  `~/.local/share/corgi/target/release/corgi` and `~/.cargo/bin/corgi`.
+  Found, it is kept until a read fails; with none, the header says so (see
+  above) and it is looked for again a minute later. Corgi there names its
+  own core's terminals (`t3`); the list puts each under the app's address
+  for it (`lab/t3`), and keeps each project by machine and folder, so two
+  machines' projects in the same folder stay apart. A machine that is away,
+  not connected or removed has no data: its rows show without it until it
+  answers again. Its `daemon` and `corgi` fields are not read: the last
+  line is this computer's, and so are the plan lines (plans are per
+  account, not per machine). The herd card counts every agent the list
+  shows, on every machine, by the app's live state; another machine's
+  tagged worker counts as `MERGE` and its paused agent as paused once its
+  Corgi has answered. Each machine's own `corgi daemon` wakes its own
+  supervisors.
 - `+` (or the command `projects.open`, for a key such as `"cmd-o":
   "projects.open"` in `keys.json`) opens the field with the keyboard in it,
   and again puts it away; on the rail it unfolds the sidebar first. Opened,
@@ -380,7 +407,9 @@ The Projects list:
 - `⏸ Agents` is for leaving the network (a Wi-Fi or a VPN): an agent in the
   middle of a turn without one fails. A click pauses at once, with no
   question, the agents of Corgi's that are working now (by the app's live
-  status, else Corgi's): it runs `corgi pause --json`, which presses Esc in
+  status, else Corgi's), on every machine whose Corgi answered and knows a
+  pause: on each machine with one working, at the same time, it runs
+  `corgi pause --json` there, which presses Esc in
   each (ending its turn), then types its harness's exit (`/exit`), so its
   conversation is saved; a supervisor's kept shell stays, a worker's
   terminal ends. Idle, done and blocked agents are left as they are. With
@@ -397,7 +426,12 @@ The Projects list:
   after a core restart. The pause is kept in Corgi's state
   (`pause/<socket>.json`), so it outlasts a restart of the app, the core or
   the daemon.
-- `▶ Agents` runs `corgi resume --json`: each paused agent comes back on its
+- In the card, an agent of another machine's is named with it (`w-api on
+  lab: did not exit; left running`); a machine whose `corgi` refused while
+  another paused is a line of its own (`Agents on lab: <why>`). The button
+  shows `▶ Agents` while an agent is paused on any machine.
+- `▶ Agents` runs `corgi resume --json`, on each machine with an agent
+  paused: each paused agent comes back on its
   own conversation, a supervisor in its shell, a worker in a new terminal
   with its name, labels and space (its ended one removed). One that does
   not come back is listed in the card, and holds nothing back any more.
@@ -408,7 +442,8 @@ The Projects list:
   requests is not tagged, so it has no mark. A click on the mark asks under
   the row (and is not also the row's click); `Cancel`, or the mark again,
   puts the question away. `Merge + push` runs `corgi merge <worker>
-  --project <dir> --json`: the merge Corgi's dashboard runs with `m`, with
+  --project <dir> --json`, on the worker's machine (its project and base
+  from that machine's status): the merge Corgi's dashboard runs with `m`, with
   its checks, in the project's primary checkout, pushed, which also clears
   the tag and tells the supervisor in its inbox. One merge at a time: while
   one runs the marks are dimmed and do nothing. Then the status is read
@@ -423,8 +458,8 @@ The Projects list:
 - After `merged` (merged and pushed; never after conflicts, a refusal or a
   failed push) the card asks whether to close the worker. `Close` is the
   default: it takes the keyboard as the question shows, so Enter closes and
-  Escape keeps. `Close` runs `corgi close <worker> --project <dir> --json`,
-  the close Corgi's dashboard runs with `x`: it ends the worker's hc
+  Escape keeps. `Close` runs `corgi close <worker> --project <dir> --json`
+  on the worker's machine, the close Corgi's dashboard runs with `x`: it ends the worker's hc
   terminal and removes it, by its address, then removes its worktree with
   `git worktree remove`; the branch stays. The app closes the worker's
   space once its last terminal is gone (a terminal of the person's in it
@@ -439,11 +474,12 @@ The Projects list:
 - `Ask supervisor to fix` is offered on a failed push, a failed fetch, and
   a merge that failed or was refused before it started (uncommitted changes
   in the primary checkout, say): whenever Corgi's answer has an `error`,
-  and the project's supervisor is running (`supervisor` in the status, not
-  `exited`). It runs `corgi merge <worker> --project <dir> --json
-  --ask-supervisor <error>`, with `--commit <commit>` after a failed push:
-  a line in the supervisor's inbox, as `s` sends from the dashboard's merge
-  dialog, which `corgi daemon` types in. The card then says who was asked;
+  and the project's supervisor is running (`supervisor` in the status of
+  the worker's machine, not `exited`). It runs `corgi merge <worker>
+  --project <dir> --json --ask-supervisor <error>` on that machine, with
+  `--commit <commit>` after a failed push: a line in the supervisor's
+  inbox, as `s` sends from the dashboard's merge dialog, which that
+  machine's `corgi daemon` types in. The card then says who was asked;
   if nobody could be, why, with the button still there.
 - The herd card's counts come from the list's own agents; its plan lines
   from `corgi usage --json`, read once the first status answers and then
@@ -515,7 +551,12 @@ The Projects list:
   Programs: `git` (status and `rev-parse`, per space), `hc machine ls`,
   `corgi status --json`, `corgi projects --json …`, `corgi open … --json`,
   `corgi merge … --json` (with `--pull`, `--skip-upstream`, or
-  `--ask-supervisor <error> [--commit <commit>]`). Files: `mods/projects/
+  `--ask-supervisor <error> [--commit <commit>]`), `corgi close`, `corgi
+  pause`, `corgi resume`, and `sh -c` for a pull. On another machine,
+  through `exec`'s `on`: `git`, the pull's `sh -c`, the `sh -c` that finds
+  `corgi` there, and that `corgi`'s `status`, `merge`, `close`, `pause`
+  and `resume`; `corgi projects`, `open` and `usage` run on this computer
+  only. Files: `mods/projects/
   config.json` or `mods/corgi/config.json` (`{ "corgi": "<path>" }`).
 - The brand row mod, `mods/corgi-brand/` (`main.js`, `mod.json`:
   `"place": "none"`, `corgi.png`, and `search.svg` and `sidebar.svg`,
