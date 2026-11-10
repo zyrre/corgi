@@ -7,8 +7,8 @@
 // spaces on its worktrees grouped under it by git. Under a project, one row
 // per agent in it, its supervisor first: Corgi's agents with their task and
 // role from `corgi status --json`, and agents started by hand with their own
-// title. A row reads task, harness, state, worktree, and is cut from the
-// right. A worktree's space with no agent keeps its plain row. Spaces outside
+// title. A row is two lines: the task with its state at the right, then
+// the harness, model and context fill. A worktree's space with no agent keeps its plain row. Spaces outside
 // any repository (~, other folders) show as spaces, with
 // their agents under them. Click a space to show it and an agent to show its
 // terminal; right-click for the space's menu; drag a space to reorder. The
@@ -62,7 +62,7 @@ function place(s, ps) {
 }
 const SPACE_ROW = 30;
 const TREE_ROW = 28;
-const AGENT_ROW = 26;
+const AGENT_ROW = 38;
 const RAIL_CELL = 32;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
@@ -73,11 +73,6 @@ const FALLBACK = 60000;
 // How often Corgi's status is read again besides when the live agents
 // change: as often as the Corgi mod reads it, never more.
 const POLL_MS = 5000;
-// How much sooner than its task an agent's worktree name gives way when a
-// row is too wide: flex takes the overflow from each in proportion to this
-// times its width, so the name is cut down to nothing before the task
-// loses a letter.
-const WORKTREE_YIELDS = 1000;
 // How many suggestions "Open project" shows at once.
 const SUGGESTIONS = 8;
 // Starting a supervisor waits for its shell, its agent and a folder-trust
@@ -423,7 +418,7 @@ export default class Projects extends View {
   }
 
   // The MERGE mark of a worker tagged ready to merge: its row's way to the
-  // merge. It keeps its width; the worktree's name after it gives way first.
+  // merge, at the right of the row's second line. It keeps its width.
   mergeMark(a, t) {
     const busy = ["running", "asking", "closing"].includes(this.merge?.phase);
     const base = this.corgiProjects.get(a.corgi.project)?.base ?? "the base branch";
@@ -1130,7 +1125,10 @@ export default class Projects extends View {
       const head = rows[n];
       const kids = [];
       while (rows[n + 1]?.tree) kids.push(rows[++n]);
-      out.push(this.row(head, t));
+      // Only the agent with the focus is lit, never a project's row with it:
+      // a project's row (a repository's space) is not lit at all, for now; a
+      // space outside any repository is, while none of its agents has the focus.
+      out.push(this.row(head, t, !head.g && head.w.active && !(by[head.w.id] ?? []).some((a) => a.focused)));
       const members = [head, ...kids].flatMap((r) => (by[r.w.id] ?? []).map((a) => ({ a, r })));
       // The supervisor first; the rest stay in the app's order.
       members.sort((x, y) => Number(y.a.supervisor) - Number(x.a.supervisor));
@@ -1252,9 +1250,8 @@ export default class Projects extends View {
   }
 
   // A space: a project's own, one outside any repository, or a worktree's
-  // with no agent in it.
-  row({ w, i, g, tree }, t) {
-    const on = w.active;
+  // with no agent in it. `on`: lit (by default while it is shown).
+  row({ w, i, g, tree }, t, on = w.active) {
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex((s) => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
@@ -1310,35 +1307,42 @@ export default class Projects extends View {
       );
   }
 
-  // One agent, on one line, left to right: its task, its harness's icon,
-  // its state, the MERGE mark of a worker tagged ready to merge, and the
-  // worktree it works in (nothing on the primary checkout). Too wide, it is
-  // cut from the right: the worktree's name first, down to nothing, and only
-  // then the task; the icon, the state and the mark stay whole.
+  // One agent, on two lines. The first: its task, cut with `…` before it
+  // reaches the state, which keeps its place at the right edge. The second,
+  // dim and smaller: its harness's icon, its model and how full its context
+  // is, each only when known, and on the right the MERGE mark of a worker
+  // tagged ready to merge. The worktree it works in is the row's tooltip.
   // `on`: lit, as the agent with the focus or for its space, which is shown.
   agent(a, { w, g, at, tree }, on, t) {
     const worktree = a.corgi?.worktree ? base(a.corgi.worktree) : tree && g?.linked && at ? base(at) : "";
-    const pic = icon(a.program, 14, a.supervisor ? t.foreground : t.muted);
-    return h_flex()
+    const pic = icon(a.program, 12, a.supervisor ? t.foreground : t.muted);
+    const model = oneLine(a.corgi?.model);
+    const ctx = Number.isFinite(a.corgi?.ctx_pct) ? `${Math.round(a.corgi.ctx_pct)}%` : "";
+    const tagged = a.corgi?.tag === "merge";
+    return v_flex()
       .id(`agent-${a.address}`)
       .pl(22)
       .pr(8)
       .h(AGENT_ROW)
       .flex_none()
-      .gap(7)
-      .items_center()
+      .justify_center()
       .rounded(8)
       .text_size(12.5)
       .cursor_pointer()
+      .when(Boolean(worktree), (el) => el.tooltip(worktree))
       .when(on, (el) => el.bg(t.selected))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click(() => run("agent.focus", { terminal: a.address }))
       .on_mouse_down("right", () => this.menu(w))
-      .child(div().flex_shrink(1).min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
-      .when(Boolean(pic), (el) => el.child(pic))
-      .child(h_flex().w(14).flex_none().items_center().justify_center().child(stateMark(t, a.status)))
-      .when(a.corgi?.tag === "merge", (el) => el.child(this.mergeMark(a, t)))
-      .when(Boolean(worktree), (el) => el.child(div().flex_shrink(WORKTREE_YIELDS).min_w(0).truncate().text_size(11).text_color(t.dim).child(worktree)));
+      .child(h_flex().h(18).gap(7).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
+        .child(h_flex().w(14).flex_none().items_center().justify_center().child(stateMark(t, a.status))))
+      .child(h_flex().h(16).gap(5).items_center().text_size(11).text_color(t.dim)
+        .when(Boolean(pic), (el) => el.child(pic))
+        .when(Boolean(model), (el) => el.child(div().flex_shrink(1).min_w(0).truncate().child(model)))
+        .when(Boolean(model && ctx), (el) => el.child(div().flex_none().child("·")))
+        .when(Boolean(ctx), (el) => el.child(div().flex_none().child(ctx)))
+        .when(tagged, (el) => el.child(div().flex_1()).child(this.mergeMark(a, t))));
   }
 
   // A space in the rail: its number, and the most urgent state in it.

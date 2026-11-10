@@ -314,7 +314,7 @@ const STATUS = {
     name: 'weather', dir: REPO, state_dir: `${HOME}/.local/state/corgi/supervisors/weather`, base: 'main',
     supervisor: null, questions: [], inbox_pending: 0, backlog: 0, ledger: { needs_answer: 0, ready_to_merge: 0, dispatched: 0 },
     agents: [
-      { name: 'w-cache', role: 'worker', state: 'working', task: 'Fix the cache\nso that it holds', terminal: 't3', worktree: `${TREES}/worktree-calm-forest-4f96`, cwd: `${TREES}/worktree-calm-forest-4f96` },
+      { name: 'w-cache', role: 'worker', state: 'working', task: 'Fix the cache\nso that it holds', model: 'Opus 5.5', ctx_pct: 33.4, terminal: 't3', worktree: `${TREES}/worktree-calm-forest-4f96`, cwd: `${TREES}/worktree-calm-forest-4f96` },
       { name: 'weather-supervisor', role: 'supervisor', state: 'done', task: 'Supervisor', terminal: 't2', worktree: null, cwd: REPO },
       // Started, and has reported no status yet: the app lists no agent for it.
       { name: 'w-docs', role: 'worker', state: 'unknown', task: 'Write the docs', terminal: 't5', worktree: `${TREES}/worktree-sunny-field-529d`, cwd: `${TREES}/worktree-sunny-field-529d` },
@@ -394,9 +394,9 @@ async function projects(w) {
       'C', 'Corgi',
       'W', 'weather',
       'Supervisor',
-      'Fix the cache so that it holds', 'worktree-calm-forest-4f96',
-      'Review the cache fix', '!', 'worktree-calm-forest-4f96',
-      'Write the docs', 'worktree-sunny-field-529d',
+      'Fix the cache so that it holds', 'Opus 5.5', '·', '33%',
+      'Review the cache fix', '!',
+      'Write the docs',
       'worktree-quiet-lake-0a1b',
       '~', '~',
       // A title that is only a folder says nothing: the program's name.
@@ -408,35 +408,48 @@ async function projects(w) {
   // agent.next and agent.prev follow the list.
   assert.deepEqual(w.agentOrder, ['t2', 't3', 't4', 't5', 't7']);
 
-  // One line each, left to right: the task, the harness's icon, the state,
-  // the worktree's name. Too wide, it is cut from the right: the worktree's
-  // name gives way first, down to nothing, and only then the task; the icon
-  // and the state keep their width.
+  // Two lines each. The first: the task, cut with an ellipsis before it
+  // reaches the state, which keeps its place at the right edge.
   const row = byId(root, 'agent-t3');
-  assert.equal(row.children.length, 4);
-  const [task, pic, state, worktree] = row.children.map(kept);
+  assert.equal(row.kind, 'v_flex');
+  assert.equal(row.children.length, 2);
+  const [first, second] = row.children.map(kept);
+  assert.equal(first.children.length, 2);
+  const [task, state] = first.children.map(kept);
   assert.deepEqual(texts(task), ['Fix the cache so that it holds']);
-  assert.deepEqual(texts(worktree), ['worktree-calm-forest-4f96']);
-  for (const [name, text] of [['task', task], ['worktree', worktree]]) {
-    assert.ok('truncate' in text.calls, `the ${name} is cut with an ellipsis`);
-    assert.deepEqual(text.calls.min_w, [0], `the ${name} can be cut to nothing`);
-    assert.ok(!('flex_1' in text.calls || 'flex_auto' in text.calls || 'flex_grow' in text.calls), `the ${name} does not spread`);
-  }
-  // The overflow is taken from each in proportion to its factor and width.
-  assert.deepEqual(task.calls.flex_shrink, [1]);
-  assert.ok(worktree.calls.flex_shrink[0] >= 1000, 'the worktree gives way long before the task');
-  assert.ok('flex_none' in pic.calls && 'flex_none' in state.calls, 'the icon and the state stay whole');
-  // The harness's icon, and the spinner of a working agent.
-  assert.deepEqual(pic.args, ['icons/claude.svg']);
+  assert.ok('truncate' in task.calls, 'the task is cut with an ellipsis');
+  assert.deepEqual(task.calls.min_w, [0], 'the task can be cut to nothing');
+  assert.ok('flex_1' in task.calls, 'the task fills the line, so the state stands at its right edge');
+  assert.ok('flex_none' in state.calls, 'the state stays whole');
   assert.deepEqual(kept(state.children[0]).args, ['mods/workspace-chrome/spinner.svg']);
   assert.ok('spin' in kept(state.children[0]).calls);
-  assert.deepEqual(texts(byId(root, 'agent-t4')), ['Review the cache fix', '!', 'worktree-calm-forest-4f96'], 'a blocked agent');
-  // An agent whose program has no icon keeps the order of the rest.
+  // The second, dim and smaller: the harness's icon, the model and the
+  // context fill, rounded.
+  assert.deepEqual(second.calls.text_size, [11]);
+  assert.deepEqual(second.calls.text_color, ['#dim']);
+  const [pic, model, dot, ctx] = second.children.map(kept);
+  assert.equal(second.children.length, 4);
+  assert.deepEqual(pic.args, ['icons/claude.svg']);
+  assert.ok('flex_none' in pic.calls, 'the icon stays whole');
+  assert.deepEqual(texts(model), ['Opus 5.5']);
+  assert.ok('truncate' in model.calls);
+  assert.deepEqual([texts(dot), texts(ctx)], [['·'], ['33%']]);
+  // The worktree's name is no text of the row, only its tooltip.
+  assert.deepEqual(row.calls.tooltip, ['worktree-calm-forest-4f96']);
+  assert.ok(!texts(row).includes('worktree-calm-forest-4f96'));
+  // What Corgi does not know is left out, with nothing in its place.
+  assert.deepEqual(byId(root, 'agent-t4').children.map((child) => texts(child)), [['Review the cache fix', '!'], []], 'a blocked agent');
+  assert.equal(kept(byId(root, 'agent-t4').children[1]).children.length, 1, 'only the icon');
+  const t5 = byId(root, 'agent-t5');
+  assert.deepEqual(texts(t5), ['Write the docs']);
+  assert.deepEqual(t5.calls.tooltip, ['worktree-sunny-field-529d']);
+  // An agent whose program has no icon keeps the rest.
   w.agents[2].program = { ...CLAUDE, icon: null };
-  assert.deepEqual(byId(mod.render(), 'agent-t4').children.map((child) => texts(child).join('')), ['Review the cache fix', '!', 'worktree-calm-forest-4f96']);
+  assert.equal(kept(byId(mod.render(), 'agent-t4').children[1]).children.length, 0);
   w.agents[2].program = CLAUDE;
   // On the primary checkout there is no worktree to name.
   assert.deepEqual(texts(byId(root, 'agent-t2')), ['Supervisor']);
+  assert.ok(!('tooltip' in byId(root, 'agent-t2').calls));
 
   // A click shows the agent's terminal; a space's row shows the space.
   click(root, 'agent-t5', mod.cx);
@@ -463,6 +476,47 @@ async function projects(w) {
   assert.equal(reads(), before + 3, 'a changed agent does');
 }
 
+// A context fill but no model: the fill alone, with no dot before it.
+{
+  const status = structuredClone(STATUS);
+  status.projects[0].agents[0].model = null;
+  const mod = await projects(window({ status }));
+  assert.deepEqual(texts(kept(byId(mod.render(), 'agent-t3').children[1])), ['33%']);
+}
+
+// What is lit: only the agent with the focus, never a project's row with
+// it; a project's row is not lit at all; a space outside any project is
+// while none of its agents has the focus.
+{
+  const lit = (root) => [...ids(root, 'space-'), ...ids(root, 'agent-')].filter((id) => 'bg' in byId(root, id).calls);
+  const w = window();
+  const mod = await projects(w);
+  // A shell in ~, a space outside any project: its row.
+  assert.deepEqual(lit(mod.render()), ['space-sp-home']);
+  // An agent in ~: the agent alone.
+  w.agents[3].focused = true;
+  assert.deepEqual(lit(mod.render()), ['agent-t7']);
+  w.agents[3].focused = false;
+  // The supervisor, in the project's own space: its row, not the project's.
+  w.spaces.at(-1).active = false;
+  w.spaces[1].active = true;
+  w.agents[0].focused = true;
+  assert.deepEqual(lit(mod.render()), ['agent-t2']);
+  // A plain shell in the project's space: nothing.
+  w.agents[0].focused = false;
+  assert.deepEqual(lit(mod.render()), []);
+  // A worker, in its worktree's space: its row.
+  w.spaces[1].active = false;
+  w.spaces[2].active = true;
+  w.agents[1].focused = true;
+  assert.deepEqual(lit(mod.render()), ['agent-t3']);
+  // A worktree's space with no agent keeps its own row, lit while shown.
+  w.agents[1].focused = false;
+  w.spaces[2].active = false;
+  w.spaces[4].active = true;
+  assert.deepEqual(lit(mod.render()), ['space-sp-quiet']);
+}
+
 // The space that is shown is lit: its own row, or the agent standing for it.
 {
   const w = window();
@@ -486,7 +540,7 @@ async function projects(w) {
   const drawn = texts(mod.render());
   assert.deepEqual(
     drawn.slice(3),
-    ['W', 'weather', 'Weather supervisor', 'Fixing the cache', 'worktree-calm-forest-4f96', 'Review the cache fix', '!', 'worktree-calm-forest-4f96', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code'],
+    ['W', 'weather', 'Weather supervisor', 'Fixing the cache', 'Review the cache fix', '!', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code'],
     drawn.join(' | '),
   );
 }
@@ -737,17 +791,17 @@ async function merged(outcome, state) {
   const w = window({ status: tagged(), merge: () => new Promise((resolve) => { finish = resolve; }) });
   const mod = await projects(w);
   let root = mod.render();
-  // The tagged worker's row has the mark, after its state and before its
-  // worktree's name, which still gives way first; no other row has one.
+  // The tagged worker's row has the mark at the right of its second line,
+  // after a spacer; no other row has one.
   assert.deepEqual(ids(root, 'merge-'), ['merge-t3']);
   const row = byId(root, 'agent-t3');
-  assert.deepEqual(row.children.map((child) => texts(child).join('')), ['Fix the cache so that it holds', '', '', 'MERGE', 'worktree-calm-forest-4f96']);
-  const [task, , , mark, worktree] = row.children.map(kept);
+  assert.deepEqual(row.children.map((child) => texts(child)), [['Fix the cache so that it holds'], ['Opus 5.5', '·', '33%', 'MERGE']]);
+  const line = kept(row.children[1]).children.map(kept);
+  const [spacer, mark] = line.slice(-2);
+  assert.ok('flex_1' in spacer.calls, 'the mark is pushed to the right edge');
   assert.ok('flex_none' in mark.calls, 'the mark stays whole');
-  assert.deepEqual(task.calls.flex_shrink, [1]);
-  assert.ok(worktree.calls.flex_shrink[0] >= 1000);
   assert.deepEqual(mark.calls.tooltip, [`Merge ${BRANCH} into main and push`]);
-  assert.deepEqual(texts(byId(root, 'agent-t5')), ['Write the docs', 'worktree-sunny-field-529d'], 'an untagged worker has none');
+  assert.deepEqual(texts(byId(root, 'agent-t5')), ['Write the docs'], 'an untagged worker has none');
   assert.equal(panel(mod), null);
 
   // A click on it asks under the row, and is not also the row's click.
