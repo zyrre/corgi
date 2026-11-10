@@ -383,12 +383,13 @@ async function projects(w) {
   const mod = await projects(w);
   const root = mod.render();
   const drawn = texts(root);
-  assert.equal(drawn[0], 'Projects');
+  // The herd card first, above the header.
+  assert.equal(drawn[6], 'Projects');
   // Spaces outside a repository as Spaces shows them; a project with its
   // agents under it, the supervisor first, in place of its worktrees' rows;
   // a worktree with no agent keeps its row.
   assert.deepEqual(ids(root, 'space-').concat(), ['space-sp-corgi', 'space-sp-weather', 'space-sp-quiet', 'space-sp-home']);
-  // Under the header, the herd card: the agents by state, a state with
+  // Above the header, the herd card: the agents by state, a state with
   // none left out (no usage: this corgi does not answer `usage`).
   assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', '1', '!', '1', '1', '2']);
   assert.deepEqual(ids(root, 'herd-'), ['herd-card', 'herd-working', 'herd-blocked', 'herd-done', 'herd-idle']);
@@ -571,7 +572,8 @@ async function projects(w) {
   assert.equal(w.sidebar, 268);
   root = mod.render();
   assert.ok(byId(root, 'open-project'), 'the field is open');
-  assert.equal(texts(root)[0], 'Projects');
+  // Unfolded, the herd card is back above the header.
+  assert.deepEqual(texts(root).slice(0, 7), ['HERD', '1', '!', '1', '1', '2', 'Projects']);
   // And » alone unfolds it.
   w.sidebar = 76;
   click(mod.render(), 'rail-unfold', mod.cx);
@@ -606,9 +608,10 @@ async function projects(w) {
 
   const root = mod.render();
   const card = byId(root, 'herd-card');
-  // Above the rows, under the header (and its field, when open).
+  // The first thing in the mod, above the header and the rows.
   const drawn = texts(root);
-  assert.deepEqual(drawn.slice(0, 2), ['Projects', 'HERD']);
+  assert.equal(drawn[0], 'HERD');
+  assert.equal(drawn[texts(card).length], 'Projects');
   assert.ok(drawn.indexOf('weather') > drawn.indexOf('CLAUDE'), 'the card stands above the rows');
   assert.deepEqual(texts(card), [
     'HERD', '1', '!', '1', '1', '2',

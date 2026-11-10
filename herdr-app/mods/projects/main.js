@@ -23,7 +23,7 @@
 // branch stays). A space's red ↓N (its checkout is N commits behind its
 // upstream, as last fetched) pulls them with a click: `git pull --ff-only`
 // in that checkout, nothing else; only a pull that fails leaves a card,
-// under the row, saying why. Above the list, a card counts the agents by
+// under the row, saying why. At the top, above the header, a card counts the agents by
 // state (HERD) and shows each plan's 5-hour and weekly use (`corgi usage
 // --json`), as the dashboard's header does. Under the list, which Corgi
 // answers (`Corgi 0.2.3 · 5b50895`), whether the checkout it was built in
@@ -693,7 +693,7 @@ export default class Projects extends View {
     return n;
   }
 
-  // Under the Projects header, one card of a line each, in the theme's
+  // At the top of the list, above its header, one card of a line each, in the theme's
   // border and dim alone, whatever the agents' states: HERD, the agents by
   // state with the list's own marks (a state with none left out), then a
   // line per harness with a plan: its 5-hour and 7-day windows, each a thin
@@ -742,7 +742,7 @@ export default class Projects extends View {
         .when(!u, (el) => el.child(div().text_color(t.dim).child(p.error ? "unavailable" : "loading…")))
         .when(Boolean(u), (el) => el.child(win("5h", u.five_hour)).child(win("7d", u.week)));
     };
-    return div().flex_none().px(8).pb(6).child(
+    return div().flex_none().px(8).pt(4).pb(2).child(
       v_flex().id("herd-card").px(8).py(4).rounded(7).border_1().border_color(t.border).bg(t.surface).text_size(11)
         .child(herd).children(providers.map(plan)));
   }
@@ -1671,6 +1671,7 @@ export default class Projects extends View {
     const by = collapsed ? null : this.agentsBySpace(sp, ps);
     const herd = by && this.herdCard(by, t);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
+      .when(Boolean(herd), (el) => el.child(herd))
       .child(h_flex().h(31).flex_none().pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, (el) => el.pl(0).pr(0).justify_center())
         .when(!collapsed, (el) => el.child("Projects"))
@@ -1681,7 +1682,6 @@ export default class Projects extends View {
           .on_click((_e, cx) => this.plus(cx))
           .child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .when(this.open && !collapsed, (el) => el.child(this.openPanel(t)))
-      .when(Boolean(herd), (el) => el.child(herd))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.pressedPull = null; cx.notify(); })
         .children(this.grouped(t, collapsed, sp, ps)))
