@@ -1898,6 +1898,12 @@ status lines of its passes.
   lightens the edge of the 16 and 32 px slots (an artefact of extracting
   them, not of the `.icns`), so check the icon by its decoded pixels, not
   by bytes or by the small slots it extracts.
+  The same file draws the Herdr app brand row's Corgi logo,
+  `herdr-app/mods/corgi-brand/corgi.png`, a finer pixel corgi (a 32 by 32 grid
+  and a smooth jaw, built as SVG and drawn with resvg) on a transparent
+  canvas the size of Herdr's own logo (`frame/welcome/herdr.png`), with
+  `cargo brand-tile`; a test fails while the committed PNG lags it, allowing
+  a step of antialiasing that may round differently on another processor.
 - `crates/corgi-core/src/choices.rs` is the pure model behind every selector
   list in the new-agent form: the rows, the word filter typed over them, and
   how typed text that names no row is offered (as a value of its own for
