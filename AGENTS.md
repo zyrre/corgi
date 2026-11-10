@@ -626,11 +626,9 @@ home, give them a scratch one holding copies of the shipped `layouts/*.json`
 and `installed.json`, and a scratch state directory, so that nothing of the
 run can land in Corgi's real state:
 `XDG_STATE_HOME=<scratch>/state sh herdr-app/install.sh --mod-only --home
-<scratch>/app`. Only ever with `--mod-only`: `--home` moves the app home
-alone, so any other run, `--uninstall` too, installs or removes the user's
-real daemon service and their OpenCode plugin (a worker's `--uninstall
---home <scratch>` once removed both; `scripts/test-install` covers the rest
-with fakes). It checks both mods with the real `herdr-app check` and
+<scratch>/app` (`--uninstall --home` removes only what is in that home;
+an install without `--mod-only` still installs the user's daemon and
+OpenCode plugin). It checks both mods with the real `herdr-app check` and
 changes the layout with the worktree's `target/release/corgi`; with no
 window on that home the shipped `main` is cloned to `corgi` by hand
 (`layout.clone` needs the window). The preview window is the place to see

@@ -72,7 +72,9 @@
 #                    the daemon and Corgi's OpenCode plugin, and closes a
 #                    Corgi space made with `corgi app-space`, whose mod is
 #                    going; with --cli also the link to this checkout's
-#                    corgi (the checkout itself is left)
+#                    corgi (the checkout itself is left). With --home only
+#                    what is in that app home goes: the daemon, the plugin
+#                    and the link are the machine's, and stay
 #
 #   CORGI_BUILD=source|release   build the CLI from source, or use the pinned
 #                                download, whatever the checkout's HEAD
@@ -91,7 +93,7 @@ die() {
   exit 1
 }
 
-version='' home_dir='' uninstall='' cli='' cli_only='' mod_only='' no_daemon=''
+version='' home_dir='' home_given='' uninstall='' cli='' cli_only='' mod_only='' no_daemon=''
 parse_args() {
   while [ $# -gt 0 ]; do
     case $1 in
@@ -103,6 +105,7 @@ parse_args() {
       --home)
         [ $# -ge 2 ] || die "--home needs a folder"
         home_dir=$2
+        home_given=1
         shift
         ;;
       --uninstall) uninstall=1 ;;
@@ -111,7 +114,7 @@ parse_args() {
       --mod-only) mod_only=1 ;;
       --no-daemon) no_daemon=1 ;;
       -h | --help)
-        sed -n '2,85p' "$0" 2>/dev/null || say "see https://github.com/zyrre/corgi#install"
+        sed -n '2,87p' "$0" 2>/dev/null || say "see https://github.com/zyrre/corgi#install"
         exit 0
         ;;
       *) die "unknown argument $1 (see --help)" ;;
@@ -307,12 +310,19 @@ if [ -n "$uninstall" ]; then
     # Before the Projects mod goes, which the layouts show: Spaces and
     # Agents go back in its place, and every layout stays.
     app_layout remove || say "could not put Spaces and Agents back in the layouts in $home_dir/layouts; run $bin app-layout remove"
-    "$bin" daemon uninstall || say "could not remove the corgi daemon; run $bin daemon uninstall"
+    [ -n "$home_given" ] || "$bin" daemon uninstall || say "could not remove the corgi daemon; run $bin daemon uninstall"
   else
-    say "no $bin to remove the daemon and the Projects list with: run corgi daemon uninstall, and in $home_dir/layouts/*.json make the \"projects\" block \"spaces\" again"
+    say "no $bin to put Spaces back with: in $home_dir/layouts/*.json make the \"projects\" block \"spaces\" again"
+    [ -n "$home_given" ] || say "and remove the daemon with: corgi daemon uninstall"
   fi
-  remove_oc_plugin "removed Corgi's OpenCode plugin $oc_plugin"
-  rm -f "$oc_answer"
+  # The daemon, OpenCode's plugin and the link are this machine's, not an
+  # app home's: --home removes only what is in that home.
+  if [ -n "$home_given" ]; then
+    say "left the corgi daemon, Corgi's OpenCode plugin${cli:+ and $link} alone: --home removes only what is in $home_dir (run --uninstall without --home for those)"
+  else
+    remove_oc_plugin "removed Corgi's OpenCode plugin $oc_plugin"
+    rm -f "$oc_answer"
+  fi
   for name in corgi projects; do
     mod_dir="$mods/$name"
     if [ -d "$mod_dir" ]; then
@@ -322,7 +332,7 @@ if [ -n "$uninstall" ]; then
       say "no $(mod_title "$name") in $mods"
     fi
   done
-  if [ -n "$cli" ]; then
+  if [ -n "$cli" ] && [ -z "$home_given" ]; then
     if [ -L "$link" ] && [ "$(readlink "$link")" = "$bin" ]; then
       rm -f "$link" && say "removed $link"
     else

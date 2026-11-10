@@ -973,6 +973,44 @@ test_app_uninstall() {
   check "uninstall --cli: link removed" "no" "$([[ -L "$link" ]] && echo yes || echo no)"
 }
 
+# --- test: --uninstall --home removes what is in that home, and nothing of the machine's
+test_app_uninstall_home() {
+  local state status=0 home plugin answer link
+  state="$(new_app_state app-uninstall-home)"
+  publish_release "$state" "corgi $version"
+  home="$state/home/.config/herdr-app"
+  plugin="$state/home/.config/opencode/plugin/corgi-hc-status.js"
+  answer="$state/home/.local/state/corgi/opencode-plugin"
+  link="$state/home/.local/bin/corgi"
+  printf '#!/bin/sh\necho opencode 1.18.33\n' >"$state/bin/opencode"
+  chmod 755 "$state/bin/opencode"
+  CORGI_OPENCODE_PLUGIN=yes run_app_install "$state" || status=$?
+  check "uninstall --home: installed first" "0 yes yes" \
+    "$status $([[ -f "$plugin" ]] && echo yes || echo no) $([[ -L "$link" ]] && echo yes || echo no)"
+
+  status=0
+  run_app_install "$state" --uninstall --cli --home "$home" || status=$?
+  check "uninstall --home: exit status" "0" "$status"
+  check "uninstall --home: the mods in that home removed" "no no" \
+    "$([[ -e "$home/mods/corgi" ]] && echo yes || echo no) $([[ -e "$home/mods/projects" ]] && echo yes || echo no)"
+  check "uninstall --home: Spaces put back in that home's layouts" \
+    "corgi app-layout remove --home $home" "$(layout_calls "$state" | grep remove)"
+  check "uninstall --home: runs no corgi daemon uninstall" "0" "$(count_daemon "$state" uninstall)"
+  check "uninstall --home: deletes no OpenCode plugin, nor its answer" "yes yes" \
+    "$([[ -f "$plugin" ]] && echo yes || echo no) $([[ -f "$answer" ]] && echo yes || echo no)"
+  check "uninstall --home: keeps the link, even with --cli" "yes" "$([[ -L "$link" ]] && echo yes || echo no)"
+  check_stderr "uninstall --home: says so in one line" \
+    "left the corgi daemon, Corgi's OpenCode plugin and $link alone: --home removes only what is in $home (run --uninstall without --home for those)" "$state"
+
+  # Without --home, today's uninstall: the machine's things go too.
+  status=0
+  run_app_install "$state" || status=$?
+  run_app_install "$state" --uninstall || status=$?
+  check "uninstall without --home: removes the daemon" "1" "$(count_daemon "$state" uninstall)"
+  check "uninstall without --home: and the plugin" "no" "$([[ -e "$plugin" ]] && echo yes || echo no)"
+  check "uninstall without --home: says nothing of --home" "0" "$(grep -c 'removes only what is in' "$state/stderr.log" || true)"
+}
+
 # --- test: OpenCode's status plugin, asked once, never forced ------------------
 test_app_opencode_plugin() {
   local state status=0 plugin answer src
@@ -1160,6 +1198,7 @@ test_app_install
 test_app_install_refusals
 test_app_install_options
 test_app_uninstall
+test_app_uninstall_home
 test_app_opencode_plugin
 test_plugin_install_adds_app_mod
 test_app_install_piped
