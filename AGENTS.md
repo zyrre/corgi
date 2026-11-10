@@ -674,6 +674,28 @@ socket accepts a connection, so it may be run on the user's real core and
 state. Never run `corgi merge` against a real project; its tests use scratch
 repositories and a fake `hc` script.
 
+The Projects mod's `⏸ Agents` runs `corgi pause --json` and `▶ Agents`
+`corgi resume --json` (`src/app/hc_pause.rs`, `crates/corgi-core/src/hc/pause.rs`).
+Never run either on the user's core: a pause stops their working agents,
+and while it holds any agent their daemon types nothing into a supervisor.
+`hc/pause/tests.rs` drives both against a fake core that acts as hc does,
+`tests/open.rs` the real binary against the fake `hc` script, and
+`waker/hc/tests.rs` the daemon's holds; a live try uses a private core
+(below) with fake agents: a program that is not a shell (hc's foreground
+is the interpreter's name, and a `sh` script reads as a shell in front),
+reports `state=…:app=claude-code` (OSC 7501), takes Esc in raw mode and
+exits 0 on `/exit`, and terminals labelled as Corgi's launch labels them,
+`corgi.resume` included. What hc does there: an agent that is its
+terminal's program (a worker) finishes the terminal when it exits with a
+code, `keep` or not, and hc keeps a finished terminal and its labels across
+`hc server stop` and `start` until `hc rm`; a new terminal may take a
+finished one's name. `hc server restart` keeps the programs running: to
+make a kept terminal lose its program, `stop` the core and `start` it. In
+the preview window, `fake/pause.json` and `fake/resume.json` (with
+`fake/pause.delay`) are what the canned corgi answers, and `status.json`'s
+`paused` and an agent's `"state": "paused", "paused": true` are what the
+list shows.
+
 ### After a merge
 
 After changes are merged into the primary checkout, one command, run in that

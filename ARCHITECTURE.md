@@ -438,7 +438,9 @@ dashboard, the command line and other frontends run the same code.
   and `confirmation` say what will stop; `pause_all` marks them, presses
   Esc in the working ones and types each harness's exit; `resume_all`
   resumes the marked ones through `restart::resume`; `Holds` and `settle`
-  are what the pass holding the wake lock honours and clears.
+  are what the pass holding the wake lock honours and clears. On hc, the
+  Herdr app's "⏸ Agents" is `hc/pause.rs`, with rules of its own (see
+  "Pause and Resume on hc").
 - `orphans.rs` is "Find orphaned sessions" (docs/orphaned-sessions.md):
   `detect` reads the snapshot, the rows, the panes' foreground processes
   (`pane.process_info`, which lists the pane's whole foreground group, an
@@ -1279,6 +1281,10 @@ reboot, and how Corgi brings the rest back, are in
 [docs/restart-survival.md](docs/restart-survival.md).
 
 #### Pause all
+
+The Herdr app's "⏸ Agents" on hc is another flow with other rules (only
+the agents working at that moment, and every delivery held while any is
+paused): see "Pause and Resume on hc".
 
 One action stops every agent, for when the user leaves the network, and
 one brings them back (`crates/corgi-core/src/pause.rs`; the dashboard's
@@ -2536,6 +2542,13 @@ socket's.
   (`blocked`, `not_found`, `finished`, …) leave the items for a later pass;
   another failure leaves them too, so a wake may arrive twice but is never
   lost.
+- **Pause.** While `corgi pause` holds any agent (`hc/pause.rs`, below), a
+  pass resumes no paused agent's terminal after a core restart
+  (`resume_line`), follows the paused agents' stops without a wake, and
+  types nothing into any supervisor, paused or not, and moves no handover
+  on (`tick_hc` returns after `observe`): wakes wait in the inboxes and go
+  out at the first pass after `corgi resume`. No early timed pass runs for
+  them meanwhile.
 - **Handover** follows `supervisor::Handover` with timed rests (the daemon
   can time one, unlike a hook): the request is typed like a wake and
   recorded in `corgi.handover`; once the note is written the replacement
@@ -2551,6 +2564,57 @@ socket's.
   Projects list: the daemon deletes such a note when it starts, and
   `corgi app-space`, which makes the space only for a person who runs it,
   needs the window open and leaves none.
+
+#### Pause and Resume on hc
+
+The Projects list's "⏸ Agents" and "▶ Agents" run `corgi pause --json` and
+`corgi resume --json` (`src/app/hc_pause.rs` over
+`crates/corgi-core/src/hc/pause.rs`), for when the user leaves the Wi-Fi or
+VPN: an agent mid-turn without a network fails, so the ones mid-turn stop
+first, and nothing starts a turn on Corgi's behalf until Resume.
+
+- **Which agents.** Every terminal of Corgi's whose agent is in front and
+  `working` at that moment, supervisors and workers alike; idle, done and
+  blocked agents are left as they are, and with none working nothing
+  changes (no mark, no file) and the button stays. An agent is paused only
+  when Corgi can bring it back: its terminal holds its `corgi.resume` line,
+  which Corgi writes for the Claude Code sessions it starts. Codex and
+  OpenCode terminals on hc have none, so they are left running and named
+  (`left`), as is the terminal the command runs in.
+- **Stopping.** Every agent is marked (`Phase::Stopping`) before a key goes
+  out; then Esc in each (it ends the turn), a wait (10 s) for it to stop
+  working, a look at its input box (`draft::holds_draft` on a watch-only
+  paint) and its harness's exit (`/exit`, `/quit`) with `hc send`, and a
+  wait (20 s) for it to leave: a supervisor's kept shell comes to the
+  front, a worker's terminal finishes (the agent is its program; hc keeps a
+  finished terminal, labels and all, across a core stop and start, until
+  `hc rm`). One that kept working, held text, or did not exit loses its
+  mark and is named in `failed`. Nothing is killed.
+- **The mark** is a file, `pause/<socket>.json` in Corgi's state directory
+  (`record_path`), not a label: a worker's terminal ends with its agent, and
+  a file outlasts the core, the app and the daemon. It keeps each agent's
+  terminal, name, project, role, harness, session, resume line, folder and
+  labels. A pause is in force while any entry is `stopping` or `paused`.
+- **The daemon** honours it (`pause::Holds`): see "Pause." under
+  `corgi daemon`. Its stops are matched by project and name as well as
+  address, since a worker comes back in a new terminal.
+- **Resume** brings back exactly the `paused` entries, each on its own
+  conversation: a supervisor's (or, after a core restart, a worker's) kept
+  shell gets the resume line typed in, and `corgi.pid` set to that shell's
+  pid so the daemon does not type it again; a worker whose terminal finished
+  gets a new terminal with the old one's name, labels and space, running
+  `/bin/sh -c "exec <resume line>"`, and the finished one is removed. It
+  waits (20 s) for the agent to be in front, then marks the entry
+  `resuming` with its terminal now. An agent that does not come back loses
+  its mark (it would hold every delivery otherwise) and is named. The
+  daemon's next pass, after `observe` has followed the agent back without a
+  wake, drops the mark (`pause::settle`); a `stopping` or `resuming` mark
+  older than `STALE_SECS` goes too.
+- **Status.** `corgi status --json` has `"paused": {"any", "agents"}`, and
+  lists each paused agent in its project with state `paused` (a worker whose
+  terminal finished is added from the file), listing the project even with
+  no other agent running. The Projects mod shows the button only from a
+  corgi whose status has `paused`.
 
 The app's sidebar is Corgi's: `corgi app-layout`
 (`crates/corgi-core/src/app_layout.rs`), run by `herdr-app/install.sh`,

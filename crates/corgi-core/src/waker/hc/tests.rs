@@ -369,3 +369,113 @@ fn a_send_hc_refused_before_typing_is_tried_again_and_any_other_failure_is_unkno
         Delivery::Unknown
     );
 }
+
+/// A second worker the supervisor spawned, at `address`.
+fn other_worker(name: &str, address: &str, state: AgentState, turn: u64) -> DashboardAgent {
+    let mut worker = agent(name, address, false, state, turn);
+    worker
+        .info
+        .tokens
+        .insert(crate::launch::CORGI_REQUEST_TOKEN.into(), "brief-2".into());
+    worker
+}
+
+/// Marks `name`, at `address`, as `corgi pause` does, in `phase`.
+fn mark(path: &Path, name: &str, address: &str, phase: crate::hc::pause::Phase) {
+    crate::hc::pause::update(path, |record| {
+        record.agents.retain(|paused| paused.name != name);
+        record.agents.push(crate::hc::pause::PausedAgent {
+            address: address.into(),
+            name: name.into(),
+            project: ROOT.into(),
+            supervisor: false,
+            harness: "claude".into(),
+            session: Some("s-1".into()),
+            resume: "claude --resume s-1".into(),
+            cwd: "/w".into(),
+            labels: Default::default(),
+            phase,
+            at: 100,
+        });
+    })
+    .unwrap();
+}
+
+#[test]
+fn while_agents_are_paused_no_supervisor_is_typed_into_and_wakes_wait_for_resume() {
+    use crate::hc::pause::Phase;
+    let scratch = ScratchDir::new("hc-waker-pause");
+    let path = scratch.join("pause.json");
+    let mut waker = led(&scratch);
+    let mut core = FakeCore::default();
+    let corgi = Path::new(CORGI);
+    use AgentState::{Done, Idle, Working};
+
+    waker.tick_hc(
+        &mut core,
+        &[
+            supervisor(Done, 1),
+            worker(Working, 0),
+            other_worker("w-tides", "t3", Working, 0),
+        ],
+        corgi,
+        100,
+    );
+    // Pause stops w-forecast (Esc, then its exit ends its terminal);
+    // w-tides finishes its turn meanwhile, and the supervisor rests.
+    mark(&path, "w-forecast", "t2", Phase::Stopping);
+    waker.tick_hc(
+        &mut core,
+        &[
+            supervisor(Done, 1),
+            worker(Idle, 1),
+            other_worker("w-tides", "t3", Done, 1),
+        ],
+        corgi,
+        101,
+    );
+    mark(&path, "w-forecast", "t2", Phase::Paused);
+    let said = waker.tick_hc(
+        &mut core,
+        &[supervisor(Done, 1), other_worker("w-tides", "t3", Done, 1)],
+        corgi,
+        102,
+    );
+    assert!(core.sent.is_empty(), "{:?}", core.sent);
+    assert_eq!(
+        core.looks, 0,
+        "no supervisor is even looked at to be typed into"
+    );
+    assert!(
+        said.iter()
+            .any(|line| line.starts_with("Agents are paused"))
+    );
+    assert!(waker.paused_hc());
+    // w-tides's wake waits in the inbox; the paused worker added none.
+    let pending = waker.inboxes.pending_for(ROOT);
+    assert_eq!(pending.len(), 1, "{pending:?}");
+
+    // Resume starts w-forecast again in a new terminal: its return wakes no
+    // one, its mark goes, and the waiting wake goes out.
+    mark(&path, "w-forecast", "t9", Phase::Resuming);
+    let said = waker.tick_hc(
+        &mut core,
+        &[
+            supervisor(Done, 1),
+            other_worker("w-tides", "t3", Done, 1),
+            agent("w-forecast", "t9", false, Idle, 0),
+        ],
+        corgi,
+        103,
+    );
+    assert!(
+        said.contains(&"w-forecast is back after Resume".to_string()),
+        "{said:?}"
+    );
+    assert!(!path.exists());
+    assert!(!waker.paused_hc());
+    assert_eq!(core.sent.len(), 1, "{:?}", core.sent);
+    let text = &core.sent[0].1;
+    assert!(text.contains("w-tides is done"), "{text}");
+    assert!(!text.contains("w-forecast"), "{text}");
+}

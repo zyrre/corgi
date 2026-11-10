@@ -120,6 +120,11 @@ pub struct SupervisorWaker {
     /// panes whose stops wake no one and whose supervisor gets nothing, and
     /// the projects whose supervisor's handover is kept while it is away.
     paused: crate::pause::Holds,
+    /// On hc, the file `corgi pause` keeps its pause in
+    /// (`hc::pause::record_path`), and whether a pause was in force at the
+    /// last pass.
+    hc_pause: Option<PathBuf>,
+    hc_paused: bool,
     /// The pauses before reading a report again ([`REPORT_REREADS`]).
     report_rereads: &'static [Duration],
     /// Where the supervisors and their workers run, which the wakes' lines
@@ -150,6 +155,8 @@ impl Default for SupervisorWaker {
             recovery_held: HashSet::new(),
             recovery_store: None,
             paused: crate::pause::Holds::default(),
+            hc_pause: None,
+            hc_paused: false,
             report_rereads: &REPORT_REREADS,
             backend: crate::backend::Backend::Herdr,
         }

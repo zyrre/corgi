@@ -63,6 +63,8 @@ mod cards;
 mod cli;
 mod daemon;
 mod hc_cli;
+mod hc_pause;
+pub use hc_pause::{PAUSE_USAGE, RESUME_USAGE, pause_command, resume_command};
 mod navigate;
 mod status;
 pub use status::{

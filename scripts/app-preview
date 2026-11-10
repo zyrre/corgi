@@ -33,7 +33,8 @@
 # repositories with a supervisor, workers in worktrees and an agent started
 # by hand, in every state, and a folder outside any repository. Their tasks
 # and roles come from a canned `corgi status --json` (fake/corgi, which
-# answers a merge from fake/merge.json and a close from fake/close.json when
+# answers a pause from fake/pause.json, a resume from fake/resume.json,
+# a merge from fake/merge.json and a close from fake/close.json when
 # there is one, and passes every other command to target/release/corgi). Anything may be done
 # in it: `do tab.new`, `do space.new`, a click by a person.
 #
@@ -278,7 +279,7 @@ AGENT
   {
     printf '{"generated":"__NOW__","daemon":{"installed":true,"pid":4242,"running":true%s},' "${build:+,\"build\":$build}"
     [[ -z "$build" ]] || printf '"corgi":%s,"newer":null},' "${build%\}}"
-    printf '"hc":{"error":null,"running":true},"projects":['
+    printf '"hc":{"error":null,"running":true},"paused":{"any":false,"agents":[]},"projects":['
     status_project alpha "$a" 1 1 \
       "$(status_agent alpha-supervisor supervisor "done" Supervisor "$a_sup" "$a" '' '' claude 'Opus 5.5' 33)" \
       "$(status_agent w-export-columns worker working "Rename the export columns and keep the old names readable for one release" "$a_w1" "$trees/alpha/worktree-quiet-river-1a2b" "$trees/alpha/worktree-quiet-river-1a2b" '' claude 'Opus 5.5' 62)" \
@@ -315,6 +316,16 @@ if [ "\${1:-}" = close ]; then
   case " \$* " in *" --force "*) answer="$fake/forced.json" ;; esac
   if [ -e "\$answer" ]; then
     [ ! -e "$fake/close.delay" ] || sleep "\$(cat "$fake/close.delay")"
+    exec cat "\$answer"
+  fi
+fi
+# \`corgi pause\` and \`corgi resume\` answer what pause.json and
+# resume.json hold, after pause.delay seconds, and stop nothing; edit
+# status.json's "paused" (and agents' "state": "paused") for what follows.
+if [ "\${1:-}" = pause ] || [ "\${1:-}" = resume ]; then
+  answer="$fake/\$1.json"
+  if [ -e "\$answer" ]; then
+    [ ! -e "$fake/pause.delay" ] || sleep "\$(cat "$fake/pause.delay")"
     exec cat "\$answer"
   fi
 fi

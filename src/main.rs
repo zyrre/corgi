@@ -22,6 +22,8 @@ Commands:
   tag         Tag an agent ready to merge, or clear its tag
   merge       Merge an agent's worktree branch, as the dashboard's m does
   close       Close a worker on herdr-core and remove its worktree
+  pause       Pause the agents working on herdr-core, before the network goes
+  resume      Resume the agents corgi pause stopped
   status      Print every project's supervisor, agents and questions as JSON
   role        Print a part of the supervisor's role it reads on demand
   edit        Open the focused or selected agent's checkout in your editor
@@ -77,6 +79,10 @@ fn main() -> Result<()> {
         Some("merge") => corgi::app::merge_command(&args[2..]),
         Some("close") if help() => usage(corgi::app::CLOSE_USAGE),
         Some("close") => corgi::app::close_command(&args[2..]),
+        Some("pause") if help() => usage(corgi::app::PAUSE_USAGE),
+        Some("pause") => corgi::app::pause_command(&args[2..]),
+        Some("resume") if help() => usage(corgi::app::RESUME_USAGE),
+        Some("resume") => corgi::app::resume_command(&args[2..]),
         Some("tag") if help() => usage(corgi::app::TAG_USAGE),
         Some("tag") => corgi::app::tag_command(&args[2..]),
         Some("role") if help() => usage(corgi::app::ROLE_USAGE),

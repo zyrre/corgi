@@ -43,6 +43,7 @@ use crate::{
         BASELINE_LABEL, HANDOVER_LABEL, HcClient, HcError,
         agents::{agent_state, shell_in_front},
         launch::relaunch_supervisor,
+        pause::Holds as PauseHolds,
     },
     job::Job,
     model::{AgentState, DashboardAgent},
@@ -114,6 +115,7 @@ impl SupervisorWaker {
         let mut waker = Self::default();
         waker.socket = Some(socket.to_path_buf());
         waker.backend = Backend::Hc;
+        waker.hc_pause = crate::hc::pause::record_path(socket);
         waker
     }
 
@@ -124,6 +126,7 @@ impl SupervisorWaker {
         let mut waker = Self::in_dir(base);
         waker.socket = Some(base.join("hc.sock"));
         waker.backend = Backend::Hc;
+        waker.hc_pause = Some(base.join("pause.json"));
         waker
     }
 
@@ -165,7 +168,31 @@ impl SupervisorWaker {
             return said;
         }
         let core = RefCell::new(core);
+        // What `corgi pause` holds: the paused agents' stops wake no one,
+        // and while any agent is paused nothing is typed into any
+        // supervisor and no handover moves on (`hc::pause`).
+        let holds = self
+            .hc_pause
+            .as_deref()
+            .map(PauseHolds::read)
+            .unwrap_or_default();
+        self.paused = crate::pause::Holds {
+            panes: holds.panes(agents),
+            roots: holds.supervisor_roots(),
+        };
         said.extend(self.observe(agents, corgi_bin, |agent| core.borrow_mut().report(agent)));
+        // What this pass followed is recorded: an agent seen back after
+        // Resume is taken up from here, and its mark goes.
+        if let Some(path) = &self.hc_pause
+            && !holds.is_empty()
+        {
+            said.extend(
+                crate::hc::pause::settle(path, agents, now)
+                    .into_iter()
+                    .map(|name| format!("{name} is back after Resume")),
+            );
+        }
+        self.hc_paused = holds.in_force;
         // The replacements that ended since the last pass.
         let mut finished = Vec::new();
         self.replacements.retain_mut(|(root, replacement)| {
@@ -183,6 +210,19 @@ impl SupervisorWaker {
                 result
                     .unwrap_or_else(|error| format!("The supervisor's handover failed: {error:#}")),
             );
+        }
+        if holds.in_force {
+            said.push(
+                "Agents are paused: no supervisor is typed into and no handover moves on until \
+                 Resume"
+                    .to_string(),
+            );
+            if let Err(error) = self.save_handovers() {
+                said.push(format!(
+                    "Could not save the supervisors' handovers: {error:#}"
+                ));
+            }
+            return said;
         }
         // One look per supervisor and pass: a handover that waits for a
         // draft and the inbox ask the same.
@@ -298,6 +338,13 @@ impl SupervisorWaker {
                 .handovers
                 .values()
                 .any(supervisor::Handover::in_progress)
+    }
+
+    /// Whether a pause was in force at the last pass: nothing is typed
+    /// into a supervisor then, so an inbox that waits calls for no early
+    /// pass.
+    pub fn paused_hc(&self) -> bool {
+        self.hc_paused
     }
 
     /// Whether `root`'s supervisor has items no delivery took yet.

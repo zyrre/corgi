@@ -245,3 +245,54 @@ fn a_status_record_of_a_resting_agent_with_its_agent_in_front_is_typeable() {
     terminal.foreground.as_mut().unwrap().name = "zsh".into();
     assert!(!resting(&terminal), "its shell is in front");
 }
+
+#[test]
+fn a_paused_agents_terminal_is_not_resumed_after_a_core_restart() {
+    let scratch = ScratchDir::new("daemon-pause");
+    let path = scratch.join("pause.json");
+    let mut supervisor = kept(
+        "t3",
+        200,
+        "-zsh",
+        &[
+            (RESUME_LABEL, RESUME),
+            (PID_LABEL, "100"),
+            (crate::hc::PROJECT_LABEL, "/repos/weather"),
+            (ROLE_LABEL, crate::hc::SUPERVISOR_ROLE),
+        ],
+    );
+    let other = kept(
+        "t4",
+        201,
+        "zsh",
+        &[(RESUME_LABEL, RESUME), (PID_LABEL, "101")],
+    );
+    pause::update(&path, |record| {
+        record.agents.push(pause::PausedAgent {
+            address: "t3".into(),
+            name: "t3-name".into(),
+            project: "/repos/weather".into(),
+            supervisor: true,
+            harness: "claude".into(),
+            session: Some("s-1".into()),
+            resume: RESUME.into(),
+            cwd: "/repos/weather".into(),
+            labels: supervisor.labels.clone(),
+            phase: pause::Phase::Paused,
+            at: 1,
+        });
+    })
+    .unwrap();
+    let holds = pause::Holds::read(&path);
+    assert_eq!(needs_resume(&supervisor), Some(RESUME));
+    assert_eq!(resume_line(&supervisor, &holds), None);
+    // Another terminal is resumed as before.
+    assert_eq!(resume_line(&other, &holds), Some(RESUME));
+    // Once Resume let go of it, the daemon resumes it after a restart again.
+    pause::update(&path, |record| record.agents.clear()).unwrap();
+    supervisor.pid = Some(300);
+    assert_eq!(
+        resume_line(&supervisor, &pause::Holds::read(&path)),
+        Some(RESUME)
+    );
+}

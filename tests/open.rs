@@ -688,3 +688,107 @@ fn close_refuses_a_dirty_worktree_then_closes_the_worker_when_forced() {
         .unwrap();
     assert!(branch.status.success(), "the branch stays");
 }
+
+#[test]
+fn pause_stops_a_working_worker_and_resume_starts_it_again_on_its_session() {
+    let world = World::new("pause");
+    let root = world.repo("weather");
+    let resume = "/bin/sh -c x corgi-agent /w '' claude --resume s-radar";
+    let worker = json!({
+        "address": "t5", "name": "w-radar", "state": "live",
+        "status": {"state": "working", "app": "claude-code"},
+        "labels": {
+            "corgi.role": "worker", "corgi.project": root, "corgi.harness": "claude",
+            "corgi.session": "s-radar", "corgi.resume": resume, "herdr.space": "sp-radar",
+            "corgi.task": "Fix the radar", "corgi.pid": "4242",
+        },
+        "cwd": root, "keep": true, "turn": 3, "pid": 4242,
+        "foreground": {"name": "claude", "pid": 4242, "argv": [], "cwd": root},
+    });
+    let socket = PathBuf::from(format!("/tmp/corgi-pause-{}.sock", std::process::id()));
+    fs::remove_file(&socket).ok();
+    let corgi = |args: &[&str], core: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_corgi"));
+        command
+            .args(args)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", world.private.join("home"))
+            .env("XDG_STATE_HOME", world.private.join("state"))
+            .env("CORGI_HC_BIN", world.private.join("hc/hc"))
+            .env("HC_SOCKET", &socket)
+            .stdin(Stdio::null());
+        let output = command.output().expect("run corgi");
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "corgi {args:?} printed no JSON ({error}): {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        let _ = core;
+        (value, output.status.code())
+    };
+
+    // Without a running core, nothing is asked and nothing paused.
+    let (refused, code) = corgi(&["pause", "--json"], false);
+    assert_eq!(code, Some(1));
+    assert_eq!(refused["result"], "refused", "{refused}");
+    assert!(world.calls().is_empty());
+
+    let _core = UnixListener::bind(&socket).unwrap();
+    world.answer("ls.worker", r#"{"terminals":[{"address":"t5"}]}"#);
+    // Working when listed; at rest after Esc; finished after its exit.
+    world.answer("get.t5.1", &worker.to_string());
+    let mut idle = worker.clone();
+    idle["status"]["state"] = "idle".into();
+    world.answer("get.t5.2", &idle.to_string());
+    let mut finished = worker.clone();
+    finished["state"] = "finished".into();
+    finished["status"] = Value::Null;
+    finished["foreground"] = Value::Null;
+    world.answer("get.t5", &finished.to_string());
+
+    let (paused, code) = corgi(&["pause", "--json"], true);
+    assert_eq!(code, Some(0), "{paused}");
+    assert_eq!(paused["result"], "paused");
+    assert_eq!(paused["paused"], json!(["w-radar"]));
+    let calls = world.calls();
+    assert_eq!(called(&calls, "keys"), ["keys|t5|esc|--json"]);
+    assert_eq!(called(&calls, "send"), ["send|t5|--json|--|/exit"]);
+    assert!(called(&calls, "kill").is_empty());
+
+    // Its terminal finished, but the status keeps it, paused.
+    let (status, _) = corgi(&["status", "--json"], true);
+    assert_eq!(status["paused"]["any"], true, "{status}");
+    let agents = &status["projects"][0]["agents"];
+    assert_eq!(agents[0]["name"], "w-radar", "{status}");
+    assert_eq!(agents[0]["state"], "paused");
+    assert_eq!(agents[0]["terminal"], "t5");
+
+    // Resume: a new terminal of its name, on its session; the old one goes.
+    world.answer(
+        "run",
+        r#"{"address":"t6","agent":"sh","cwd":"/w","name":"w-radar","state":"live","turn":0}"#,
+    );
+    let mut back = idle.clone();
+    back["address"] = "t6".into();
+    back["pid"] = 5151.into();
+    world.answer("get.t6", &back.to_string());
+    let (resumed, code) = corgi(&["resume", "--json"], true);
+    fs::remove_file(&socket).ok();
+    assert_eq!(code, Some(0), "{resumed}");
+    assert_eq!(resumed["resumed"], json!(["w-radar"]));
+    let calls = world.calls();
+    let run = called(&calls, "run");
+    assert_eq!(run.len(), 1);
+    assert!(run[0].contains("--name|w-radar"), "{run:?}");
+    assert!(run[0].contains("--label|herdr.space=sp-radar"), "{run:?}");
+    assert!(
+        run[0].ends_with(&format!("--|/bin/sh|-c|exec {resume}")),
+        "{run:?}"
+    );
+    assert_eq!(called(&calls, "rm"), ["rm|t5|--json"]);
+    assert!(called(&calls, "label").contains(&&"label|t6|corgi.pid=5151|--json".to_string()));
+    let (status, _) = corgi(&["status", "--json"], false);
+    assert_eq!(status["paused"]["any"], false, "{status}");
+}

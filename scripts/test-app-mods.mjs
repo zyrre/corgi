@@ -1253,6 +1253,171 @@ function pictures(el) {
   assert.deepEqual(texts(mod.render()), ['Herdr', '+', 'Corgi']);
 }
 
+// --- Pause and resume: the header's "⏸ Agents" ----------------------------------------------
+
+// The window's status from a corgi that knows a pause: none in force, or
+// w-docs (its terminal still shown) and w-radar (its terminal ended with
+// its agent) paused.
+function pauseStatus(any) {
+  const status = structuredClone(STATUS);
+  status.paused = { any, agents: [] };
+  if (any) {
+    const project = status.projects[0];
+    Object.assign(project.agents[2], { state: 'paused', paused: true });
+    project.agents.push({ name: 'w-radar', role: 'worker', state: 'paused', paused: true, task: 'Fix the radar', terminal: 't20', worktree: `${TREES}/worktree-radar`, cwd: `${TREES}/worktree-radar` });
+    status.paused.agents = [{ name: 'w-docs', terminal: 't5' }, { name: 'w-radar', terminal: 't20' }];
+  }
+  return status;
+}
+const pauses = (w) => w.execs.filter((call) => call[1] === 'pause' || call[1] === 'resume').map((call) => call.slice(1));
+// The button as it reads: its icon (⏸ or ▶) and its text.
+const ICONS = { 'mods/projects/pause.svg': '⏸', 'mods/projects/play.svg': '▶' };
+const header = (root) => {
+  const button = byId(root, 'agents-pause');
+  if (!button) return null;
+  const icon = kept(button.children[0]);
+  return [`${ICONS[icon.args[0]]} ${texts(button).join('')}`];
+};
+// The state mark at the right of an agent's first line.
+const markOf = (root, id) => {
+  const first = kept(byId(root, id).children[0]);
+  const mark = kept(kept(first.children[1]).children[0]);
+  return mark.kind === 'svg' ? ICONS[mark.args[0]] ?? mark.args[0] : texts(mark).join('');
+};
+
+// No button from a corgi that knows no pause.
+{
+  const mod = await projects(window());
+  assert.equal(byId(mod.render(), 'agents-pause'), null);
+}
+
+// "⏸ Agents" pauses the working agents at once, shows its progress, and
+// flips to "▶ Agents".
+{
+  let finish;
+  const w = window({ status: pauseStatus(false), pause: () => new Promise((resolve) => { finish = resolve; }) });
+  const mod = await projects(w);
+  let root = mod.render();
+  assert.deepEqual(header(root), ['⏸ Agents']);
+  assert.equal(texts(root)[0], 'Projects');
+  const button = byId(root, 'agents-pause');
+  assert.match(button.calls.tooltip[0], /^Pause the agents that are working, before you go offline/);
+  // Left of the +.
+  let siblings = null;
+  walk(root, (node) => {
+    if ((node.children ?? []).some((child) => kept(child)?.id === 'project-open')) siblings = node.children.map((child) => kept(child).id);
+  });
+  assert.deepEqual(siblings, ['agents-pause', 'project-open']);
+
+  // w-cache works (the window says so): no question, the pause runs.
+  click(root, 'agents-pause', mod.cx);
+  assert.deepEqual(pauses(w), [['pause', '--json']]);
+  assert.deepEqual(texts(byId(mod.render(), 'agents-pause-panel')), ['Pausing 1 agent…']);
+  // A second click while it runs does nothing.
+  click(mod.render(), 'agents-pause', mod.cx);
+  assert.equal(pauses(w).length, 1);
+
+  w.programs[1] = corgi({ status: pauseStatus(true) });
+  finish({ result: 'paused', message: 'Paused 1 agent', paused: ['w-cache'], failed: [], left: [] });
+  await mod.settle();
+  root = mod.render();
+  assert.equal(byId(root, 'agents-pause-panel'), null, 'nothing more on success');
+  assert.deepEqual(header(root), ['▶ Agents']);
+  assert.deepEqual(w.toasts, []);
+}
+
+// With no agent working the click changes nothing: a toast says so.
+{
+  const w = window({ status: pauseStatus(false) });
+  w.agents = w.agents.map((a) => ({ ...a, status: a.status === 'working' ? 'done' : a.status }));
+  const status = pauseStatus(false);
+  for (const a of status.projects[0].agents) if (a.state === 'working') a.state = 'done';
+  w.programs[1] = corgi({ status });
+  const mod = await projects(w);
+  click(mod.render(), 'agents-pause', mod.cx);
+  await mod.settle();
+  assert.deepEqual(pauses(w), [], 'corgi pause is not even run');
+  assert.deepEqual(w.toasts, [{ title: 'No agents are working', body: 'Nothing was paused.', level: 'info', timeout: 3000 }]);
+  const root = mod.render();
+  assert.deepEqual(header(root), ['⏸ Agents']);
+  assert.equal(byId(root, 'agents-pause-panel'), null, 'no card');
+
+  // Corgi found none working after all (they finished meanwhile): the same.
+  const raced = window({ status: pauseStatus(false), pause: { result: 'nothing', message: 'No agent is working', paused: [], failed: [], left: [] } });
+  const other = await projects(raced);
+  click(other.render(), 'agents-pause', other.cx);
+  await other.settle();
+  assert.deepEqual(pauses(raced), [['pause', '--json']]);
+  assert.equal(raced.toasts.length, 1);
+  assert.equal(byId(other.render(), 'agents-pause-panel'), null);
+  assert.deepEqual(header(other.render()), ['⏸ Agents']);
+}
+
+// While agents are paused: "▶ Agents", a ⏸ in their rows (one whose
+// terminal ended stands under its project), and the click resumes them.
+{
+  const w = window({ status: pauseStatus(true), resume: { result: 'resumed', message: 'Resumed 2 agents', resumed: ['w-docs', 'w-radar'], failed: [], left: [] } });
+  const mod = await projects(w);
+  const root = mod.render();
+  assert.deepEqual(header(root), ['▶ Agents']);
+  assert.match(byId(root, 'agents-pause').calls.tooltip[0], /^Resume the 2 paused agents on their own conversation/);
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t20', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7']);
+  assert.deepEqual(texts(kept(byId(root, 'agent-t5').children[0])), ['Write the docs']);
+  assert.equal(markOf(root, 'agent-t5'), '⏸');
+  assert.deepEqual(texts(kept(byId(root, 'agent-t20').children[0])), ['Fix the radar']);
+  assert.equal(markOf(root, 'agent-t20'), '⏸');
+  assert.deepEqual(texts(kept(byId(root, 'agent-t20').children[1])), ['Paused'], 'its terminal ended: no program or model to show');
+  assert.equal(markOf(root, 'agent-t3'), 'mods/workspace-chrome/spinner.svg', 'a working row keeps its spinner');
+
+  click(root, 'agents-pause', mod.cx);
+  assert.deepEqual(texts(byId(mod.render(), 'agents-pause-panel')), ['Resuming 2 agents…']);
+  w.programs[1] = corgi({ status: pauseStatus(false) });
+  await mod.settle();
+  assert.deepEqual(pauses(w), [['resume', '--json']]);
+  assert.equal(byId(mod.render(), 'agents-pause-panel'), null);
+  assert.deepEqual(header(mod.render()), ['⏸ Agents']);
+}
+
+// An agent that did not stop, or did not come back, is listed in a card
+// with Dismiss.
+{
+  const partial = { result: 'partial', message: 'Paused 1 agent', paused: ['w-cache'], failed: [{ name: 'w-docs', why: 'did not exit; left running' }], left: [{ name: 'w-codex', why: 'has no resume line, so Corgi could not bring it back' }] };
+  const w = window({ status: pauseStatus(false), pause: partial });
+  const mod = await projects(w);
+  click(mod.render(), 'agents-pause', mod.cx);
+  w.programs[1] = corgi({ status: pauseStatus(true) });
+  await mod.settle();
+  const card = byId(mod.render(), 'agents-pause-panel');
+  assert.deepEqual(texts(card), ['Not paused:', 'w-docs: did not exit; left running', 'w-codex: has no resume line, so Corgi could not bring it back', 'Dismiss']);
+  assert.deepEqual(card.calls.border_color, ['#blocked']);
+  assert.deepEqual(header(mod.render()), ['▶ Agents'], 'the one that stopped is paused');
+  click(mod.render(), 'agents-pause-dismiss', mod.cx);
+  assert.equal(byId(mod.render(), 'agents-pause-panel'), null);
+
+  const back = { result: 'partial', message: 'Resumed 1 agent', resumed: ['w-docs'], failed: [{ name: 'w-radar', why: 'did not come back: its agent exited at once (terminal t21)' }], left: [] };
+  const r = window({ status: pauseStatus(true), resume: back });
+  const again = await projects(r);
+  click(again.render(), 'agents-pause', again.cx);
+  await again.settle();
+  assert.deepEqual(texts(byId(again.render(), 'agents-pause-panel')), ['Did not come back:', 'w-radar: did not come back: its agent exited at once (terminal t21)', 'Dismiss']);
+
+  // A refusal (hc not running) says why.
+  const refused = window({ status: pauseStatus(false), pause: { code: 1, stdout: JSON.stringify({ result: 'refused', message: 'herdr-core (hc) is not running; Corgi does not start it for a pause', paused: [], failed: [], left: [] }) } });
+  const third = await projects(refused);
+  click(third.render(), 'agents-pause', third.cx);
+  await third.settle();
+  assert.deepEqual(texts(byId(third.render(), 'agents-pause-panel')), ['Nothing was paused', 'herdr-core (hc) is not running; Corgi does not start it for a pause', 'Dismiss']);
+  assert.deepEqual(header(third.render()), ['⏸ Agents']);
+}
+
+// The rail has no room for it.
+{
+  const w = window({ status: pauseStatus(true) });
+  w.sidebar = 76;
+  const mod = await projects(w);
+  assert.equal(byId(mod.render(), 'agents-pause'), null);
+}
+
 // --- Corgi's layout: the installer changes it, never a mod ------------------------------
 
 // Neither mod runs `corgi app-layout` (it would clone and switch layouts),
