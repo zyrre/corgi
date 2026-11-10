@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Shell tests for scripts/app-preview against a fake Herdr app, a fake hc, a
+# fake AeroSpace and a fake corgi. No window is opened and no core started.
+#
+# Run directly: scripts/test-app-preview
+#
+# The script runs in a scratch checkout (its own copy, the real
+# herdr-app/install.sh and mods, a fake target/release/corgi), so its
+# target/app-preview and its /tmp link are the test's. HOME is a scratch
+# folder holding a window.json, as the person's app home does. Every fake
+# appends its calls to one log, which the tests read.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ "$(uname -s)" != Darwin ]]; then
+  echo "scripts/test-app-preview: skipped, scripts/app-preview is for macOS"
+  exit 0
+fi
+
+work="$(cd "$(mktemp -d /tmp/corgi-apt.XXXXXX)" && pwd -P)"
+checkout="$work/checkout"
+preview="$checkout/target/app-preview"
+log="$work/calls.log"
+failures=0
+tests_run=0
+
+cleanup() {
+  # The fake window, should a failed test have left it: by its own pid.
+  local pid
+  pid=$(cat "$preview/home/window.pid" 2>/dev/null) || pid=
+  [[ -z "$pid" ]] || kill "$pid" 2>/dev/null || true
+  rm -f "/tmp/corgi-ap-$(id -u)-$(printf '%s' "$checkout" | cksum | cut -d ' ' -f 1)"
+  rm -rf "$work"
+}
+trap cleanup EXIT
+
+check() {
+  tests_run=$((tests_run + 1))
+  local name=$1
+  shift
+  if "$@" >/dev/null 2>&1; then
+    echo "ok   $name"
+  else
+    failures=$((failures + 1))
+    echo "FAIL $name"
+  fi
+}
+logged() { grep -qF -- "$1" "$log"; }
+not_logged() { ! logged "$1"; }
+count() { grep -cF -- "$1" "$log" || true; }
+
+# --- fixtures ---------------------------------------------------------------
+
+mkdir -p "$checkout/scripts" "$checkout/herdr-app" "$checkout/target/release" "$work/bin" \
+  "$work/Herdr.app/Contents/MacOS" "$work/home/.config/herdr-app"
+cp "$script_dir/app-preview" "$script_dir/install.sh" "$checkout/scripts/"
+cp "$script_dir/../herdr-app/install.sh" "$checkout/herdr-app/"
+cp -R "$script_dir/../herdr-app/mods" "$checkout/herdr-app/mods"
+cp "$script_dir/../herdr-plugin.toml" "$checkout/"
+printf '{\n  "state": "windowed",\n  "display": "display-of-the-person"\n}\n' >"$work/home/.config/herdr-app/window.json"
+: >"$log"
+
+cat >"$work/Herdr.app/Contents/MacOS/Herdr" <<FAKE_APP
+#!/bin/sh
+# With no argument it is the window: it notes its environment and waits.
+case \${1:-} in
+  --version)
+    echo "herdr-app 9.9.9"
+    exit 0
+    ;;
+  '')
+    env | grep -E '^(HERDR_|HC_|XDG_STATE_HOME=)' | sort | sed 's/^/window /' >>"$log"
+    echo "\$\$" >"\$HERDR_APP_HOME/window.pid"
+    exec sleep 300
+    ;;
+  check)
+    echo "check passed"
+    exit 0
+    ;;
+esac
+pid=\$(cat "\${HERDR_APP_HOME:-/nonexistent}/window.pid" 2>/dev/null) || pid=
+if [ -z "\$pid" ] || ! kill -0 "\$pid" 2>/dev/null; then
+  echo "herdr-app: no Herdr window" >&2
+  exit 2
+fi
+case \$1 in
+  status) echo '{ "layout": "corgi" }' ;;
+  ls) echo '{ "spaces": [] }' ;;
+  shot)
+    echo PNG >"\$2"
+    echo "\$2"
+    ;;
+  do)
+    shift
+    echo "do \$*" >>"$log"
+    [ "\$1" != app.quit ] || kill "\$pid"
+    echo '{ "ok": true }'
+    ;;
+esac
+FAKE_APP
+
+cat >"$work/bin/hc" <<FAKE_HC
+#!/bin/sh
+# Keeps the addresses of the terminals it "runs" in a file.
+list="$work/terminals"
+touch "\$list"
+echo "hc[\${HC_SESSION:-}] \$*" >>"$log"
+case "\$1 \${2:-}" in
+  "server status") echo '{"pid":null}' ;;
+  "ls "*) echo "{\"terminals\":[\$(sed 's/.*/{"address":"&"}/' "\$list" | paste -sd , -)]}" ;;
+  "run "*)
+    n=\$((\$(cat "$work/made" 2>/dev/null || echo 0) + 1))
+    echo "\$n" >"$work/made"
+    echo "t\$n" >>"\$list"
+    echo "{\"address\":\"t\$n\",\"state\":\"live\"}"
+    ;;
+  "rm "*)
+    grep -vx "\$2" "\$list" >"\$list.new" || true
+    mv "\$list.new" "\$list"
+    ;;
+esac
+FAKE_HC
+
+cat >"$work/bin/aerospace" <<FAKE_AEROSPACE
+#!/bin/sh
+echo "aerospace \$*" >>"$log"
+case \$1 in
+  list-windows) [ -z "\${FAKE_LISTED:-}" ] || echo "77 \$(cat "$preview/pid")" ;;
+  list-workspaces) echo "\${FAKE_FOCUSED:-1}" ;;
+esac
+FAKE_AEROSPACE
+
+cat >"$checkout/target/release/corgi" <<FAKE_CORGI
+#!/bin/sh
+echo "corgi \$*" >>"$log"
+[ "\$1" != app-layout ] || echo "built the Corgi layout"
+FAKE_CORGI
+chmod 755 "$work/Herdr.app/Contents/MacOS/Herdr" "$work/bin/hc" "$work/bin/aerospace" "$checkout/target/release/corgi"
+
+# The script, with the fakes, a scratch HOME, and a worker's own variables,
+# which must not reach the window.
+preview() {
+  HOME="$work/home" APP_PREVIEW_APP="$work/Herdr.app" APP_PREVIEW_HC="$work/bin/hc" \
+    APP_PREVIEW_AEROSPACE="$work/bin/aerospace" HC_TERMINAL_ID=t9 HC_TERMINAL_SOCKET=/the/persons/core.sock \
+    "$checkout/scripts/app-preview" "$@"
+}
+link="/tmp/corgi-ap-$(id -u)-$(printf '%s' "$checkout" | cksum | cut -d ' ' -f 1)"
+
+# --- start ------------------------------------------------------------------
+
+check "start succeeds" preview start
+window=$(cat "$preview/pid" 2>/dev/null) || window=
+check "the window runs" kill -0 "$window"
+check "its home is the checkout's, through the short link" logged "window HERDR_APP_HOME=$link/home"
+check "the link leads to target/app-preview" test "$(readlink "$link")" = "$preview"
+check "it is on a core of its own" logged "window HC_SESSION=preview"
+check "with its state under target/app-preview" logged "window XDG_STATE_HOME=$link/state"
+check "it sends no telemetry" logged "window HERDR_TELEMETRY=0"
+check "the worker's terminal is not passed on" not_logged "window HC_TERMINAL"
+check "every hc call names the preview's core" not_logged "hc[] "
+check "eight made-up terminals are started" test "$(count "hc[preview] run ")" = 8
+check "each in a space" test "$(count "--label herdr.space=preview-")" = 8
+check "the app is a copy" test -x "$preview/Herdr.app/Contents/MacOS/Herdr"
+check "the Projects mod is the checkout's" cmp "$checkout/herdr-app/mods/projects/main.js" "$preview/home/mods/projects/main.js"
+check "the mods run the canned corgi" grep -qF "\"$preview/fake/corgi\"" "$preview/home/mods/projects/config.json" "$preview/home/mods/corgi/config.json"
+check "the layout is built with the checkout's corgi" logged "corgi app-layout --home $link/home"
+check "the window is switched to the corgi layout" logged "do layout.switch --name corgi"
+check "the canned status is JSON" python3 -m json.tool "$preview/fake/status.json"
+check "it names the terminals started" grep -q '"terminal":"t2"' "$preview/fake/status.json"
+status=$("$preview/fake/corgi" status --json)
+check "the canned corgi answers status, dated now" grep -q "\"generated\":\"$(date -u +%Y-%m-%d)T" <<<"$status"
+"$preview/fake/corgi" projects --json >/dev/null
+check "and passes the rest to the checkout's corgi" logged "corgi projects --json"
+if grep -q display-of-the-person "$preview/home/window.json" 2>/dev/null; then
+  check "the window is told the corner of the person's display" grep -Eq '"bounds":\[[0-9]+\.0,[0-9]+\.0,1280\.0,800\.0\]' "$preview/home/window.json"
+else
+  echo "skip the window's place: this machine reports no screen"
+fi
+check "a window AeroSpace does not list is not moved" not_logged "move-node-to-workspace"
+
+check "a second start succeeds" preview start
+check "and opens no second window" test "$(count "window HERDR_APP_HOME=")" = 1
+check "but installs the mods again" test "$(count "corgi app-layout")" = 2
+
+# --- shot, do, status ---------------------------------------------------------
+
+shot=$(preview shot list)
+check "shot prints the picture's path" test "$shot" = "$preview/list.png"
+check "and writes it" test -s "$preview/list.png"
+check "do passes a command on" preview "do" projects.open
+check "with its arguments" preview "do" layout.resize --id sidebar --px 200
+check "as given" logged "do layout.resize --id sidebar --px 200"
+for refused in app.quit window.close window.minimize app.update app.update_core app.check_updates app.hide_others; do
+  check "do refuses $refused" bash -c "! \"\$0\" do $refused" "$checkout/scripts/app-preview"
+  check "and does not run $refused" not_logged "do $refused"
+done
+check "status asks the window" grep -q corgi <<<"$(preview status)"
+
+# --- stop -------------------------------------------------------------------
+
+check "stop succeeds" preview stop
+check "it quits the window" logged "do app.quit"
+check "the window is gone" bash -c "! kill -0 $window"
+for n in 1 2 3 4 5 6 7 8; do
+  check "terminal t$n is ended by its address" logged "hc[preview] kill t$n"
+  check "and removed" logged "hc[preview] rm t$n"
+done
+check "the core is stopped" logged "hc[preview] server stop"
+check "the link is gone" bash -c "! test -e '$link' && ! test -L '$link'"
+check "the made-up projects are gone" bash -c "! test -e '$preview/fake' && ! test -e '$preview/state' && ! test -e '$link.files'"
+check "the home and the pictures stay" test -d "$preview/home" -a -s "$preview/list.png"
+check "a second stop is harmless" preview stop
+check "shot without a window fails" bash -c "! \"\$0\" shot x" "$checkout/scripts/app-preview"
+
+# --- a window AeroSpace lists -------------------------------------------------
+
+: >"$log"
+check "start with a listed window succeeds" env FAKE_LISTED=1 FAKE_FOCUSED=2 "$BASH" -c "$(declare -f preview); work='$work' checkout='$checkout' preview start"
+check "it is floated" logged "aerospace layout --window-id 77 floating"
+check "and moved to workspace 4" logged "aerospace move-node-to-workspace --window-id 77 4"
+check "without following it" not_logged "focus-follows-window"
+preview stop >/dev/null 2>&1
+: >"$log"
+check "start while the person looks at workspace 4 succeeds" env FAKE_LISTED=1 FAKE_FOCUSED=4 "$BASH" -c "$(declare -f preview); work='$work' checkout='$checkout' preview start"
+check "it is moved to the preview workspace instead" logged "aerospace move-node-to-workspace --window-id 77 preview"
+preview stop >/dev/null 2>&1
+
+echo
+echo "$tests_run tests run, $failures failed"
+[[ "$failures" -eq 0 ]]
