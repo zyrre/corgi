@@ -391,14 +391,21 @@ The Projects list:
   never fetches by itself. A click on it runs `git pull --ff-only` in that
   row's checkout (the space's folder: a project's primary checkout, or a
   worktree's own for a worktree's row), with no question first, and
-  nothing else: no merge, rebase, stash or reset. One pull at a time,
+  nothing else: no merge, rebase, stash or reset. It never asks for a
+  login, which it has no terminal to ask in: it runs from `sh -c` with
+  `GIT_TERMINAL_PROMPT=0` and `GIT_SSH_COMMAND` set to the person's own
+  (`GIT_SSH_COMMAND`, else `core.sshCommand`, else `ssh`) plus `-o
+  BatchMode=yes` (`exec` takes no environment), so a pull that needs one
+  fails at once. One pull at a time,
   since worktrees of a repository share its remote branches; a click while
   one runs does nothing. Then the checkout's git is read again. Pulled: the
   `↓N` goes and nothing more is shown. Failed: the card says why, from
   git's own words: `Can't fast-forward: main and origin/main have
   diverged`, `Local changes would be overwritten: <files>`, `Untracked
   files would be overwritten: <files>`, `Couldn't reach origin: <git's
-  line>`, else git's first `fatal:`/`error:` line. It stays until
+  line>`, `Needs a login: run git pull in a terminal once` (prompts
+  disabled, `Permission denied (publickey)`, an unknown host key), else
+  git's first `fatal:`/`error:` line. It stays until
   `Dismiss`, or until the checkout is no longer behind. `↑N` is only shown:
   nothing pushes. A worktree's space with agents in it has no row, so no
   `↓N`.

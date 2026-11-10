@@ -574,8 +574,10 @@ async function projects(w) {
 
 // A window whose primary checkout is 3 behind origin/main and whose
 // worktree with no agent (quiet-lake) 2 behind origin/spike; `pull(cwd)`
-// answers each `git pull`, and is called only for one. `pulls` keeps each
-// pull's folder and arguments.
+// answers each pull, and is called only for one. `pulls` keeps each pull's
+// folder and what ran. A pull is a shell that runs `git pull --ff-only`
+// alone, with no prompt for a login.
+const PULL_SH = /^ssh="\$\{GIT_SSH_COMMAND:-\$\(git config --get core\.sshCommand\)\}"; export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="\$\{ssh:-ssh\} -o BatchMode=yes"; exec git pull --ff-only$/;
 function behindWindow(pull) {
   const w = window();
   const behind = { [REPO]: 3, [`${TREES}/worktree-quiet-lake-0a1b`]: 2 };
@@ -583,11 +585,13 @@ function behindWindow(pull) {
   w.pulls = [];
   w.programs = [
     (command, args, options) => {
-      if (command !== 'git') return undefined;
-      if (args[0] === 'pull') {
-        w.pulls.push({ cwd: options.cwd, args });
+      if (command === 'sh') {
+        assert.equal(args[0], '-c');
+        assert.match(args[1], PULL_SH);
+        w.pulls.push({ cwd: options.cwd, args: ['pull', '--ff-only'] });
         return pull(options.cwd);
       }
+      if (command !== 'git') return undefined;
       if (args.includes('status') && behind[options.cwd] !== undefined) {
         return { stdout: `# branch.head ${options.cwd === REPO ? 'main' : 'spike'}\n# branch.upstream ${upstream[options.cwd]}\n# branch.ab +1 -${behind[options.cwd]}\n` };
       }
@@ -648,8 +652,8 @@ function pressPull(root, key, cx) {
   root = mod.render();
   assert.deepEqual(ids(root, 'pull-'), [`pull-${REPO_KEY}`]);
   assert.deepEqual(ids(root, 'pull-card-'), []);
-  // Only git was asked: no merge, stash or reset, and nothing of the app.
-  assert.deepEqual(w.execs.filter(([command, ...args]) => command === 'git' && !args.includes('status') && !args.includes('rev-parse')), [['git', 'pull', '--ff-only']]);
+  // Only the pull was run: no merge, stash or reset, and nothing of the app.
+  assert.deepEqual(w.execs.filter(([command, ...args]) => !(command === 'git' && (args.includes('status') || args.includes('rev-parse'))) && command !== CORGI).map(([command, flag]) => [command, flag]), [['sh', '-c']]);
   // The next pull may run.
   pressPull(root, REPO_KEY, mod.cx);
   assert.deepEqual(w.pulls.at(-1), { cwd: REPO, args: ['pull', '--ff-only'] });
@@ -675,6 +679,10 @@ function pressPull(root, key, cx) {
       'Couldn\'t reach origin: Could not resolve hostname gitlab.example.com: nodename nor servname provided',
     ],
     [Promise.reject(new Error('timed out after 120000 ms')), 'git pull did not finish: timed out after 120000 ms'],
+    // A login it may not ask for: at once, not after the timeout.
+    [{ code: 128, stderr: 'fatal: could not read Username for \'https://gitlab.example.com\': terminal prompts disabled\n' }, 'Needs a login: run git pull in a terminal once'],
+    [{ code: 128, stderr: 'git@gitlab.example.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n' }, 'Needs a login: run git pull in a terminal once'],
+    [{ code: 128, stderr: 'Host key verification failed.\nfatal: Could not read from remote repository.\n' }, 'Needs a login: run git pull in a terminal once'],
   ];
   for (const [answer, said] of failures) {
     const w = behindWindow(() => answer);

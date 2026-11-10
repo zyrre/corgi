@@ -91,6 +91,13 @@ const DAEMON_COMMAND = "corgi daemon install";
 
 // A pull fetches first: a slow remote, a big fetch.
 const PULL_TIMEOUT_MS = 120000;
+// The pull, never asking for a password or a passphrase: there is no
+// terminal to ask in, so it would wait out PULL_TIMEOUT_MS. The ssh command
+// the person uses (GIT_SSH_COMMAND, else core.sshCommand) is kept, in batch
+// mode. `exec` takes no environment, hence the shell; it runs git alone.
+const PULL_SCRIPT = 'ssh="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand)}"; '
+  + 'export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${ssh:-ssh} -o BatchMode=yes"; '
+  + "exec git pull --ff-only";
 
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
@@ -127,7 +134,11 @@ function pullProblem(r, g) {
   if (local !== -1) return `Local changes would be overwritten: ${files(local)}`;
   const untracked = lines.findIndex((l) => /untracked working tree files would be (overwritten|removed)/i.test(l));
   if (untracked !== -1) return `Untracked files would be overwritten: ${files(untracked)}`;
-  const away = lines.find((l) => /could not read from remote repository|unable to access|could not resolve|connection (refused|timed out|closed)|operation timed out|permission denied \(/i.test(l));
+  // A pull that would have asked for a login, refused in batch mode.
+  if (lines.some((l) => /terminal prompts disabled|could not read (username|password)|authentication failed|permission denied \(|host key verification failed/i.test(l))) {
+    return "Needs a login: run git pull in a terminal once";
+  }
+  const away = lines.find((l) => /could not read from remote repository|unable to access|could not resolve|connection (refused|timed out|closed)|operation timed out/i.test(l));
   if (away) return `Couldn't reach ${remote}: ${oneLine(said(away))}`;
   if (lines.some((l) => /not possible to fast-forward|diverging branches|have diverged/i.test(l))) {
     return `Can't fast-forward: ${branch} and ${upstream} have diverged`;
@@ -1340,8 +1351,8 @@ export default class Projects extends View {
     return Object.values(this.pulls).some((p) => p.phase === "running");
   }
 
-  // `git pull --ff-only` in the checkout `key` names, and nothing else: no
-  // merge, rebase, stash or reset. Done, its git is read again and the ↓N
+  // `git pull --ff-only` in the checkout `key` names (PULL_SCRIPT), and
+  // nothing else: no merge, rebase, stash or reset. Done, its git is read again and the ↓N
   // goes with nothing more; failed, a card says why.
   pull(key, cx) {
     const g = this.git[key];
@@ -1352,7 +1363,7 @@ export default class Projects extends View {
     cx.spawn(async (cx) => {
       let r;
       try {
-        r = await exec("git", ["pull", "--ff-only"], { cwd, on, timeout: PULL_TIMEOUT_MS });
+        r = await exec("sh", ["-c", PULL_SCRIPT], { cwd, on, timeout: PULL_TIMEOUT_MS });
       } catch (e) {
         r = { code: -1, stdout: "", stderr: `git pull did not finish: ${e?.message ?? e}` };
       }
