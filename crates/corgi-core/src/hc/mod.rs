@@ -17,6 +17,7 @@ pub mod daemon;
 pub mod events;
 pub mod launch;
 mod observe;
+pub mod pause;
 
 use std::{
     collections::BTreeMap,

@@ -23,7 +23,11 @@ branch, as `x` does there. A red `↓3` after a space's name says its
 checkout is 3 commits behind its upstream: click it to pull them. At the
 top, above the list's header, a card counts your agents by state (HERD) and shows how much of
 each Claude and Codex plan's 5-hour and weekly windows is used, as the
-dashboard's header does. The
+dashboard's header does. `⏸ Agents`, left of the `+`, is for leaving the
+Wi-Fi or VPN: it stops the agents that are working at that moment, each
+ending its turn and exiting with its conversation saved, and while any is
+paused Corgi types nothing into a supervisor and hands none over; it then
+reads `▶ Agents`, which brings exactly those back. The
 last line says which Corgi runs (`Corgi 0.2.3 · 5b50895`) and whether a
 newer one has been merged since.
 
@@ -150,7 +154,8 @@ The Projects mod fills its block on `chrome`, text 13 px:
     for MERGE) and its count, semibold in the state's color; a state with
     none left out, `no agents` in `dim` when none has any. Counted over the
     list's agents as the dashboard's HERD box counts: a worker tagged ready
-    to merge counts as MERGE alone, an agent in no state as idle. Each
+    to merge counts as MERGE alone, an agent in no state as idle, and one
+    paused by `⏸ Agents` as paused (its pause icon, in `muted`). Each
     count's tooltip says it (`1 blocked`).
   - A line per harness with a plan (`corgi usage --json`): `5h` and `7d`,
     each in `dim`, a 34 px bar 4 px high on `border` filled to the use, the
@@ -159,8 +164,23 @@ The Projects mod fills its block on `chrome`, text 13 px:
     14h`), left out whole in a sidebar under 330 px (Herdr's own 268), where
     the tooltip says them instead. The line's tooltip: the plan and how old
     the reading is (`Max · read 2m ago`), and why the last reading failed. With no reading, `loading…`, or `unavailable` once one failed.
-- **Header** (31 px): `Projects` in `dim` 11.5 px and a 26 px `+` button
-  (tooltip `Open project`), lit while its field is open.
+- **Header** (31 px): `Projects` in `dim` 11.5 px and, 4 px apart on the
+  right, the pause button and a 26 px `+` button (tooltip `Open project`),
+  lit while its field is open. The pause button is drawn as the `+`: 26 px
+  high, radius 6, no fill and the header's `dim`, `hover` behind it and
+  `foreground` on hover; a 14 px icon (the mod's `pause.svg`, two bars,
+  stroked as the `+` is) and `Agents` in the header's 11.5 px. While agents
+  are paused only its icon changes, to a play triangle (`play.svg`); at
+  half opacity while a pause or resume runs. Its tooltip says what it does.
+  Not drawn on the rail, nor from a `corgi` whose status has no `paused`.
+- **Pause progress and result** (under the header, 8 px in from each side,
+  a card on `surface`, radius 7, padding 7, 11.5 px): a spinner and
+  `Pausing 3 agents…` (or `Resuming 2 agents…`) with a `border` outline
+  while it runs; nothing once it went through. When agents were left
+  behind, a `blocked` outline, `Not paused:` (or `Did not come back:`) in
+  `blocked` semibold, one wrapping line per agent, `<name>: <why>`, and
+  `Dismiss` (`raised`). A refusal (`hc` not running) shows `Nothing was
+  paused` and Corgi's message.
 - **Open project** (only while open, under the header): a card (`surface`,
   a `border` outline, radius 9) holding a text field (30 px, an `accent`
   outline, placeholder `Project name or path…`); up to eight suggestions,
@@ -190,7 +210,9 @@ The Projects mod fills its block on `chrome`, text 13 px:
     in 12.5 px (medium weight for `Supervisor`), cut with `…` before it
     reaches the state, which keeps its place at the row's right edge: a
     spinning ring in `working`, a `!` tile in `blocked`, a dot in `done`, a
-    ring in `idle`. The second (16 px), in `dim` 11 px, 5 px apart from
+    ring in `idle`, a 10 px pause icon in `muted` for an agent paused by
+    `⏸ Agents`. A paused worker whose terminal ended with its agent has no
+    program or model to show: its second line reads `Paused`. The second (16 px), in `dim` 11 px, 5 px apart from
     the left: the harness's icon (12 px; Claude's now, Codex's or
     OpenCode's when it is one), the model (`Opus 5.5`, cut with `…` if the
     line runs out), a `·`, and the context fill (`33%`), from `model` and
@@ -355,6 +377,31 @@ The Projects list:
 - `New space` in the field makes a plain space (`space.new`), as `cmd-n`,
   the tab bar's `+` menu and the space menu still do; a machine's header
   keeps its own `+`.
+- `⏸ Agents` is for leaving the network (a Wi-Fi or a VPN): an agent in the
+  middle of a turn without one fails. A click pauses at once, with no
+  question, the agents of Corgi's that are working now (by the app's live
+  status, else Corgi's): it runs `corgi pause --json`, which presses Esc in
+  each (ending its turn), then types its harness's exit (`/exit`), so its
+  conversation is saved; a supervisor's kept shell stays, a worker's
+  terminal ends. Idle, done and blocked agents are left as they are. With
+  none working nothing changes: no `corgi pause` runs, the button stays,
+  and the app's toast says `No agents are working` and goes by itself.
+  Nothing is killed: an agent that keeps working, has text in its input
+  box, or does not exit is left running and listed in the card, as is one
+  Corgi could not resume (no resume line: Codex and OpenCode on hc).
+- While any agent is paused, Corgi's daemon types nothing into any
+  supervisor (the paused ones and the others alike) and moves no handover
+  on, so nothing starts a turn while you are offline; a worker's stop still
+  adds its wake to the inbox, and those wakes go out after Resume. A
+  paused agent's own stop wakes no one, and the daemon does not resume it
+  after a core restart. The pause is kept in Corgi's state
+  (`pause/<socket>.json`), so it outlasts a restart of the app, the core or
+  the daemon.
+- `▶ Agents` runs `corgi resume --json`: each paused agent comes back on its
+  own conversation, a supervisor in its shell, a worker in a new terminal
+  with its name, labels and space (its ended one removed). One that does
+  not come back is listed in the card, and holds nothing back any more.
+  The status is read again after either.
 - `MERGE` is on a worker whose `tag` in `corgi status --json` is `merge`:
   Corgi's supervisor tags a worker whose branch is ready to merge straight
   into the base branch. A project that merges through merge or pull

@@ -32,7 +32,7 @@ use crate::{
     },
     git::git_current_branch,
     model::{DashboardAgent, PromptCacheKind},
-    paths::expand_home,
+    paths::{expand_home, is_home},
     time::{rfc3339_utc, unix_now},
 };
 
@@ -65,8 +65,12 @@ false. \"daemon\" says whether corgi daemon runs for the core (\"running\",
 \"pid\"), the build it runs (\"build\": version, commit, dirty) and whether
 its service is installed (\"installed\"). \"corgi\" is this binary's build, as
 corgi --version --json prints it, and \"newer\": the branch and the number of
-commits the checkout it was built in has that the build lacks, or null. It
-changes nothing.";
+commits the checkout it was built in has that the build lacks, or null.
+\"paused\" says whether corgi pause holds any agent (\"any\") and which
+(\"agents\": name, project, role, harness, terminal); each paused agent is
+also in its project's agents with state \"paused\" and \"paused\": true,
+a worker whose terminal finished with its agent included. It changes
+nothing.";
 
 pub const CLOSE_USAGE: &str = "\
 Usage: corgi close NAME --project DIR [--force] [--keep-worktree] [--json]
@@ -232,6 +236,24 @@ pub fn status_command(args: &[String]) -> Result<()> {
     value["daemon"] = super::daemon::status_value();
     // Which Corgi answers, and whether its checkout has moved on since.
     value["corgi"] = crate::version::Build::this().status_value();
+    // Which agents `corgi pause` stopped, for the Projects list's button,
+    // each in its project, also one with no other agent left running.
+    let paused = super::hc_pause::paused_status();
+    if let Some(projects) = value["projects"].as_array_mut() {
+        for agent in paused.agents.iter().filter(|agent| agent.is_paused()) {
+            let root = agent.project.as_str();
+            let listed = projects.iter().any(|project| project["dir"] == root);
+            if !listed && only.as_deref().is_none_or(|only| only == root) && !is_home(root) {
+                projects.push(project_value(
+                    &seen.agents,
+                    &Inboxes::default(),
+                    root,
+                    unix_now(),
+                ));
+            }
+        }
+    }
+    super::hc_pause::add_to_status(&mut value, &paused);
     println!("{}", serde_json::to_string(&value)?);
     Ok(())
 }

@@ -11,9 +11,13 @@
 //! the core was down is news at its next pass. A pass:
 //!
 //! 1. gives each kept terminal whose program the core replaced with a shell
-//!    (a core stop, a reboot) its resume line, once ([`needs_resume`]);
+//!    (a core stop, a reboot) its resume line, once ([`needs_resume`]),
+//!    unless its agent is paused ([`resume_line`]);
 //! 2. adds the wakes, moves the handovers on, and types each supervisor's
 //!    inbox in when it may be typed into ([`SupervisorWaker::tick_hc`]).
+//!    While `corgi pause` holds any agent ([`pause`]), the paused agents'
+//!    stops wake no one, and no supervisor is typed into and no handover
+//!    moves on until `corgi resume`: the wakes wait in the inboxes.
 //!
 //! It never names or makes a space of the Herdr app: the app calls a space
 //! nobody named after where its first terminal is. An earlier daemon made
@@ -48,6 +52,7 @@ use super::{
     HcClient, PID_LABEL, RESUME_LABEL, Terminal,
     agents::{corgi_terminals, dashboard_agents, shell_in_front},
     events::{EventStream, Message, concerns_corgi},
+    pause,
 };
 use crate::{
     app_space,
@@ -390,7 +395,10 @@ impl Daemon {
             }
         };
         self.known = terminals.iter().map(|t| t.address.clone()).collect();
-        let mut said = self.resume(&terminals);
+        let holds = pause::record_path(&self.options.socket)
+            .map(|path| pause::Holds::read(&path))
+            .unwrap_or_default();
+        let mut said = self.resume(&terminals, &holds);
         let agents = dashboard_agents(&terminals, None);
         said.extend(self.waker.tick_hc(
             &mut self.core,
@@ -400,20 +408,23 @@ impl Daemon {
         ));
         said.append(&mut self.core.notes);
         self.busy = self.waker.handing_over_any()
-            || agents.iter().any(|agent| {
-                agent.supervisor
-                    && matches!(agent.info.state, AgentState::Done | AgentState::Idle)
-                    && self.waker.undelivered_for(&agent.project_root) > 0
-            });
+            || !self.waker.paused_hc()
+                && agents.iter().any(|agent| {
+                    agent.supervisor
+                        && matches!(agent.info.state, AgentState::Done | AgentState::Idle)
+                        && self.waker.undelivered_for(&agent.project_root) > 0
+                });
         self.say(said);
     }
 
     /// Types the resume line into each kept terminal of `terminals` whose
-    /// program the core replaced with a shell, once per program.
-    fn resume(&mut self, terminals: &[Terminal]) -> Vec<String> {
+    /// program the core replaced with a shell, once per program, unless
+    /// `holds` says its agent is paused: only `corgi resume` brings that one
+    /// back.
+    fn resume(&mut self, terminals: &[Terminal], holds: &pause::Holds) -> Vec<String> {
         let mut said = Vec::new();
         for terminal in terminals {
-            let Some(line) = needs_resume(terminal) else {
+            let Some(line) = resume_line(terminal, holds) else {
                 continue;
             };
             let Some(pid) = terminal.pid else {
@@ -464,6 +475,14 @@ impl Daemon {
         }
         self.last_said = said;
     }
+}
+
+/// [`needs_resume`], unless `holds` says the agent of `terminal` is paused.
+pub fn resume_line<'a>(terminal: &'a Terminal, holds: &pause::Holds) -> Option<&'a str> {
+    if holds.holds_terminal(terminal) {
+        return None;
+    }
+    needs_resume(terminal)
 }
 
 /// The resume line to type into `terminal`, if the core replaced the

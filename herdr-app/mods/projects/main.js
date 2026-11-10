@@ -29,13 +29,21 @@
 // answers (`Corgi 0.2.3 · 5b50895`), whether the checkout it was built in
 // has moved on since, and whether the daemon is down or runs another build.
 //
+// Left of the +, "⏸ Agents" pauses the agents of Corgi's that are working,
+// before the network goes (`corgi pause`): each ends its turn and exits,
+// its conversation saved, and while any is paused Corgi's daemon types
+// nothing into a supervisor. The button then reads "▶ Agents" and brings
+// back exactly those (`corgi resume`). Paused agents' rows show a ⏸. With
+// none working a click changes nothing and says so in a toast; agents that
+// did not stop, or did not come back, are listed in a card under the header.
+//
 // It began as a copy of Herdr's `spaces` mod and is Corgi's own since.
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import {
   spaces, machines, panes, agents, focused, run, openOverlay, exec, hc, theme, shared, setShared, setAgentOrder,
-  watchFolder, window, layout, home, appHome, readTextFile, nextCommand,
+  watchFolder, window, layout, home, appHome, readTextFile, nextCommand, notify,
 } from "herdr";
 
 function find(node, id) {
@@ -91,6 +99,14 @@ const INSTALL_COMMAND = "CORGI_BUILD=source herdr-app/install.sh";
 // What starts the daemon, or restarts it, with the corgi that answers.
 const DAEMON_COMMAND = "corgi daemon install";
 
+// A pause interrupts each working agent and waits for it to exit; a resume
+// waits for each to come back: some seconds an agent, a few minutes at most.
+const PAUSE_TIMEOUT_MS = 300000;
+// The button's icons and a paused row's mark: ⏸ and ▶, the mod's own.
+const PAUSE_ICON = "mods/projects/pause.svg";
+const PLAY_ICON = "mods/projects/play.svg";
+// How long the toast of a pause that found no agent working stays.
+const NOTE_MS = 3000;
 // A pull fetches first: a slow remote, a big fetch.
 const PULL_TIMEOUT_MS = 120000;
 // The pull, never asking for a password or a passphrase: there is no
@@ -158,6 +174,8 @@ function icon(p, size, color) {
 // An agent's state, as Herdr's own agents list draws it: a spinner while it
 // works, a ! when it needs you, a dot when it finished unseen, a ring at rest.
 function stateMark(t, status) {
+  // Paused by "⏸ Agents": its conversation waits for "▶ Agents".
+  if (status === "paused") return svg(PAUSE_ICON).size(10).mx(2).flex_none().text_color(t.muted);
   if (status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
   if (status === "blocked") return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
   if (status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
@@ -279,6 +297,12 @@ export default class Projects extends View {
     // through), shown under the project once the worker's row is gone. A
     // close that went through puts the card away.
     this.merge = null;
+    // What `corgi status` says of a pause: { any, agents }, null from a corgi
+    // that knows none (no button then).
+    this.paused = null;
+    // A pause or resume under way, { verb, phase: "running", count }, or
+    // one that left agents behind, { verb, phase: "failed", failed, message }.
+    this.pausing = null;
     // The offer's Close, which holds the keyboard so that Enter takes it.
     this.closeFocus = cx.focus_handle();
     this.loading = false;
@@ -371,6 +395,7 @@ export default class Projects extends View {
       this.corgiProjects = new Map((status?.projects ?? []).map((p) => [p.dir, p]));
       this.build = status?.corgi ?? null;
       this.daemon = status?.daemon ?? null;
+      this.paused = status ? (status.paused ?? null) : this.paused;
       // A question about a worker that is gone, or no longer tagged, and a
       // result with no row left to stand under, are put away; not a close,
       // whose worker is meant to go.
@@ -426,10 +451,10 @@ export default class Projects extends View {
 
   // What `corgi COMMAND ARGS` (merge, close) answered: its JSON, or a
   // refusal saying why there is none.
-  async corgiJson(command, args, what) {
+  async corgiJson(command, args, what, timeout = MERGE_TIMEOUT_MS) {
     if (!this.corgi) return { result: "refused", message: NO_CORGI };
     try {
-      const r = await exec(this.corgi, [command, ...args], { timeout: MERGE_TIMEOUT_MS });
+      const r = await exec(this.corgi, [command, ...args], { timeout });
       try {
         return JSON.parse(r.stdout);
       } catch (_) {
@@ -678,16 +703,128 @@ export default class Projects extends View {
       );
   }
 
+  // --- Pause and resume ----------------------------------------------------------
+
+  // How many of Corgi's agents work now: as the window sees them, else as
+  // Corgi's status last said.
+  workingCount() {
+    const live = new Map(agents().map((a) => [a.address, a.status]));
+    let n = 0;
+    for (const [address, c] of this.corgiAgents) if ((live.get(address) ?? c.state) === "working" && !c.paused) n++;
+    return n;
+  }
+
+  // The button: resumes while any agent is paused, else pauses the working
+  // ones at once. With none working nothing changes: a toast says so.
+  pauseAgents(cx) {
+    if (this.pausing?.phase === "running") return;
+    if (this.paused?.any) {
+      this.runPause(cx, "resume", this.paused.agents?.length ?? 0);
+      return;
+    }
+    const working = this.workingCount();
+    if (!working) {
+      this.nothingWorking();
+      return;
+    }
+    this.runPause(cx, "pause", working);
+  }
+
+  nothingWorking() {
+    notify({ title: "No agents are working", body: "Nothing was paused.", level: "info", timeout: NOTE_MS });
+  }
+
+  // Runs `corgi pause` or `corgi resume`, with `count` agents in its
+  // progress line; a card lists any agent it left behind.
+  runPause(cx, verb, count) {
+    this.pausing = { verb, phase: "running", count };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const r = await this.corgiJson(verb, ["--json"], verb === "pause" ? "The pause" : "The resume", PAUSE_TIMEOUT_MS);
+      const failed = [...(r.failed ?? []), ...(r.left ?? [])];
+      if (verb === "pause" && r.result === "nothing" && !failed.length) {
+        this.pausing = null;
+        this.nothingWorking();
+      } else if (failed.length || r.result === "refused") {
+        this.pausing = { verb, phase: "failed", failed, message: oneLine(r.message) };
+      } else this.pausing = null;
+      // The button follows at once; the status read after confirms it. A
+      // resume lets go of every mark, also of an agent that did not come back.
+      const stopped = r.paused ?? [];
+      if (verb === "pause" && stopped.length) this.paused = { any: true, agents: stopped.map((name) => ({ name })) };
+      if (verb === "resume" && r.result !== "refused") this.paused = { any: false, agents: [] };
+      cx.notify();
+      this.refreshCorgi(cx);
+    });
+  }
+
+  // The header's button: "⏸ Agents", or "▶ Agents" while agents are paused.
+  pauseButton(t) {
+    const any = Boolean(this.paused?.any);
+    const busy = this.pausing?.phase === "running";
+    const n = this.paused?.agents?.length ?? 0;
+    const tip = any
+      ? `Resume the ${n === 1 ? "paused agent" : `${n} paused agents`} on ${n === 1 ? "its" : "their"} own conversation`
+      : "Pause the agents that are working, before you go offline. Each ends its turn and exits, its conversation saved; nothing is typed into a supervisor until you resume.";
+    // Drawn as the + beside it: its height, radius, hover and colours, the
+    // header's text; paused is told apart by the icon alone (▶, not ⏸).
+    return div()
+      .id("agents-pause")
+      .h(26)
+      .px(6)
+      .gap(4)
+      .flex()
+      .flex_none()
+      .items_center()
+      .rounded(6)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .when(busy, (el) => el.opacity(0.5))
+      .tooltip(tip)
+      .on_click((_e, cx) => this.pauseAgents(cx))
+      .child(svg(any ? PLAY_ICON : PAUSE_ICON).size(14).flex_none())
+      .child("Agents");
+  }
+
+  // Under the header: the pause running, or the agents it left behind.
+  pausePanel(t) {
+    const p = this.pausing;
+    if (!p) return null;
+    const box = v_flex().id("agents-pause-panel").flex_none().mx(8).mb(6).p(7).gap(5).rounded(7).border_1().bg(t.surface).text_size(11.5).text_color(t.foreground);
+    if (p.phase === "running") {
+      const what = `${p.verb === "pause" ? "Pausing" : "Resuming"} ${p.count === 1 ? "1 agent" : `${p.count} agents`}…`;
+      return box.border_color(t.border).child(
+        h_flex().gap(7).items_center().text_color(t.muted)
+          .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
+          .child(div().flex_1().min_w(0).truncate().child(what)),
+      );
+    }
+    const title = p.verb === "pause" ? "Not paused:" : "Did not come back:";
+    return box.border_color(t.blocked)
+      .child(div().text_color(t.blocked).font_semibold().whitespace_normal().child(p.failed.length ? title : p.verb === "pause" ? "Nothing was paused" : "Nothing was resumed"))
+      .when(!p.failed.length && Boolean(p.message), (el) => el.child(div().whitespace_normal().child(tildePaths(p.message))))
+      .children(p.failed.map((f, i) => div().id(`agents-pause-failed-${i}`).whitespace_normal().child(`${f.name}: ${tildePaths(oneLine(f.why))}`)))
+      .child(h_flex().gap(5).child(
+        div().id("agents-pause-dismiss").px(8).h(22).flex().flex_none().items_center().rounded(5).bg(t.raised).cursor_pointer()
+          .hover((s) => s.opacity(0.88))
+          .on_click((_e, cx) => {
+            this.pausing = null;
+            cx.notify();
+          })
+          .child("Dismiss"),
+      ));
+  }
+
   // --- The herd and plan usage ---------------------------------------------------
 
   // The agents by state, as the dashboard's HERD box counts them: a worker
-  // tagged ready to merge counts as MERGE, not as done or idle; an agent
-  // in no state counts as idle.
+  // tagged ready to merge counts as MERGE, not as done or idle; one paused
+  // by "⏸ Agents" as paused; an agent in no state counts as idle.
   herdCounts(by) {
-    const n = { working: 0, blocked: 0, merge: 0, done: 0, idle: 0 };
+    const n = { working: 0, blocked: 0, merge: 0, done: 0, idle: 0, paused: 0 };
     for (const a of Object.values(by).flat()) {
       if (a.corgi?.tag === "merge") n.merge++;
-      else if (a.status === "working" || a.status === "blocked" || a.status === "done") n[a.status]++;
+      else if (a.status === "working" || a.status === "blocked" || a.status === "done" || a.status === "paused") n[a.status]++;
       else n.idle++;
     }
     return n;
@@ -711,6 +848,7 @@ export default class Projects extends View {
       ["merge", "to merge", mergeDot, t.accent],
       ["done", "done", stateMark(t, "done"), t.done ?? t.dim],
       ["idle", "idle", stateMark(t, "idle"), t.muted],
+      ["paused", "paused", stateMark(t, "paused"), t.muted],
     ].filter(([k]) => n[k] > 0);
     if (!states.length && !providers.length) return null;
     const label = (text) => div().w(50).flex_none().text_size(10).font_semibold().text_color(t.dim).child(text);
@@ -1272,11 +1410,17 @@ export default class Projects extends View {
     for (const s of sp) for (const tab of s.tabs ?? []) { spaceOf[tab.id] = s.id; tabs[tab.id] = tab; }
     const rows = agents().map((a) => ({ address: a.address, space: a.space, tab: a.tab, status: a.status, program: a.program, title: a.title, focused: a.focused }));
     const listed = new Set(rows.map((r) => r.address));
-    for (const address of this.corgiAgents.keys()) {
+    for (const [address, c] of this.corgiAgents) {
       if (listed.has(address)) continue;
       const p = ps.find((p) => p.terminal === address);
-      if (!p || !spaceOf[p.tab]) continue;
-      rows.push({ address, space: spaceOf[p.tab], tab: p.tab, status: null, program: p.program, title: p.title, focused: p.focused });
+      if (p && spaceOf[p.tab]) {
+        rows.push({ address, space: spaceOf[p.tab], tab: p.tab, status: null, program: p.program, title: p.title, focused: p.focused });
+        continue;
+      }
+      // A paused worker's terminal ended with its agent: its row stands
+      // under its project's space until it is resumed.
+      const home = c.paused && sp.find((s) => !s.machine && place(s, ps) === c.project);
+      if (home) rows.push({ address, space: home.id, tab: null, status: null, program: null, title: "", focused: false });
     }
     const by = {};
     for (const row of rows) {
@@ -1284,7 +1428,7 @@ export default class Projects extends View {
       (by[row.space] ??= []).push({
         ...row,
         corgi,
-        status: row.status ?? STATUS[corgi?.state] ?? null,
+        status: corgi?.paused ? "paused" : row.status ?? STATUS[corgi?.state] ?? null,
         supervisor: corgi?.role === "supervisor",
         task: corgi ? (corgi.role === "supervisor" ? "Supervisor" : oneLine(corgi.task) || corgi.name) : ownTitle(row, tabs[row.tab]),
       });
@@ -1627,6 +1771,8 @@ export default class Projects extends View {
         .when(Boolean(model), (el) => el.child(div().flex_shrink(1).min_w(0).truncate().child(model)))
         .when(Boolean(model && ctx), (el) => el.child(div().flex_none().child("·")))
         .when(Boolean(ctx), (el) => el.child(div().flex_none().child(ctx)))
+        // A paused worker whose terminal ended has no program or model to show.
+        .when(a.status === "paused" && !pic && !model && !ctx, (el) => el.child(div().child("Paused")))
         .when(tagged, (el) => el.child(div().flex_1()).child(this.mergeMark(a, t))));
   }
 
@@ -1675,12 +1821,16 @@ export default class Projects extends View {
       .child(h_flex().h(31).flex_none().pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, (el) => el.pl(0).pr(0).justify_center())
         .when(!collapsed, (el) => el.child("Projects"))
-        .child(div().id("project-open").size(26).flex_none().flex().items_center().justify_center().rounded(6)
-          .when(this.open && !collapsed, (el) => el.bg(t.hover).text_color(t.foreground))
-          .hover((s) => s.bg(t.hover).text_color(t.foreground))
-          .tooltip("Open project")
-          .on_click((_e, cx) => this.plus(cx))
-          .child(svg("mods/workspace-chrome/plus.svg").size(14))))
+        .child(h_flex().flex_none().gap(4).items_center()
+          // No button from a corgi that knows no pause, nor in the rail.
+          .when(Boolean(this.paused) && !collapsed, (el) => el.child(this.pauseButton(t)))
+          .child(div().id("project-open").size(26).flex_none().flex().items_center().justify_center().rounded(6)
+            .when(this.open && !collapsed, (el) => el.bg(t.hover).text_color(t.foreground))
+            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .tooltip("Open project")
+            .on_click((_e, cx) => this.plus(cx))
+            .child(svg("mods/workspace-chrome/plus.svg").size(14)))))
+      .when(Boolean(this.pausing) && !collapsed, (el) => el.child(this.pausePanel(t)))
       .when(this.open && !collapsed, (el) => el.child(this.openPanel(t)))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.pressedPull = null; cx.notify(); })

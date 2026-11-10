@@ -91,7 +91,7 @@ function lastLines(text, n) {
 // Text shown on one line: a `\n` would start a second one even when truncated.
 const oneLine = (text) => (text ?? "").replace(/\s+/g, " ").trim();
 
-const RANK = { blocked: 5, working: 4, done: 3, idle: 2, unknown: 1, exited: 0 };
+const RANK = { blocked: 5, working: 4, done: 3, idle: 2, unknown: 1, paused: 0, exited: 0 };
 
 // What starts the daemon, shown when it is not running.
 const DAEMON_COMMAND = "corgi daemon install";
