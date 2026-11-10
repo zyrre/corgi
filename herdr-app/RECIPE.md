@@ -13,10 +13,12 @@ terminal.
 
 The **Projects** mod is a sidebar list that stands in your layout where
 Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, two lines each
-(the agent's task with its state at the right; under it, smaller, its
-harness's icon, its model and how full its context is), and a `+` that opens a project: type a name or a path, and Enter shows
+(the agent's task; under it, smaller, its harness's icon, its model, how
+full its context is and, at the right, its state as a badge: `WORKING`,
+`BLOCKED`, `DONE`, `IDLE`, `PAUSED`, `EXITED`, the words Corgi's dashboard
+and desktop window use), and a `+` that opens a project: type a name or a path, and Enter shows
 its supervisor or starts it. A worker Corgi tagged ready to merge has a
-`MERGE` mark in its row: click it, confirm, and its branch is merged into
+`MERGE` badge in its row, in place of its state's: click it, confirm, and its branch is merged into
 the project's base branch and pushed, as `m` does in Corgi's dashboard;
 then it offers to close the worker and remove its worktree, keeping the
 branch, as `x` does there. A red `↓3` after a space's name says its
@@ -149,14 +151,17 @@ The Projects mod fills its block on `chrome`, text 13 px:
   theme's `border` and `dim` whatever the agents' states, a 20 px line
   each, every title (`HERD`, `CODEX`, `CLAUDE`) 10 px semibold in a 50 px
   column:
-  - `HERD`: per state with agents, its mark as in the agent rows (spinner,
-    `!`, a filled dot for done, a ring for idle, a small `accent` square
-    for MERGE) and its count, semibold in the state's color; a state with
-    none left out, `no agents` in `dim` when none has any. Counted over the
-    list's agents as the dashboard's HERD box counts: a worker tagged ready
-    to merge counts as MERGE alone, an agent in no state as idle, and one
-    paused by `⏸ Agents` as paused (its pause icon, in `muted`). Each
-    count's tooltip says it (`1 blocked`).
+  - `HERD`: per state with agents, the rows' badge with its count
+    (`WORKING 3`, `BLOCKED 1`, `MERGE 1`, `DONE 1`, `IDLE 2`, `PAUSED 1`,
+    `EXITED 1`, in that order, 4 px apart); a state with none left out,
+    `no agents` in `dim` when none has any. Counted over the list's agents
+    by the badge each row shows, as the dashboard's HERD box counts: a
+    worker tagged ready to merge counts as MERGE alone (unless it is
+    paused), an agent in no state as idle. The badges wrap whole onto more
+    lines, 3 px apart, in the room right of the title, and the line grows
+    with them: with all seven states two lines at 357 px and three at
+    Herdr's own 268; no badge is ever cut. Each count's tooltip says it
+    (`1 blocked`).
   - A line per harness with a plan (`corgi usage --json`): `5h` and `7d`,
     each in `dim`, a 34 px bar 4 px high on `border` filled to the use, the
     percentage semibold, both in `ansi2` under 60 %, `ansi3` under 85 %,
@@ -173,6 +178,13 @@ The Projects mod fills its block on `chrome`, text 13 px:
   are paused only its icon changes, to a play triangle (`play.svg`); at
   half opacity while a pause or resume runs. Its tooltip says what it does.
   Not drawn on the rail, nor from a `corgi` whose status has no `paused`.
+- **Spinners**: what is running (a pause, a merge, a close, a supervisor
+  starting, a pull, a working space in the rail) shows braille frames
+  (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, one every 90 ms, `.frames`, natively and only while
+  shown) in `working`, the glyph 18 px in a fixed 12 px box (10 px with a
+  16 px glyph for the pull), so nothing beside it moves. Never a turning
+  svg (`.spin`): the app turns one at about 10 fps while the window is
+  quiet, which reads as lagging. The rows and the herd card have none.
 - **Pause progress and result** (under the header, 8 px in from each side,
   a card on `surface`, radius 7, padding 7, 11.5 px): a spinner and
   `Pausing 3 agents…` (or `Resuming 2 agents…`) with a `border` outline
@@ -210,24 +222,28 @@ The Projects mod fills its block on `chrome`, text 13 px:
     puts a card under the row, indented 22 px (`surface`, a `blocked`
     border, radius 7): git's reason in plain words and `Dismiss`. Under it, indented 22 px, one 38 px row per agent in it and in
     the spaces on its worktrees, on two lines. The first (18 px): the task
-    in 12.5 px (medium weight for `Supervisor`), cut with `…` before it
-    reaches the state, which keeps its place at the row's right edge: a
-    spinning ring in `working`, a `!` tile in `blocked`, a dot in `done`, a
-    ring in `idle`, a 10 px pause icon in `muted` for an agent paused by
-    `⏸ Agents`. A paused worker whose terminal ended with its agent has no
-    program or model to show: its second line reads `Paused`. The second (16 px), in `dim` 11 px, 5 px apart from
+    in 12.5 px (medium weight for `Supervisor`), the line's whole width,
+    cut with `…`. The second (16 px), in `dim` 11 px, 5 px apart from
     the left: the harness's icon (12 px; Claude's now, Codex's or
     OpenCode's when it is one), the model (`Opus 5.5`, cut with `…` if the
     line runs out), a `·`, and the context fill (`33%`), from `model` and
     `ctx_pct` in `corgi status --json`. What is not known is left out with
     nothing in its place (no `·` without both): an agent started by hand
-    shows its icon alone. On a worker tagged ready to merge, the `MERGE`
-    mark stands at the right end of the second line (10 px semibold,
-    `accent_foreground` on `accent`, radius 4; tooltip `Merge worktree/x
-    into main and push`). The worktree's folder name
+    shows its icon alone. At the right end of the second line, the state's
+    badge, still (no animation), 10 px semibold, 5 px padding, radius 4:
+    `WORKING` on `working`, `BLOCKED` on `blocked`, `DONE` on `done`,
+    `PAUSED` on `muted` (an agent paused by `⏸ Agents`, tagged or not),
+    each with near-black text on a light fill and white on a dark one;
+    `IDLE` in `muted` on a faint `muted` tint, the state at rest; `EXITED`
+    (an agent Corgi says exited) a `blocked` outline with `blocked` text.
+    An agent in no state shows none. On a worker tagged ready to merge, the
+    `MERGE` mark is its badge, in place of its state's (`accent_foreground`
+    on `accent`; tooltip `Merge worktree/x into main and push`). A paused
+    worker whose terminal ended with its agent shows its `PAUSED` badge
+    alone. The worktree's folder name
     (`worktree-calm-forest-4f96`; nothing on the primary checkout) is not
     drawn; it is the row's tooltip. The supervisor is first; the rest keep
-    the app's order. The state, the icon, the fill and the mark stay whole.
+    the app's order. The badge, the icon and the fill stay whole.
   - Under a worker's row, while its merge is asked about, runs or has
     ended: a card indented like the row (22 px; `surface`, radius 7,
     padding 7, text 11.5 px, its text wrapping) with a `border` outline
@@ -286,7 +302,7 @@ The Projects mod fills its block on `chrome`, text 13 px:
   daemon that is down.
 - **The rail** (the sidebar narrower than 160 px): no texts; the `+`, a
   32 px cell per space with its number and, on the right, the most urgent
-  state in it (the spinner, the `!`, a dot for done), and `»` at the bottom.
+  state in it (the braille spinner, the `!`, a dot for done), and `»` at the bottom.
 
 ## How it behaves
 

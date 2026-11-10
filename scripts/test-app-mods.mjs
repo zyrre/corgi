@@ -241,11 +241,71 @@ function walk(el, visit) {
 }
 
 // Every text under `el`, in the order it is drawn.
+// A spinner's frames are a mark, as its ring was, not text the view says:
+// they are left out.
+// The mods' one spinner: braille frames stepped natively, in `working`, in
+// a fixed box `size` wide and high (12 px, 10 for the pull mark), never an
+// svg turned with `spin`.
+const SPIN = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+function assertSpinner(el, size = 12, what = 'a spinner') {
+  const node = kept(el);
+  assert.equal(node?.kind, 'div', `${what}: a div of frames, not ${node?.kind}`);
+  assert.deepEqual(node.calls.frames, [SPIN, 90], `${what}: braille frames`);
+  assert.deepEqual([node.calls.w, node.calls.h], [[size], [size]], `${what}: a fixed box`);
+  assert.ok('flex_none' in node.calls && 'justify_center' in node.calls, `${what}: whole and centered`);
+  assert.deepEqual(node.calls.text_color, ['#working'], `${what}: in working`);
+  assert.ok(!('spin' in node.calls));
+}
+// The line that says `text`, its spinner first: the spinner before it.
+function spinnerBefore(root, text) {
+  let line = null;
+  walk(root, (node) => {
+    if ((node.children ?? []).some((child) => kept(kept(child)?.children?.[0]) === text)) line = node;
+  });
+  assert.ok(line, `no line says ${text}`);
+  assertSpinner(line.children[0], 12, text);
+}
+
+// Spinners (braille frames, or a turning svg) under `el`.
+function spinnersIn(el) {
+  let n = 0;
+  walk(el, (node) => { if ('frames' in node.calls || 'spin' in node.calls) n += 1; });
+  return n;
+}
+// A state's badge: a small pill saying `text`, whole, in the state's color.
+// Solid for most (its text in the fill's contrast; the stand-in theme's
+// colors are names, which read as dark), a tint for IDLE, an outline for
+// EXITED; MERGE is the merge mark, in the accent.
+const BADGE_LOOK = {
+  working: { bg: ['#working'], text_color: ['#ffffff'] },
+  blocked: { bg: ['#blocked'], text_color: ['#ffffff'] },
+  done: { bg: ['#done'], text_color: ['#ffffff'] },
+  paused: { bg: ['#muted'], text_color: ['#ffffff'] },
+  idle: { bg: ['#muted33'], text_color: ['#muted'] },
+  exited: { border_color: ['#blocked'], text_color: ['#blocked'] },
+  merge: { bg: ['#accent'], text_color: ['#accent_foreground'] },
+};
+function assertBadge(el, key, text) {
+  const node = kept(el);
+  assert.deepEqual(texts(node), [text]);
+  assert.ok('flex_none' in node.calls && 'rounded' in node.calls, `${text}: a whole pill`);
+  for (const [call, args] of Object.entries(BADGE_LOOK[key])) assert.deepEqual(node.calls[call], args, `${text}: ${call}`);
+  if (key === 'exited') assert.ok(!('bg' in node.calls), 'EXITED is an outline');
+}
+
+// The badge at the right end of an agent row's second line (null: none).
+const markOf = (root, id) => {
+  const second = kept(byId(root, id).children[1]);
+  const mark = kept(second.children.at(-1));
+  return mark && ['badge-', 'merge-'].some((p) => mark.id?.startsWith(p)) ? texts(mark).join('') : null;
+};
+
 function texts(el) {
   const out = [];
   const collect = (el) => {
     const node = kept(el);
     if (typeof node === 'string') out.push(node);
+    else if (node && typeof node === 'object' && 'frames' in node.calls) return;
     else if (node && typeof node === 'object') for (const child of node.children ?? []) collect(child);
   };
   collect(el);
@@ -387,28 +447,43 @@ async function projects(w) {
   const root = mod.render();
   const drawn = texts(root);
   // The herd card first, above the header.
-  assert.equal(drawn[6], 'Projects');
+  assert.equal(drawn[5], 'Projects');
   // Spaces outside a repository as Spaces shows them; a project with its
   // agents under it, the supervisor first, in place of its worktrees' rows;
   // a worktree with no agent keeps its row.
   assert.deepEqual(ids(root, 'space-').concat(), ['space-sp-corgi', 'space-sp-weather', 'space-sp-quiet', 'space-sp-home']);
-  // Above the header, the herd card: the agents by state, a state with
-  // none left out (no usage: this corgi does not answer `usage`).
-  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', '1', '!', '1', '1', '2']);
-  assert.deepEqual(ids(root, 'herd-'), ['herd-card', 'herd-working', 'herd-blocked', 'herd-done', 'herd-idle']);
+  // Above the header, the herd card: the agents by state as the rows'
+  // badges with a count, a state with none left out (no usage: this corgi
+  // does not answer `usage`). An agent in no state counts as idle.
+  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', 'WORKING 1', 'BLOCKED 1', 'DONE 1', 'IDLE 2']);
+  assert.deepEqual(ids(root, 'herd-'), ['herd-card', 'herd-badges', 'herd-working', 'herd-blocked', 'herd-done', 'herd-idle']);
+  assertBadge(byId(root, 'herd-working'), 'working', 'WORKING 1');
+  assertBadge(byId(root, 'herd-idle'), 'idle', 'IDLE 2');
+  assert.equal(byId(root, 'herd-idle').calls.tooltip[0], '2 idle');
+  // The badges wrap whole beside the label, and the line grows with them.
+  const badges = byId(root, 'herd-badges');
+  assert.ok('flex_wrap' in badges.calls && 'flex_1' in badges.calls, 'the badges wrap in the room the label leaves');
+  assert.deepEqual(badges.calls.min_w, [0]);
+  assert.ok(!('truncate' in byId(root, 'herd-working').calls), 'a badge is never cut');
+  const herdLine = byId(root, 'herd');
+  assert.deepEqual([herdLine.calls.min_h, herdLine.calls.h], [[20], undefined], 'a line high at least, taller as it wraps');
+  // No spinner on the card or in a row.
+  assert.equal(spinnersIn(byId(root, 'herd-card')), 0);
+  for (const id of ids(root, 'agent-')) assert.equal(spinnersIn(byId(root, id)), 0, id);
   assert.deepEqual(
-    drawn.slice(7),
+    drawn.slice(6),
     [
       'C', 'Corgi',
       'W', 'weather',
-      'Supervisor',
-      'Fix the cache so that it holds', 'Opus 5.5', '·', '33%',
-      'Review the cache fix', '!',
+      'Supervisor', 'IDLE',
+      'Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING',
+      'Review the cache fix', 'BLOCKED',
+      // In no state: no badge.
       'Write the docs',
       'worktree-quiet-lake-0a1b',
       '~', '~',
       // A title that is only a folder says nothing: the program's name.
-      'Claude Code',
+      'Claude Code', 'DONE',
     ],
     drawn.join(' | '),
   );
@@ -416,27 +491,28 @@ async function projects(w) {
   // agent.next and agent.prev follow the list.
   assert.deepEqual(w.agentOrder, ['t2', 't3', 't4', 't5', 't7']);
 
-  // Two lines each. The first: the task, cut with an ellipsis before it
-  // reaches the state, which keeps its place at the right edge.
+  // Two lines each. The first: the task alone, the whole width, cut with an
+  // ellipsis.
   const row = byId(root, 'agent-t3');
   assert.equal(row.kind, 'v_flex');
   assert.equal(row.children.length, 2);
   const [first, second] = row.children.map(kept);
-  assert.equal(first.children.length, 2);
-  const [task, state] = first.children.map(kept);
+  assert.equal(first.children.length, 1);
+  const [task] = first.children.map(kept);
   assert.deepEqual(texts(task), ['Fix the cache so that it holds']);
   assert.ok('truncate' in task.calls, 'the task is cut with an ellipsis');
   assert.deepEqual(task.calls.min_w, [0], 'the task can be cut to nothing');
-  assert.ok('flex_1' in task.calls, 'the task fills the line, so the state stands at its right edge');
-  assert.ok('flex_none' in state.calls, 'the state stays whole');
-  assert.deepEqual(kept(state.children[0]).args, ['mods/workspace-chrome/spinner.svg']);
-  assert.ok('spin' in kept(state.children[0]).calls);
+  assert.ok('flex_1' in task.calls, 'the task fills the line');
   // The second, dim and smaller: the harness's icon, the model and the
-  // context fill, rounded.
+  // context fill, rounded, and the state's badge at the right edge.
   assert.deepEqual(second.calls.text_size, [11]);
   assert.deepEqual(second.calls.text_color, ['#dim']);
-  const [pic, model, dot, ctx] = second.children.map(kept);
-  assert.equal(second.children.length, 4);
+  const [pic, model, dot, ctx, gap, state] = second.children.map(kept);
+  assert.equal(second.children.length, 6);
+  assert.ok('flex_1' in gap.calls, 'the badge stands at the right edge');
+  assert.equal(state, byId(root, 'badge-t3'));
+  assertBadge(state, 'working', 'WORKING');
+  assert.ok(!('loop' in state.calls), 'WORKING is still: no fade');
   assert.deepEqual(pic.args, ['icons/claude.svg']);
   assert.ok('flex_none' in pic.calls, 'the icon stays whole');
   assert.deepEqual(texts(model), ['Opus 5.5']);
@@ -445,18 +521,23 @@ async function projects(w) {
   // The worktree's name is no text of the row, only its tooltip.
   assert.deepEqual(row.calls.tooltip, ['worktree-calm-forest-4f96']);
   assert.ok(!texts(row).includes('worktree-calm-forest-4f96'));
-  // What Corgi does not know is left out, with nothing in its place.
-  assert.deepEqual(byId(root, 'agent-t4').children.map((child) => texts(child)), [['Review the cache fix', '!'], []], 'a blocked agent');
-  assert.equal(kept(byId(root, 'agent-t4').children[1]).children.length, 1, 'only the icon');
+  // What Corgi does not know is left out, with nothing in its place: the
+  // badge alone on the second line.
+  assert.deepEqual(byId(root, 'agent-t4').children.map((child) => texts(child)), [['Review the cache fix'], ['BLOCKED']], 'a blocked agent');
+  assertBadge(byId(root, 'badge-t4'), 'blocked', 'BLOCKED');
+  assertBadge(byId(root, 'badge-t2'), 'idle', 'IDLE');
+  assertBadge(byId(root, 'badge-t7'), 'done', 'DONE');
+  assert.equal(byId(root, 'badge-t5'), null, 'an agent in no state has no badge');
+  assert.equal(kept(byId(root, 'agent-t4').children[1]).children.length, 3, 'only the icon, and the badge after its gap');
   const t5 = byId(root, 'agent-t5');
   assert.deepEqual(texts(t5), ['Write the docs']);
   assert.deepEqual(t5.calls.tooltip, ['worktree-sunny-field-529d']);
   // An agent whose program has no icon keeps the rest.
   w.agents[2].program = { ...CLAUDE, icon: null };
-  assert.equal(kept(byId(mod.render(), 'agent-t4').children[1]).children.length, 0);
+  assert.equal(kept(byId(mod.render(), 'agent-t4').children[1]).children.length, 2, 'the badge alone');
   w.agents[2].program = CLAUDE;
   // On the primary checkout there is no worktree to name.
-  assert.deepEqual(texts(byId(root, 'agent-t2')), ['Supervisor']);
+  assert.deepEqual(texts(byId(root, 'agent-t2')), ['Supervisor', 'IDLE']);
   assert.ok(!('tooltip' in byId(root, 'agent-t2').calls));
 
   // A click shows the agent's terminal; a space's row shows the space.
@@ -490,7 +571,7 @@ async function projects(w) {
   const status = structuredClone(STATUS);
   status.projects[0].agents[0].model = null;
   const mod = await projects(window({ status }));
-  assert.deepEqual(texts(kept(byId(mod.render(), 'agent-t3').children[1])), ['33%']);
+  assert.deepEqual(texts(kept(byId(mod.render(), 'agent-t3').children[1])), ['33%', 'WORKING']);
 }
 
 // What is lit: only the agent with the focus, never a project's row with
@@ -549,10 +630,10 @@ async function projects(w) {
   const root = mod.render();
   const drawn = texts(root);
   // The herd card counts the app's agents alone: with no usage, no plan lines.
-  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', '1', '!', '1', '1', '1']);
+  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', 'WORKING 1', 'BLOCKED 1', 'DONE 1', 'IDLE 1']);
   assert.deepEqual(
-    drawn.slice(9),
-    ['W', 'weather', 'Weather supervisor', 'Fixing the cache', 'Review the cache fix', '!', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code'],
+    drawn.slice(8),
+    ['W', 'weather', 'Weather supervisor', 'IDLE', 'Fixing the cache', 'WORKING', 'Review the cache fix', 'BLOCKED', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code', 'DONE'],
     drawn.join(' | '),
   );
 }
@@ -565,6 +646,11 @@ async function projects(w) {
   const mod = await projects(w);
   let root = mod.render();
   assert.deepEqual(texts(root), ['1', '·', '2', '·', '3', '4', '·', '5', '·', '6', '·', '»']);
+  // A working space's mark is the braille spinner: a rail cell has no room
+  // for a badge.
+  let railSpinner = null;
+  walk(byId(root, 'space-sp-calm'), (node) => { if ('frames' in node.calls) railSpinner = node; });
+  assertSpinner(railSpinner, 12, 'the rail');
   assert.deepEqual(ids(root, 'agent-'), []);
   assert.equal(byId(root, 'open-project'), null);
   click(root, 'space-sp-calm', mod.cx);
@@ -576,7 +662,7 @@ async function projects(w) {
   root = mod.render();
   assert.ok(byId(root, 'open-project'), 'the field is open');
   // Unfolded, the herd card is back above the header.
-  assert.deepEqual(texts(root).slice(0, 7), ['HERD', '1', '!', '1', '1', '2', 'Projects']);
+  assert.deepEqual(texts(root).slice(0, 6), ['HERD', 'WORKING 1', 'BLOCKED 1', 'DONE 1', 'IDLE 2', 'Projects']);
   // And » alone unfolds it.
   w.sidebar = 76;
   click(mod.render(), 'rail-unfold', mod.cx);
@@ -617,7 +703,7 @@ async function projects(w) {
   assert.equal(drawn[texts(card).length], 'Projects');
   assert.ok(drawn.indexOf('weather') > drawn.indexOf('CLAUDE'), 'the card stands above the rows');
   assert.deepEqual(texts(card), [
-    'HERD', '1', '!', '1', '1', '2',
+    'HERD', 'WORKING 1', 'BLOCKED 1', 'DONE 1', 'IDLE 2',
     'CODEX', 'unavailable',
     'CLAUDE', '5h', '31%', '2h 14m', '7d', '86%', '3d 14h',
   ]);
@@ -655,12 +741,35 @@ async function projects(w) {
   const tagged = window({ status, usage: () => usage });
   const again = await projects(tagged);
   const card2 = byId(again.render(), 'herd-card');
-  assert.deepEqual(ids(card2, 'herd-'), ['herd-card', 'herd-blocked', 'herd-merge', 'herd-done', 'herd-idle']);
+  assert.deepEqual(ids(card2, 'herd-'), ['herd-card', 'herd-badges', 'herd-blocked', 'herd-merge', 'herd-done', 'herd-idle']);
+  assertBadge(byId(card2, 'herd-merge'), 'merge', 'MERGE 1');
+  assert.equal(byId(card2, 'herd-merge').calls.tooltip[0], '1 to merge');
   assert.equal(colorOf(card2, '64%'), '#ansi3');
+  // Its row shows MERGE in place of WORKING: the merge mark, the one badge.
+  const taggedRow = again.render();
+  assert.equal(markOf(taggedRow, 'agent-t3'), 'MERGE');
+  assert.equal(byId(taggedRow, 'badge-t3'), null);
+  assertBadge(byId(taggedRow, 'merge-t3'), 'merge', 'MERGE');
+  assert.ok('on_click' in byId(taggedRow, 'merge-t3').handlers, 'MERGE still opens the merge question');
 
   // The rail has no room for it.
   tagged.sidebar = 76;
   assert.equal(byId(again.render(), 'herd-card'), null);
+}
+
+// An agent Corgi knows exited: EXITED, an outline, in its row and in HERD;
+// one paused and tagged ready to merge is PAUSED, as the desktop window
+// says. Many states wrap whole badges.
+{
+  const status = structuredClone(STATUS);
+  status.projects[0].agents[2].state = 'exited';
+  const w = window({ status });
+  const mod = await projects(w);
+  const root = mod.render();
+  assert.equal(markOf(root, 'agent-t5'), 'EXITED');
+  assertBadge(byId(root, 'badge-t5'), 'exited', 'EXITED');
+  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', 'WORKING 1', 'BLOCKED 1', 'DONE 1', 'IDLE 1', 'EXITED 1']);
+  assertBadge(byId(root, 'herd-exited'), 'exited', 'EXITED 1');
 }
 
 {
@@ -746,7 +855,7 @@ function pressPull(root, key, cx) {
   const mark = byId(root, `pull-${QUIET_KEY}`);
   assert.ok('opacity' in mark.calls);
   assert.ok(!('cursor_pointer' in mark.calls));
-  assert.equal(kept(mark.children[0]).kind, 'svg');
+  assertSpinner(mark.children[0], 10, 'the pull mark');
   pressPull(root, QUIET_KEY, mod.cx);
   pressPull(root, REPO_KEY, mod.cx);
   assert.equal(w.pulls.length, 1, 'nothing runs while a pull is in flight');
@@ -986,6 +1095,7 @@ const opens = (w) => w.execs.filter((call) => call[1] === 'open').map((call) => 
   mod.view.input.handlers.submit({}, mod.cx);
   await new Promise((resolve) => setImmediate(resolve));
   assert.ok(texts(mod.render()).includes("Starting zebra's supervisor…"));
+  spinnerBefore(mod.render(), "Starting zebra's supervisor…");
   mod.view.input.handlers.submit({}, mod.cx);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(opens(w).length, 1);
@@ -1093,6 +1203,7 @@ async function merged(outcome, state) {
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(merges(w), [['w-cache', '--project', REPO, '--json']]);
   assert.deepEqual(texts(panel(mod)), ['Merging…']);
+  spinnerBefore(panel(mod), 'Merging…');
   // While it runs, a second click starts nothing and puts nothing away.
   click(mod.render(), 'merge-t3', mod.cx);
   assert.deepEqual(texts(panel(mod)), ['Merging…']);
@@ -1185,6 +1296,7 @@ function closedWindow(w) {
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(closes(w), [['w-cache', '--project', REPO, '--json']]);
   assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, 'Closing…']);
+  spinnerBefore(panel(mod), 'Closing…');
   // Another worker's MERGE mark does nothing meanwhile.
   const other = tagged();
   Object.assign(other.projects[0].agents[2], { tag: 'merge', state: 'done' });
@@ -1538,11 +1650,6 @@ const header = (root) => {
   return [`${ICONS[icon.args[0]]} ${texts(button).join('')}`];
 };
 // The state mark at the right of an agent's first line.
-const markOf = (root, id) => {
-  const first = kept(byId(root, id).children[0]);
-  const mark = kept(kept(first.children[1]).children[0]);
-  return mark.kind === 'svg' ? ICONS[mark.args[0]] ?? mark.args[0] : texts(mark).join('');
-};
 
 // No button from a corgi that knows no pause.
 {
@@ -1571,6 +1678,7 @@ const markOf = (root, id) => {
   click(root, 'agents-pause', mod.cx);
   assert.deepEqual(pauses(w), [['pause', '--json']]);
   assert.deepEqual(texts(byId(mod.render(), 'agents-pause-panel')), ['Pausing 1 agent…']);
+  spinnerBefore(byId(mod.render(), 'agents-pause-panel'), 'Pausing 1 agent…');
   // A second click while it runs does nothing.
   click(mod.render(), 'agents-pause', mod.cx);
   assert.equal(pauses(w).length, 1);
@@ -1629,11 +1737,12 @@ const markOf = (root, id) => {
   assert.deepEqual(kept(byId(root, 'agents-pause').children[0]).calls.size, [14]);
   assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t20', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7']);
   assert.deepEqual(texts(kept(byId(root, 'agent-t5').children[0])), ['Write the docs']);
-  assert.equal(markOf(root, 'agent-t5'), '⏸');
+  assert.equal(markOf(root, 'agent-t5'), 'PAUSED');
+  assertBadge(byId(root, 'badge-t5'), 'paused', 'PAUSED');
   assert.deepEqual(texts(kept(byId(root, 'agent-t20').children[0])), ['Fix the radar']);
-  assert.equal(markOf(root, 'agent-t20'), '⏸');
-  assert.deepEqual(texts(kept(byId(root, 'agent-t20').children[1])), ['Paused'], 'its terminal ended: no program or model to show');
-  assert.equal(markOf(root, 'agent-t3'), 'mods/workspace-chrome/spinner.svg', 'a working row keeps its spinner');
+  assert.equal(markOf(root, 'agent-t20'), 'PAUSED');
+  assert.deepEqual(texts(kept(byId(root, 'agent-t20').children[1])), ['PAUSED'], 'its terminal ended: no program or model to show, the badge alone');
+  assert.equal(markOf(root, 'agent-t3'), 'WORKING', 'a working row keeps its badge');
   // HERD counts them as paused, not idle.
   assert.equal(byId(root, 'herd-paused').calls.tooltip[0], '2 paused');
 
@@ -1755,9 +1864,9 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   const mod = await projects(w);
   const root = mod.render();
   assert.deepEqual(byId(root, 'agent-lab/t3').children.map((child) => texts(child)), [['Serve the forecast'], ['Sonnet 5.5', '·', '50%', 'MERGE']]);
-  assert.deepEqual(texts(byId(root, 'agent-lab/t2')), ['Supervisor', 'Opus 5.5', '·', '10%']);
+  assert.deepEqual(texts(byId(root, 'agent-lab/t2')), ['Supervisor', 'Opus 5.5', '·', '10%', 'IDLE']);
   assert.deepEqual(byId(root, 'merge-lab/t3').calls.tooltip, ['Merge worktree/api into develop and push'], "lab's project, not this computer's");
-  assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%']);
+  assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING']);
   assert.deepEqual(ids(root, 'merge-'), ['merge-lab/t3']);
   // Under lab's header, after this computer's.
   assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7', 'agent-lab/t2', 'agent-lab/t3']);
@@ -1772,7 +1881,7 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   // This computer's corgi is asked as before, with no machine.
   for (const [, options] of localRuns(w, 'status')) assert.deepEqual(options, { timeout: 20000 });
   // HERD counts lab's agents too, its tagged worker as MERGE.
-  assert.deepEqual(ids(root, 'herd-'), ['herd-card', 'herd-working', 'herd-blocked', 'herd-merge', 'herd-done', 'herd-idle']);
+  assert.deepEqual(ids(root, 'herd-'), ['herd-card', 'herd-badges', 'herd-working', 'herd-blocked', 'herd-merge', 'herd-done', 'herd-idle']);
   assert.equal(byId(root, 'herd-merge').calls.tooltip[0], '1 to merge');
   assert.equal(byId(root, 'herd-idle').calls.tooltip[0], '3 idle');
   assert.equal(byId(root, 'machine-no-corgi-lab'), null);
@@ -1897,7 +2006,7 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   assert.deepEqual(header(root), ['▶ Agents']);
   assert.match(byId(root, 'agents-pause').calls.tooltip[0], /^Resume the 2 paused agents/);
   assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7', 'agent-lab/t2', 'agent-lab/t20', 'agent-lab/t3']);
-  assert.equal(markOf(root, 'agent-lab/t20'), '⏸');
+  assert.equal(markOf(root, 'agent-lab/t20'), 'PAUSED');
   click(root, 'agents-pause', again.cx);
   await again.settle();
   assert.deepEqual(localRuns(r, 'resume'), []);
@@ -1930,11 +2039,11 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
     const note = byId(root, 'machine-no-corgi-lab');
     assert.deepEqual(texts(note), ["Corgi isn't installed on lab"]);
     assert.deepEqual(note.calls.text_color, ['#dim']);
-    assert.deepEqual(texts(byId(root, 'agent-lab/t3')), ['Serving the forecast']);
-    assert.deepEqual(texts(byId(root, 'agent-lab/t2')), ['Claude Code']);
+    assert.deepEqual(texts(byId(root, 'agent-lab/t3')), ['Serving the forecast', 'DONE']);
+    assert.deepEqual(texts(byId(root, 'agent-lab/t2')), ['Claude Code', 'IDLE']);
     assert.deepEqual(ids(root, 'merge-'), []);
     // This computer's rows are as ever.
-    assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%']);
+    assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING']);
     const looks = () => onLab(w).filter(([command]) => command === 'sh').length;
     assert.equal(looks(), 1);
     assert.deepEqual(labRuns(w, 'status'), []);
@@ -1974,9 +2083,9 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   });
   const mod = await projects(w);
   const root = mod.render();
-  assert.deepEqual(texts(byId(root, 'agent-lab/t3')), ['Serving the forecast']);
+  assert.deepEqual(texts(byId(root, 'agent-lab/t3')), ['Serving the forecast', 'DONE']);
   assert.equal(byId(root, 'machine-no-corgi-lab'), null);
-  assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%']);
+  assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING']);
 
   // Data it had goes when it stops answering.
   const v = labWindow();
@@ -2018,6 +2127,20 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   const drawn = texts(mod.render());
   assert.ok(drawn.includes('weather'), drawn.join(' | '));
   assert.ok(!drawn.some((text) => text.startsWith('Corgi layout')));
+}
+
+// No mod turns an svg for a spinner: every one is the braille frames of
+// `spinner` (the app turns `spin` at about 10 fps while the window is quiet).
+// The rows and HERD have none at all (their badges say WORKING).
+{
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const mods = new URL('../herdr-app/mods/', import.meta.url);
+  for (const mod of readdirSync(mods)) {
+    let source;
+    try { source = readFileSync(new URL(`${mod}/main.js`, mods), 'utf8'); } catch { continue; }
+    assert.ok(!/\.spin\(/.test(source), `${mod}/main.js still turns an svg with .spin(`);
+    assert.ok(!source.includes('spinner.svg'), `${mod}/main.js still draws spinner.svg`);
+  }
 }
 
 console.log('app mods: ok');
