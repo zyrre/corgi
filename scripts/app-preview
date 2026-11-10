@@ -1,0 +1,423 @@
+#!/usr/bin/env bash
+# A Herdr app window of this checkout's own, to look at a change to Corgi's
+# mods (herdr-app/mods) or its layout (`corgi app-layout`) and to take
+# pictures of it, without the person's window, app home, core or daemon.
+#
+#   scripts/app-preview start            open the window (again: install the mods again)
+#   scripts/app-preview shot [name]      save target/app-preview/<name>.png, print its path
+#   scripts/app-preview do <command> …   run a command in that window (herdr-app do)
+#   scripts/app-preview status | ls      what that window shows (herdr-app status, ls)
+#   scripts/app-preview stop             close it, and everything start made
+#
+# Everything is kept under target/app-preview/ of the checkout: a copy of the
+# installed Herdr.app (the app updates itself in place when it quits, and
+# must never do that to the person's running one), the app home `home/`,
+# and the pictures. The app's control socket needs a path shorter than a
+# worktree's, so the window is given the home through a link,
+# /tmp/corgi-ap-<uid>-<checksum of the checkout>.
+#
+# `start` installs this checkout's mods and layout into that home with
+# herdr-app/install.sh --mod-only and target/release/corgi (build it first),
+# names that corgi in the mods' config.json, switches the window to the
+# `corgi` layout and waits for a frame. The window opens in the bottom right
+# corner of the screen with one point of its edge showing, where it is in
+# nobody's way and still draws (see park_window), and takes no focus.
+# AeroSpace lists no window of an app that a worker under herdr-core starts
+# (run directly, with `open`, or as a launchd job), so it cannot be moved to
+# a workspace; should AeroSpace list it, it is floated and moved to
+# workspace 4 ($APP_PREVIEW_WORKSPACE), or to one named `preview`
+# ($APP_PREVIEW_FALLBACK_WORKSPACE) while the person is looking at 4.
+#
+# The window is on a herdr-core of its own (HC_SESSION=preview, its state
+# under target/app-preview/state), holding made-up projects: two
+# repositories with a supervisor, workers in worktrees and an agent started
+# by hand, in every state, and a folder outside any repository. Their tasks
+# and roles come from a canned `corgi status --json` (fake/corgi, which
+# passes every other command to target/release/corgi). Anything may be done
+# in it: `do tab.new`, `do space.new`, a click by a person.
+#
+# It is never put on the person's own core. A second window there is no
+# onlooker: the spaces are one document shared by every window of a core
+# (the Projects mod itself reorders them with space.move), and a terminal
+# has one size, so the pane the preview shows is resized to the preview's
+# for the person too.
+#
+# `stop` quits the window with app.quit (its own pid is killed, once, only
+# if that does nothing), ends each terminal of its core by address, stops
+# that core and removes the link. The home, the app copy and the pictures
+# stay.
+#
+#   APP_PREVIEW_APP=<Herdr.app>       the app to copy, instead of the one herdr-app on PATH is in
+#   APP_PREVIEW_HC=<hc>               the herdr-core command
+#   APP_PREVIEW_AEROSPACE=<aerospace> AeroSpace's command (/opt/homebrew/bin/aerospace)
+#   APP_PREVIEW_SIZE=<w>x<h>          the window's size in points (1280x800)
+set -euo pipefail
+
+say() { printf 'app-preview: %s\n' "$*" >&2; }
+die() {
+  say "$*"
+  exit 1
+}
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+dir="$root/target/app-preview"
+bundle="$dir/Herdr.app"
+exe="$bundle/Contents/MacOS/Herdr"
+corgi="$root/target/release/corgi"
+link="/tmp/corgi-ap-$(id -u)-$(printf '%s' "$root" | cksum | cut -d ' ' -f 1)"
+home="$link/home"
+state="$link/state"
+fake="$dir/fake"
+notes="$link.files/notes" # a folder in no repository (target/ is inside this one), with no folder beside it
+hc_bin=${APP_PREVIEW_HC:-hc}
+aerospace=${APP_PREVIEW_AEROSPACE:-/opt/homebrew/bin/aerospace}
+workspace=${APP_PREVIEW_WORKSPACE:-4}
+fallback_workspace=${APP_PREVIEW_FALLBACK_WORKSPACE:-preview}
+window_size=${APP_PREVIEW_SIZE:-1280x800}
+person_home="$HOME/.config/herdr-app" # read, never written
+base_path="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+# --- the window -------------------------------------------------------------
+
+# herdr-app as a client of the preview window.
+app() { HERDR_APP_HOME="$home" "$exe" "$@"; }
+running() { [[ -x "$exe" && -L "$link" ]] && app status >/dev/null 2>&1; }
+alive() { [[ -n "$1" ]] && kill -0 "$1" 2>/dev/null; }
+
+# Waits until "$@" succeeds, for $1 quarter seconds at the most.
+wait_for() {
+  local tries=$1
+  shift
+  while ! "$@" >/dev/null 2>&1; do
+    tries=$((tries - 1))
+    [[ $tries -gt 0 ]] || return 1
+    sleep 0.25
+  done
+}
+
+# Copies the installed app, once per version of it.
+copy_app() {
+  local source=${APP_PREVIEW_APP:-} found
+  if [[ -z "$source" ]]; then
+    found=$(command -v herdr-app) || die "no herdr-app on PATH; set APP_PREVIEW_APP to Herdr.app"
+    source=$(cd "$(dirname "$(readlink -f "$found")")/../.." && pwd -P)
+  fi
+  [[ -x "$source/Contents/MacOS/Herdr" ]] || die "$source is not a Herdr app bundle"
+  local want have=
+  want=$("$source/Contents/MacOS/Herdr" --version)
+  [[ ! -x "$exe" ]] || have=$("$exe" --version 2>/dev/null) || have=
+  [[ "$want" != "$have" ]] || return 0
+  rm -rf "$bundle"
+  cp -R "$source" "$bundle"
+  say "copied $want from $source"
+}
+
+# A home the app takes for one it has run before: no welcome, and no "first
+# start after an update", which would update herdr-core.
+seed_home() {
+  local version
+  version=$("$exe" --version | cut -d ' ' -f 2)
+  mkdir -p "$dir/home"
+  [[ -e "$dir/home/update-notes.json" ]] || printf '{"last_run":"%s","presented":[]}\n' "$version" >"$dir/home/update-notes.json"
+  [[ -e "$dir/home/shared.json" ]] || printf '{"frame.welcomed":"skipped"}\n' >"$dir/home/shared.json"
+  # The person's zoom and fonts, so that a picture shows what they would see.
+  [[ -e "$dir/home/settings.json" || ! -e "$person_home/settings.json" ]] || cp "$person_home/settings.json" "$dir/home/settings.json"
+}
+
+# Where the window opens: the app puts it where window.json says it was, so
+# it is told the bottom right corner of the screen, with one point of its
+# edge showing. That is where AeroSpace keeps the windows of a workspace
+# that is not shown; the app still draws there, which it stops doing when
+# minimized. The app takes the place only with the display it knows the
+# screen by, read from where it last wrote one, and only inside that screen.
+park_window() {
+  local display size width height
+  display=$({ cat "$dir/home/window.json" "$person_home/window.json" 2>/dev/null || true; } | sed -n 's/.*"display": *"\([^"]*\)".*/\1/p' | head -n 1)
+  size=$(osascript -l JavaScript -e 'ObjC.import("AppKit"); var f = $.NSScreen.mainScreen.frame; Math.round(f.size.width) + " " + Math.round(f.size.height)' 2>/dev/null) || size=
+  width=${size% *} height=${size#* }
+  if [[ -z "$display" || ! "$width" =~ ^[0-9]+$ || ! "$height" =~ ^[0-9]+$ ]]; then
+    say "could not tell the screen (no display in a window.json, or no screen size): the window opens in the middle of it"
+    return 0
+  fi
+  printf '{"state":"windowed","bounds":[%s.0,%s.0,%s.0,%s.0],"display":"%s"}\n' \
+    "$((width - 1))" "$((height - 28))" "${window_size%x*}" "${window_size#*x}" "$display" >"$dir/home/window.json"
+}
+
+# Should AeroSpace list the window (see the top of this file), floats it, so
+# that it tiles with none of the person's, and moves it off the workspace
+# they are looking at.
+move_window() {
+  local pid=$1 ids='' tries=12 to=$workspace id
+  [[ -x "$aerospace" ]] || return 0
+  while [[ -z "$ids" && $tries -gt 0 ]]; do
+    ids=$("$aerospace" list-windows --all --format '%{window-id} %{app-pid}' 2>/dev/null | awk -v pid="$pid" '$2 == pid { print $1 }') || ids=
+    tries=$((tries - 1))
+    [[ -n "$ids" ]] || sleep 0.25
+  done
+  [[ -n "$ids" ]] || return 0
+  if [[ "$("$aerospace" list-workspaces --focused 2>/dev/null)" == "$to" ]]; then
+    to=$fallback_workspace
+  fi
+  for id in $ids; do
+    "$aerospace" layout --window-id "$id" floating >/dev/null 2>&1 || true
+    "$aerospace" move-node-to-workspace --window-id "$id" "$to" || say "could not move window $id to workspace $to"
+  done
+  say "the window is on AeroSpace workspace $to"
+}
+
+# --- the mods and the layout --------------------------------------------------
+
+install_mods() {
+  local name
+  XDG_STATE_HOME="$state" HERDR_APP_BIN="$exe" sh "$root/herdr-app/install.sh" --mod-only --home "$home" ||
+    die "installing the mods into $home failed"
+  # --mod-only names no corgi, and the mods would find the person's: the
+  # canned one, which runs this checkout's.
+  for name in projects corgi; do
+    printf '{ "corgi": "%s" }\n' "$fake/corgi" >"$home/mods/$name/config.json"
+  done
+}
+
+# --- a core of its own, with made-up projects ----------------------------------
+
+# hc on the preview's core. SSH_CONNECTION makes hc start that core itself
+# rather than through launchd.
+hcp() {
+  env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${USER:-}" SHELL=/bin/sh TERM=xterm-256color LANG=en_US.UTF-8 \
+    PATH="$base_path" SSH_CONNECTION="127.0.0.1 1 127.0.0.1 22" HC_SESSION=preview XDG_STATE_HOME="$state" \
+    "$hc_bin" "$@"
+}
+
+# Field $1 of the first record of hc's JSON on stdin.
+json_field() { sed -n "s/.*\"$1\":\"\\{0,1\\}\\([^\",}]*\\).*/\\1/p" | head -n 1; }
+
+# Starts a fake agent: name, folder, space, state, program, title. Prints its address.
+fake_agent() {
+  hcp run --bg --json --no-parent --name "$1" --cwd "$2" --label "herdr.space=$3" -- "$fake/agent" "$4" "$5" "${6:-}" |
+    json_field address
+}
+
+fake_repo() {
+  mkdir -p "$1"
+  [[ -d "$1/.git" ]] && return 0
+  git -C "$1" init -q -b main
+  git -C "$1" -c user.name=preview -c user.email=preview@example.invalid commit -q --allow-empty -m "A made-up project"
+}
+
+fake_worktree() {
+  [[ -d "$2" ]] || git -C "$1" worktree add -q -b "worktree/${2##*/worktree-}" "$2"
+}
+
+# One agent of the canned status: name, role, state, task, terminal, folder, worktree, tag.
+status_agent() {
+  local worktree=null tag=null
+  [[ -z "$7" ]] || worktree="\"$7\""
+  [[ -z "$8" ]] || tag="\"$8\""
+  printf '{"name":"%s","role":"%s","state":"%s","task":"%s","terminal":"%s","cwd":"%s","worktree":%s,"tag":%s,' "$1" "$2" "$3" "$4" "$5" "$6" "$worktree" "$tag"
+  printf '"branch":"%s","harness":"claude","model":"Opus 5.5","ctx_pct":18,"request_id":null,' "$([[ -n "$7" ]] && echo "worktree/${7##*/worktree-}" || echo main)"
+  printf '"cache":{"estimated":false,"minutes_left":55,"state":"warm","tokens":126636}}'
+}
+
+# One project of the canned status: name, folder, questions, ready to merge, its agents (the supervisor first).
+status_project() {
+  local name=$1 at=$2 questions=$3 ready=$4 first=$5 agents
+  shift 4
+  agents=$(printf '%s,' "$@")
+  printf '{"name":"%s","dir":"%s","base":"main","backlog":2,"inbox_pending":0,"state_dir":"%s/state/corgi/supervisors/%s",' "$name" "$at" "$dir" "$name"
+  printf '"ledger":{"dispatched":2,"needs_answer":%s,"ready_to_merge":%s},"questions":[' "$questions" "$ready"
+  [[ "$questions" == 0 ]] || printf '{"id":"Q7","title":"Keep the old column names for one release?","blocks":"w-export-columns","file":"%s/Q7.md"}' "$fake"
+  printf '],"supervisor":%s,"agents":[%s]}' "$first" "${agents%,}"
+}
+
+start_fakes() {
+  mkdir -p "$dir/state" "$fake"
+  hcp server start >/dev/null || die "could not start a herdr-core for the preview"
+  [[ "$(hcp ls --json --all | json_field address)" == "" ]] || return 0 # its terminals are there already
+
+  cat >"$fake/agent" <<'AGENT'
+#!/bin/sh
+# scripts/app-preview's fake agent: reports a state to herdr-core as an agent
+# does (OSC 7501), sets a title, and waits. `none` reports nothing.
+[ "$1" = none ] || printf '\033]7501;state=%s:app=%s\033\\' "$1" "$2"
+[ -z "${3:-}" ] || printf '\033]2;%s\033\\' "$3"
+printf 'A made-up %s of scripts/app-preview (%s).\n' "$2" "$1"
+exec sleep 100000000
+AGENT
+  chmod 755 "$fake/agent"
+
+  local a="$fake/alpha" b="$fake/beta" trees="$fake/worktrees"
+  fake_repo "$a"
+  fake_repo "$b"
+  mkdir -p "$trees/alpha" "$notes"
+  fake_worktree "$a" "$trees/alpha/worktree-quiet-river-1a2b"
+  fake_worktree "$a" "$trees/alpha/worktree-tall-pine-3c4d"
+  fake_worktree "$a" "$trees/alpha/worktree-warm-hill-5e6f"
+  fake_worktree "$a" "$trees/alpha/worktree-dry-lake-7a8b"
+
+  local a_sup a_w1 a_w2 a_w3 a_w4 b_sup
+  a_sup=$(fake_agent alpha-supervisor "$a" preview-alpha "done" claude-code)
+  a_w1=$(fake_agent w-export-columns "$trees/alpha/worktree-quiet-river-1a2b" preview-alpha-1 working claude-code)
+  a_w2=$(fake_agent w-login-test "$trees/alpha/worktree-tall-pine-3c4d" preview-alpha-2 blocked codex)
+  a_w3=$(fake_agent w-docs "$trees/alpha/worktree-warm-hill-5e6f" preview-alpha-3 idle opencode)
+  a_w4=$(fake_agent w-cache "$trees/alpha/worktree-dry-lake-7a8b" preview-alpha-4 "done" claude-code)
+  b_sup=$(fake_agent beta-supervisor "$b" preview-beta working claude-code)
+  # Started by hand: Corgi's status does not know it, so it shows its own title.
+  fake_agent beta-by-hand "$b" preview-beta working codex "Trying the importer by hand" >/dev/null
+  fake_agent notes "$notes" preview-notes none sh >/dev/null
+
+  {
+    printf '{"generated":"__NOW__","daemon":{"installed":true,"pid":4242,"running":true},"hc":{"error":null,"running":true},"projects":['
+    status_project alpha "$a" 1 1 \
+      "$(status_agent alpha-supervisor supervisor "done" Supervisor "$a_sup" "$a" '' '')" \
+      "$(status_agent w-export-columns worker working "Rename the export columns and keep the old names readable for one release" "$a_w1" "$trees/alpha/worktree-quiet-river-1a2b" "$trees/alpha/worktree-quiet-river-1a2b" '')" \
+      "$(status_agent w-login-test worker blocked "Fix the flaky login test" "$a_w2" "$trees/alpha/worktree-tall-pine-3c4d" "$trees/alpha/worktree-tall-pine-3c4d" '')" \
+      "$(status_agent w-docs worker idle "Docs" "$a_w3" "$trees/alpha/worktree-warm-hill-5e6f" "$trees/alpha/worktree-warm-hill-5e6f" '')" \
+      "$(status_agent w-cache worker "done" "Cache the parsed schedule between runs" "$a_w4" "$trees/alpha/worktree-dry-lake-7a8b" "$trees/alpha/worktree-dry-lake-7a8b" merge)"
+    printf ','
+    status_project beta "$b" 0 0 "$(status_agent beta-supervisor supervisor working Supervisor "$b_sup" "$b" '' '')"
+    printf ']}\n'
+  } >"$fake/status.json"
+
+  cat >"$fake/corgi" <<CORGI
+#!/bin/sh
+# scripts/app-preview's canned corgi: the made-up projects' status, and
+# target/release/corgi for everything else.
+if [ "\${1:-}" = status ]; then
+  exec sed "s/__NOW__/\$(date -u +%Y-%m-%dT%H:%M:%SZ)/" "$fake/status.json"
+fi
+exec "$corgi" "\$@"
+CORGI
+  chmod 755 "$fake/corgi"
+}
+
+# Ends every terminal of the preview's core by its address, then the core.
+stop_fakes() {
+  [[ -d "$dir/state" ]] || return 0
+  local status pids address pid
+  status=$(hcp server status --json 2>/dev/null) || status=
+  pids=$(printf '%s' "$status" | grep -o '"pid":[0-9]*' | cut -d : -f 2 | sort -u)
+  for address in $(hcp ls --json --all 2>/dev/null | grep -o '"address":"[^"]*"' | cut -d '"' -f 4); do
+    hcp kill "$address" >/dev/null 2>&1 || true
+    hcp rm "$address" >/dev/null 2>&1 || say "could not remove terminal $address of the preview's core"
+  done
+  hcp server stop >/dev/null 2>&1 || say "could not stop the preview's core"
+  for pid in $pids; do
+    wait_for 40 not_alive "$pid" || say "pid $pid of the preview's core is still running"
+  done
+}
+not_alive() { ! alive "$1"; }
+
+# --- the commands -----------------------------------------------------------------
+
+cmd_start() {
+  [[ $# -eq 0 ]] || die "start takes no argument"
+  [[ "$(uname -s)" == Darwin ]] || die "only macOS so far (on Linux, Herdr's own scripts/sandbox does this)"
+  [[ -x "$corgi" ]] || die "no $corgi: run cargo build --release first"
+  mkdir -p "$dir"
+
+  if running; then
+    install_mods
+    say "installed this checkout's mods again in the open window"
+    return 0
+  fi
+
+  copy_app
+  seed_home
+  park_window
+  ln -sfn "$dir" "$link"
+  [[ "$(readlink "$link")" == "$dir" ]] || die "$link is not a link to $dir"
+  start_fakes
+
+  # With the environment an app started from the Dock has, and none of this
+  # shell's (HC_TERMINAL_ID and the like name the person's core).
+  env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${USER:-}" SHELL="${SHELL:-/bin/sh}" LANG=en_US.UTF-8 \
+    TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    HERDR_APP_HOME="$home" HERDR_TELEMETRY=0 HC_SESSION=preview XDG_STATE_HOME="$state" \
+    nohup "$exe" >"$dir/app.log" 2>&1 </dev/null &
+  local pid=$!
+  echo "$pid" >"$dir/pid"
+  wait_for 120 running || die "the window did not answer on $home/herdr-app.sock; see $dir/app.log (its pid is $pid)"
+  move_window "$pid"
+
+  install_mods
+  app "do" layout.switch --name corgi >/dev/null || die "could not switch the window to the corgi layout"
+  wait_for 80 app shot "$dir/.frame.png" || die "the window drew no frame"
+  rm -f "$dir/.frame.png"
+  say "the window is open (pid $pid), on a herdr-core of its own with made-up projects"
+  say "next: scripts/app-preview shot <name>, do <command>, stop"
+}
+
+cmd_shot() {
+  running || die "no preview window: scripts/app-preview start"
+  local name=${1:-shot-$(date +%H%M%S)}
+  app shot "$dir/${name%.png}.png"
+}
+
+# Commands that reach outside the preview: the installed app and core, and
+# the person's other apps.
+refused() {
+  case $1 in
+    app.quit | window.close) echo "close the window with scripts/app-preview stop" ;;
+    window.minimize) echo "a minimized window draws no more frames, so every shot would show the last one" ;;
+    app.update | app.update_core | app.check_updates) echo "it updates the installed Herdr or herdr-core" ;;
+    app.hide_others | app.show_all | app.feedback) echo "it reaches outside the preview window" ;;
+  esac
+}
+
+cmd_do() {
+  [[ $# -gt 0 ]] || die "do needs a command (herdr-app commands lists them)"
+  local why
+  why=$(refused "${1%%:*}")
+  [[ -z "$why" ]] || die "$1 is refused: $why"
+  running || die "no preview window: scripts/app-preview start"
+  app "do" "$@"
+}
+
+cmd_stop() {
+  local pid
+  pid=$(cat "$dir/pid" 2>/dev/null) || pid=
+  [[ ! -d "$dir" ]] || ln -sfn "$dir" "$link"
+  if running; then
+    app "do" app.quit >/dev/null 2>&1 || true
+  fi
+  if alive "$pid" && ! wait_for 40 not_alive "$pid"; then
+    # Its own pid, once, and only while that pid still runs the preview's copy.
+    if lsof -a -p "$pid" -d txt 2>/dev/null | grep -qF "$exe"; then
+      kill "$pid" 2>/dev/null || true
+      wait_for 40 not_alive "$pid" || say "the window (pid $pid) did not close"
+    else
+      say "pid $pid is not the preview window: left alone"
+    fi
+  fi
+  if [[ -d "$dir" ]]; then
+    stop_fakes
+    rm -rf "$dir/state" "$fake" "$link.files"
+    rm -f "$link"
+  fi
+  rm -f "$dir/pid" "$dir/home/herdr-app.sock"
+  say "closed"
+}
+
+case ${1:-} in
+  start)
+    shift
+    cmd_start "$@"
+    ;;
+  shot)
+    shift
+    cmd_shot "$@"
+    ;;
+  do)
+    shift
+    cmd_do "$@"
+    ;;
+  status | ls)
+    running || die "no preview window: scripts/app-preview start"
+    app "$1"
+    ;;
+  stop) cmd_stop ;;
+  -h | --help | '')
+    sed -n '2,53p' "$0"
+    ;;
+  *) die "unknown command $1 (see --help)" ;;
+esac

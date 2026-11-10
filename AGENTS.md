@@ -480,13 +480,108 @@ problem and progress) and whose `render` adds the rows in question, built
 from made-up agents. `check` fails on a builder the app lacks, so a passing
 copy means every element of those views is one the app can make. Neither
 shows what the window really draws (widths, where text is cut, which keys
-reach a field): only a look at the window does.
+reach a field): only a look at the window does, and the window to look at
+is the preview window below, never the user's.
+
+### The preview window
+
+`scripts/app-preview` opens a Herdr app window of the worktree's own, with
+the worktree's mods and layout in it, on an app home, a copy of the app and
+a herdr-core of its own, all under `target/app-preview/`. Check every
+change to a mod or to the layout in it before handing off, after the two
+fast checks above:
+
+```bash
+cargo build --release                  # the mods run target/release/corgi
+scripts/app-preview start              # again after an edit: installs the mods again
+scripts/app-preview do projects.open   # any command of `herdr-app commands`, or a mod's own
+scripts/app-preview shot open-project  # prints target/app-preview/open-project.png
+scripts/app-preview status             # layout, focus, and errors from mods and files
+scripts/app-preview stop               # always, before the final report
+```
+
+Read each picture yourself (the Read tool shows a PNG) and say what looks
+wrong in it, also when it is not your change's. A change that is visual
+(what a view draws: a row, a width, a color, an element, where text is cut,
+a state's mark) attaches screenshots to its report: each one's path under
+`target/app-preview/` with a line on what it shows, taken at the sidebar's
+own width and at a narrow one (`do layout.resize --id sidebar --px 190`)
+when text can be cut. A change that is not visual (an installer step, a
+command's arguments, a test, a doc) attaches none and says that it is not.
+The window is also there to try a change while working on it: `do tab.new
+--name x --argv '["sh"]'`, `do space.new`, and `hc` on its core (the
+`hcp` function in the script shows the environment) make whatever state a
+view needs, and `stop` removes all of it.
+
+The window shows made-up projects: `alpha` with a supervisor and four
+workers in worktrees (working, blocked, idle and done, one tagged to
+merge, one with a long task and one with a short one), `beta` with a
+working supervisor and an agent started by hand, and `notes`, a folder in
+no repository. The agents are a script that reports a state to herdr-core
+(OSC 7501) and sleeps; their tasks and roles come from a canned `corgi
+status --json` (`target/app-preview/fake/corgi`), which passes every other
+command to the worktree's `target/release/corgi` with the preview's state
+directory. Change the made-up projects in `start_fakes` when a view needs
+a state they lack. `scripts/test-app-preview` runs the script against a
+fake app, hc, AeroSpace and corgi, opening nothing: run it, and
+`shellcheck scripts/app-preview scripts/test-app-preview`, after changing
+the script. What its choices rest on:
+
+- The window is never put on the user's core. A second window there shows
+  their real agents, but it is no onlooker: a terminal has one size, so the
+  pane the second window shows is resized to its size in the user's window
+  too (a supervisor's screen was redrawn at the test window's width for
+  the seconds a test ran), and the spaces are one document that every window's mods
+  write (the Projects mod reorders them with `space.move`).
+- The app is run from a copy of the installed `Herdr.app`: it stages its
+  own update beside its executable and swaps it in when it quits, which a
+  second copy of the user's app would do under their running one. The home
+  is seeded with `update-notes.json` naming the app's version, since a
+  first start after an update also updates herdr-core, and with
+  `"frame.welcomed": "skipped"` in `shared.json`.
+- The app serves its commands on `<home>/herdr-app.sock`, and a home under
+  a worktree's `target/` is longer than a socket path may be (the app then
+  runs with no socket: `no Herdr window … path must be shorter than
+  SUN_LEN`). The home is given through a link in `/tmp`; so is the core's
+  state (`XDG_STATE_HOME`).
+- AeroSpace lists no window of an app started from a worker's shell under
+  herdr-core, whether run directly, with `open`, or as a launchd job in the
+  user's `gui/` domain: `NSWorkspace` does not count that process as a
+  running app, although its window is on screen. So the window cannot be
+  moved to workspace 4, as the user's rule for headed windows asks. It is
+  kept off their screen by its place instead: the app opens where
+  `window.json` says it was, so the script writes the bottom right corner
+  of the screen there, one point of the window showing, which is where
+  AeroSpace itself keeps a hidden workspace's windows. The app takes the
+  place only together with the `display` id it wrote itself (read from the
+  user's `window.json`, never written), and only inside the screen: a
+  place outside it is ignored and the window opens in the middle. It
+  takes no focus. `open -n` left the app stopped (`ps` state `T`), with a
+  process to remove by pid.
+- The app draws no frame while minimized, so `shot` then repeats the last
+  one; in the corner it draws every frame. `do window.minimize` is refused
+  for that reason, with the commands that reach outside the preview
+  (`app.update`, `app.update_core`, `app.quit`, …).
+- Launch the app with `env -i`: a worker's `HC_TERMINAL_ID` and
+  `HC_TERMINAL_SOCKET` name the user's core. A core of one's own is
+  `HC_SESSION=<name>` with `XDG_STATE_HOME`, started with `SSH_CONNECTION`
+  set (see "Testing `corgi daemon`"); `hc server status` starts a stopped
+  core too.
+- A folder under `target/` is inside Corgi's own repository to `git`, so
+  the made-up projects are repositories of their own there, and the folder
+  in no repository is outside the checkout (`/tmp/corgi-ap-….files/notes`,
+  with no folder beside it: `corgi projects` offers a space's neighbours as
+  "nearby").
+- `herdr-app/install.sh --mod-only` writes no `config.json`, and a mod
+  without one finds the user's `corgi` on `PATH`: the script writes the
+  file after each install, which reloads the mod once more.
 
 A status from a private core's live test
 (see "Testing on hc") shows hc agents, a MERGE tag and the daemon line; stop
 that test's daemon, then its core, for the daemon warning and the
 `herdr-core not running` badge. Never open the app window (`herdr-app` with no
-command) from an agent; it takes over the user's screen. In a mod, a
+command) from an agent; it takes over the user's screen
+(`scripts/app-preview` is the one way to open one). In a mod, a
 `.when(cond, fn)` callback must return the element it was given, and text
 for one line goes through the mod's `oneLine`, since a `\n` starts a second
 line even in a truncated element. A click goes to every element under the
@@ -505,8 +600,8 @@ run can land in Corgi's real state:
 builds the layout with the worktree's `target/release/corgi`; edit that
 copy of `main.json` to see a rebuild, or a kept build. Putting a mod or a
 layout into the user's real `~/.config/herdr-app` from a worktree, even to
-look at it, is refused by the permission rules here: ask the user to look
-(`herdr-app shot` after they switch) instead.
+look at it, is refused by the permission rules here: look at it in the
+preview window instead.
 
 A terminal started with `hc run --bg --keep --label herdr.space=<new id>
 --cwd <dir>` shows in the app as a new space without the window switching
