@@ -39,7 +39,7 @@ Usage: corgi projects --json [--query TEXT] [--open DIR]...
 Prints the projects to offer for \"Open project\" as one JSON object, in the
 order the new-agent form lists them: projects with agents on herdr-core (hc),
 the ones open in the Herdr app (each --open DIR, a folder a space is in),
-directories beside those, then the ones Corgi remembers. With --query only
+Git repositories beside those, then the ones Corgi remembers. With --query only
 those matching every word of TEXT, and, as the form does:
 
   an absolute path (or ~/…)  the directories that complete it, the directory
@@ -477,9 +477,11 @@ mod tests {
         let repos = fs::canonicalize(&*scratch).unwrap().join("repos");
         let [weather, zebra, _beside] = ["weather", "zebra", "beside"].map(|name| {
             let dir = repos.join(name);
-            fs::create_dir_all(&dir).unwrap();
+            fs::create_dir_all(dir.join(".git")).unwrap();
             dir.to_string_lossy().into_owned()
         });
+        // A plain folder beside them is no project to offer.
+        fs::create_dir_all(repos.join("worktrees")).unwrap();
         let agents = [
             supervisor(&weather, "t3", false),
             DashboardAgent {

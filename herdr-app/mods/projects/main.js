@@ -118,6 +118,9 @@ function stateMark(t, status) {
 const NO_CORGI = "The corgi command was not found. Install Corgi: run herdr-app/install.sh from its repository.";
 const OLD_CORGI = "This corgi is older than the Projects list. Update Corgi: run herdr-app/install.sh from its repository again.";
 
+// The Open project field's keys, each kept whole when the line wraps.
+const KEYS = ["Enter opens", "Tab completes", "Esc closes"];
+
 // Corgi's word for an agent's state as one of the app's, or null.
 const STATUS = { working: "working", blocked: "blocked", done: "done", idle: "idle" };
 
@@ -438,10 +441,14 @@ export default class Projects extends View {
         .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
         .child(div().flex_1().min_w(0).truncate().child(text));
     // Green for what went well, yellow for a merge that landed but was not
-    // pushed, the color of what needs the person otherwise. Not the states'
-    // colors: a theme's `working` is amber, which would read as a warning.
+    // pushed, blue for a conflict Corgi handed to the supervisor (not
+    // merged, but nothing is left to the person), the color of what needs
+    // the person otherwise. Not the states' colors: a theme's `working` is
+    // amber, which would read as a warning.
+    const handed = o?.result === "conflicts" && Boolean(o.supervisor);
     const color = m.phase === "confirm" || m.phase === "running" ? t.border
       : m.phase === "asked" || o.result === "merged" ? t.ansi2
+      : handed ? t.ansi4
       : o.result === "push-failed" ? t.ansi3 : t.blocked;
     const panel = v_flex()
       .id(`merge-panel-${m.terminal}`)
@@ -479,7 +486,7 @@ export default class Projects extends View {
     // already: `corgi merge` aborts one and hands it over by itself.
     const askable = Boolean(o.error) && this.supervised(m.dir);
     return panel
-      .child(div().text_color(color).font_semibold().child(`${m.name}: ${o.result}`))
+      .child(div().text_color(color).font_semibold().whitespace_normal().child(handed ? `${m.name}: conflicts, handed to ${o.supervisor}` : `${m.name}: ${o.result}`))
       .child(div().whitespace_normal().child(oneLine(o.message)))
       .when(Boolean(m.problem), (el) => el.child(div().text_color(t.blocked).whitespace_normal().child(m.problem)))
       .when(m.phase === "asking", (el) => el.child(waiting("Asking the supervisor…")))
@@ -753,8 +760,13 @@ export default class Projects extends View {
       )
       .when(Boolean(this.problem), (el) => el.child(div().px(8).py(3).text_size(11.5).text_color(t.blocked).whitespace_normal().child(this.problem)))
       .child(
-        h_flex().px(8).pt(2).gap(6).items_center().text_size(10.5).text_color(t.dim)
-          .child(div().flex_1().min_w(0).truncate().child("Enter opens · Tab completes · Esc"))
+        // The keys wrap whole, a key with what it does, rather than be cut:
+        // at the sidebar's own width the last goes to a second line.
+        h_flex().px(8).pt(2).gap(6).items_start().text_size(10.5).text_color(t.dim)
+          .child(
+            h_flex().id("open-keys").flex_1().min_w(0).flex_wrap().gap_x(8)
+              .children(KEYS.map((k) => div().flex_none().whitespace_nowrap().child(k))),
+          )
           .child(
             div().id("open-plain-space").flex_none().px(5).rounded(4).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
               .tooltip("A space with a shell and no project")

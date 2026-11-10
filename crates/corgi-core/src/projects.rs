@@ -278,9 +278,12 @@ pub fn known_projects(
     projects
 }
 
-/// Adds visible directory siblings of `root` that Corgi does not know yet.
+/// Adds visible Git repositories beside `root` that Corgi does not know yet.
 /// Open repositories tend to be collected under one `projects` directory, so
 /// this makes the next repository available without first opening it in Herdr.
+/// A plain folder there (a `worktrees` folder, notes) is no project to offer;
+/// one Corgi knows is listed under its own source, and a typed path still
+/// reaches any folder.
 fn discover_siblings(root: &str, known: &[Project], nearby: &mut Vec<Project>) {
     let Some(parent) = Path::new(root).parent() else {
         return;
@@ -290,7 +293,10 @@ fn discover_siblings(root: &str, known: &[Project], nearby: &mut Vec<Project>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+        if !path.is_dir()
+            || entry.file_name().to_string_lossy().starts_with('.')
+            || !is_git_repository(&path)
+        {
             continue;
         }
         let root = path.to_string_lossy().into_owned();
@@ -302,6 +308,12 @@ fn discover_siblings(root: &str, known: &[Project], nearby: &mut Vec<Project>) {
             nearby.push(project(&root, ProjectSource::Nearby));
         }
     }
+}
+
+/// Whether `dir` is the top of a Git checkout: a `.git` directory, or the
+/// `.git` file of a linked worktree or submodule.
+fn is_git_repository(dir: &Path) -> bool {
+    dir.join(".git").exists()
 }
 
 fn project(root: &str, source: ProjectSource) -> Project {
@@ -617,12 +629,16 @@ mod tests {
     }
 
     #[test]
-    fn nearby_directories_of_open_projects_are_suggested() {
+    fn nearby_repositories_of_open_projects_are_suggested_but_not_plain_folders() {
         let dir = ScratchDir::new("projects-nearby");
         let supervisor = dir.join("corgi");
         let other = dir.join("other-project");
+        let linked = dir.join("linked-worktree");
         fs::create_dir_all(&supervisor).expect("create open project");
-        fs::create_dir_all(&other).expect("create sibling project");
+        fs::create_dir_all(other.join(".git")).expect("create sibling repository");
+        fs::create_dir_all(&linked).expect("create linked worktree");
+        fs::write(linked.join(".git"), "gitdir: /elsewhere\n").expect("write .git file");
+        fs::create_dir_all(dir.join("worktrees")).expect("create a plain folder");
 
         let projects = known_projects(
             &[],
@@ -637,6 +653,11 @@ mod tests {
                     root: supervisor.to_string_lossy().into_owned(),
                     name: "corgi".into(),
                     source: ProjectSource::Open,
+                },
+                Project {
+                    root: linked.to_string_lossy().into_owned(),
+                    name: "linked-worktree".into(),
+                    source: ProjectSource::Nearby,
                 },
                 Project {
                     root: other.to_string_lossy().into_owned(),
