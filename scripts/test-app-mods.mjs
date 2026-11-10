@@ -388,8 +388,12 @@ async function projects(w) {
   // agents under it, the supervisor first, in place of its worktrees' rows;
   // a worktree with no agent keeps its row.
   assert.deepEqual(ids(root, 'space-').concat(), ['space-sp-corgi', 'space-sp-weather', 'space-sp-quiet', 'space-sp-home']);
+  // Under the header, the herd card: the agents by state, a state with
+  // none left out (no usage: this corgi does not answer `usage`).
+  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', '1', '!', '1', '1', '2']);
+  assert.deepEqual(ids(root, 'herd-'), ['herd-card', 'herd-working', 'herd-blocked', 'herd-done', 'herd-idle']);
   assert.deepEqual(
-    drawn.slice(1),
+    drawn.slice(7),
     [
       'C', 'Corgi',
       'W', 'weather',
@@ -461,8 +465,9 @@ async function projects(w) {
   click(root, 'agent-t3', mod.cx, 'on_mouse_down:right');
   assert.deepEqual(w.ran.at(-1)[1].props, { tab: 'space', target: { id: 'sp-calm' } });
 
-  // Corgi is read as often as the Corgi mod reads it, and no more.
-  assert.deepEqual(mod.cx.timers.map((timer) => timer.ms).sort((a, b) => a - b), [250, 1000, 5000, 15000]);
+  // Corgi is read as often as the Corgi mod reads it, and no more; plan
+  // usage each minute, as often as its cache is renewed.
+  assert.deepEqual(mod.cx.timers.map((timer) => timer.ms).sort((a, b) => a - b), [250, 1000, 5000, 15000, 60000]);
   const reads = () => w.execs.filter((call) => call[1] === 'status').length;
   const before = reads();
   await mod.tick(5000);
@@ -537,9 +542,12 @@ async function projects(w) {
   const w = window();
   w.programs = [git];
   const mod = await projects(w);
-  const drawn = texts(mod.render());
+  const root = mod.render();
+  const drawn = texts(root);
+  // The herd card counts the app's agents alone: with no usage, no plan lines.
+  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', '1', '!', '1', '1', '1']);
   assert.deepEqual(
-    drawn.slice(3),
+    drawn.slice(9),
     ['W', 'weather', 'Weather supervisor', 'Fixing the cache', 'Review the cache fix', '!', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code'],
     drawn.join(' | '),
   );
@@ -568,6 +576,97 @@ async function projects(w) {
   w.sidebar = 76;
   click(mod.render(), 'rail-unfold', mod.cx);
   assert.equal(w.sidebar, 268);
+}
+
+// --- The herd and plan usage card ---------------------------------------------------
+
+{
+  const now = Math.floor(Date.now() / 1000);
+  const usage = {
+    version: 1,
+    now,
+    providers: [
+      { provider: 'codex', title: 'CODEX', usage: null, fetched_at: null, error: 'codex app-server timed out' },
+      {
+        provider: 'claude', title: 'CLAUDE', fetched_at: now - 150, error: null,
+        usage: { provider: 'claude', plan_type: 'Max', banked_resets: null, five_hour: { used_percent: 31, resets_at: now + 8070 }, week: { used_percent: 86, resets_at: now + 310_000 } },
+      },
+    ],
+  };
+  const w = window({ usage: () => usage });
+  w.sidebar = 357;
+  const mod = await projects(w);
+  const usageRuns = () => w.execs.filter((call) => call[1] === 'usage');
+  // Read once Corgi answers status, then each minute, never with status.
+  assert.deepEqual(usageRuns().map((call) => call.slice(1)), [['usage', '--json']]);
+  await mod.tick(5000);
+  assert.equal(usageRuns().length, 1);
+  await mod.tick(60000);
+  assert.equal(usageRuns().length, 2);
+
+  const root = mod.render();
+  const card = byId(root, 'herd-card');
+  // Above the rows, under the header (and its field, when open).
+  const drawn = texts(root);
+  assert.deepEqual(drawn.slice(0, 2), ['Projects', 'HERD']);
+  assert.ok(drawn.indexOf('weather') > drawn.indexOf('CLAUDE'), 'the card stands above the rows');
+  assert.deepEqual(texts(card), [
+    'HERD', '1', '!', '1', '1', '2',
+    'CODEX', 'unavailable',
+    'CLAUDE', '5h', '31%', '2h 14m', '7d', '86%', '3d 14h',
+  ]);
+  // The card's own colors are the theme's, whatever the agents' states (one
+  // is blocked here): its border and every title dim.
+  assert.equal(card.calls.border_color[0], '#border');
+  const colorOf = (root, text) => {
+    let found = null;
+    walk(root, (node) => {
+      if (found === null && node.children?.length === 1 && kept(node.children[0]) === text) found = node.calls.text_color?.[0] ?? null;
+    });
+    return found;
+  };
+  for (const title of ['HERD', 'CODEX', 'CLAUDE']) assert.equal(colorOf(card, title), '#dim', title);
+  // The windows in the dashboard's colors.
+  assert.equal(colorOf(card, '31%'), '#ansi2');
+  assert.equal(colorOf(card, '86%'), '#ansi1');
+  // The plan and the reading's age are the line's tooltip; a failed reading's
+  // line says why.
+  assert.equal(byId(root, 'usage-claude').calls.tooltip[0], 'Max · read 2m ago');
+  assert.equal(byId(root, 'usage-codex').calls.tooltip[0], 'codex app-server timed out');
+  // A state's count says what it counts.
+  assert.equal(byId(root, 'herd-blocked').calls.tooltip[0], '1 blocked');
+  // At Herdr's own 268 px the reset times go whole, into the tooltip.
+  w.sidebar = 268;
+  const narrow = mod.render();
+  assert.deepEqual(texts(byId(narrow, 'usage-claude')), ['CLAUDE', '5h', '31%', '7d', '86%']);
+  assert.equal(byId(narrow, 'usage-claude').calls.tooltip[0], 'Max · read 2m ago · 5h resets in 2h 14m · 7d resets in 3d 14h');
+
+  // A worker tagged ready to merge counts as MERGE, not as its state; the
+  // middle window's yellow.
+  usage.providers[1].usage.five_hour.used_percent = 64;
+  const status = structuredClone(STATUS);
+  status.projects[0].agents[0].tag = 'merge';
+  const tagged = window({ status, usage: () => usage });
+  const again = await projects(tagged);
+  const card2 = byId(again.render(), 'herd-card');
+  assert.deepEqual(ids(card2, 'herd-'), ['herd-card', 'herd-blocked', 'herd-merge', 'herd-done', 'herd-idle']);
+  assert.equal(colorOf(card2, '64%'), '#ansi3');
+
+  // The rail has no room for it.
+  tagged.sidebar = 76;
+  assert.equal(byId(again.render(), 'herd-card'), null);
+}
+
+{
+  // Neither agents nor plans: no card.
+  const w = window({ usage: { version: 1, now: 0, providers: [] } });
+  w.agents = [];
+  w.panes = [];
+  const status = structuredClone(STATUS);
+  status.projects[0].agents = [];
+  w.programs = [git, corgi({ status, usage: { version: 1, now: 0, providers: [] } })];
+  const mod = await projects(w);
+  assert.equal(byId(mod.render(), 'herd-card'), null);
 }
 
 // --- Pull, from a checkout's ↓N ----------------------------------------------------------
