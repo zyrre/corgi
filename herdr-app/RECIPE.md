@@ -153,14 +153,15 @@ The Projects mod fills its block on `chrome`, text 13 px:
     After `merged` it asks, under Corgi's message, `Close <worker> and
     remove its worktree?` with `Keep` (`raised`) and `Close` (`solid`, with
     a 1 px outline in `solid` that turns `foreground` while it holds the
-    keyboard); then a spinner and `Closing…`; then Corgi's message, its
-    paths under the home folder as `~/…`, in `ansi2`, and `Dismiss`. A
-    close refused for changes in the worktree turns the outline `blocked`
-    and shows Corgi's message (which names them) in `blocked`, then `Close
-    <worker> anyway and discard them?` with `Keep` and `Close anyway`
-    (`solid`); a close that failed shows its message in `blocked` on a
-    `blocked` outline. Once the worker is closed its row is gone with its
-    space, and the card stands after the project's last agent row instead.
+    keyboard); then a spinner and `Closing…`. A close that went through
+    puts the card away at once, with nothing to dismiss. A close refused
+    for changes in the worktree turns the outline `blocked` and shows
+    Corgi's message (which names them, paths under the home folder as
+    `~/…`) in `blocked`, then `Close <worker> anyway and discard them?`
+    with `Keep` and `Close anyway` (`solid`); a close that failed shows its
+    message in `blocked` on a `blocked` outline, and `Dismiss`. If the
+    worker's row goes with its space while the card is still up, the card
+    stands after the project's last agent row instead.
   - A worktree's space with no agent in it keeps a 28 px row of its own
     under its project: a branch glyph and the space's name.
   - A space outside a repository with agents in it has their rows under it
@@ -306,9 +307,10 @@ The Projects list:
   space once its last terminal is gone (a terminal of the person's in it
   keeps it). A worktree with uncommitted or untracked changes is refused
   (`reason` `dirty`, `dirty` listing them) and nothing is closed: `Close
-  anyway` runs it again with `--force`, which discards them. `Keep` puts
-  the question away and leaves the plain result. Then the status is read
-  again. `corgi close` refuses a supervisor and an agent Corgi did not
+  anyway` runs it again with `--force`, which discards them. A close that
+  went through (`closed`) ends the flow: the card goes at once and only a
+  refusal or a failure is shown. `Keep` puts the question away and leaves
+  the plain result. Then the status is read again. `corgi close` refuses a supervisor and an agent Corgi did not
   start.
 - `Ask supervisor to fix` is offered on a failed push, a failed fetch, and
   a merge that failed or was refused before it started (uncommitted changes

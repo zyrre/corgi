@@ -196,8 +196,9 @@ export default class Projects extends View {
     // name, dir, branch, base, phase, outcome, problem, closed }. Its phases:
     // confirm, running, result, asking (the supervisor), asked; once merged
     // and pushed, offer (close the worker?), closing, dirty (refused: the
-    // worktree has changes) and closed (`closed`: how the close went), shown
-    // under the project once the worker's row is gone.
+    // worktree has changes) and closed (`closed`: a close that did not go
+    // through), shown under the project once the worker's row is gone. A
+    // close that went through puts the card away.
     this.merge = null;
     // The offer's Close, which holds the keyboard so that Enter takes it.
     this.closeFocus = cx.focus_handle();
@@ -376,8 +377,10 @@ export default class Projects extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       const closed = await this.corgiJson("close", [m.name, "--project", m.dir, "--json", ...(force ? ["--force"] : [])], "The close");
+      // Closed: that ends it, and the card goes with the worker's row.
+      // Only a refusal or a failure is left for the person.
       const dirty = closed.result === "refused" && closed.reason === "dirty";
-      this.merge = { ...m, phase: dirty ? "dirty" : "closed", closed };
+      this.merge = closed.result === "closed" ? null : { ...m, phase: dirty ? "dirty" : "closed", closed };
       cx.notify();
       this.refreshCorgi(cx);
     });
@@ -487,7 +490,7 @@ export default class Projects extends View {
     // The close after it: a worktree with changes, or a close that did not
     // go through, needs the person.
     const c = m.closed;
-    const border = m.phase === "dirty" || (m.phase === "closed" && c?.result !== "closed") ? t.blocked : color;
+    const border = m.phase === "dirty" || m.phase === "closed" ? t.blocked : color;
     const panel = v_flex()
       .id(`merge-panel-${m.terminal}`)
       .flex_none()
@@ -554,7 +557,7 @@ export default class Projects extends View {
       return panel
         .child(title)
         .child(said)
-        .child(div().text_color(c.result === "closed" ? t.ansi2 : t.blocked).whitespace_normal().child(tildePaths(oneLine(c.message)) || `The close ${c.result}.`))
+        .child(div().text_color(t.blocked).whitespace_normal().child(tildePaths(oneLine(c.message)) || `The close ${c.result}.`))
         .child(buttons(dismiss));
     }
     const retry = o.reason === "behind" ? ["Pull, merge + push", ["--pull"]] : o.reason === "fetch-failed" ? ["Merge + push without fetching", ["--skip-upstream"]] : null;
@@ -1144,8 +1147,9 @@ export default class Projects extends View {
         }
         order.push(a.address);
       }
-      // A closed worker's row is gone with its space: how the close went
-      // stands under its project's agents instead.
+      // A closing worker's row may go with its space before the close
+      // answers: the card, and a close that did not go through, stand under
+      // its project's agents instead.
       const m = this.merge;
       const closing = m?.phase === "closing" || m?.phase === "closed";
       if (!panel && closing && (head.at === m.dir || members.some(({ a }) => a.corgi?.project === m.dir))) out.push(this.mergePanel(m, t));
