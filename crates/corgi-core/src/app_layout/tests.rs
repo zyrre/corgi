@@ -157,13 +157,74 @@ fn add_gitlab(layout: &mut Value) {
         .push(json!({ "id": "gitlab", "type": "block", "content": { "mod": "gitlab" } }));
 }
 
-/// `main` with Corgi's one change: Projects for Spaces, no Agents.
+/// `main` with Corgi's one change: Projects for Spaces, no Agents, and
+/// Corgi's brand row.
 fn with_projects(mut layout: Value) -> Value {
     *find_mut(&mut layout, "sidebar-lists").unwrap() = json!({
         "id": "sidebar-lists", "type": "column", "children": [
             { "id": "spaces", "type": "block", "size": { "weight": 1 }, "min": 90,
               "content": { "mod": "projects" } } ] });
+    find_mut(&mut layout, "brand").unwrap()["content"]["mod"] = "corgi-brand".into();
     layout
+}
+
+/// The mod a node of `layout` shows.
+fn mod_of<'a>(layout: &'a mut Value, id: &str) -> &'a str {
+    shown_mod(find_mut(layout, id).unwrap()).unwrap()
+}
+
+#[test]
+fn the_brand_row_is_corgis_once_and_the_footer_and_other_mods_stay() {
+    let mut layout = main_layout();
+    add_gitlab(&mut layout);
+    assert_eq!(put_projects(&mut layout), Ok(Change::Edited));
+    assert_eq!(mod_of(&mut layout, "brand"), "corgi-brand");
+    // The footer is the same mod's, and stays Herdr's.
+    assert_eq!(mod_of(&mut layout, "sidebar-footer"), "workspace-chrome");
+    assert_eq!(
+        find_mut(&mut layout, "sidebar-footer").unwrap()["content"]["props"],
+        json!({ "footer": true })
+    );
+    assert_eq!(mod_of(&mut layout, "tabs"), "tabs-gitlab");
+    assert_eq!(mod_of(&mut layout, "gitlab"), "gitlab");
+    let mut expected = with_projects(main_layout());
+    add_gitlab(&mut expected);
+    assert_eq!(layout, expected);
+    // Again: nothing to do.
+    assert_eq!(put_projects(&mut layout), Ok(Change::Unchanged));
+    assert_eq!(layout, expected);
+
+    // A layout Corgi changed before it had a brand row gets it, once.
+    let mut older = with_projects(main_layout());
+    find_mut(&mut older, "brand").unwrap()["content"]["mod"] = "workspace-chrome".into();
+    add_gitlab(&mut older);
+    assert_eq!(put_projects(&mut older), Ok(Change::Edited));
+    assert_eq!(older, expected);
+    assert_eq!(put_projects(&mut older), Ok(Change::Unchanged));
+
+    // A brand row of someone else's mod is theirs.
+    let mut theirs = main_layout();
+    find_mut(&mut theirs, "brand").unwrap()["content"]["mod"] = "my-brand".into();
+    assert_eq!(put_projects(&mut theirs), Ok(Change::Edited));
+    assert_eq!(mod_of(&mut theirs, "brand"), "my-brand");
+}
+
+#[test]
+fn a_layout_without_a_brand_block_gets_the_projects_list_alone() {
+    let mut layout = main_layout();
+    let sidebar = &mut layout["children"][0]["children"];
+    sidebar.as_array_mut().unwrap().remove(0);
+    let before = layout.clone();
+    assert_eq!(put_projects(&mut layout), Ok(Change::Edited));
+    assert_eq!(count(&layout, "corgi-brand"), 0);
+    assert_eq!(count(&layout, "projects"), 1);
+    assert_eq!(count(&layout, "workspace-chrome"), 1, "the footer");
+    assert_eq!(put_projects(&mut layout), Ok(Change::Unchanged));
+    // And remove puts back what it had, no brand row added.
+    assert!(take_projects(&mut layout, |_| json!({
+        "id": "agents", "type": "block", "size": { "weight": 1 }, "min": 90,
+        "content": { "mod": "agents" } })));
+    assert_eq!(layout, before);
 }
 
 #[test]
@@ -421,18 +482,38 @@ fn restore_puts_spaces_and_agents_back_where_projects_was() {
     fake.put("mine", &mine);
     fake.put("plain", &json!({ "id": "root", "type": "row" }));
 
-    assert_eq!(restore(fake.home(), None).unwrap(), ["corgi", "mine"]);
-    let restored = fake.get("corgi");
+    // A layout with Corgi's brand row alone (its lists put back by hand).
+    let mut brand_only = main_layout();
+    find_mut(&mut brand_only, "brand").unwrap()["content"]["mod"] = "corgi-brand".into();
+    fake.put("brand-only", &brand_only);
+
+    assert_eq!(
+        restore(fake.home(), None).unwrap(),
+        ["brand-only", "corgi", "mine"]
+    );
+    assert_eq!(fake.get("brand-only"), main_layout());
+    let mut restored = fake.get("corgi");
     assert_eq!(lists(&restored), lists(&main_layout()));
+    assert_eq!(mod_of(&mut restored, "brand"), "workspace-chrome");
+    assert_eq!(mod_of(&mut restored, "sidebar-footer"), "workspace-chrome");
+    assert_eq!(mod_of(&mut restored, "tabs"), "tabs-gitlab");
+    assert_eq!(count(&restored, "corgi-brand"), 0);
     assert_eq!(count(&restored, "gitlab"), 1, "herdr-gitlab's panel stays");
     assert!(restored.get("cloned_from").is_some());
-    let mine = fake.get("mine");
+    let mut mine = fake.get("mine");
     assert_eq!(lists(&mine), lists(&main_layout()));
     assert_eq!(mine["children"][0]["size"]["px"], 300);
+    assert_eq!(mod_of(&mut mine, "brand"), "workspace-chrome");
     // No layout is deleted, and the window is not switched.
     assert_eq!(
         fake.files(),
-        ["corgi.json", "main.json", "mine.json", "plain.json"]
+        [
+            "brand-only.json",
+            "corgi.json",
+            "main.json",
+            "mine.json",
+            "plain.json"
+        ]
     );
     assert!(fake.calls().iter().all(|c| !c.contains("switch")));
     // Nothing left to restore.

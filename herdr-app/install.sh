@@ -40,7 +40,8 @@
 #     in skips it and says so, and one where OpenCode reports by itself
 #     removes Corgi's plugin
 #   - the mods: herdr-app/mods/projects (the Projects list of the
-#     sidebar) and herdr-app/mods/corgi (an overview of every project, shown
+#     sidebar), herdr-app/mods/corgi-brand (the sidebar's top row, "Herdr +
+#     Corgi") and herdr-app/mods/corgi (an overview of every project, shown
 #     nowhere until it is given a tab; see `corgi app-space` below) are each
 #     put together in a hidden folder of the app home ($HERDR_APP_HOME, else
 #     ~/.config/herdr-app; --home DIR), with a config.json naming the CLI,
@@ -48,8 +49,8 @@
 #     when it differs from the installed one: the app reloads a mod on every
 #     file it sees change
 #   - the layout: `corgi app-layout` puts the Projects mod in place of the
-#     sidebar's Spaces and takes out its Agents list, and changes nothing
-#     else: a layout of the person's own in place; Herdr's shipped main is
+#     sidebar's Spaces, takes out its Agents list and puts the brand mod in
+#     the sidebar's brand row, and changes nothing else: a layout of the person's own in place; Herdr's shipped main is
 #     first cloned to layouts/corgi.json, which an open window switches to.
 #     Run again, it changes nothing
 #
@@ -185,6 +186,7 @@ ours() { [ ! -e "$1" ] || grep -q 'io.github.zyrre.corgi' "$1/main.js" 2>/dev/nu
 mod_title() {
   case $1 in
     projects) echo "Projects mod" ;;
+    corgi-brand) echo "brand row mod" ;;
     *) echo "Corgi mod" ;;
   esac
 }
@@ -312,7 +314,7 @@ if [ -n "$uninstall" ]; then
     app_layout remove || say "could not put Spaces and Agents back in the layouts in $home_dir/layouts; run $bin app-layout remove"
     [ -n "$home_given" ] || "$bin" daemon uninstall || say "could not remove the corgi daemon; run $bin daemon uninstall"
   else
-    say "no $bin to put Spaces back with: in $home_dir/layouts/*.json make the \"projects\" block \"spaces\" again"
+    say "no $bin to put Spaces back with: in $home_dir/layouts/*.json make the \"projects\" block \"spaces\" and the \"corgi-brand\" block \"workspace-chrome\" again"
     [ -n "$home_given" ] || say "and remove the daemon with: corgi daemon uninstall"
   fi
   # The daemon, OpenCode's plugin and the link are this machine's, not an
@@ -323,7 +325,7 @@ if [ -n "$uninstall" ]; then
     remove_oc_plugin "removed Corgi's OpenCode plugin $oc_plugin"
     rm -f "$oc_answer"
   fi
-  for name in corgi projects; do
+  for name in corgi projects corgi-brand; do
     mod_dir="$mods/$name"
     if [ -d "$mod_dir" ]; then
       ours "$mod_dir" || die "$mod_dir is not Corgi's mod; leaving it"
@@ -440,9 +442,11 @@ install_mod() {
   fi
 }
 
-# The Projects mod before the layout that shows it. The Corgi mod is left
-# alone when it is the one that asked (--cli-only): it is running.
+# The Projects and brand row mods before the layout that shows them. The
+# Corgi mod is left alone when it is the one that asked (--cli-only): it is
+# running.
 install_mod projects
+install_mod corgi-brand
 [ -n "$cli_only" ] || install_mod corgi
 
 # --- the layout ------------------------------------------------------------------------

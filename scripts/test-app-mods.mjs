@@ -213,7 +213,8 @@ async function start(mod, w) {
     },
   };
   const view = new module.default();
-  view.init({}, cx);
+  // A mod with nothing to set up (the brand row) has no init.
+  view.init?.({}, cx);
   // Runs until no task is left running, the ones started meanwhile too.
   const settle = async () => {
     while (tasks.length) await tasks.shift();
@@ -1120,6 +1121,68 @@ for (const outcome of [
   w.sidebar = 76;
   const rail = await projects(w);
   assert.equal(byId(rail.render(), 'corgi-version'), null);
+}
+
+// --- the brand row: "Herdr + Corgi" at the sidebar's top --------------------------------
+
+// The images and icons under `el`, by path.
+function pictures(el) {
+  const out = [];
+  walk(el, (node) => {
+    if (node.kind === 'image' || node.kind === 'svg') out.push(node.args[0]);
+  });
+  return out;
+}
+
+// At the sidebar's width: both logos and names, the `+` dim between them,
+// the two names alike, Corgi's cut first, and the shipped row's buttons.
+{
+  const w = world();
+  const mod = await start('corgi-brand', w);
+  const root = mod.render();
+  assert.deepEqual(texts(root), ['Herdr', '+', 'Corgi']);
+  assert.deepEqual(pictures(root), ['frame/welcome/herdr.png', 'mods/corgi-brand/corgi.png', 'mods/corgi-brand/search.svg', 'mods/corgi-brand/sidebar.svg']);
+  assert.deepEqual(kept(root).calls.pl, [76], 'room for the traffic lights');
+  const herdr = byId(root, 'brand-herdr');
+  const corgi = byId(root, 'brand-corgi');
+  for (const name of [herdr, corgi]) {
+    assert.ok(name.calls.font_semibold && name.calls.truncate, 'a name is semibold and cut with …');
+    assert.deepEqual(name.calls.text_color, ['#foreground']);
+    assert.deepEqual(name.calls.min_w, [0]);
+  }
+  const half = byId(root, 'brand-corgi-half');
+  assert.ok(half.calls.flex_shrink[0] >= 1000 * herdr.calls.flex_shrink[0], 'Corgi gives way before Herdr');
+  assert.ok(half.calls.overflow_hidden && byId(root, 'brand-names').calls.overflow_hidden, 'nothing spills under the buttons');
+  assert.deepEqual(texts(half), ['+', 'Corgi']);
+  assert.deepEqual(byId(root, 'brand-plus').calls.text_color, ['#dim']);
+  assert.ok(!byId(root, 'brand-plus').calls.font_semibold);
+  walk(root, (node) => {
+    if (node.kind === 'image') assert.deepEqual([node.calls.size, node.calls.rounded], [[20], [5]], node.args[0]);
+  });
+  // The buttons do what the shipped row's do.
+  click(root, 'search', mod.cx);
+  assert.deepEqual(w.ran.at(-1), ['mod.open', { name: 'picker' }]);
+  assert.ok(byId(root, 'search').handlers['on_mouse_down:left'], 'a press on a button does not drag the window');
+  click(root, 'sidebar-toggle', mod.cx);
+  assert.deepEqual(w.ran.at(-1), ['layout.resize', { id: 'sidebar', px: 76 }]);
+  assert.equal(w.shared['sidebar.width'], 268);
+  assert.equal(w.shared['sidebar.collapsed'], true);
+
+  // The macOS rail: the traffic lights fill it, as in the shipped row.
+  const rail = mod.render();
+  assert.deepEqual(texts(rail), []);
+  assert.deepEqual(pictures(rail), []);
+  assert.deepEqual(kept(rail).calls.pl, [6]);
+
+  // Elsewhere the rail keeps the toggle, which unfolds it to the width it had.
+  w.api.window = () => ({ platform: 'linux', active: true, fullscreen: false });
+  w.sidebar = 44;
+  const other = mod.render();
+  assert.deepEqual(texts(other), []);
+  assert.deepEqual(pictures(other), ['mods/corgi-brand/sidebar.svg']);
+  click(other, 'sidebar-toggle', mod.cx);
+  assert.deepEqual(w.ran.at(-1), ['layout.resize', { id: 'sidebar', px: 268 }]);
+  assert.deepEqual(kept(mod.render()).calls.pl, [14], 'no traffic lights off macOS');
 }
 
 // --- Corgi's layout: the installer changes it, never a mod ------------------------------

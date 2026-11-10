@@ -686,6 +686,9 @@ new_app_state() {
   cp "$app_dir/install.sh" "$state/checkout/herdr-app/install.sh"
   cp "$app_dir/mods/corgi/main.js" "$app_dir/mods/corgi/mod.json" "$state/checkout/herdr-app/mods/corgi/"
   cp "$app_dir/mods/projects/main.js" "$app_dir/mods/projects/mod.json" "$state/checkout/herdr-app/mods/projects/"
+  # The brand row mod whole: its logo and icons are files of its own.
+  cp -R "$app_dir/mods/corgi-brand" "$state/checkout/herdr-app/mods/"
+  rm -f "$state/checkout/herdr-app/mods/corgi-brand/jsconfig.json" "$state/checkout/herdr-app/mods/corgi-brand"/*.d.ts
   mkdir -p "$state/checkout/herdr-app/opencode"
   cp "$app_dir/opencode/corgi-hc-status.js" "$state/checkout/herdr-app/opencode/"
   cat >"$state/bin/herdr-app" <<'FAKE_APP'
@@ -722,6 +725,7 @@ count_daemon() { grep -c "^corgi daemon $2\$" "$1/calls.log" || true; }
 
 app_mod() { echo "$1/home/.config/herdr-app/mods/corgi"; }
 projects_mod() { echo "$1/home/.config/herdr-app/mods/projects"; }
+brand_mod() { echo "$1/home/.config/herdr-app/mods/corgi-brand"; }
 # The `corgi app-layout` calls, one per line.
 layout_calls() { grep '^corgi app-layout' "$1/calls.log" || true; }
 real_checkout() { (cd "$1/checkout" && pwd -P); }
@@ -748,8 +752,11 @@ test_app_install() {
   check "app: names the CLI for the mod" "{ \"corgi\": \"$bin\" }" "$(cat "$mod/config.json" 2>/dev/null)"
   check "app: copies the Projects mod" "yes" "$([[ -f "$projects/main.js" && -f "$projects/mod.json" ]] && echo yes || echo no)"
   check "app: names the CLI for the Projects mod" "{ \"corgi\": \"$bin\" }" "$(cat "$projects/config.json" 2>/dev/null)"
-  check "app: checks each mod before it goes in, the Projects mod first" \
-    "herdr-app check $stage/projects|herdr-app check $stage/corgi" \
+  check "app: copies the brand row mod, its logo and icons too" "yes" \
+    "$(cd "$(brand_mod "$state")" 2>/dev/null && [[ -f main.js && -f mod.json && -f corgi.png && -f search.svg && -f sidebar.svg ]] && echo yes || echo no)"
+  check_stderr "app: says it installed the brand row mod" "installed the brand row mod in $(brand_mod "$state")" "$state"
+  check "app: checks each mod before it goes in, the sidebar's first" \
+    "herdr-app check $stage/projects|herdr-app check $stage/corgi-brand|herdr-app check $stage/corgi" \
     "$(grep '^herdr-app check' "$state/calls.log" | tr '\n' '|' | sed 's/|$//')"
   check "app: leaves what check writes out" "no" \
     "$([[ -e "$mod/jsconfig.json" || -e "$mod/gpui-kit.d.ts" || -e "$projects/jsconfig.json" || -e "$projects/gpui-kit.d.ts" ]] && echo yes || echo no)"
@@ -758,7 +765,7 @@ test_app_install() {
   check_stderr "app: says it installed the Projects mod" "installed the Projects mod in $projects" "$state"
   check "app: puts the Projects list into the layout of the app's home, asking its window" \
     "corgi app-layout --app $state/bin/herdr-app --home $state/home/.config/herdr-app" "$(layout_calls "$state")"
-  check "app: after the mods are in" "herdr-app check|herdr-app check|corgi app-layout" \
+  check "app: after the mods are in" "herdr-app check|herdr-app check|herdr-app check|corgi app-layout" \
     "$(grep -E '^(herdr-app check|corgi app-layout)' "$state/calls.log" | cut -d ' ' -f 1-2 | tr '\n' '|' | sed 's/|$//')"
   check_stderr "app: says what corgi did to the layout" \
     "so Corgi cloned it to corgi and put its Projects list in the sidebar" "$state"
@@ -881,8 +888,8 @@ test_app_install_options() {
   check "--cli-only: exit status" "0" "$status"
   check "--cli-only: installs the CLI" "corgi $version" "$(installed "$state")"
   check "--cli-only: no Corgi mod (it is the one running this)" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
-  check "--cli-only: the Projects mod, checked" "yes 1" \
-    "$([[ -f "$(projects_mod "$state")/main.js" ]] && echo yes || echo no) $(count_checks "$state")"
+  check "--cli-only: the Projects and brand row mods, checked" "yes yes 2" \
+    "$([[ -f "$(projects_mod "$state")/main.js" ]] && echo yes || echo no) $([[ -f "$(brand_mod "$state")/main.js" ]] && echo yes || echo no) $(count_checks "$state")"
   check "--cli-only: the layout" "corgi app-layout --app $state/bin/herdr-app --home $state/home/.config/herdr-app" "$(layout_calls "$state")"
   check "--cli-only: installs the daemon" "1" "$(count_daemon "$state" install)"
   check "--cli-only: no Corgi space" "" "$(space_calls "$state")"
@@ -947,8 +954,8 @@ test_app_uninstall() {
 
   run_app_install "$state" --uninstall || status=$?
   check "uninstall: exit status" "0" "$status"
-  check "uninstall: mods removed" "no no" \
-    "$([[ -e "$mod" ]] && echo yes || echo no) $([[ -e "$(projects_mod "$state")" ]] && echo yes || echo no)"
+  check "uninstall: mods removed" "no no no" \
+    "$([[ -e "$mod" ]] && echo yes || echo no) $([[ -e "$(projects_mod "$state")" ]] && echo yes || echo no) $([[ -e "$(brand_mod "$state")" ]] && echo yes || echo no)"
   check "uninstall: daemon removed" "1" "$(count_daemon "$state" uninstall)"
   check "uninstall: closes a Corgi space made by hand, then puts Spaces back in the layouts, first" \
     "corgi app-space remove --home $state/home/.config/herdr-app --app $state/bin/herdr-app|corgi app-layout remove --home $state/home/.config/herdr-app|corgi daemon uninstall" \
@@ -991,8 +998,8 @@ test_app_uninstall_home() {
   status=0
   run_app_install "$state" --uninstall --cli --home "$home" || status=$?
   check "uninstall --home: exit status" "0" "$status"
-  check "uninstall --home: the mods in that home removed" "no no" \
-    "$([[ -e "$home/mods/corgi" ]] && echo yes || echo no) $([[ -e "$home/mods/projects" ]] && echo yes || echo no)"
+  check "uninstall --home: the mods in that home removed" "no no no" \
+    "$([[ -e "$home/mods/corgi" ]] && echo yes || echo no) $([[ -e "$home/mods/projects" ]] && echo yes || echo no) $([[ -e "$home/mods/corgi-brand" ]] && echo yes || echo no)"
   check "uninstall --home: Spaces put back in that home's layouts" \
     "corgi app-layout remove --home $home" "$(layout_calls "$state" | grep remove)"
   check "uninstall --home: runs no corgi daemon uninstall" "0" "$(count_daemon "$state" uninstall)"

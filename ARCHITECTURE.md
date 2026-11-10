@@ -2549,8 +2549,10 @@ socket's.
 The app's sidebar is Corgi's: `corgi app-layout`
 (`crates/corgi-core/src/app_layout.rs`), run by `herdr-app/install.sh`,
 puts the Projects mod (`herdr-app/mods/projects`) in place of the sidebar's
-`spaces` block and takes out its `agents` block, in the layout the window
-shows, and changes nothing else in it, so other mods (herdr-gitlab's panel)
+`spaces` block, takes out its `agents` block and puts the brand row mod
+(`herdr-app/mods/corgi-brand`, "Herdr + Corgi") in its `brand` block in
+place of `workspace-chrome`, in the layout the window shows, and changes
+nothing else in it (the sidebar's footer stays `workspace-chrome`'s), so other mods (herdr-gitlab's panel)
 can change the same layout. Herdr's shipped layouts and mods are read-only
 (replaced whole on every start, an edited one moved aside), so a shipped
 `main` is first cloned to `corgi`, as `layout.clone` does, and the window

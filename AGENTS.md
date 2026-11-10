@@ -440,13 +440,18 @@ shellcheck scripts/install.sh scripts/link-command.sh scripts/test-install herdr
 
 ## The Herdr app mod
 
-`herdr-app/mods/corgi/` is the Herdr app's Corgi mod and
+`herdr-app/mods/corgi/` is the Herdr app's Corgi mod,
 `herdr-app/mods/projects/` its Projects mod, the list in the layout's
-sidebar; `herdr-app/RECIPE.md` describes them for people and agents, and
-`herdr-app/install.sh` installs them with the CLI and runs `corgi
-app-layout` (`crates/corgi-core/src/app_layout.rs`). That changes one
-thing in the layout the window shows, in place: the sidebar's `spaces`
-block shows `projects` and its `agents` block goes. A shipped layout
+sidebar, and `herdr-app/mods/corgi-brand/` its brand row mod, the
+"Herdr + Corgi" row at the sidebar's top; `herdr-app/RECIPE.md` describes
+them for people and agents, and `herdr-app/install.sh` installs them with
+the CLI and runs `corgi app-layout`
+(`crates/corgi-core/src/app_layout.rs`). That changes one thing in the
+layout the window shows, in place, the left sidebar: its `spaces` block
+shows `projects`, its `agents` block goes, and its `brand` block shows
+`corgi-brand` instead of `workspace-chrome` (the `sidebar-footer` block
+stays `workspace-chrome`'s; a layout without a `brand` block keeps the
+rest of the change). A shipped layout
 (`main`) is first cloned to `corgi`, as `layout.clone` does, and switched
 to; Corgi never rebuilds a layout from `main` and no mod touches the
 layout, so other mods' changes to it (herdr-gitlab's `gitlab` block in
@@ -464,7 +469,9 @@ are read-only: Herdr replaces them on every start and moves an edited one
 aside, so never edit them, and never switch the user's window to another
 layout without being asked to (the install's switch to the `corgi` clone
 is what the user asks for by installing). The Projects mod began as a copy of Herdr's
-`spaces` and is Corgi's own: it follows no later version of it.
+`spaces`, and the brand row mod as a copy of the brand row of Herdr's
+`workspace-chrome` (with its own copies of the two icons it draws); both
+are Corgi's own and follow no later version of them.
 
 Test `corgi app-space` against a fake `herdr-app` (its tests do), never
 the user's app. The Corgi
@@ -474,8 +481,9 @@ Projects mod reads the same status, runs the same `corgi merge` from a
 tagged worker's MERGE mark (and `corgi merge … --ask-supervisor` for
 "Ask supervisor to fix"), and runs `corgi projects` and `corgi
 open` (`src/app/open.rs`). Check every change with
-`herdr-app check herdr-app/mods/corgi` and `herdr-app check
-herdr-app/mods/projects` (it writes `jsconfig.json` and
+`herdr-app check herdr-app/mods/corgi`, `herdr-app check
+herdr-app/mods/projects` and `herdr-app check herdr-app/mods/corgi-brand`
+(it writes `jsconfig.json` and
 `gpui-kit.d.ts` there, which Git ignores). `check` renders only the first
 frame (the "Reading Corgi's status…" line; the Projects list with its field
 closed and no agents), so a mistake in another view passes it. Two things
@@ -485,7 +493,7 @@ cover the rest. The first must pass before a mod change is handed off:
 node scripts/test-app-mods.mjs
 ```
 
-It runs both mods under Node with stand-ins for `gpui-kit`, `gpui-base` and
+It runs the mods under Node with stand-ins for `gpui-kit`, `gpui-base` and
 `herdr` (chainable records whose `child`, `when` and `on_*` calls are kept,
 so a test reads each view's texts and calls its click and key handlers) and
 canned answers for `git` and `corgi`; add a case there for what you change.
@@ -632,7 +640,7 @@ run can land in Corgi's real state:
 `XDG_STATE_HOME=<scratch>/state sh herdr-app/install.sh --mod-only --home
 <scratch>/app` (`--uninstall --home` removes only what is in that home;
 an install without `--mod-only` still installs the user's daemon and
-OpenCode plugin). It checks both mods with the real `herdr-app check` and
+OpenCode plugin). It checks the mods with the real `herdr-app check` and
 changes the layout with the worktree's `target/release/corgi`; with no
 window on that home the shipped `main` is cloned to `corgi` by hand
 (`layout.clone` needs the window). The preview window is the place to see
@@ -669,7 +677,7 @@ CORGI_BUILD=source herdr-app/install.sh
 
 It builds `target/release/corgi` from what is checked out, installs the
 daemon's service again, which restarts the daemon on the new binary, puts
-both mods into the app's home when they differ, and makes sure the layout
+the mods into the app's home when they differ, and makes sure the layout
 has the Projects list (which, once it has, changes nothing). Nothing else
 needs reloading: the app reloads a mod the moment its files change (each
 shown copy starts over, so an open "Open project" field or a merge's result

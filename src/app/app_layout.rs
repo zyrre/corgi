@@ -17,8 +17,9 @@ Usage: corgi app-layout [--layout NAME] [--app PATH] [--home DIR] [--json]
        corgi app-layout remove [--layout NAME] [--home DIR]
 
 Puts Corgi's Projects list into the Herdr app's sidebar, in place of Spaces,
-and takes out the Agents list, which Projects shows too. Nothing else in the
-layout changes, so other mods' changes to it stay. The layout is the one the
+and takes out the Agents list, which Projects shows too; the brand row at
+the sidebar's top shows Corgi's (\"Herdr + Corgi\") in place of Herdr's.
+Nothing else in the layout changes, so other mods' changes to it stay. The layout is the one the
 window shows (or showed last), or NAME:
 
   - one of your own is edited in place;
@@ -31,9 +32,9 @@ Run again, it changes nothing: it only makes sure the Projects list is
 there, and does not follow Herdr's later changes to main. A layout with no
 Spaces or Projects list in its sidebar is left as it is, and why is printed.
 
-  remove        puts Herdr's Spaces and Agents lists back in each of your
-                layouts that shows the Projects list (or in NAME); no layout
-                is deleted and the window is not switched
+  remove        puts Herdr's Spaces and Agents lists and its brand row back
+                in each of your layouts that shows Corgi's (or in NAME); no
+                layout is deleted and the window is not switched
 
   --layout NAME the layout to change, instead of the one the window shows
   --home DIR    the app's home (default: $HERDR_APP_HOME, else
