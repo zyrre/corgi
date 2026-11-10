@@ -77,7 +77,11 @@ jobs:
         run: |
           out=$(dist/corgi-${{ matrix.target }} --version)
           echo "$out"
-          [ "$out" = "corgi ${TAG#v}" ] || { echo "::error::expected corgi ${TAG#v}"; exit 1; }
+          # The version, then the commit it was built from: corgi 0.2.4 (5b50895).
+          case $out in
+            "corgi ${TAG#v}" | "corgi ${TAG#v} ("*")") ;;
+            *) echo "::error::expected corgi ${TAG#v}"; exit 1 ;;
+          esac
 
       - name: Check the Linux binary is static
         if: contains(matrix.target, 'musl')

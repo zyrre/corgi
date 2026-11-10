@@ -33,7 +33,7 @@ Commands:
   serve       Speak the frontend protocol on stdio, for a desktop GUI
 
 Run corgi COMMAND --help for a command's options, and corgi --version for the
-version.";
+version and the commit it was built from (--version --json for both as JSON).";
 
 /// Whether the arguments after the program name start the dashboard: none,
 /// or `--compact` as the plugin's `quick` pane passes it.
@@ -50,7 +50,7 @@ fn main() -> Result<()> {
     };
     match args.get(1).map(String::as_str) {
         // scripts/install.sh runs this to check a downloaded release binary.
-        Some("--version" | "-V") => usage(concat!("corgi ", env!("CARGO_PKG_VERSION"))),
+        Some("--version" | "-V") => corgi::version::version_command(&args[2..]),
         Some("spawn") if help() => usage(corgi::app::SPAWN_USAGE),
         Some("spawn") => corgi::app::spawn(&args[2..]),
         Some("--help" | "-h" | "help") => usage(USAGE),

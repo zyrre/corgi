@@ -385,6 +385,27 @@ test_wrong_version_builds_from_source() {
   check_stderr "wrong version: says why" "is not $version (it said: corgi 0.0.1)" "$state"
 }
 
+# --- test: a binary that names its commit after the version is that version --
+test_version_with_commit() {
+  local state status reports
+  for reports in "corgi $version (5b50895)" "corgi $version (5b50895, modified)"; do
+    status=0
+    state="$(new_state version-commit)"
+    publish_release "$state" "$reports"
+    run_install "$state" || status=$?
+    check "version with commit: exit status ($reports)" "0" "$status"
+    check "version with commit: installs the release binary" "$reports" "$(installed "$state")"
+    check "version with commit: cargo not run" "0" "$(count_cargo "$state")"
+  done
+  # Only a commit in brackets may follow: a longer version is another one.
+  for reports in "corgi ${version}0" "corgi $version-rc1" "corgi $version (5b50895) and more"; do
+    state="$(new_state version-commit-wrong)"
+    publish_release "$state" "$reports"
+    run_install "$state" || true
+    check "version with commit: $reports builds from source" "corgi built from source" "$(installed "$state")"
+  done
+}
+
 # A matching remote checksum must never authorize replacement bytes, even
 # when they claim the correct version. The marker catches execution at --version.
 test_replaced_remote_artifacts() {
@@ -1123,6 +1144,7 @@ test_checksum_mismatch_builds_from_source
 test_missing_asset_builds_from_source
 test_missing_release_builds_from_source
 test_wrong_version_builds_from_source
+test_version_with_commit
 test_cargo_failure_fails_install
 test_no_cargo_fails_clearly
 test_herdr_install_links_command

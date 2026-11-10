@@ -37,8 +37,8 @@ use super::{
     hc_cli::hc_project_root,
     launch::CORGI_REQUEST_TOKEN,
     merge::{
-        MergeError, Upstream, abort_merge, conflict_item, merge_form, project_supervisor,
-        run_merge, tell_supervisor_about_merge,
+        ConflictHelp, MergeError, Upstream, abort_merge, conflict_item, handoff, merge_form,
+        project_supervisor, push_failed_item, refused_form, run_merge, tell_supervisor_about_merge,
     },
 };
 
@@ -59,11 +59,15 @@ Agents on the Herdr TUI are not listed. hc is asked only when its core already
 runs, since asking it would start one: when it does not, the projects still
 come from the state directories, without agents, and \"hc\".\"running\" is
 false. \"daemon\" says whether corgi daemon runs for the core (\"running\",
-\"pid\") and whether its service is installed (\"installed\"). It changes
-nothing.";
+\"pid\"), the build it runs (\"build\": version, commit, dirty) and whether
+its service is installed (\"installed\"). \"corgi\" is this binary's build, as
+corgi --version --json prints it, and \"newer\": the branch and the number of
+commits the checkout it was built in has that the build lacks, or null. It
+changes nothing.";
 
 pub const MERGE_USAGE: &str = "\
 Usage: corgi merge NAME --project DIR [--json] [--pull | --skip-upstream]
+       corgi merge NAME --project DIR --ask-supervisor ERROR [--commit COMMIT] [--json]
 
 Merges the branch of worker NAME of DIR's project on herdr-core (hc), from its
 linked worktree, into the branch checked out in the project's primary checkout,
@@ -76,11 +80,20 @@ its inbox. A merge that stops on conflicts is aborted and handed to the
 project's running supervisor, as the dashboard's s does; without one it is left
 in the primary checkout to resolve.
 
-With --json it prints {\"result\", \"message\", \"commit\", \"reason\"}: result
-is merged, conflicts, push-failed or refused; reason says why a refusal was
-(unavailable, behind, fetch-failed, failed, no-agent). It exits 0 only when
-the branch was merged and pushed. A core that is not running is not started:
-the merge is refused as unavailable.";
+With --ask-supervisor it merges nothing: it asks the project's running
+supervisor, in its inbox, to fix the merge that failed or was refused with
+ERROR and to report back, as the dashboard's s does. With --commit, the merge
+landed at COMMIT and it was the push that failed with ERROR. It is refused
+(no-supervisor) when no supervisor of the project runs.
+
+With --json it prints {\"result\", \"message\", \"commit\", \"reason\",
+\"error\"}: result is merged, conflicts, push-failed, refused, or asked for
+--ask-supervisor; reason says why a refusal was (unavailable, behind,
+fetch-failed, failed, no-agent, no-supervisor); error is the failure alone,
+when there is one a supervisor could fix, as --ask-supervisor takes it. It
+exits 0 only when the branch was merged and pushed, or the supervisor asked.
+A core that is not running is not started: the merge is refused as
+unavailable.";
 
 /// `dir` as an existing absolute directory.
 fn existing_dir(dir: &str) -> Result<PathBuf> {
@@ -190,6 +203,8 @@ pub fn status_command(args: &[String]) -> Result<()> {
     );
     // Whether supervisors on hc are woken while the app is closed.
     value["daemon"] = super::daemon::status_value();
+    // Which Corgi answers, and whether its checkout has moved on since.
+    value["corgi"] = crate::version::Build::this().status_value();
     println!("{}", serde_json::to_string(&value)?);
     Ok(())
 }
@@ -334,13 +349,17 @@ fn agent_value(agent: &DashboardAgent, now: u64) -> Value {
 /// How a `corgi merge` ended, as it prints it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MergeOutcome {
-    /// `merged`, `conflicts`, `push-failed` or `refused`.
+    /// `merged`, `conflicts`, `push-failed` or `refused`; `asked` when the
+    /// supervisor was asked to fix one.
     pub(crate) result: &'static str,
     pub(crate) message: String,
     pub(crate) commit: Option<String>,
     /// Why a merge was refused: `unavailable`, `behind`, `fetch-failed`,
-    /// `failed` or `no-agent`.
+    /// `failed`, `no-agent`, or `no-supervisor` for an ask.
     pub(crate) reason: Option<&'static str>,
+    /// The failure alone, when it is one the project's supervisor could be
+    /// asked to fix: what `--ask-supervisor` takes.
+    pub(crate) error: Option<String>,
 }
 
 impl MergeOutcome {
@@ -350,6 +369,15 @@ impl MergeOutcome {
             message,
             commit: None,
             reason: Some(reason),
+            error: None,
+        }
+    }
+
+    /// A refusal a supervisor could fix: `error` is what stopped the merge.
+    fn fixable(reason: &'static str, message: String, error: String) -> Self {
+        Self {
+            error: Some(error),
+            ..Self::refused(reason, message)
         }
     }
 
@@ -359,6 +387,7 @@ impl MergeOutcome {
             "message": self.message,
             "commit": self.commit,
             "reason": self.reason,
+            "error": self.error,
         })
     }
 }
@@ -369,12 +398,23 @@ pub fn merge_command(args: &[String]) -> Result<()> {
     let mut project = None;
     let mut json_output = false;
     let mut upstream: fn(&Upstream) -> Upstream = Upstream::checked;
+    let mut chose_upstream = false;
+    let mut ask = None;
+    let mut landed = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--json" => json_output = true,
-            "--pull" => upstream = Upstream::pulled,
-            "--skip-upstream" => upstream = Upstream::skipped,
+            "--pull" => (upstream, chose_upstream) = (Upstream::pulled, true),
+            "--skip-upstream" => (upstream, chose_upstream) = (Upstream::skipped, true),
+            "--ask-supervisor" => {
+                ask = Some(
+                    args.next()
+                        .context("--ask-supervisor needs the merge's error")?
+                        .clone(),
+                )
+            }
+            "--commit" => landed = Some(args.next().context("--commit needs a commit")?.clone()),
             "--project" => {
                 project = Some(args.next().context("--project needs a directory")?.clone())
             }
@@ -386,10 +426,26 @@ pub fn merge_command(args: &[String]) -> Result<()> {
     let name = name.context(format!("name the agent to merge\n\n{MERGE_USAGE}"))?;
     let project =
         existing_dir(&project.context(format!("--project is required\n\n{MERGE_USAGE}"))?)?;
+    anyhow::ensure!(
+        ask.is_some() || landed.is_none(),
+        "--commit goes with --ask-supervisor\n\n{MERGE_USAGE}"
+    );
+    anyhow::ensure!(
+        ask.is_none() || !chose_upstream,
+        "--ask-supervisor merges nothing: it takes no --pull or --skip-upstream\n\n{MERGE_USAGE}"
+    );
     let root = hc_project_root(&project);
     let mut seen = HcSeen::look();
-    let outcome = match (seen.unavailable(), &seen.client) {
-        (None, Some(client)) => merge_agent(
+    let outcome = match (seen.unavailable(), &seen.client, &ask) {
+        (None, Some(_), Some(error)) => ask_supervisor(
+            &seen.agents,
+            &Inboxes::default(),
+            &name,
+            &root,
+            error,
+            landed.as_deref(),
+        ),
+        (None, Some(client), None) => merge_agent(
             client,
             &mut seen.agents,
             &Inboxes::default(),
@@ -397,19 +453,96 @@ pub fn merge_command(args: &[String]) -> Result<()> {
             &root,
             upstream,
         ),
-        (unavailable, _) => MergeOutcome::refused("unavailable", unavailable.unwrap_or_default()),
+        (unavailable, _, _) => {
+            MergeOutcome::refused("unavailable", unavailable.unwrap_or_default())
+        }
     };
+    let succeeded = matches!(outcome.result, "merged" | "asked");
     if json_output {
         println!("{}", serde_json::to_string(&outcome.json())?);
-    } else if outcome.result == "merged" {
+    } else if succeeded {
         println!("{}", outcome.message);
     } else {
         eprintln!("{}", outcome.message);
     }
-    if outcome.result != "merged" {
+    if !succeeded {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// The worker `name` of the project at `root` among `agents`.
+fn worker_index(agents: &[DashboardAgent], name: &str, root: &str) -> Option<usize> {
+    agents.iter().position(|agent| {
+        agent.project_root == root
+            && !agent.supervisor
+            && (agent.info.display_name() == name || agent.info.name.as_deref() == Some(name))
+    })
+}
+
+/// Asks the running supervisor of the project at `root`, through `inboxes`,
+/// to fix what stopped the merge of the worker `name` with `error`, as the
+/// dashboard's merge dialog does at `s`: the push that failed after the
+/// merge landed at `landed`, or else the merge that failed or was refused.
+/// Nothing is merged or aborted: `corgi merge` hands a conflict over itself.
+pub(crate) fn ask_supervisor(
+    agents: &[DashboardAgent],
+    inboxes: &Inboxes,
+    name: &str,
+    root: &str,
+    error: &str,
+    landed: Option<&str>,
+) -> MergeOutcome {
+    let Some(index) = worker_index(agents, name, root) else {
+        return MergeOutcome::refused("no-agent", format!("No worker {name} runs in {root}"));
+    };
+    let Some(form) = refused_form(
+        &agents[index],
+        error.to_string(),
+        ConflictHelp::NoSupervisor,
+    ) else {
+        return MergeOutcome::refused(
+            "unavailable",
+            "Merge is available only for an agent in a linked worktree".into(),
+        );
+    };
+    let Some(supervisor) = project_supervisor(agents, &form.project_root) else {
+        return MergeOutcome::refused(
+            "no-supervisor",
+            format!("No supervisor of {root} is running to ask"),
+        );
+    };
+    let (item, message) = match landed {
+        Some(commit) => (
+            push_failed_item(&form, commit, error),
+            format!(
+                "Asked {supervisor} about the failed push of {}",
+                form.target_branch
+            ),
+        ),
+        None => match handoff(&form, &supervisor, Some(error)) {
+            Some(handoff) => (handoff.item, handoff.status),
+            None => {
+                return MergeOutcome::refused(
+                    "failed",
+                    "this merge has not failed, so there is nothing to fix".into(),
+                );
+            }
+        },
+    };
+    match inboxes.notify(item) {
+        Ok(()) => MergeOutcome {
+            result: "asked",
+            message,
+            commit: landed.map(str::to_string),
+            reason: None,
+            error: None,
+        },
+        Err(error) => MergeOutcome::refused(
+            "failed",
+            format!("{supervisor} could not be asked: {error:#}"),
+        ),
+    }
 }
 
 /// Merges the branch of the worker `name` of the project at `root` among
@@ -426,18 +559,19 @@ pub(crate) fn merge_agent(
     root: &str,
     upstream: fn(&Upstream) -> Upstream,
 ) -> MergeOutcome {
-    let Some(index) = agents.iter().position(|agent| {
-        agent.project_root == root
-            && !agent.supervisor
-            && (agent.info.display_name() == name || agent.info.name.as_deref() == Some(name))
-    }) else {
+    let Some(index) = worker_index(agents, name, root) else {
         return MergeOutcome::refused("no-agent", format!("No worker {name} runs in {root}"));
     };
     let agent = &agents[index];
     let mut form = match merge_form(agent) {
         Ok(form) => form,
         Err(error) => {
-            return MergeOutcome::refused("unavailable", format!("Merge unavailable: {error:#}"));
+            let error = format!("{error:#}");
+            return MergeOutcome::fixable(
+                "unavailable",
+                format!("Merge unavailable: {error}"),
+                error,
+            );
         }
     };
     form.upstream = upstream(&form.upstream);
@@ -456,6 +590,7 @@ pub(crate) fn merge_agent(
                 message,
                 commit: (!commit.is_empty()).then_some(commit),
                 reason: None,
+                error: None,
             }
         }
         Err(MergeError::PushFailed { commit, error }) => {
@@ -471,6 +606,7 @@ pub(crate) fn merge_agent(
                 message,
                 commit: (!commit.is_empty()).then_some(commit),
                 reason: None,
+                error: Some(error),
             }
         }
         Err(MergeError::Conflicts(files)) => {
@@ -501,6 +637,7 @@ pub(crate) fn merge_agent(
                 message,
                 commit: None,
                 reason: None,
+                error: None,
             }
         }
         Err(MergeError::Behind(commits)) => MergeOutcome::refused(
@@ -512,15 +649,18 @@ pub(crate) fn merge_agent(
                 form.target_branch
             ),
         ),
-        Err(MergeError::FetchFailed(error)) => MergeOutcome::refused(
-            "fetch-failed",
-            format!(
-                "Could not fetch {}: {error}; merge again with --skip-upstream to merge without it",
-                form.upstream.name().unwrap_or("the upstream")
-            ),
-        ),
+        Err(MergeError::FetchFailed(error)) => {
+            let upstream = form.upstream.name().unwrap_or("the upstream");
+            MergeOutcome::fixable(
+                "fetch-failed",
+                format!(
+                    "Could not fetch {upstream}: {error}; merge again with --skip-upstream to merge without it"
+                ),
+                format!("could not fetch {upstream}: {error}"),
+            )
+        }
         Err(MergeError::Failed(error)) => {
-            MergeOutcome::refused("failed", format!("Merge of {what} failed: {error}"))
+            MergeOutcome::fixable("failed", format!("Merge of {what} failed: {error}"), error)
         }
     }
 }
@@ -992,13 +1132,14 @@ mod tests {
                 message: "Merged and pushed worktree/fix into main".into(),
                 commit: Some(commit.clone()),
                 reason: None,
+                error: None,
             }
         );
         assert_eq!(project.head("origin/main"), commit);
         assert_eq!(
             outcome.json(),
             json!({"result": "merged", "message": "Merged and pushed worktree/fix into main",
-                   "commit": commit, "reason": null})
+                   "commit": commit, "reason": null, "error": null})
         );
         let pending = project.pending();
         assert_eq!(pending.len(), 1, "{pending:?}");
@@ -1077,6 +1218,7 @@ mod tests {
             (outcome.result, outcome.reason),
             ("refused", Some("no-agent"))
         );
+        assert_eq!(outcome.error, None, "nothing a supervisor could fix");
 
         let mut agents = vec![project.worker()];
         fs::write(project.repo.join("status.txt"), "edited\n").unwrap();
@@ -1091,6 +1233,97 @@ mod tests {
             outcome.message
         );
         assert_eq!(outcome.json()["commit"], json!(null));
+        // The failure alone, for --ask-supervisor.
+        let error = outcome.error.clone().expect("what refused it");
+        assert_eq!(outcome.message, format!("Merge unavailable: {error}"));
+        assert_eq!(outcome.json()["error"], json!(error));
+    }
+
+    #[test]
+    fn the_supervisor_is_asked_to_fix_a_failed_merge_only_while_one_runs() {
+        let project = Mergeable::new("status-merge-ask");
+        supervisor_state(&project.state, &project.repo);
+        let inboxes = corgi_core::waker::SupervisorWaker::in_dir(&project.state).inboxes();
+        let error = "the primary checkout has uncommitted changes: M status.txt";
+        let ask = |agents: &[DashboardAgent], name: &str, landed: Option<&str>| {
+            ask_supervisor(agents, &inboxes, name, &project.root(), error, landed)
+        };
+        let before = project.head("main");
+
+        // No supervisor runs: nobody is asked, and nothing waits for one.
+        let alone = vec![project.worker()];
+        let outcome = ask(&alone, "w-fix", None);
+        assert_eq!(
+            (outcome.result, outcome.reason),
+            ("refused", Some("no-supervisor"))
+        );
+        assert!(project.pending().is_empty());
+
+        let agents = vec![
+            agent("app-supervisor", &project.repo, true),
+            project.worker(),
+        ];
+        let outcome = ask(&agents, "w-other", None);
+        assert_eq!(
+            (outcome.result, outcome.reason),
+            ("refused", Some("no-agent"))
+        );
+        // The supervisor itself has no branch to merge.
+        let outcome = ask(&agents, "app-supervisor", None);
+        assert_eq!(
+            (outcome.result, outcome.reason),
+            ("refused", Some("no-agent"))
+        );
+        assert!(project.pending().is_empty());
+
+        // A merge that failed or was refused: the line the dashboard's s sends.
+        let outcome = ask(&agents, "w-fix", None);
+        assert_eq!(
+            outcome,
+            MergeOutcome {
+                result: "asked",
+                message: "Asked app-supervisor to fix the merge of w-fix".into(),
+                commit: None,
+                reason: None,
+                error: None,
+            }
+        );
+        let pending = project.pending();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert!(
+            pending[0].starts_with(
+                "[Corgi] Merging w-fix (task \"Fix the status\"), branch worktree/fix in worktree "
+            ) && pending[0].contains(&format!(
+                "failed: {error}. The user asks you to fix it and report back."
+            )),
+            "{pending:?}"
+        );
+        // A push that failed after the merge landed has a line of its own.
+        let outcome = ask(&agents, "w-fix", Some("abc1234"));
+        assert_eq!(
+            (
+                outcome.result,
+                outcome.message.as_str(),
+                outcome.commit.as_deref()
+            ),
+            (
+                "asked",
+                "Asked app-supervisor about the failed push of main",
+                Some("abc1234")
+            )
+        );
+        let pending = project.pending();
+        assert_eq!(pending.len(), 2, "{pending:?}");
+        assert!(
+            pending[1].starts_with("[Corgi] The user asks for help with a failed push.")
+                && pending[1].contains("into main at abc1234")
+                && pending[1].contains(error),
+            "{pending:?}"
+        );
+
+        // Asking merges and aborts nothing.
+        assert_eq!(project.head("main"), before);
+        assert!(!project.mid_merge());
     }
 
     #[test]
@@ -1129,6 +1362,9 @@ mod tests {
             "{}",
             outcome.message
         );
+        let error = outcome.error.clone().expect("the push's error");
+        assert!(error.contains("main is protected"), "{error}");
+        assert!(!error.contains("Merged"), "the failure alone: {error}");
         let pending = project.pending();
         assert_eq!(pending.len(), 1, "{pending:?}");
         assert!(pending[0].contains("push"), "{pending:?}");

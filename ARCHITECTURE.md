@@ -174,7 +174,15 @@ The repository is a Cargo workspace of three crates. The first two are on
   `src/theme/`), the command-line tools and the Omarchy endpoints. Where a
   flow is split, the core holds the work and `src/app/` the form, the keys,
   the background job and the panel, re-exporting the core's items under the
-  paths the dashboard always used (`app::launch::LaunchPlan`, …).
+  paths the dashboard always used (`app::launch::LaunchPlan`, …). Its
+  `build.rs` tells it what it was built from (`src/version.rs`): the commit,
+  whether the files that go into the binary differed from it, and the
+  checkout, none of them outside a Git checkout of Corgi. `corgi --version`
+  prints `corgi 0.2.3 (5b50895)` (`--json` for the whole of it), `corgi
+  status --json` carries it as `corgi`, with `newer` when that checkout has
+  commits the build lacks, and the daemon writes its own into its lock, so
+  the Herdr app's Projects list can say which Corgi runs, that a newer one
+  was merged, and that the daemon still runs another.
 
 Both are the workspace's default members, so `cargo build`, `cargo test`
 and `cargo clippy` at the root cover both. The third is out of the default
@@ -2376,6 +2384,12 @@ project's directory with `--create` as the form does (`launch::create_project`,
 which records it as Corgi's own). A merge of an hc worker takes its checkout and branch from its
 row, refuses (`unavailable`) when the core is not running rather than start
 one, and clears the worker's `corgi.tag` labels as `corgi tag --clear` does.
+Its JSON names the failure alone as `error` when it is one a supervisor
+could fix, and `corgi merge … --ask-supervisor ERROR [--commit COMMIT]`
+(`ask_supervisor`) merges nothing: it puts the line the dashboard's `s`
+sends (`merge::handoff`, or `push_failed_item` with `--commit`) into the
+inbox of the project's running supervisor, and is refused without one. That
+is the Projects mod's "Ask supervisor to fix".
 
 Labels replace pane tokens: `corgi.project` (the primary checkout,
 without symlinks), `corgi.role` (`supervisor` or `worker`), `corgi.request`,
@@ -2476,7 +2490,8 @@ session, and its records are named after the hc core's socket
 socket's.
 
 - **One per core, never starting one.** It holds `daemon/<socket>.lock`
-  (with its pid, which `corgi daemon status` and `corgi status --json`'s
+  (with its pid on the first line and its build, `{version, commit, dirty}`,
+  on the second, which `corgi daemon status` and `corgi status --json`'s
   `daemon` show) and the core's wake lock for its whole life. It waits for
   the core's socket to accept a connection and asks `hc` nothing while it
   does not, since any `hc` command starts a stopped core with the caller's
