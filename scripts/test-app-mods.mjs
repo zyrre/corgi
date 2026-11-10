@@ -97,6 +97,8 @@ function world(overrides = {}) {
     programs: [], // [(command, args, options) => result | promise | undefined]
     ran: [], // app commands: [name, args]
     execs: [], // programs run: [command, ...args]
+    calls: [], // the same, whole: { command, args, options }
+    machineList: [], // the other machines, as `hc machine ls --json` lists them
     toasts: [],
     commands: [], // `<mod>.<command>`s waiting for the mod, as from a key
     agentOrder: null,
@@ -108,7 +110,7 @@ function world(overrides = {}) {
     panes: () => w.panes,
     agents: () => w.agents,
     terminals: () => w.terminals,
-    machines: () => [{ name: null, layout: 'ready' }],
+    machines: () => [{ name: null, layout: 'ready' }, ...w.machineList.map((m) => ({ name: m.name, layout: 'ready' }))],
     focused: () => w.focused,
     layout: () => ({ id: 'root', children: [{ id: 'sidebar', size: { px: w.sidebar }, children: [] }] }),
     window: () => ({ platform: 'macos', active: true, fullscreen: false }),
@@ -142,9 +144,10 @@ function world(overrides = {}) {
     nextCommand: () => (w.commands.length ? Promise.resolve(w.commands.shift()) : Promise.reject(new Error('no more commands in a test'))),
     // No folder is watched here: a mod falls back to its timers.
     watchFolder: () => Promise.reject(new Error('no watch in a test')),
-    hc: async () => ({ code: 0, stdout: '{"machines":[]}', stderr: '' }),
+    hc: async () => ({ code: 0, stdout: JSON.stringify({ machines: w.machineList }), stderr: '' }),
     exec: async (command, args = [], options = {}) => {
       w.execs.push([command, ...args]);
+      w.calls.push({ command, args, options });
       for (const program of w.programs) {
         // An answer, or the promise of one; nothing when it is another program.
         const result = program(command, args, options);
@@ -1681,6 +1684,315 @@ const markOf = (root, id) => {
   w.sidebar = 76;
   const mod = await projects(w);
   assert.equal(byId(mod.render(), 'agents-pause'), null);
+}
+
+// --- Another machine's agents: its own Corgi, through herdr-core ----------------------------
+
+const LAB = 'lab';
+const LAB_CORGI = '/home/jo/.local/bin/corgi';
+const API_TREE = `${TREES}/worktree-calm-forest-4f96`;
+// lab's Corgi: a project in the same folder as this computer's weather
+// (two machines may each have one there), with lab's own terminals t2 and
+// t3, w-api tagged to merge into develop. `paused`: w-api paused, and
+// w-radar too, whose terminal ended with its agent.
+function labStatus({ working = false, paused = false } = {}) {
+  const supervisor = { name: 'weather-supervisor', role: 'supervisor', state: 'idle', task: 'Supervisor', model: 'Opus 5.5', ctx_pct: 10, terminal: 't2', worktree: null, cwd: REPO };
+  const api = { name: 'w-api', role: 'worker', state: working ? 'working' : 'done', task: 'Serve the forecast', model: 'Sonnet 5.5', ctx_pct: 50.2, terminal: 't3', tag: working || paused ? null : 'merge', branch: 'worktree/api', worktree: API_TREE, cwd: API_TREE };
+  const agents = [supervisor, api];
+  if (paused) {
+    Object.assign(api, { state: 'paused', paused: true });
+    agents.push({ name: 'w-radar', role: 'worker', state: 'paused', paused: true, task: 'Fix the radar', terminal: 't20', worktree: `${TREES}/worktree-radar`, cwd: `${TREES}/worktree-radar` });
+  }
+  return {
+    ...structuredClone(STATUS),
+    paused: { any: paused, agents: paused ? [{ name: 'w-api', terminal: 't3' }, { name: 'w-radar', terminal: 't20' }] : [] },
+    projects: [{ ...structuredClone(STATUS.projects[0]), base: 'develop', supervisor, agents }],
+  };
+}
+// This computer's window with lab added and connected: lab's weather space
+// and its worktree's, with lab's supervisor and w-api in them. `located`:
+// what the look for corgi on lab answers (a function of nothing, or a
+// result); `answers`: lab's corgi, as `corgi()` takes them; `local`: this
+// computer's; `pull`: lab's checkout is 2 behind and a pull there answers this.
+function labWindow({ located = { stdout: `${LAB_CORGI}\n` }, answers = {}, local = {}, pull = null } = {}) {
+  const w = window(local);
+  w.machineList = [{ name: LAB, state: 'connected', target: 'jo@lab' }];
+  w.spaces.push(
+    space('lab/sp-weather', 'weather', REPO, { machine: LAB }),
+    space('lab/sp-calm', 'worktree-calm-forest-4f96', API_TREE, { machine: LAB }),
+  );
+  w.panes.push(pane('lab/sp-weather', 'lab/t2', REPO, CLAUDE), pane('lab/sp-calm', 'lab/t3', API_TREE, CLAUDE));
+  // lab's supervisor never titled its terminal: the app gives it its address.
+  w.agents.push(agent('lab/sp-weather', 'lab/t2', 'idle', 'lab/t2'), agent('lab/sp-calm', 'lab/t3', 'done', '✳ Serving the forecast'));
+  w.lab = { answers };
+  w.labPulls = [];
+  w.programs.unshift((command, args, options) => {
+    if (options.on !== LAB) return undefined;
+    if (command === 'sh' && /command -v corgi/.test(args[1])) return typeof located === 'function' ? located() : located;
+    if (command === 'sh' && pull) {
+      assert.match(args[1], PULL_SH);
+      w.labPulls.push(options);
+      return pull;
+    }
+    if (pull && command === 'git' && args.includes('status') && options.cwd === REPO) {
+      return { stdout: '# branch.head main\n# branch.upstream origin/main\n# branch.ab +0 -2\n' };
+    }
+    if (command === LAB_CORGI) return corgi({ status: labStatus(), ...w.lab.answers })(CORGI, args);
+    return undefined;
+  });
+  return w;
+}
+// What ran on lab, and this computer's corgi: [program, args, options].
+const onLab = (w) => w.calls.filter((c) => c.options.on === LAB && c.command !== 'git').map((c) => [c.command, c.args, c.options]);
+const labRuns = (w, verb) => onLab(w).filter(([command, args]) => command === LAB_CORGI && args[0] === verb);
+const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.args[0] === verb).map((c) => [c.args, c.options]);
+
+// lab's agents get their second line and MERGE from lab's own Corgi, found
+// and read through herdr-core; this computer's keep theirs, though the
+// terminals and the folder have the same names.
+{
+  const w = labWindow();
+  const mod = await projects(w);
+  const root = mod.render();
+  assert.deepEqual(byId(root, 'agent-lab/t3').children.map((child) => texts(child)), [['Serve the forecast'], ['Sonnet 5.5', '·', '50%', 'MERGE']]);
+  assert.deepEqual(texts(byId(root, 'agent-lab/t2')), ['Supervisor', 'Opus 5.5', '·', '10%']);
+  assert.deepEqual(byId(root, 'merge-lab/t3').calls.tooltip, ['Merge worktree/api into develop and push'], "lab's project, not this computer's");
+  assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%']);
+  assert.deepEqual(ids(root, 'merge-'), ['merge-lab/t3']);
+  // Under lab's header, after this computer's.
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7', 'agent-lab/t2', 'agent-lab/t3']);
+  // Asked on lab: where corgi is (a shell there), then its status, once.
+  const [look, status] = onLab(w);
+  assert.deepEqual([look[0], look[1][0], look[2]], ['sh', '-c', { on: LAB, timeout: 20000 }]);
+  for (const place of ['$app/mods/projects/config.json', 'command -v corgi', "-lc 'command -v corgi'", '$HOME/.local/bin/corgi', '$HOME/.cargo/bin/corgi']) {
+    assert.ok(look[1][1].includes(place), `the look tries ${place}`);
+  }
+  assert.deepEqual(status, [LAB_CORGI, ['status', '--json'], { on: LAB, timeout: 20000 }]);
+  assert.equal(onLab(w).length, 2);
+  // This computer's corgi is asked as before, with no machine.
+  for (const [, options] of localRuns(w, 'status')) assert.deepEqual(options, { timeout: 20000 });
+  // HERD counts lab's agents too, its tagged worker as MERGE.
+  assert.deepEqual(ids(root, 'herd-'), ['herd-card', 'herd-working', 'herd-blocked', 'herd-merge', 'herd-done', 'herd-idle']);
+  assert.equal(byId(root, 'herd-merge').calls.tooltip[0], '1 to merge');
+  assert.equal(byId(root, 'herd-idle').calls.tooltip[0], '3 idle');
+  assert.equal(byId(root, 'machine-no-corgi-lab'), null);
+}
+
+// lab's corgi is found once, and read every 5 seconds at most, less often
+// when it is slow: never sooner than three times its last read took.
+{
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    let slow = 4000;
+    const w = labWindow({ answers: { status: () => { clock += slow; return labStatus(); } } });
+    const mod = await projects(w);
+    const reads = () => labRuns(w, 'status').length;
+    assert.equal(reads(), 1);
+    // Took 4 s: the next read waits 12 s from its start.
+    clock += 5000;
+    await mod.tick(5000);
+    await mod.tick(1000);
+    assert.equal(reads(), 1);
+    // Live agents changing reads this computer's at once, lab's not yet.
+    w.agents[0] = { ...w.agents[0], status: 'working' };
+    await mod.tick(1000);
+    assert.equal(reads(), 1);
+    clock += 3000;
+    slow = 0;
+    await mod.tick(5000);
+    assert.equal(reads(), 2);
+    // Quick again: every 5 seconds, no sooner.
+    clock += 4999;
+    await mod.tick(5000);
+    assert.equal(reads(), 2);
+    clock += 1;
+    await mod.tick(5000);
+    assert.equal(reads(), 3);
+    assert.equal(onLab(w).filter(([command]) => command === 'sh').length, 1, 'found once');
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+// MERGE on lab's worker: the merge, the close and the question for the
+// supervisor run on lab, and lab's status is read again after each.
+{
+  const MERGED_API = { result: 'merged', message: 'Merged and pushed worktree/api into develop', commit: 'abc1234', reason: null, error: null, supervisor: null };
+  const CLOSED_API = { result: 'closed', message: 'Closed w-api', reason: null, dirty: [], worktree: API_TREE, branch: 'worktree/api', removed: true };
+  const w = labWindow({ answers: { merge: MERGED_API, close: CLOSED_API } });
+  const mod = await projects(w);
+  click(mod.render(), 'merge-lab/t3', mod.cx);
+  assert.deepEqual(texts(byId(mod.render(), 'merge-panel-lab/t3')), ['Merge worktree/api into develop and push?', 'Cancel', 'Merge + push']);
+  const reads = labRuns(w, 'status').length;
+  click(mod.render(), 'merge-confirm-lab/t3', mod.cx);
+  await mod.settle();
+  assert.deepEqual(labRuns(w, 'merge'), [[LAB_CORGI, ['merge', 'w-api', '--project', REPO, '--json'], { timeout: 600000, on: LAB }]]);
+  assert.equal(labRuns(w, 'status').length, reads + 1, 'read again at once');
+  assert.deepEqual(texts(byId(mod.render(), 'merge-panel-lab/t3')).slice(0, 3), ['w-api: merged', MERGED_API.message, 'Close w-api and remove its worktree?']);
+  click(mod.render(), 'close-confirm-lab/t3', mod.cx);
+  await mod.settle();
+  assert.deepEqual(labRuns(w, 'close'), [[LAB_CORGI, ['close', 'w-api', '--project', REPO, '--json'], { timeout: 600000, on: LAB }]]);
+  assert.equal(labRuns(w, 'status').length, reads + 2);
+  assert.deepEqual(localRuns(w, 'merge').concat(localRuns(w, 'close')), [], "nothing of it runs on this computer");
+
+  // A push that failed: lab's supervisor runs (this computer's does not),
+  // so it can be asked, on lab.
+  const failed = { result: 'push-failed', message: 'Merged, but the push failed', commit: 'def5678', reason: null, error: 'rejected: fetch first', supervisor: null };
+  const v = labWindow({ answers: { merge: (args) => (args.includes('--ask-supervisor') ? { result: 'asked', message: 'Asked weather-supervisor' } : failed) } });
+  const other = await projects(v);
+  click(other.render(), 'merge-lab/t3', other.cx);
+  click(other.render(), 'merge-confirm-lab/t3', other.cx);
+  await other.settle();
+  click(other.render(), 'merge-ask-lab/t3', other.cx);
+  await other.settle();
+  assert.deepEqual(labRuns(v, 'merge').map(([, args, options]) => [args.slice(5), options]), [
+    [[], { timeout: 600000, on: LAB }],
+    [['--ask-supervisor', 'rejected: fetch first', '--commit', 'def5678'], { timeout: 600000, on: LAB }],
+  ]);
+  assert.deepEqual(texts(byId(other.render(), 'merge-panel-lab/t3')), ['Asked weather-supervisor', 'Dismiss']);
+}
+
+// A ↓N on lab's checkout pulls there.
+{
+  const w = labWindow({ pull: { stdout: 'Fast-forward\n' } });
+  const mod = await projects(w);
+  const key = JSON.stringify([LAB, REPO]);
+  assert.deepEqual(ids(mod.render(), 'pull-'), [`pull-${key}`], "only lab's checkout is behind");
+  pressPull(mod.render(), key, mod.cx);
+  await mod.settle();
+  assert.deepEqual(w.labPulls, [{ cwd: REPO, on: LAB, timeout: 120000 }]);
+}
+
+// "⏸ Agents" pauses on each machine where an agent of Corgi's works, all
+// at once; an agent left behind is listed with its machine. "▶ Agents"
+// resumes on each machine that has one paused.
+{
+  let finish;
+  const w = labWindow({
+    local: { status: pauseStatus(false), pause: { result: 'paused', message: 'Paused 1 agent', paused: ['w-cache'], failed: [], left: [] } },
+    answers: { status: labStatus({ working: true }), pause: () => new Promise((resolve) => { finish = resolve; }) },
+  });
+  w.agents = w.agents.map((a) => (a.address === 'lab/t3' ? { ...a, status: 'working' } : a));
+  const mod = await projects(w);
+  click(mod.render(), 'agents-pause', mod.cx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(texts(byId(mod.render(), 'agents-pause-panel')), ['Pausing 2 agents…']);
+  assert.deepEqual(localRuns(w, 'pause'), [[['pause', '--json'], { timeout: 300000 }]]);
+  assert.deepEqual(labRuns(w, 'pause'), [[LAB_CORGI, ['pause', '--json'], { timeout: 300000, on: LAB }]]);
+  // What this computer's Corgi says once w-cache is paused.
+  w.programs[2] = corgi({ status: pauseStatus(true) });
+  finish({ result: 'partial', message: 'Paused 0 agents', paused: [], failed: [{ name: 'w-api', why: 'did not exit; left running' }], left: [] });
+  await mod.settle();
+  assert.deepEqual(texts(byId(mod.render(), 'agents-pause-panel')), ['Not paused:', 'w-api on lab: did not exit; left running', 'Dismiss']);
+  assert.deepEqual(header(mod.render()), ['▶ Agents'], "this computer's w-cache is paused");
+
+  // Only lab has agents paused: the resume runs there alone. Its paused
+  // worker whose terminal ended stands under lab's project, not this
+  // computer's of the same folder.
+  const r = labWindow({ local: { status: pauseStatus(false) }, answers: { status: labStatus({ paused: true }), resume: { result: 'resumed', message: 'Resumed 2 agents', resumed: ['w-api', 'w-radar'], failed: [], left: [] } } });
+  const again = await projects(r);
+  const root = again.render();
+  assert.deepEqual(header(root), ['▶ Agents']);
+  assert.match(byId(root, 'agents-pause').calls.tooltip[0], /^Resume the 2 paused agents/);
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7', 'agent-lab/t2', 'agent-lab/t20', 'agent-lab/t3']);
+  assert.equal(markOf(root, 'agent-lab/t20'), '⏸');
+  click(root, 'agents-pause', again.cx);
+  await again.settle();
+  assert.deepEqual(localRuns(r, 'resume'), []);
+  assert.deepEqual(labRuns(r, 'resume'), [[LAB_CORGI, ['resume', '--json'], { timeout: 300000, on: LAB }]]);
+
+  // A machine that refuses while the other pauses is a line of the card's.
+  const refusal = labWindow({
+    local: { status: pauseStatus(false), pause: { result: 'paused', message: 'Paused 1 agent', paused: ['w-cache'], failed: [], left: [] } },
+    answers: { status: labStatus({ working: true }), pause: { code: 1, stdout: JSON.stringify({ result: 'refused', message: 'herdr-core (hc) is not running', paused: [], failed: [], left: [] }) } },
+  });
+  refusal.agents = refusal.agents.map((a) => (a.address === 'lab/t3' ? { ...a, status: 'working' } : a));
+  const third = await projects(refusal);
+  click(third.render(), 'agents-pause', third.cx);
+  await third.settle();
+  assert.deepEqual(texts(byId(third.render(), 'agents-pause-panel')), ['Not paused:', 'Agents on lab: herdr-core (hc) is not running', 'Dismiss']);
+}
+
+// Without corgi on lab its rows show with their own titles and no Corgi
+// data; its header says so once, quietly. It is looked for again a minute
+// later, not every 5 seconds.
+{
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const w = labWindow({ located: { code: 3, stdout: '' } });
+    const mod = await projects(w);
+    const root = mod.render();
+    assert.deepEqual(ids(root, 'machine-no-corgi-'), ['machine-no-corgi-lab']);
+    const note = byId(root, 'machine-no-corgi-lab');
+    assert.deepEqual(texts(note), ["Corgi isn't installed on lab"]);
+    assert.deepEqual(note.calls.text_color, ['#dim']);
+    assert.deepEqual(texts(byId(root, 'agent-lab/t3')), ['Serving the forecast']);
+    assert.deepEqual(texts(byId(root, 'agent-lab/t2')), ['Claude Code']);
+    assert.deepEqual(ids(root, 'merge-'), []);
+    // This computer's rows are as ever.
+    assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%']);
+    const looks = () => onLab(w).filter(([command]) => command === 'sh').length;
+    assert.equal(looks(), 1);
+    assert.deepEqual(labRuns(w, 'status'), []);
+    clock += 30000;
+    await mod.tick(5000);
+    assert.equal(looks(), 1);
+    clock += 30000;
+    await mod.tick(5000);
+    assert.equal(looks(), 2);
+
+    // Removed after it was found: the read that fails looks for it again.
+    let there = true;
+    const v = labWindow({ located: () => (there ? { stdout: `${LAB_CORGI}\n` } : { code: 3, stdout: '' }) });
+    const other = await projects(v);
+    assert.deepEqual(ids(other.render(), 'merge-'), ['merge-lab/t3']);
+    there = false;
+    v.programs.unshift((command) => {
+      if (command === LAB_CORGI) throw new Error(`${LAB_CORGI}: not installed`);
+    });
+    other.view.refreshRemote(LAB, other.cx, true);
+    await other.settle();
+    assert.deepEqual(ids(other.render(), 'merge-'), []);
+    other.view.refreshRemote(LAB, other.cx, true);
+    await other.settle();
+    assert.deepEqual(texts(byId(other.render(), 'machine-no-corgi-lab')), ["Corgi isn't installed on lab"]);
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+// lab away (herdr-core cannot reach it): its rows show without data and
+// nothing is said; a machine that is not connected is not asked at all.
+{
+  const w = labWindow();
+  w.programs.unshift((_command, _args, options) => {
+    if (options.on === LAB) throw new Error('lab is unreachable');
+  });
+  const mod = await projects(w);
+  const root = mod.render();
+  assert.deepEqual(texts(byId(root, 'agent-lab/t3')), ['Serving the forecast']);
+  assert.equal(byId(root, 'machine-no-corgi-lab'), null);
+  assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%']);
+
+  // Data it had goes when it stops answering.
+  const v = labWindow();
+  const other = await projects(v);
+  assert.deepEqual(ids(other.render(), 'merge-'), ['merge-lab/t3']);
+  v.programs.unshift((_command, _args, options) => {
+    if (options.on === LAB) throw new Error('lab is unreachable');
+  });
+  other.view.refreshRemote(LAB, other.cx, true);
+  await other.settle();
+  assert.deepEqual(ids(other.render(), 'merge-'), []);
+
+  const asleep = labWindow();
+  asleep.machineList = [{ name: LAB, state: 'unreachable', target: 'jo@lab' }];
+  await projects(asleep);
+  assert.deepEqual(onLab(asleep), []);
 }
 
 // --- Corgi's layout: the installer changes it, never a mod ------------------------------
