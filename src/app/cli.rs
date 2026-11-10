@@ -94,6 +94,8 @@ pub(super) struct SpawnOptions {
     pub(super) agent_args: Vec<String>,
     /// Where to start the agent, when `--backend` says.
     pub(super) backend: Option<Backend>,
+    /// The existing hc terminal `corgi supervisor --terminal` starts in.
+    pub(super) terminal: Option<String>,
 }
 
 fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
@@ -119,6 +121,7 @@ fn parse_spawn_options(args: &[String]) -> Result<SpawnOptions> {
             "--name" => options.name = Some(value()?),
             "--task-file" => options.task_file = Some(value()?),
             "--request-id" => options.request_id = Some(valid_request_id(value()?)?),
+            "--terminal" => options.terminal = Some(value()?.trim().to_string()),
             "--backend" => {
                 let name = value()?;
                 options.backend = Some(
@@ -171,6 +174,10 @@ fn valid_request_id(id: String) -> Result<String> {
 /// started agent to stdout as one JSON object.
 pub fn spawn(args: &[String]) -> Result<()> {
     let options = parse_spawn_options(args)?;
+    anyhow::ensure!(
+        options.terminal.is_none(),
+        "--terminal is for corgi supervisor; a worker gets a terminal of its own"
+    );
     let project = existing_project_dir(options.project.as_deref())?;
     // Refused before stdin is read, Herdr is asked anything, or a retry's
     // request id is looked up: a refused spawn starts nothing, so a retry
@@ -367,6 +374,13 @@ Options:
   --backend B        herdr (a Herdr TUI pane) or hc (a kept herdr-core shell
                      terminal, for the Herdr app). Default: the one this
                      runs in, else hc unless a Herdr TUI is running
+  --terminal T       On hc, start in the existing terminal T (an address such
+                     as t7, or a name) instead of a new one: a shell waiting
+                     at its prompt, such as a tab open in the Herdr app. It
+                     becomes the project's supervisor terminal, and the space
+                     it is in the project's, where workers nest. Refused for
+                     a terminal with an agent or a running command, and for
+                     one Corgi already uses
 
 Arguments after -- go to the agent CLI unchanged, after the model and effort.";
 
@@ -393,7 +407,15 @@ pub fn supervisor_command(args: &[String]) -> Result<()> {
     let project = existing_project_dir(positional.or(options.project.as_deref()))?;
     anyhow::ensure!(!is_home(&project), SUPERVISOR_HOME_REFUSAL);
     let task = read_task(options.task_file.as_deref(), false)?;
-    if hc_cli::launch_backend(options.backend) == Backend::Hc {
+    // An existing terminal is one of hc's.
+    anyhow::ensure!(
+        options.terminal.is_none() || options.backend != Some(Backend::Herdr),
+        "--terminal names a herdr-core terminal; it does not go with --backend herdr"
+    );
+    let backend = options
+        .backend
+        .or(options.terminal.as_ref().map(|_| Backend::Hc));
+    if hc_cli::launch_backend(backend) == Backend::Hc {
         return print_launch(&hc_cli::supervisor(&options, harness, &project, task)?);
     }
 
@@ -1233,7 +1255,7 @@ fn read_task(task_file: Option<&str>, required: bool) -> Result<String> {
 }
 
 /// `project`, or the current directory, as an existing absolute directory.
-fn existing_project_dir(project: Option<&str>) -> Result<PathBuf> {
+pub(super) fn existing_project_dir(project: Option<&str>) -> Result<PathBuf> {
     let project = match project {
         Some(path) => PathBuf::from(expand_home(path.trim())),
         None => env::current_dir().context("read the current directory")?,
@@ -1551,7 +1573,7 @@ mod tests {
         let options = parse_spawn_options(&args(
             "--project ~/repos/corgi --harness Claude --model opus --effort HIGH \
              --checkout directory --name fix-cache --task-file brief.md \
-             --request-id 20261002-fix-cache --backend hc \
+             --request-id 20261002-fix-cache --backend hc --terminal t7 \
              -- --append-system-prompt-file role.md --name x",
         ))
         .unwrap();
@@ -1568,6 +1590,7 @@ mod tests {
                 request_id: Some("20261002-fix-cache".into()),
                 agent_args: args("--append-system-prompt-file role.md --name x"),
                 backend: Some(Backend::Hc),
+                terminal: Some("t7".into()),
             }
         );
         assert_eq!(
@@ -1586,6 +1609,7 @@ mod tests {
             "--request-id",
             "--backend tmux",
             "--backend",
+            "--terminal",
         ] {
             assert!(
                 parse_spawn_options(&args(bad)).is_err(),

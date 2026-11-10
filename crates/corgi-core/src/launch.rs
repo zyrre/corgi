@@ -534,7 +534,7 @@ fn effort_suffix(harness: &Harness, effort: &str) -> String {
 /// Creates the directory of a new project and records it as one Corgi made.
 /// It stays a plain directory until the project's supervisor makes it a
 /// repository.
-fn create_project(project: &Path, progress: &mut dyn Progress) -> Result<()> {
+pub fn create_project(project: &Path, progress: &mut dyn Progress) -> Result<()> {
     progress.report(format!("Creating project {}…", project.display()));
     // The directory stays plain: the project's supervisor makes it a repository,
     // shaped by the first request, before any worker needs a worktree.

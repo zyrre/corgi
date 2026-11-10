@@ -1,6 +1,9 @@
 //! The Corgi space of the Herdr app (herdr-app): a space named "Corgi" on
-//! this computer, first in the Spaces list, whose only tab shows the `corgi`
-//! mod, the overview the person starts from and jumps to agents from.
+//! this computer, first in the list of spaces, whose only tab shows the
+//! `corgi` mod, an overview of every project. Nothing makes it any more but
+//! a person running `corgi app-space`: the install and the daemon did until
+//! the space was retired, when Corgi's place in the app became the Projects
+//! list of its layout ([`crate::app_layout`]).
 //!
 //! It is the one space Corgi names. A space is recognised by its name,
 //! [`SPACE_NAME`], on this computer: Herdr calls a space nobody named after
@@ -10,10 +13,10 @@
 //! adds the mod's tab, named [`TAB_NAME`], and closes the shell's tab.
 //!
 //! Spaces are kept in herdr-core per machine, but only the app's window
-//! changes them. When the window is not open, `corgi app-space` leaves a note
-//! ([`pending_path`]) and `corgi daemon` makes the space once the window is
-//! open ([`make_pending`]), then deletes the note: the space is made once, so
-//! closing it is the person's choice and sticks.
+//! changes them, so with the window closed there is nothing to make one in.
+//! An earlier Corgi then left a note for `corgi daemon` to make the space
+//! once the window opened; [`forget_pending`] deletes such a note, and
+//! nothing reads one.
 
 use std::{
     fs,
@@ -26,7 +29,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::paths::{corgi_state_dir, home};
@@ -42,7 +45,7 @@ const APP_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The Herdr app to ask: its binary and its home (`HERDR_APP_HOME`), which
 /// also names the window it asks.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HerdrApp {
     pub bin: PathBuf,
     pub home: PathBuf,
@@ -154,8 +157,22 @@ impl HerdrApp {
         Ok(Some(listing.spaces))
     }
 
+    /// The layout the window shows (`herdr-app status`), or `None` when no
+    /// window is open.
+    pub fn shown_layout(&self) -> Result<Option<String>> {
+        let Some(out) = self.call(&["status"])? else {
+            return Ok(None);
+        };
+        let status: Value =
+            serde_json::from_str(&out).context("read what herdr-app status printed")?;
+        Ok(status
+            .get("layout")
+            .and_then(Value::as_str)
+            .map(str::to_string))
+    }
+
     /// Runs app command `name` with `args`; `None` when no window is open.
-    fn command(&self, name: &str, args: Value) -> Result<Option<Value>> {
+    pub(crate) fn command(&self, name: &str, args: Value) -> Result<Option<Value>> {
         let Some(out) = self.call(&["do", name, &args.to_string()])? else {
             return Ok(None);
         };
@@ -276,63 +293,21 @@ pub fn remove(app: &HerdrApp) -> Result<Removed> {
     Ok(Removed::Closed(closed))
 }
 
-/// Where the note that a Corgi space is still to be made is kept: the app
-/// to make it in, as JSON.
-pub fn pending_path() -> Option<PathBuf> {
+/// Where an earlier Corgi noted that a Corgi space was still to be made.
+fn pending_path() -> Option<PathBuf> {
     corgi_state_dir().map(|dir| dir.join("app-space.json"))
 }
 
-/// Notes that the Corgi space is to be made in `app` once its window opens.
-pub fn set_pending(app: &HerdrApp) -> Result<()> {
-    let path = pending_path().context("no home folder for Corgi's state")?;
-    write_pending(&path, app)
+/// Deletes the note an earlier Corgi left for its daemon to make the Corgi
+/// space once the app's window opened: whether there was one. The space is
+/// only ever made by a person now, so a note left behind must not be acted
+/// on by a daemon of that earlier version started later either.
+pub fn forget_pending() -> bool {
+    pending_path().is_some_and(|path| forget_pending_at(&path))
 }
 
-fn write_pending(path: &Path, app: &HerdrApp) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    }
-    fs::write(path, serde_json::to_string(app)?)
-        .with_context(|| format!("write {}", path.display()))
-}
-
-/// Forgets a pending Corgi space.
-pub fn clear_pending() {
-    if let Some(path) = pending_path() {
-        let _ = fs::remove_file(path);
-    }
-}
-
-/// For `corgi daemon`'s passes: makes the pending Corgi space once the
-/// app's window is open, and then forgets it. What it did or why it could
-/// not, to log; nothing when nothing is pending or the window is closed.
-pub fn make_pending() -> Option<String> {
-    make_pending_at(&pending_path()?)
-}
-
-fn make_pending_at(path: &Path) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
-    let Ok(app) = serde_json::from_str::<HerdrApp>(&text) else {
-        let _ = fs::remove_file(path);
-        return Some(format!(
-            "forgot the pending Corgi space: {} is not what corgi app-space writes",
-            path.display()
-        ));
-    };
-    if !app.window_open() {
-        return None;
-    }
-    match ensure(&app) {
-        Ok(Ensured::NoWindow) => None,
-        Ok(done) => {
-            let _ = fs::remove_file(path);
-            Some(match done {
-                Ensured::Made(id) => format!("made the Corgi space {id} in the Herdr app"),
-                _ => "the Herdr app has a Corgi space already".to_string(),
-            })
-        }
-        Err(error) => Some(format!("could not make the Corgi space: {error:#}")),
-    }
+fn forget_pending_at(path: &Path) -> bool {
+    fs::remove_file(path).is_ok()
 }
 
 #[cfg(test)]

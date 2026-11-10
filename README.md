@@ -175,7 +175,7 @@ Install on macOS or Linux:
 herdr plugin install zyrre/corgi && corgi setup
 ```
 
-For the Herdr app (herdr-app 0.1.14 or newer), this installs the `corgi` command, Corgi's mod in a space of its own (`Corgi`, first in the Spaces list: start there and click an agent to see its terminal) and `corgi daemon`, a service of your session that wakes and hands over supervisors with the app's window closed, and updates them when run again ([`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) describes the mod). With OpenCode installed, it asks once whether to add a small status plugin to `~/.config/opencode/plugin/`, without which an OpenCode worker wakes no supervisor:
+For the Herdr app (herdr-app 0.1.14 or newer), this installs the `corgi` command, Corgi's mods, the Corgi layout, and `corgi daemon`, a service of your session that wakes and hands over supervisors with the app's window closed, and updates them when run again ([`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) describes the mods). The Corgi layout is Herdr's own with one Projects list in the sidebar in place of Spaces and Agents: each repository with its agents under it, and a `+` that opens a project by name or path and starts its supervisor. The install does not switch to it; `herdr-app do layout.switch '{"name":"corgi"}'` does, and `"main"` goes back. It makes no space in the app: for the Corgi mod's overview of every project in a space of its own, run `corgi app-space`. With OpenCode installed, it asks once whether to add a small status plugin to `~/.config/opencode/plugin/`, without which an OpenCode worker wakes no supervisor:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh

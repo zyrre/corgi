@@ -26,7 +26,10 @@ Commands:
   edit        Open the focused or selected agent's checkout in your editor
   hook        What Herdr runs on its start and on agents' events
   daemon      Wake supervisors on herdr-core (the Herdr app), as a service
-  app-space   Make the Herdr app's Corgi space, or remove it
+  app-space   Make the Herdr app's Corgi space by hand, or remove it
+  app-layout  Build the Herdr app's Corgi layout from Herdr's own, or remove it
+  projects    List the projects to offer for Open project, as JSON
+  open        Open a project: name its supervisor's terminal, or start it
   serve       Speak the frontend protocol on stdio, for a desktop GUI
 
 Run corgi COMMAND --help for a command's options, and corgi --version for the
@@ -83,6 +86,12 @@ fn main() -> Result<()> {
         Some("daemon") => corgi::app::daemon_command(&args[2..]),
         Some("app-space") if help() => usage(corgi::app::APP_SPACE_USAGE),
         Some("app-space") => corgi::app::app_space_command(&args[2..]),
+        Some("app-layout") if help() => usage(corgi::app::APP_LAYOUT_USAGE),
+        Some("app-layout") => corgi::app::app_layout_command(&args[2..]),
+        Some("projects") if help() => usage(corgi::app::PROJECTS_USAGE),
+        Some("projects") => corgi::app::projects_command(&args[2..]),
+        Some("open") if help() => usage(corgi::app::OPEN_USAGE),
+        Some("open") => corgi::app::open_command(&args[2..]),
         Some("serve") if help() => usage(corgi::serve::SERVE_USAGE),
         Some("serve") => corgi::serve::serve_command(&args[2..]),
         Some("setup") if help() => usage(corgi::app::SETUP_USAGE),

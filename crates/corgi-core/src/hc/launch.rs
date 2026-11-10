@@ -5,6 +5,9 @@
 //! The supervisor runs inside a shell so that a handover can `/exit` it and
 //! start its successor in the same terminal, which keeps its address, its
 //! labels and the workers hc counts as its children (`docs/herdr-app-port.md`).
+//! That shell is one Corgi starts ([`launch_supervisor`]), the project's own
+//! again once its agent has exited ([`relaunch_supervisor`]), or one the
+//! person had open, which becomes the supervisor's ([`adopt_terminal`]).
 //!
 //! Every agent starts through [`agent_script`], which removes the variables
 //! a Claude Code session and a Herdr pane hand their children: a core
@@ -163,7 +166,7 @@ pub fn launch_supervisor(
     corgi_bin: &Path,
     progress: &mut dyn Progress,
 ) -> Result<Launched> {
-    start_supervisor(client, plan, corgi_bin, None, progress)
+    start_supervisor(client, plan, corgi_bin, Place::New, progress)
 }
 
 /// Starts `plan`, a project's supervisor, in the kept shell terminal
@@ -180,14 +183,89 @@ pub fn relaunch_supervisor(
     address: &str,
     progress: &mut dyn Progress,
 ) -> Result<Launched> {
-    start_supervisor(client, plan, corgi_bin, Some(address), progress)
+    start_supervisor(client, plan, corgi_bin, Place::Again(address), progress)
+}
+
+/// Starts `plan`, a project's supervisor, in the shell terminal `address`
+/// that Corgi did not start: one open in the Herdr app, or any other of hc's.
+/// The terminal becomes the project's supervisor terminal, as one
+/// [`launch_supervisor`] starts is: it gets Corgi's labels, which is how
+/// `fleet`, `status`, spawn, merge and the daemon find a supervisor, and is
+/// kept, so the daemon can resume it. It stays in the space it is in, which
+/// from then on is the project's ([`current_project_space`]); one in no
+/// space of the app gets the project's own ([`project_space`]). Refused
+/// ([`adoption_refusal`]) unless a shell waits at its prompt there.
+pub fn adopt_terminal(
+    client: &HcClient,
+    plan: &LaunchPlan,
+    corgi_bin: &Path,
+    address: &str,
+    progress: &mut dyn Progress,
+) -> Result<Launched> {
+    start_supervisor(client, plan, corgi_bin, Place::Adopt(address), progress)
+}
+
+/// Where a supervisor starts.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Place<'a> {
+    /// A new kept shell terminal.
+    New,
+    /// The project's own supervisor terminal, whose agent has exited.
+    Again(&'a str),
+    /// A shell terminal Corgi did not start.
+    Adopt(&'a str),
+}
+
+/// Why the terminal cannot become a supervisor's ([`adopt_terminal`]), if
+/// it cannot: only a live terminal of this machine with a shell at its
+/// prompt can, so neither an agent nor a running command is ever typed
+/// into, and never one Corgi already runs an agent in.
+pub fn adoption_refusal(terminal: &Terminal) -> Option<String> {
+    let address = &terminal.address;
+    if address.contains('/') {
+        return Some(format!(
+            "{address} is on another machine; Corgi starts its agents on this one"
+        ));
+    }
+    if !terminal.is_live() {
+        return Some(format!("{address} has ended"));
+    }
+    if let Some(role) = terminal.label(ROLE_LABEL) {
+        return Some(format!(
+            "{address} is already Corgi's {role} terminal of {}",
+            terminal.label(PROJECT_LABEL).unwrap_or("a project")
+        ));
+    }
+    match &terminal.foreground {
+        None => Some(format!(
+            "hc does not say what runs in {address}, so nothing is typed into it"
+        )),
+        Some(_) if shell_in_front(terminal) => None,
+        Some(foreground) => Some(format!(
+            "{address} runs {}, not a shell waiting at its prompt",
+            foreground.name
+        )),
+    }
 }
 
 fn start_supervisor(
     client: &HcClient,
     plan: &LaunchPlan,
     corgi_bin: &Path,
-    place: Option<&str>,
+    place: Place,
+    progress: &mut dyn Progress,
+) -> Result<Launched> {
+    let prepare = |root: &str| supervisor::prepare_for(root, corgi_bin, Backend::Hc);
+    start_supervisor_with(client, plan, place, &prepare, progress)
+}
+
+/// [`start_supervisor`] with the supervisor's state directory made ready by
+/// `prepare`, which a test points at a directory of its own.
+pub(super) fn start_supervisor_with(
+    client: &HcClient,
+    plan: &LaunchPlan,
+    place: Place,
+    prepare: &dyn Fn(&str) -> Result<Prepared>,
     progress: &mut dyn Progress,
 ) -> Result<Launched> {
     if let Some(refusal) = harness_refusal(&plan.harness) {
@@ -198,7 +276,7 @@ fn start_supervisor(
         crate::launch::supervisor_harness_error(&plan.harness)
     );
     let existing = match place {
-        Some(address) => {
+        Place::Again(address) => {
             let terminal = client.get(address)?;
             anyhow::ensure!(
                 terminal.is_live() && shell_in_front(&terminal),
@@ -207,10 +285,17 @@ fn start_supervisor(
             );
             Some(terminal)
         }
-        None => None,
+        Place::Adopt(address) => {
+            let terminal = client.get(address)?;
+            if let Some(refusal) = adoption_refusal(&terminal) {
+                bail!(refusal);
+            }
+            Some(terminal)
+        }
+        Place::New => None,
     };
     let root = plan.project.to_string_lossy().into_owned();
-    let prepared = supervisor::prepare_for(&root, corgi_bin, Backend::Hc)?;
+    let prepared = prepare(&root)?;
     if let Some(warning) = &prepared.warning {
         progress.report(warning.clone());
     }
@@ -250,17 +335,34 @@ fn start_supervisor(
             progress.report(format!("Taking over {} ({address})…", plan.name));
             // The new session's labels, and none of the old one's.
             let pid = terminal.pid.map(|pid| pid.to_string()).unwrap_or_default();
-            client.label(
-                &address,
-                &[
-                    (HARNESS_LABEL, plan.harness.kind()),
-                    (SESSION_LABEL, session.as_deref().unwrap_or_default()),
-                    (RESUME_LABEL, resume.as_deref().unwrap_or_default()),
-                    (HANDOVER_LABEL, ""),
-                    (BASELINE_LABEL, ""),
-                    (PID_LABEL, &pid),
-                ],
-            )?;
+            let mut labels = vec![
+                (HARNESS_LABEL, plan.harness.kind()),
+                (SESSION_LABEL, session.as_deref().unwrap_or_default()),
+                (RESUME_LABEL, resume.as_deref().unwrap_or_default()),
+                (HANDOVER_LABEL, ""),
+                (BASELINE_LABEL, ""),
+                (PID_LABEL, &pid),
+            ];
+            // A terminal that becomes the supervisor's gets what one Corgi
+            // starts has from its first moment. Its space stays the one it
+            // is in; only one outside the app gets the project's own.
+            let space = project_space(&root);
+            if matches!(place, Place::Adopt(_)) {
+                labels.extend([
+                    (PROJECT_LABEL, root.as_str()),
+                    (ROLE_LABEL, SUPERVISOR_ROLE),
+                    (TASK_LABEL, SUPERVISOR_NAME),
+                ]);
+                if terminal.label(SPACE_LABEL).is_none() {
+                    labels.push((SPACE_LABEL, &space));
+                }
+            }
+            client.label(&address, &labels)?;
+            // Kept, so that a core stop or a reboot leaves a shell in its
+            // place, which the daemon gives the resume line.
+            if !terminal.keep {
+                client.keep(&address)?;
+            }
             address
         }
         None => {
@@ -288,9 +390,14 @@ fn start_supervisor(
         "Starting {} in {address} as {}…",
         plan.harness, plan.name
     ));
-    client
-        .send(&address, &line)
-        .with_context(|| format!("type the supervisor's command into {address}"))?;
+    if let Err(error) = client.send(&address, &line) {
+        // Nothing was typed: a terminal that was to become the supervisor's
+        // is the person's own again, not a supervisor's with no agent.
+        if matches!(place, Place::Adopt(_)) {
+            disown(client, &address);
+        }
+        return Err(error.context(format!("type the supervisor's command into {address}")));
+    }
     let terminal = wait_for_agent(client, &address)?;
     progress.step(2);
     // Only Claude Code asks on screen; Codex takes its answer on the
@@ -310,9 +417,31 @@ fn start_supervisor(
         name: plan.name.clone(),
         cwd: plan.project.clone(),
         checkout: Checkout::ProjectRoot,
-        location: format!("in hc terminal {address}, a kept shell in {root}"),
+        location: match place {
+            Place::Adopt(_) => {
+                format!("in hc terminal {address}, the shell that was open in {root}")
+            }
+            _ => format!("in hc terminal {address}, a kept shell in {root}"),
+        },
         session,
     })
+}
+
+/// Takes Corgi's labels off `address` again, a terminal [`adopt_terminal`]
+/// labelled and then could type nothing into. Its space label is the app's
+/// and stays.
+fn disown(client: &HcClient, address: &str) {
+    let labels = [
+        PROJECT_LABEL,
+        ROLE_LABEL,
+        TASK_LABEL,
+        HARNESS_LABEL,
+        SESSION_LABEL,
+        RESUME_LABEL,
+        PID_LABEL,
+    ]
+    .map(|label| (label, ""));
+    let _ = client.label(address, &labels);
 }
 
 /// The arguments that make `harness`'s session the supervisor prepared in
@@ -410,7 +539,11 @@ pub fn launch_worker(
     };
     let session = session_id_for(&plan.harness)?;
     let command = harness_command(plan, session.as_deref(), &[], Start::Task(&plan.prompt));
-    let space = worker_space(root, checkout, &space_nonce()?);
+    let space = worker_space(
+        &current_project_space(client, root),
+        checkout,
+        &space_nonce()?,
+    );
     let mut labels = agent_labels(
         plan,
         root,
@@ -604,21 +737,44 @@ pub fn task_title(prompt: &str) -> String {
     title
 }
 
-/// The Herdr app's space for a worker of the project at `root` that works
-/// in `checkout`, whoever spawned it. A worker in a worktree gets a new
-/// space of its own: the project's ([`project_space`]) with `nonce` after
-/// it. The app makes a space for an id it does not know, unnamed, so it is
-/// called after where the worker's terminal is, and its `spaces` sidebar
-/// nests a space whose first terminal is in a linked worktree under the
-/// space of the repository's main checkout, the supervisor's, by `git
-/// rev-parse --git-common-dir`, whoever made either space and whatever they
-/// are called. A worker in the primary checkout or another directory is a
-/// tab of the project's space: a space of its own there would not nest.
-pub fn worker_space(root: &str, checkout: Checkout, nonce: &str) -> String {
+/// The Herdr app's space for a worker that works in `checkout`, whoever
+/// spawned it, of the project whose space is `project`
+/// ([`current_project_space`]). A worker in a worktree gets a new space of
+/// its own: the project's with `nonce` after it. The app makes a space for
+/// an id it does not know, unnamed, so it is called after where the worker's
+/// terminal is, and its sidebar nests a space whose first terminal is in a
+/// linked worktree under the space of the repository's main checkout, the
+/// supervisor's, by `git rev-parse --git-common-dir`, whoever made either
+/// space and whatever they are called. A worker in the primary checkout or
+/// another directory is a tab of the project's space: a space of its own
+/// there would not nest.
+pub fn worker_space(project: &str, checkout: Checkout, nonce: &str) -> String {
     match checkout {
-        Checkout::Worktree => format!("{}-{nonce}", project_space(root)),
-        Checkout::ProjectRoot | Checkout::Directory => project_space(root),
+        Checkout::Worktree => format!("{project}-{nonce}"),
+        Checkout::ProjectRoot | Checkout::Directory => project.to_string(),
     }
+}
+
+/// The Herdr app's space of the project at `root` as it is now: the space
+/// its supervisor's terminal is in, which is one the person had open when
+/// the supervisor was started in a shell of theirs ([`adopt_terminal`]),
+/// else the one Corgi gives a project ([`project_space`]), where a
+/// supervisor started later will be.
+pub fn current_project_space(client: &HcClient, root: &str) -> String {
+    client
+        .list(&[(ROLE_LABEL, SUPERVISOR_ROLE), (PROJECT_LABEL, root)])
+        .ok()
+        .and_then(|terminals| {
+            terminals
+                .iter()
+                // hc filtered by the labels; a fake of it in a test does not.
+                .filter(|terminal| {
+                    terminal.label(ROLE_LABEL) == Some(SUPERVISOR_ROLE)
+                        && terminal.label(PROJECT_LABEL) == Some(root)
+                })
+                .find_map(|terminal| terminal.label(SPACE_LABEL).map(str::to_string))
+        })
+        .unwrap_or_else(|| project_space(root))
 }
 
 /// Eight random hexadecimal digits for [`worker_space`].
@@ -630,11 +786,12 @@ fn space_nonce() -> Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-/// The Herdr app's space of the project at `root`, its supervisor's: `corgi-`
-/// and its directory name, with a few characters of a hash of the whole path
-/// so that two projects of the same name get two spaces. The supervisor's
-/// terminal is on the primary checkout, so the app calls the space after the
-/// repository; Corgi never names it.
+/// The Herdr app's space Corgi gives the project at `root`, for a
+/// supervisor it starts in a terminal of its own: `corgi-` and its directory
+/// name, with a few characters of a hash of the whole path so that two
+/// projects of the same name get two spaces. The supervisor's terminal is on
+/// the primary checkout, so the app calls the space after the repository;
+/// Corgi never names it.
 pub fn project_space(root: &str) -> String {
     let name =
         crate::launch::sanitize_agent_name(dir_name(root).unwrap_or(supervisor::UNNAMED_PROJECT));

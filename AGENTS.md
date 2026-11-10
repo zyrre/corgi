@@ -431,23 +431,55 @@ shellcheck scripts/install.sh scripts/link-command.sh scripts/test-install herdr
 
 ## The Herdr app mod
 
-`herdr-app/mods/corgi/` is the Herdr app's Corgi mod; `herdr-app/RECIPE.md`
-describes it for people and agents, and `herdr-app/install.sh` installs it
-with the CLI and runs `corgi app-space`, which gives it a space of its own
-(`crates/corgi-core/src/app_space.rs`; the daemon makes a pending one once
-the window opens). Test that against a fake `herdr-app` (its tests do), not
-the user's app: on the real one, touch only a space named `Corgi`. The mod
-reads `corgi status --json` and runs `corgi merge`;
-both live in `src/app/status.rs` and see hc's agents alone, never the Herdr
-TUI's. Check every change with
-`herdr-app check herdr-app/mods/corgi` (it writes `jsconfig.json` and
+`herdr-app/mods/corgi/` is the Herdr app's Corgi mod and
+`herdr-app/mods/projects/` its Projects mod, the sidebar of the Corgi
+layout; `herdr-app/RECIPE.md` describes them for people and agents, and
+`herdr-app/install.sh` installs them with the CLI and runs `corgi
+app-layout`, which builds `layouts/corgi.json` from Herdr's shipped `main`
+(`crates/corgi-core/src/app_layout.rs`). The Corgi space, a space named
+`Corgi` showing the Corgi mod, is retired (the user closed theirs on
+purpose; Corgi's features in the app go into the Projects mod): neither the
+install nor `corgi daemon` makes it, and nothing may bring it back by
+itself. `corgi app-space` (`crates/corgi-core/src/app_space.rs`) still
+makes it for a person who runs it, and `remove` closes it. Herdr's shipped
+layouts and mods
+(`~/.config/herdr-app/layouts/main.json`, `mods/spaces`, `mods/agents`, …)
+are read-only: Herdr replaces them on every start and moves an edited one
+aside, so never edit them, and never switch the user's window to another
+layout without being asked to. The Projects mod began as a copy of Herdr's
+`spaces` and is Corgi's own: it follows no later version of it.
+
+Test `corgi app-space` against a fake `herdr-app` (its tests do), never
+the user's app. The Corgi
+mod reads `corgi status --json` and runs `corgi merge`; both live in
+`src/app/status.rs` and see hc's agents alone, never the Herdr TUI's. The
+Projects mod reads the same status and runs `corgi projects` and `corgi
+open` (`src/app/open.rs`). Check every change with
+`herdr-app check herdr-app/mods/corgi` and `herdr-app check
+herdr-app/mods/projects` (it writes `jsconfig.json` and
 `gpui-kit.d.ts` there, which Git ignores). `check` renders only the first
-frame (the "Reading Corgi's status…" line), so a mistake in the overview or
-the project view passes it: run the mod's other views too, for example
-under Node with stub `gpui-kit`, `gpui-base` and `herdr` modules fed a real
-`corgi status --json` (the stubs are plain chainable records whose
-`child`, `when` and `on_*` calls are kept, so a script can read each view's
-texts and call its click handlers). A status from a private core's live test
+frame (the "Reading Corgi's status…" line; the Projects list with its field
+closed and no agents), so a mistake in another view passes it. Two things
+cover the rest. The first must pass before a mod change is handed off:
+
+```bash
+node scripts/test-app-mods.mjs
+```
+
+It runs both mods under Node with stand-ins for `gpui-kit`, `gpui-base` and
+`herdr` (chainable records whose `child`, `when` and `on_*` calls are kept,
+so a test reads each view's texts and calls its click and key handlers) and
+canned answers for `git` and `corgi`; add a case there for what you change.
+It proves the logic, not that the app has a builder. For that, the second:
+`herdr-app check` a scratch copy of the mod (outside the repository) whose
+`init` puts it in the state to check (the field open, with suggestions, a
+problem and progress) and whose `render` adds the rows in question, built
+from made-up agents. `check` fails on a builder the app lacks, so a passing
+copy means every element of those views is one the app can make. Neither
+shows what the window really draws (widths, where text is cut, which keys
+reach a field): only a look at the window does.
+
+A status from a private core's live test
 (see "Testing on hc") shows hc agents, a MERGE tag and the daemon line; stop
 that test's daemon, then its core, for the daemon warning and the
 `herdr-core not running` badge. Never open the app window (`herdr-app` with no
@@ -460,6 +492,25 @@ pointer, up to the row: a button inside a clickable row calls
 `herdr-app` exits 2 (`no Herdr window`) when the app is closed, and a closed
 app can leave its `herdr-app.sock` behind: to tell whether the window is
 open, test whether the socket accepts a connection, not whether it exists.
+
+To try the installer and `corgi app-layout` for real without the user's app
+home, give them a scratch one holding a copy of the shipped
+`layouts/main.json`, and a scratch state directory, so that nothing of the
+run can land in Corgi's real state:
+`XDG_STATE_HOME=<scratch>/state sh herdr-app/install.sh --mod-only --home
+<scratch>/app`. It checks both mods with the real `herdr-app check` and
+builds the layout with the worktree's `target/release/corgi`; edit that
+copy of `main.json` to see a rebuild, or a kept build. Putting a mod or a
+layout into the user's real `~/.config/herdr-app` from a worktree, even to
+look at it, is refused by the permission rules here: ask the user to look
+(`herdr-app shot` after they switch) instead.
+
+A terminal started with `hc run --bg --keep --label herdr.space=<new id>
+--cwd <dir>` shows in the app as a new space without the window switching
+to it, which `herdr-app do space.new` would do: use it for a scratch shell
+that `corgi open --terminal` or `corgi supervisor --terminal` should start
+in. Killing its terminals closes the space; the app keeps it in its
+`recent` list, which is the app's own.
 
 `corgi status --json` only reads, and asks `hc` nothing unless its core's
 socket accepts a connection, so it may be run on the user's real core and
@@ -549,11 +600,27 @@ build; delete the session afterwards and check `herdr session list`. Then:
 ## Testing on hc (herdr-core)
 
 `crates/corgi-core/src/hc/tests.rs` drives the hc client against a fake
-`hc` script (canned output per command, or per call with `CMD.N.out`). To
+`hc` script (canned output per command, or per call with `CMD.N.out`), and
+`tests/open.rs` the real binary's `corgi open`, `projects`, `supervisor
+--terminal` and `app-layout` against another (`CORGI_HC_BIN`), with a
+private home and state. A supervisor start prepares its state directory,
+so a core test that starts one goes through `start_supervisor_with` and
+`supervisor::prepare_at` with a scratch base, never the real one. A test
+project inside this checkout (under `target/`) is Corgi's own repository to
+`git rev-parse`, so `tests/open.rs` keeps its projects in a `ScratchDir`.
+A worktree launch (`Checkout::Worktree`) in a test would make a real
+checkout under `~/.herdr/worktrees`: use `create_worktree_in`. To
 try the commands live, use the user's core, which must never be stopped or
 restarted, and only terminals you start; remove each by address
 (`hc kill t7; hc rm t7`), never by name pattern. Things that bit:
 
+- hc wraps what one agent's terminal sends to a program that has reported
+  a status: `hc send t7 /exit` run from a worker's terminal (yours) arrives
+  as `<hc from="t2p w-name">/exit</hc>`, a message, not the command, and a
+  shell line arrives unrunnable. `HcClient::send` removes `HC_TERMINAL_ID`
+  for that reason; by hand, `env -u HC_TERMINAL_ID hc send …`. A first send
+  to a shell that never reported is not wrapped, so the wrapping shows only
+  on the second start in the same terminal.
 - `hc ls --json` gives `status` as a bare word and no labels; `hc get` gives
   a record and the labels. hc's options after the program are the
   program's (`hc run … sleep 60 --json` passes `--json` to `sleep`), so put

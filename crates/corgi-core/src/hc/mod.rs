@@ -268,6 +268,14 @@ struct ErrorBody {
     hint: String,
 }
 
+/// Whether an `hc` call says which hc terminal it is made from (hc gives
+/// every program in one [`TERMINAL_ID_ENV`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    Known,
+    Unnamed,
+}
+
 /// A terminal for [`HcClient::run`] to start.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunSpec {
@@ -314,7 +322,17 @@ impl HcClient {
     /// Runs `hc args… --json` and returns what it printed on stdout. A
     /// failure is the [`HcError`] hc reported, when it reported one.
     fn output(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let output = Command::new(&self.bin)
+        self.output_as(args, Caller::Known)
+    }
+
+    /// [`HcClient::output`], with hc told or not which of its terminals
+    /// this process runs in.
+    fn output_as(&self, args: &[&str], caller: Caller) -> Result<Vec<u8>> {
+        let mut command = Command::new(&self.bin);
+        if caller == Caller::Unnamed {
+            command.env_remove(TERMINAL_ID_ENV);
+        }
+        let output = command
             .args(args.iter().take_while(|arg| **arg != "--"))
             .arg("--json")
             .args(args.iter().skip_while(|arg| **arg != "--"))
@@ -346,7 +364,11 @@ impl HcClient {
     }
 
     fn json<T: DeserializeOwned>(&self, args: &[&str]) -> Result<T> {
-        let stdout = self.output(args)?;
+        self.json_as(args, Caller::Known)
+    }
+
+    fn json_as<T: DeserializeOwned>(&self, args: &[&str], caller: Caller) -> Result<T> {
+        let stdout = self.output_as(args, caller)?;
         serde_json::from_slice(&stdout).with_context(|| {
             format!(
                 "hc {} printed unexpected JSON: {}",
@@ -442,9 +464,13 @@ impl HcClient {
 
     /// Pastes `text` into `target` and presses Enter, once nobody has typed
     /// there for a few seconds. Never forced: hc refuses a blocked program.
+    /// The text arrives as it is: hc wraps what one of its agents' terminals
+    /// sends to a program that has reported a status (`<hc from="t7 name">…
+    /// </hc>`), which a shell cannot run and a harness would not take for a
+    /// command of its own, so the send never says which terminal it is from.
     pub fn send(&self, target: &str, text: &str) -> Result<Sent> {
         // After `--`, a text that starts with `-` is still the text.
-        self.json(&["send", target, "--", text])
+        self.json_as(&["send", target, "--", text], Caller::Unnamed)
     }
 
     /// Presses the named `keys` (`down`, `enter`, `esc`) in `target`.
@@ -463,6 +489,12 @@ impl HcClient {
         let mut args = vec!["label", target];
         args.extend(pairs.iter().map(String::as_str));
         self.json(&args)
+    }
+
+    /// Has the core replace a lost program of `target` (a core stop, a
+    /// reboot) with a shell in place, as `hc run --keep` does from the start.
+    pub fn keep(&self, target: &str) -> Result<()> {
+        self.output(&["keep", target]).map(drop)
     }
 
     /// Ends the program of `target`.

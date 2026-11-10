@@ -12,9 +12,10 @@ use std::{
 use super::{
     agents::{agent_state, dashboard_agents, shell_in_front, tag},
     launch::{
-        SESSION_VARIABLES, Start, agent_argv, agent_script, answer_folder_trust,
-        create_worktree_in, harness_command, harness_refusal, launch_worker, new_session_id,
-        project_space, shell_line, task_title, worker_space,
+        Place, SESSION_VARIABLES, Start, adoption_refusal, agent_argv, agent_script,
+        answer_folder_trust, create_worktree_in, current_project_space, harness_command,
+        harness_refusal, launch_worker, new_session_id, project_space, shell_line,
+        start_supervisor_with, task_title, worker_space,
     },
     *,
 };
@@ -692,26 +693,76 @@ fn space_label(run: &str) -> String {
 #[test]
 fn a_worktree_worker_gets_a_space_of_its_own_and_a_shared_checkout_the_projects() {
     let project = project_space("/repos/weather");
-    let first = worker_space("/repos/weather", Checkout::Worktree, "1a2b3c4d");
+    let first = worker_space(&project, Checkout::Worktree, "1a2b3c4d");
     assert_eq!(first, format!("{project}-1a2b3c4d"));
     assert_ne!(
         first,
-        worker_space("/repos/weather", Checkout::Worktree, "5e6f7a8b")
+        worker_space(&project, Checkout::Worktree, "5e6f7a8b")
     );
     // Another project's worker never lands in this project's spaces.
-    assert!(!worker_space("/other/weather", Checkout::Worktree, "1a2b3c4d").starts_with(&project));
+    let other = project_space("/other/weather");
+    assert!(!worker_space(&other, Checkout::Worktree, "1a2b3c4d").starts_with(&project));
     // Not a linked worktree, so a space of its own would not nest: a tab of
     // the project's space, the supervisor's.
     for checkout in [Checkout::ProjectRoot, Checkout::Directory] {
-        assert_eq!(
-            worker_space("/repos/weather", checkout, "1a2b3c4d"),
-            project
-        );
+        assert_eq!(worker_space(&project, checkout, "1a2b3c4d"), project);
     }
 }
 
+/// A project's supervisor terminal as `hc get` describes it, in `space`.
+fn supervisor_json(address: &str, root: &str, space: &str) -> String {
+    terminal_json(
+        address,
+        "weather-supervisor",
+        &[
+            (PROJECT_LABEL, root),
+            (ROLE_LABEL, SUPERVISOR_ROLE),
+            (SPACE_LABEL, space),
+        ],
+        "idle",
+    )
+}
+
 #[test]
-fn a_shared_checkout_worker_joins_the_projects_space_not_its_supervisors_old_one() {
+fn the_projects_space_is_its_supervisors_else_the_one_corgi_gives_it() {
+    let hc = FakeHc::new();
+    // No supervisor runs: the space a supervisor Corgi starts will be in.
+    hc.answer("ls", r#"{"terminals":[]}"#);
+    assert_eq!(
+        current_project_space(&hc.client(), "/repos/weather"),
+        project_space("/repos/weather")
+    );
+    // Its supervisor was started in a shell of a space the person made.
+    let supervisor = supervisor_json("t1", "/repos/weather", "sp9e8ef90a");
+    hc.answer("ls", &format!(r#"{{"terminals":[{supervisor}]}}"#));
+    hc.answer("get.t1", &supervisor);
+    assert_eq!(
+        current_project_space(&hc.client(), "/repos/weather"),
+        "sp9e8ef90a"
+    );
+    assert!(
+        hc.calls().contains(
+            &"ls|--label|corgi.role=supervisor|--label|corgi.project=/repos/weather|--json"
+                .to_string()
+        ),
+        "{:?}",
+        hc.calls()
+    );
+    // Another project's supervisor says nothing of this one's space.
+    assert_eq!(
+        current_project_space(&hc.client(), "/repos/other"),
+        project_space("/repos/other")
+    );
+    // hc not answering leaves the space Corgi gives.
+    hc.fail("ls", 1, "no core");
+    assert_eq!(
+        current_project_space(&hc.client(), "/repos/weather"),
+        project_space("/repos/weather")
+    );
+}
+
+#[test]
+fn workers_join_the_space_their_supervisor_is_in() {
     let scratch = ScratchDir::new("hc-worker-spaces");
     let root = git_repo(&scratch.join("weather"));
     let root_text = root.to_string_lossy().into_owned();
@@ -720,34 +771,25 @@ fn a_shared_checkout_worker_joins_the_projects_space_not_its_supervisors_old_one
         "run",
         r#"{"address":"t5","name":"weather","state":"live","turn":0}"#,
     );
-    // The supervisor, in a space an older Corgi chose (its caller's), is
-    // there to be found; a worker no longer joins it.
-    let supervisor = terminal_json(
-        "t1",
-        "weather-supervisor",
-        &[
-            (PROJECT_LABEL, &root_text),
-            (ROLE_LABEL, SUPERVISOR_ROLE),
-            (SPACE_LABEL, "s1"),
-        ],
-        "idle",
-    );
+    // The supervisor runs in a space the person had open, not the one Corgi
+    // would have given the project.
+    let supervisor = supervisor_json("t1", &root_text, "sp9e8ef90a");
     hc.answer("ls", &format!(r#"{{"terminals":[{supervisor}]}}"#));
     hc.answer("get.t1", &supervisor);
     hc.answer("get.t5", &terminal_json("t5", "weather", &[], "idle"));
-    let plan = worker_plan(&root, Harness::Claude, Checkout::ProjectRoot);
-    launch_worker(&hc.client(), &plan, &root_text, &mut Silent).unwrap();
-    launch_worker(&hc.client(), &plan, &root_text, &mut Silent).unwrap();
+    // On the primary checkout, or another directory of it: a tab of that
+    // space. (A worktree worker's own space is named after it, see above.)
+    for checkout in [Checkout::ProjectRoot, Checkout::Directory] {
+        let plan = worker_plan(&root, Harness::Claude, checkout);
+        launch_worker(&hc.client(), &plan, &root_text, &mut Silent).unwrap();
+    }
     let spaces: Vec<String> = hc
         .calls()
         .iter()
         .filter(|call| call.starts_with("run|"))
         .map(|run| space_label(run))
         .collect();
-    assert_eq!(
-        spaces,
-        [project_space(&root_text), project_space(&root_text)]
-    );
+    assert_eq!(spaces, ["sp9e8ef90a", "sp9e8ef90a"]);
 }
 
 #[test]
@@ -1105,5 +1147,318 @@ fn the_paint_of_claude_codes_box_on_hc_shows_a_draft_and_an_empty_box() {
     assert_eq!(
         crate::draft::holds_draft(&Harness::Claude, &empty),
         Some(false)
+    );
+}
+
+/// A plain shell terminal of the Herdr app, as `hc get` describes it: a
+/// shell at its prompt in `cwd`, in the space `sp1`, kept by the app.
+fn app_shell(address: &str, cwd: &str) -> serde_json::Value {
+    serde_json::json!({
+        "address": address,
+        "name": null,
+        "state": "live",
+        "status": null,
+        "labels": {"herdr.space": "sp1", "herdr.tab": "tb1"},
+        "cwd": cwd,
+        "foreground": {"name": "zsh", "pid": 4242, "argv": ["/bin/zsh", "-l"], "cwd": cwd},
+        "pid": 4242,
+        "keep": true,
+        "turn": 0,
+        "argv": ["/bin/zsh", "-l"],
+        "created_ms": 1,
+    })
+}
+
+#[test]
+fn only_a_shell_waiting_at_its_prompt_can_become_a_supervisors_terminal() {
+    let terminal = |change: &dyn Fn(&mut serde_json::Value)| -> Terminal {
+        let mut value = app_shell("t7", "/repos/weather");
+        change(&mut value);
+        serde_json::from_value(value).unwrap()
+    };
+    assert_eq!(adoption_refusal(&terminal(&|_| {})), None);
+    // A login shell's name starts with a dash.
+    assert_eq!(
+        adoption_refusal(&terminal(&|t| t["foreground"]["name"] = "-zsh".into())),
+        None
+    );
+    for (change, why) in [
+        // A running command, and an agent.
+        (
+            (&|t: &mut serde_json::Value| t["foreground"]["name"] = "cargo".into())
+                as &dyn Fn(&mut serde_json::Value),
+            "t7 runs cargo, not a shell waiting at its prompt",
+        ),
+        (
+            &|t| {
+                t["foreground"]["name"] = "claude".into();
+                t["status"] = serde_json::json!({"state": "idle", "app": "claude-code"});
+            },
+            "t7 runs claude, not a shell",
+        ),
+        (
+            &|t| t["foreground"] = serde_json::Value::Null,
+            "hc does not say what runs in t7",
+        ),
+        (&|t| t["state"] = "finished".into(), "t7 has ended"),
+        (
+            &|t| t["address"] = "vps/t7".into(),
+            "vps/t7 is on another machine",
+        ),
+        // One Corgi runs an agent in, of this project or another.
+        (
+            &|t| {
+                t["labels"]["corgi.role"] = "worker".into();
+                t["labels"]["corgi.project"] = "/repos/other".into();
+            },
+            "t7 is already Corgi's worker terminal of /repos/other",
+        ),
+    ] {
+        let refusal = adoption_refusal(&terminal(change)).unwrap_or_default();
+        assert!(refusal.contains(why), "{why}: {refusal}");
+    }
+}
+
+/// A supervisor's plan for the project at `root`.
+fn supervisor_plan(root: &Path) -> LaunchPlan {
+    let mut plan = worker_plan(root, Harness::Claude, Checkout::ProjectRoot);
+    plan.name = "t7".into();
+    plan.prompt = String::new();
+    plan.request_id = None;
+    plan.role = Role::Supervisor {
+        handover_pane: None,
+    };
+    plan
+}
+
+#[test]
+fn a_supervisor_started_in_an_open_shell_makes_that_terminal_and_space_the_projects() {
+    let scratch = ScratchDir::new("hc-adopt");
+    let root = git_repo(&scratch.join("weather"));
+    let root_text = root.to_string_lossy().into_owned();
+    let state = scratch.join("state");
+    let hc = FakeHc::new();
+    // The shell at its prompt when looked at; the agent in front afterwards.
+    let shell = app_shell("t7", &root_text);
+    hc.answer("get.1", &shell.to_string());
+    let mut agent = shell.clone();
+    agent["foreground"]["name"] = "claude".into();
+    agent["status"] = serde_json::json!({"state": "idle", "app": "claude-code"});
+    hc.answer("get.t7", &agent.to_string());
+    hc.answer("label", &shell.to_string());
+    hc.answer("send", r#"{"started":null,"status":null,"turn":0}"#);
+    let plan = supervisor_plan(&root);
+    let prepare = |root: &str| {
+        crate::supervisor::prepare_at(
+            &state,
+            root,
+            Path::new("/opt/corgi"),
+            crate::supervisor::Backend::Hc,
+        )
+    };
+    let launched = start_supervisor_with(
+        &hc.client(),
+        &plan,
+        Place::Adopt("t7"),
+        &prepare,
+        &mut Silent,
+    )
+    .unwrap();
+    assert_eq!(launched.terminal.address, "t7");
+    assert_eq!(launched.cwd, root);
+    assert!(
+        launched.location.contains("the shell that was open in"),
+        "{}",
+        launched.location
+    );
+    let session = launched.session.unwrap();
+    let calls = hc.calls();
+    // No terminal is started: the one that was open is labelled as a
+    // supervisor Corgi starts is, and keeps its space.
+    assert!(
+        !calls.iter().any(|call| call.starts_with("run|")),
+        "{calls:?}"
+    );
+    let label = calls
+        .iter()
+        .find(|call| call.starts_with("label|"))
+        .unwrap();
+    for part in [
+        "label|t7|".to_string(),
+        format!("|corgi.project={root_text}|"),
+        "|corgi.role=supervisor|".into(),
+        "|corgi.task=Supervisor|".into(),
+        "|corgi.harness=claude|".into(),
+        format!("|corgi.session={session}|"),
+        "|corgi.pid=4242|".into(),
+        "|corgi.resume=/bin/sh -c ".into(),
+    ] {
+        assert!(label.contains(&part), "{part} not in {label}");
+    }
+    assert!(!label.contains("herdr.space"), "{label}");
+    // The app keeps its terminals already.
+    assert!(
+        !calls.iter().any(|call| call.starts_with("keep|")),
+        "{calls:?}"
+    );
+    // The agent's command line is typed into the shell, after the labels.
+    let send = calls.iter().position(|call| call.starts_with("send|t7|"));
+    let labelled = calls.iter().position(|call| call.starts_with("label|"));
+    assert!(labelled < send, "{calls:?}");
+    let typed = &calls[send.unwrap()];
+    assert!(
+        typed.contains(&format!("corgi-agent {root_text} ")),
+        "{typed}"
+    );
+    assert!(
+        typed.contains(&format!("--session-id {session}")),
+        "{typed}"
+    );
+    // Its workers then join the space it is in.
+    let labelled: Terminal = {
+        let mut value = agent.clone();
+        value["labels"]["corgi.role"] = "supervisor".into();
+        value["labels"]["corgi.project"] = root_text.clone().into();
+        serde_json::from_value(value).unwrap()
+    };
+    assert_eq!(labelled.label(SPACE_LABEL), Some("sp1"));
+    let rows = dashboard_agents(&[labelled], Some(&*scratch));
+    assert!(rows[0].supervisor && !rows[0].exited);
+    assert_eq!(rows[0].info.workspace_id, "sp1");
+    // The app named it nothing: it goes by its address.
+    assert_eq!(rows[0].info.display_name(), "t7");
+}
+
+#[test]
+fn a_terminal_outside_the_app_gets_the_projects_space_and_is_kept() {
+    let scratch = ScratchDir::new("hc-adopt-plain");
+    let root = git_repo(&scratch.join("weather"));
+    let root_text = root.to_string_lossy().into_owned();
+    let state = scratch.join("state");
+    let hc = FakeHc::new();
+    let mut shell = app_shell("t7", &root_text);
+    shell["labels"] = serde_json::json!({});
+    shell["keep"] = false.into();
+    hc.answer("get.1", &shell.to_string());
+    let mut agent = shell.clone();
+    agent["status"] = serde_json::json!({"state": "idle", "app": "claude-code"});
+    hc.answer("get.t7", &agent.to_string());
+    hc.answer("label", &shell.to_string());
+    hc.answer("send", r#"{"started":null,"status":null,"turn":0}"#);
+    let prepare = |root: &str| {
+        crate::supervisor::prepare_at(
+            &state,
+            root,
+            Path::new("/opt/corgi"),
+            crate::supervisor::Backend::Hc,
+        )
+    };
+    start_supervisor_with(
+        &hc.client(),
+        &supervisor_plan(&root),
+        Place::Adopt("t7"),
+        &prepare,
+        &mut Silent,
+    )
+    .unwrap();
+    let calls = hc.calls();
+    let label = calls
+        .iter()
+        .find(|call| call.starts_with("label|"))
+        .unwrap();
+    assert!(
+        label.contains(&format!("|herdr.space={}|", project_space(&root_text))),
+        "{label}"
+    );
+    assert!(calls.contains(&"keep|t7|--json".to_string()), "{calls:?}");
+}
+
+#[test]
+fn a_terminal_that_is_no_waiting_shell_is_left_as_it_is() {
+    let scratch = ScratchDir::new("hc-adopt-refused");
+    let hc = FakeHc::new();
+    let mut busy = app_shell("t7", "/repos/weather");
+    busy["foreground"]["name"] = "vim".into();
+    hc.answer("get.t7", &busy.to_string());
+    let prepare = |_: &str| -> anyhow::Result<crate::supervisor::Prepared> {
+        panic!("nothing is prepared for a refused terminal")
+    };
+    let error = start_supervisor_with(
+        &hc.client(),
+        &supervisor_plan(&scratch),
+        Place::Adopt("t7"),
+        &prepare,
+        &mut Silent,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("t7 runs vim"), "{error}");
+    assert_eq!(hc.calls(), ["get|t7|--json"]);
+}
+
+#[test]
+fn a_shell_nothing_could_be_typed_into_is_not_left_as_a_supervisors() {
+    let scratch = ScratchDir::new("hc-adopt-unsent");
+    let root = git_repo(&scratch.join("weather"));
+    let state = scratch.join("state");
+    let hc = FakeHc::new();
+    let shell = app_shell("t7", &root.to_string_lossy());
+    hc.answer("get.t7", &shell.to_string());
+    hc.answer("label", &shell.to_string());
+    hc.fail(
+        "send",
+        9,
+        r#"{"error":{"kind":"blocked","message":"t7 is blocked","hint":""}}"#,
+    );
+    let prepare = |root: &str| {
+        crate::supervisor::prepare_at(
+            &state,
+            root,
+            Path::new("/opt/corgi"),
+            crate::supervisor::Backend::Hc,
+        )
+    };
+    let error = start_supervisor_with(
+        &hc.client(),
+        &supervisor_plan(&root),
+        Place::Adopt("t7"),
+        &prepare,
+        &mut Silent,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("type the supervisor's command into t7"),
+        "{error:#}"
+    );
+    let calls = hc.calls();
+    let cleared = calls.last().unwrap();
+    assert!(
+        cleared.starts_with("label|t7|corgi.project=|corgi.role=|corgi.task=|"),
+        "{calls:?}"
+    );
+    assert!(!cleared.contains("herdr.space"), "{cleared}");
+}
+
+#[test]
+fn a_supervisor_works_in_its_project_whatever_folder_its_shell_started_in() {
+    // A shell the app started at home, where the person went to the project.
+    let mut value = app_shell("t7", "/Users/jane");
+    value["labels"]["corgi.role"] = "supervisor".into();
+    value["labels"]["corgi.project"] = "/repos/weather".into();
+    value["foreground"]["name"] = "claude".into();
+    let supervisor: Terminal = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(
+        super::agents::agent_info(&supervisor).cwd.as_deref(),
+        Some("/repos/weather")
+    );
+    let rows = dashboard_agents(&[supervisor], Some(Path::new("/nonexistent")));
+    assert_eq!(rows[0].worktree_checkout, None);
+    // A worker's folder is its terminal's.
+    value["labels"]["corgi.role"] = "worker".into();
+    value["cwd"] = "/worktrees/weather/worktree-calm-otter-1f2e".into();
+    let worker: Terminal = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        super::agents::agent_info(&worker).cwd.as_deref(),
+        Some("/worktrees/weather/worktree-calm-otter-1f2e")
     );
 }

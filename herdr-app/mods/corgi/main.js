@@ -1,11 +1,13 @@
 // Corgi for the Herdr app (io.github.zyrre.corgi): each project's supervisor,
 // workers and open questions on herdr-core, and whether `corgi daemon` runs,
 // from `corgi status --json`. It only reads, and merges a worker's branch when
-// asked; it never wakes or types into an agent. It is the only tab of the
-// Corgi space, which `corgi app-space` makes; clicking an agent shows it.
+// asked; it never wakes or types into an agent. Clicking an agent shows it.
+// It docks nowhere by itself: `corgi app-space`, run by hand, makes a space
+// named Corgi whose only tab shows it. When it starts it has corgi build
+// Corgi's layout again if Herdr's has changed.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, exec, home, appHome, readTextFile, watchFolder, theme, run } from "herdr";
+import { agents, exec, home, appHome, readTextFile, watchFolder, theme, run, notify } from "herdr";
 
 // The Corgi release this mod belongs to. The release sets it (see AGENTS.md,
 // "Releasing"); the mod installs or updates corgi to this version and no other.
@@ -142,6 +144,8 @@ export default class Corgi extends View {
     this.again = false;
     this.watched = new Set();
     this.agentKey = "";
+    this.layout = null; // what `corgi app-layout` said: { result, message }
+    this.layoutChecked = false;
     this.refresh(cx);
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
     // Live agents changing is a sign the status did too; comparing is cheap.
@@ -188,6 +192,7 @@ export default class Corgi extends View {
           }
         }
         if (this.corgi) {
+          this.checkLayout(cx);
           const r = await this.run(["status", "--json"], 20000);
           if (r.code === 0) {
             this.status = JSON.parse(r.stdout);
@@ -233,6 +238,27 @@ export default class Corgi extends View {
       this.setupState = failure ? { phase: "failed", title: from ? "Updating Corgi failed" : "Installing Corgi failed", ...failure } : null;
       cx.notify();
       if (!failure) this.refresh(cx);
+    });
+  }
+
+  // Corgi's layout is Herdr's `main` with the Projects list in its sidebar,
+  // and Herdr replaces `main` on its updates: once per start, corgi builds it
+  // again if `main` changed. It never switches the window to it. What it
+  // could not build from shows in the overview.
+  checkLayout(cx) {
+    if (this.layoutChecked) return;
+    this.layoutChecked = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(this.corgi, ["app-layout", "--home", appHome(), "--json"], { timeout: 20000 });
+        this.layout = JSON.parse(r.stdout);
+      } catch (_) {
+        return; // a corgi from before it built layouts
+      }
+      if (this.layout.result === "rebuilt") {
+        notify({ title: "Corgi layout rebuilt", body: "Herdr's main layout changed, and Corgi's follows it.", level: "info" });
+      }
+      cx.notify();
     });
   }
 
@@ -393,6 +419,7 @@ export default class Corgi extends View {
             this.column()
               .when(Boolean(this.status.daemon), (el) => el.child(this.daemonLine(t, this.status.daemon)))
               .when(Boolean(this.status.hc?.error), (el) => el.child(div().text_color(t.blocked).text_size(12).child(oneLine(`herdr-core did not answer: ${this.status.hc.error}`))))
+              .when(this.layout?.result === "kept" || this.layout?.result === "missing", (el) => el.child(this.layoutLine(t, this.layout)))
               .when(projects.length === 0, (el) => el.child(div().text_color(t.muted).child("No projects with a supervisor or a Corgi agent.")))
               .children(projects.map((p) => this.projectBlock(cx, t, p))),
           ),
@@ -415,6 +442,16 @@ export default class Corgi extends View {
       .child(div().text_color(t.blocked).font_semibold().whitespace_normal().child("Corgi daemon not running: supervisors on the Herdr app won't be woken or handed over"))
       .child(div().text_color(t.muted).text_size(12).child(d.installed ? "Its service is installed but not running. To restart it, run:" : "To start it, run:"))
       .child(div().p(6).rounded(6).bg(t.raised).text_size(12).font_family("JetBrains Mono").child(DAEMON_COMMAND));
+  }
+
+  // Why Corgi's layout was not built from Herdr's `main` this time: the last
+  // build stays in use (kept), or there is none (missing).
+  layoutLine(t, layout) {
+    return div()
+      .text_size(12)
+      .text_color(layout.result === "kept" ? t.blocked : t.dim)
+      .whitespace_normal()
+      .child(`Corgi layout: ${oneLine(layout.message)}`);
   }
 
   projectBlock(cx, t, p) {

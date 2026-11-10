@@ -253,8 +253,16 @@ All of this is in the core, `crates/corgi-core/src/`.
   and the only source of the permission prompts a blocked CLI shows on screen.
 - `app_space.rs` finds, makes and removes the Herdr app's Corgi space (a
   space named `Corgi` whose only tab is the `corgi` mod) through `herdr-app
-  ls` and `herdr-app do`, and keeps the note of a pending one for
-  `corgi daemon`; `corgi app-space` (`src/app/app_space.rs`) runs it.
+  ls` and `herdr-app do`; `corgi app-space` (`src/app/app_space.rs`) runs
+  it, for a person who wants that space. The space is retired: neither the
+  install nor the daemon makes it, and the note an earlier version left for
+  the daemon to make it from is deleted, never read (`forget_pending`).
+- `app_layout.rs` builds the Herdr app's Corgi layout (`layouts/corgi.json`
+  in the app's home) from Herdr's shipped `main`: the sidebar's `spaces`
+  block shows Corgi's `projects` mod and its `agents` block is gone. The
+  build is a function of `main` alone, written only when it differs from
+  the file in place, and a `main` of another shape keeps the last build;
+  `corgi app-layout` (`src/app/app_layout.rs`) runs it.
 - `session/` reads each agent's session file, which its CLI already
   writes: Claude Code's transcript under `projects/` in its configuration
   directory, and Codex's rollout under `~/.codex/sessions`. From it come the
@@ -2356,7 +2364,16 @@ agents only when its core's socket accepts a connection (`"hc": {"running",
 "error"}` says which), and the projects Corgi wrote down whose supervisor
 state directory exists, so a project with no agent running still shows;
 `corgi supervisor` on hc writes its project down for that, as a launch on the
-TUI does. A merge of an hc worker takes its checkout and branch from its
+TUI does. `corgi projects --json` and `corgi open … --json`
+(`src/app/open.rs`) are what the app's Projects mod runs for "Open project":
+`projects` gives the rows the new-agent form's project list gives
+(`choices::ChoiceList` over `known_projects`, with the folders the app's
+spaces are in as the open ones, path completions and where a new name would
+go), each with the terminal its supervisor runs in; `open` names a running
+supervisor's terminal or starts the supervisor (below), on the launch the
+project's supervisor last had (`dashboard_supervisor_plan`), creating a new
+project's directory with `--create` as the form does (`launch::create_project`,
+which records it as Corgi's own). A merge of an hc worker takes its checkout and branch from its
 row, refuses (`unavailable`) when the core is not running rather than start
 one, and clears the worker's `corgi.tag` labels as `corgi tag --clear` does.
 
@@ -2370,11 +2387,14 @@ supervisor's shell, a worker's agent), `corgi.handover` and `corgi.baseline`
 `corgi_handover` and `corgi_baseline` tokens on the TUI),
 `corgi.tag=merge` with `corgi.tag.at` (the state and hc `turn` it was tagged
 at, so a tag the agent has worked past stops showing), and `herdr.space`
-(`hc::launch`: the supervisor's is the project's, `corgi-<project>-<hash>`
-(`project_space`); a worker in a worktree gets a new one, that id and
-eight random hex digits, and a worker in the primary checkout or another
-directory is a tab of the project's space (`worker_space`), whoever spawned
-it). The app makes a space for an
+(`hc::launch`: a supervisor Corgi starts in a terminal of its own gets
+`corgi-<project>-<hash>` (`project_space`), and one started in a shell the
+person had open stays in that shell's space; either way the project's space
+is the one its supervisor's terminal is in (`current_project_space`, which
+falls back to `project_space` while no supervisor runs). A worker in a
+worktree gets a new space, that id and eight random hex digits, and a
+worker in the primary checkout or another directory is a tab of the
+project's space (`worker_space`), whoever spawned it). The app makes a space for an
 id it does not know, unnamed, and Corgi never names one, so the app calls
 each after where its first terminal is: the project's after its repository,
 a worker's after its worktree. Its `spaces` sidebar nests a space under
@@ -2393,7 +2413,27 @@ with the agent's command line typed into it, so that a handover can `/exit`
 and start its successor in the same terminal. `corgi supervisor` on a
 project whose supervisor terminal has its shell in front (its agent
 exited) starts the new session there, with the terminal's address, name and
-space (`hc::launch::relaunch_supervisor`). Its role names `hc send`,
+space (`hc::launch::relaunch_supervisor`). `corgi supervisor --terminal T`
+starts it in an existing terminal instead of a new one
+(`hc::launch::adopt_terminal`): a live terminal of this machine with a shell
+waiting at its prompt and no role of Corgi's (`adoption_refusal`; an agent
+or a running command in front refuses it), such as a tab the person has
+open in the app. The terminal gets the labels a supervisor's has from its
+start (project, role, task, harness, session, resume, the shell's pid), is
+kept (`hc keep`) if it was not, and keeps the `herdr.space` it has, so
+`fleet`, `status`, spawn, merge and the daemon find it by its labels as
+they find any supervisor, and its workers join or nest under that space; a
+terminal in no space of the app gets the project's own. Its row's folder is
+the project's, whatever folder the shell started in (`hc::agents`), and it
+goes by its address when nobody named it, since hc has no rename. If
+nothing could be typed, the labels are taken off again. `corgi open` offers
+it the shells the Projects mod names (`Shell::Offered` in `hc_cli.rs`) and
+takes the first that also waits in the project's primary checkout; a
+project's own supervisor terminal at its shell always comes first. What
+Corgi types (`HcClient::send`) never says which hc terminal it is typed
+from: hc wraps a message from one agent's terminal to a program that has
+reported a status in `<hc from="t7 name">…</hc>`, which a shell cannot run.
+Its role names `hc send`,
 `hc read` and `hc keys` where the TUI's names `herdr agent prompt`, `read`
 and `send-keys` (`STEERING` in `supervisor.rs`; the TUI's text is
 unchanged), and a wake for a blocked worker names `hc read <worker> --lines
@@ -2480,14 +2520,26 @@ socket's.
   types the harness's exit command, waits for the shell in front, and
   starts the successor in the same terminal with the takeover prompt. Its
   workers, terminals of their own, keep running.
-- **Spaces** are not the daemon's: it never names, makes or moves a
-  project's or a worker's space of the app (a named space would keep its
-  name instead of following its repository's). The one exception is the
-  Corgi space (`app_space.rs`): when `corgi app-space` found the app's
-  window closed, it left `app-space.json` in Corgi's state directory, and
-  each pass with the window's socket answering makes the space through
-  `herdr-app ls`/`do` and deletes the note, so it is made once. That is
-  the only time the daemon talks to the app's window.
+- **Spaces** are not the daemon's: it never names, makes or moves a space
+  of the app (a named space would keep its name instead of following its
+  repository's), and it never talks to the app's window. It used to make
+  the Corgi space (`app_space.rs`) from a note `corgi app-space` left in
+  Corgi's state directory (`app-space.json`) when it found the window
+  closed. That space is retired, since Corgi's place in the app is the
+  Projects list: the daemon deletes such a note when it starts, and
+  `corgi app-space`, which makes the space only for a person who runs it,
+  needs the window open and leaves none.
+
+The app's sidebar is Corgi's in a layout of its own: `corgi app-layout`
+(`crates/corgi-core/src/app_layout.rs`) builds `layouts/corgi.json` from
+Herdr's shipped `main` with the Projects mod (`herdr-app/mods/projects`) in
+place of the sidebar's `spaces` block and without its `agents` block.
+Herdr's shipped layouts and mods are read-only (replaced whole on every
+start, an edited one moved aside), so `main` is never edited; the layout is
+rebuilt when `main` changed, by `herdr-app/install.sh` and by each of
+Corgi's mods when it starts, and nothing ever switches the window to it.
+The install puts the Corgi mod in the app's home too, and shows it nowhere.
+`herdr-app/RECIPE.md` describes the mods and the layout.
 
 `corgi daemon install` writes a LaunchAgent (`~/Library/LaunchAgents/
 io.github.zyrre.corgi.daemon.plist`) or a systemd user unit, `KeepAlive`/

@@ -199,39 +199,20 @@ fn remove_closes_only_corgi_tabs_without_terminals() {
 }
 
 #[test]
-fn a_pending_space_is_made_once_the_window_opens_and_then_forgotten() {
-    let fake = Fake::new("app-space-pending", json!([]));
+fn a_note_of_a_pending_space_is_deleted_and_nothing_is_made_from_it() {
+    let fake = Fake::new("app-space-pending", json!([])).open();
     let note = fake.dir.join("state/app-space.json");
-    write_pending(&note, &fake.app).unwrap();
-    // Closed: nothing to say, and the note stays.
-    assert_eq!(make_pending_at(&note), None);
-    assert!(note.exists());
+    fs::create_dir_all(note.parent().unwrap()).unwrap();
+    // What an earlier Corgi wrote: the app to make the space in.
+    fs::write(
+        &note,
+        json!({ "bin": fake.app.bin, "home": fake.app.home }).to_string(),
+    )
+    .unwrap();
+    assert!(forget_pending_at(&note));
+    assert!(!note.exists());
+    // The window is open, and still nothing was asked of it.
     assert!(fake.calls().is_empty());
-
-    let fake = fake.open();
-    fake.file("fail-space.new", "");
-    let said = make_pending_at(&note).unwrap();
-    assert!(said.starts_with("could not make the Corgi space"), "{said}");
-    assert!(note.exists(), "a failure is tried again at the next pass");
-
-    fs::remove_file(fake.app.home.join("fail-space.new")).unwrap();
-    fake.file(
-        "reply-space.new.json",
-        r#"{"space": "sp-new", "tab": "tb-shell", "terminal": "t9"}"#,
-    );
-    assert_eq!(
-        make_pending_at(&note).as_deref(),
-        Some("made the Corgi space sp-new in the Herdr app")
-    );
-    assert!(!note.exists());
-    assert_eq!(make_pending_at(&note), None);
-}
-
-#[test]
-fn a_note_that_is_not_corgis_is_forgotten() {
-    let dir = ScratchDir::new("app-space-bad-note");
-    let note = dir.join("app-space.json");
-    fs::write(&note, "not json").unwrap();
-    assert!(make_pending_at(&note).unwrap().starts_with("forgot"));
-    assert!(!note.exists());
+    // With no note there is nothing to forget.
+    assert!(!forget_pending_at(&note));
 }
