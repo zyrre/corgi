@@ -153,12 +153,14 @@ The Projects mod fills its block on `chrome`, text 13 px:
     After `merged` it asks, under Corgi's message, `Close <worker> and
     remove its worktree?` with `Keep` (`raised`) and `Close` (`solid`, with
     a 1 px outline in `solid` that turns `foreground` while it holds the
-    keyboard); then a spinner and `Closing…`. A close that went through
-    puts the card away at once, with nothing to dismiss. A close refused
+    keyboard); then a spinner and `Closing…`. A close that went through,
+    and `Keep` (or Escape), put the card away at once, with nothing to
+    dismiss. A close refused
     for changes in the worktree turns the outline `blocked` and shows
     Corgi's message (which names them, paths under the home folder as
     `~/…`) in `blocked`, then `Close <worker> anyway and discard them?`
-    with `Keep` and `Close anyway` (`solid`); a close that failed shows its
+    with `Keep` (which puts the card away too) and `Close anyway`
+    (`solid`); a close that failed shows its
     message in `blocked` on a `blocked` outline, and `Dismiss`. If the
     worker's row goes with its space while the card is still up, the card
     stands after the project's last agent row instead.
@@ -309,9 +311,10 @@ The Projects list:
   (`reason` `dirty`, `dirty` listing them) and nothing is closed: `Close
   anyway` runs it again with `--force`, which discards them. A close that
   went through (`closed`) ends the flow: the card goes at once and only a
-  refusal or a failure is shown. `Keep` puts the question away and leaves
-  the plain result. Then the status is read again. `corgi close` refuses a supervisor and an agent Corgi did not
-  start.
+  refusal or a failure is shown. `Keep` (Escape, or `Keep` after a dirty
+  refusal) ends it too: the card goes at once and nothing is closed. After
+  a close the status is read again. `corgi close` refuses a supervisor and
+  an agent Corgi did not start.
 - `Ask supervisor to fix` is offered on a failed push, a failed fetch, and
   a merge that failed or was refused before it started (uncommitted changes
   in the primary checkout, say): whenever Corgi's answer has an `error`,

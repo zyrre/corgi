@@ -386,12 +386,12 @@ export default class Projects extends View {
     });
   }
 
-  // Keep: the worker and its worktree stay, and the card is the merge's
-  // result again.
+  // Keep: the worker and its worktree stay, and that ends it: the card
+  // goes, with nothing to dismiss.
   keepWorker(cx) {
     const m = this.merge;
     if (m?.phase !== "offer" && m?.phase !== "dirty") return;
-    this.merge = { ...m, phase: "result", closed: null };
+    this.merge = null;
     cx.notify();
   }
 

@@ -795,12 +795,13 @@ async function merged(outcome, state) {
   assert.deepEqual(panel(mod).calls.border_color, ['#ansi2']);
   assert.equal(w.execs.filter((call) => call[1] === 'status').length, reads + 1);
   assert.deepEqual(ids(mod.render(), 'merge-t'), [], 'no mark is left');
-  // Keep: the plain result again, and nothing is closed.
+  // Keep: the card goes at once, with nothing to dismiss, and nothing is
+  // closed.
   click(mod.render(), 'close-keep-t3', mod.cx);
-  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', `Merged and pushed ${BRANCH} into main`, 'Dismiss']);
-  assert.deepEqual(w.execs.filter((call) => call[1] === 'close'), []);
-  click(mod.render(), 'merge-dismiss-t3', mod.cx);
   assert.equal(panel(mod), null);
+  assert.equal(mod.view.merge, null);
+  assert.deepEqual(w.execs.filter((call) => call[1] === 'close'), []);
+  assert.ok(byId(mod.render(), 'agent-t3'), 'the worker stays');
 }
 
 // A conflict: `corgi merge` aborted it and handed it to the supervisor
@@ -931,7 +932,7 @@ function closedWindow(w) {
     assert.deepEqual(closes(w), [['w-cache', '--project', REPO, '--json']]);
     if (answer === 'keep') {
       click(mod.render(), 'close-keep-t3', mod.cx);
-      assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, 'Dismiss']);
+      assert.equal(panel(mod), null, 'kept: no card');
       assert.equal(closes(w).length, 1);
       continue;
     }
@@ -942,11 +943,11 @@ function closedWindow(w) {
   }
 }
 
-// Escape on Close is Keep.
+// Escape on Close is Keep: no card.
 {
   const { w, mod } = await merged(MERGED);
   byId(mod.render(), 'close-confirm-t3').handlers.on_key_down({ key: 'escape', modifiers: {} }, mod.cx);
-  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', MERGED.message, 'Dismiss']);
+  assert.equal(panel(mod), null);
   assert.deepEqual(closes(w), []);
 }
 
