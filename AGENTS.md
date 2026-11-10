@@ -535,12 +535,13 @@ directory. Its `corgi` and `daemon.build` are the worktree's own build
 is canned too: with `fake/merge.json` holding what `corgi merge --json`
 would print (`fake/ask.json` for `--ask-supervisor`, `fake/merge.delay` the
 seconds it takes), nothing is merged; without it the worktree's `corgi`
-answers, on the preview's core. The window takes no clicks from a script,
+answers, on the preview's core. So is a close after a merge:
+`fake/close.json` (`fake/forced.json` for `--force`, `fake/close.delay`). The window takes no clicks from a script,
 so a state behind one (the question under a MERGE mark, a card's button)
 is reached by saving a copy of the mod into the preview's home
 (`/tmp/corgi-ap-…/home/mods/projects/main.js`; the app reloads it) whose
 command loop calls the handler the click calls (`this.askMerge`,
-`this.runMerge`), then `do projects.<command>`; `start` again puts the
+`this.runMerge`, `this.closeWorker`), then `do projects.<command>`; `start` again puts the
 worktree's own mod back. Take a shot a second after a reload: until each
 space's git is read, the worktrees' spaces show as rows of their own.
 Change the made-up projects in `start_fakes` when a view needs

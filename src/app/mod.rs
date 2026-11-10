@@ -65,7 +65,9 @@ mod daemon;
 mod hc_cli;
 mod navigate;
 mod status;
-pub use status::{MERGE_USAGE, STATUS_USAGE, merge_command, status_command};
+pub use status::{
+    CLOSE_USAGE, MERGE_USAGE, STATUS_USAGE, close_command, merge_command, status_command,
+};
 pub(crate) mod orphans;
 pub use app_layout::{APP_LAYOUT_USAGE, app_layout_command};
 pub use app_space::{APP_SPACE_USAGE, app_space_command};

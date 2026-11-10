@@ -36,12 +36,12 @@ use crate::{
 /// and exits with the code in the matching `.code` (0 without one). Every
 /// call's arguments are recorded, separated by `|`, each call ended by an
 /// ASCII record separator (a prompt has lines of its own).
-struct FakeHc {
+pub(super) struct FakeHc {
     dir: ScratchDir,
 }
 
 impl FakeHc {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = ScratchDir::new("fake-hc");
         let script = dir.join("hc");
         fs::write(
@@ -64,21 +64,21 @@ exit "$(cat "$f.code" 2>/dev/null || echo 0)"
         Self { dir }
     }
 
-    fn client(&self) -> HcClient {
+    pub(super) fn client(&self) -> HcClient {
         HcClient::new(self.dir.join("hc"))
     }
 
     /// `hc reply`'s output (`reply` is `CMD` or `CMD.TARGET`).
-    fn answer(&self, reply: &str, out: &str) {
+    pub(super) fn answer(&self, reply: &str, out: &str) {
         fs::write(self.dir.join(format!("{reply}.out")), out).unwrap();
     }
 
-    fn fail(&self, reply: &str, code: i32, err: &str) {
+    pub(super) fn fail(&self, reply: &str, code: i32, err: &str) {
         fs::write(self.dir.join(format!("{reply}.code")), code.to_string()).unwrap();
         fs::write(self.dir.join(format!("{reply}.err")), err).unwrap();
     }
 
-    fn calls(&self) -> Vec<String> {
+    pub(super) fn calls(&self) -> Vec<String> {
         fs::read_to_string(self.dir.join("calls"))
             .unwrap_or_default()
             .split('\x1e')

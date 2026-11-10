@@ -12,6 +12,7 @@
 //! [`agents`]). [`launch`] starts supervisors and workers there.
 
 pub mod agents;
+pub mod close;
 pub mod daemon;
 pub mod events;
 pub mod launch;
