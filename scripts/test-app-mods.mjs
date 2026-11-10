@@ -779,6 +779,8 @@ async function merged(outcome, state) {
   finish({ result: 'merged', message: `Merged and pushed ${BRANCH}\ninto main`, commit: 'abc1234', reason: null, error: null });
   await mod.settle();
   assert.deepEqual(texts(panel(mod)), ['w-cache: merged', `Merged and pushed ${BRANCH} into main`, 'Dismiss']);
+  // Green, not the amber of an agent that works.
+  assert.deepEqual(panel(mod).calls.border_color, ['#ansi2']);
   assert.equal(w.execs.filter((call) => call[1] === 'status').length, reads + 1);
   assert.deepEqual(ids(mod.render(), 'merge-t'), [], 'no mark is left');
   click(mod.render(), 'merge-dismiss-t3', mod.cx);
@@ -791,6 +793,7 @@ async function merged(outcome, state) {
   const message = `Merging ${BRANCH} into main stopped on conflicts in a.txt; aborted it and asked weather-supervisor to have w-cache merge main into its branch`;
   const { mod } = await merged({ result: 'conflicts', message, commit: null, reason: null, error: null });
   assert.deepEqual(texts(panel(mod)), ['w-cache: conflicts', message, 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#blocked']);
 }
 
 // A failed push: the branch is merged; a running supervisor can be asked
@@ -799,10 +802,12 @@ async function merged(outcome, state) {
   const outcome = { result: 'push-failed', message: `Merged ${BRANCH} into main, but the push failed: main is protected`, commit: 'abc1234', reason: null, error: 'main is protected' };
   const { w, mod } = await merged(outcome);
   assert.deepEqual(texts(panel(mod)), ['w-cache: push-failed', outcome.message, 'Ask supervisor to fix', 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#ansi3'], 'merged, but not pushed');
   click(mod.render(), 'merge-ask-t3', mod.cx);
   await mod.settle();
   assert.deepEqual(merges(w).at(-1), ['w-cache', '--project', REPO, '--json', '--ask-supervisor', 'main is protected', '--commit', 'abc1234']);
   assert.deepEqual(texts(panel(mod)), ['Asked weather-supervisor to fix the merge of w-cache', 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#ansi2']);
   click(mod.render(), 'merge-dismiss-t3', mod.cx);
   assert.equal(panel(mod), null);
 }

@@ -130,8 +130,9 @@ The Projects mod fills its block on `chrome`, text 13 px:
   - Under a worker's row, while its merge is asked about, runs or has
     ended: a card indented like the row (22 px; `surface`, radius 7,
     padding 7, text 11.5 px, its text wrapping) with a `border` outline
-    while it asks or runs, `working` for merged and for a supervisor that
-    was asked, `done` for a failed push, `blocked` otherwise. It holds
+    while it asks or runs, `ansi2` (green) for merged and for a supervisor
+    that was asked, `ansi3` (yellow) for a failed push, `blocked` otherwise.
+    It holds
     `Merge worktree/x into main and push?` with `Cancel` (`raised`) and
     `Merge + push` (`solid`); then a spinner and `Merging…`; then
     `<worker>: merged` (or `conflicts`, `push-failed`, `refused`) in the
@@ -150,7 +151,7 @@ The Projects mod fills its block on `chrome`, text 13 px:
   that answers was built from, with `· modified` for a build with
   uncommitted changes, and the release alone for a build without Git. When
   the checkout it was built in has commits the build lacks, `· main is
-  newer` (the branch checked out there) in `done`, and under it, in
+  newer` (the branch checked out there) in `ansi3`, and under it, in
   monospace 10 px `muted`, wrapping, what to run:
   `cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh`. When the
   daemon does not run, `Corgi daemon not running: supervisors won't be
@@ -483,6 +484,10 @@ wants the overview on screen.
   message is written for the person (`Merge unavailable: …`, `merge again
   with --skip-upstream`), the error is what the supervisor's line quotes. A
   conflict needs no button: `corgi merge` hands it over itself.
+- The card's and the footer's colors are not the agent states': a theme's
+  `working` is amber and its `done` is whatever a finished agent's dot is,
+  so "merged" in `working` read as a warning. What went well is `ansi2`,
+  what landed but needs a look `ansi3`, what needs the person `blocked`.
 - The version line shows what the answering `corgi` says of itself, never
   what the mod's files are: after an install the mod is reloaded and reads
   the new binary's status within 5 seconds. A `corgi` from before `status`

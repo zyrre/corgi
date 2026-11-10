@@ -437,9 +437,12 @@ export default class Projects extends View {
       h_flex().gap(7).items_center().text_color(t.muted)
         .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
         .child(div().flex_1().min_w(0).truncate().child(text));
+    // Green for what went well, yellow for a merge that landed but was not
+    // pushed, the color of what needs the person otherwise. Not the states'
+    // colors: a theme's `working` is amber, which would read as a warning.
     const color = m.phase === "confirm" || m.phase === "running" ? t.border
-      : m.phase === "asked" || o.result === "merged" ? t.working
-      : o.result === "push-failed" ? t.done : t.blocked;
+      : m.phase === "asked" || o.result === "merged" ? t.ansi2
+      : o.result === "push-failed" ? t.ansi3 : t.blocked;
     const panel = v_flex()
       .id(`merge-panel-${m.terminal}`)
       .flex_none()
@@ -521,7 +524,7 @@ export default class Projects extends View {
         el.child(
           h_flex().gap(4).items_center()
             .child(div().flex_shrink(1).min_w(0).truncate().child(what))
-            .when(Boolean(newer), (el) => el.child(div().flex_none().text_color(t.done).child(`· ${newer}`))),
+            .when(Boolean(newer), (el) => el.child(div().flex_none().text_color(t.ansi3).child(`· ${newer}`))),
         ),
       )
       .when(Boolean(newer), (el) => el.child(command(`${b.source ? `cd ${tilde(b.source)} && ` : ""}${INSTALL_COMMAND}`)))
