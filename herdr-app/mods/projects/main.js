@@ -15,6 +15,13 @@
 // command `projects.open` does what the + does, for a key of the person's
 // (keys.json: "cmd-o": "projects.open").
 //
+// A worker Corgi tagged ready to merge has a MERGE mark in its row: a click
+// asks under the row, then runs `corgi merge`, the merge Corgi's dashboard
+// runs with m, and shows how it went, with "Ask supervisor to fix" when it
+// failed and the project's supervisor runs. Under the list, which Corgi
+// answers (`Corgi 0.2.3 · 5b50895`), whether the checkout it was built in
+// has moved on since, and whether the daemon is down or runs another build.
+//
 // It began as a copy of Herdr's `spaces` mod and is Corgi's own since.
 
 import { View, div, image, svg } from "gpui-kit";
@@ -74,6 +81,13 @@ const SUGGESTIONS = 8;
 // Starting a supervisor waits for its shell, its agent and a folder-trust
 // question: about a minute at the most.
 const OPEN_TIMEOUT_MS = 120000;
+// A merge fetches, merges and pushes; exec's longest wait is 10 minutes.
+const MERGE_TIMEOUT_MS = 600000;
+// What makes a Corgi built from a checkout the newest merged there again
+// (AGENTS.md, "After a merge"): run in that checkout.
+const INSTALL_COMMAND = "CORGI_BUILD=source herdr-app/install.sh";
+// What starts the daemon, or restarts it, with the corgi that answers.
+const DAEMON_COMMAND = "corgi daemon install";
 
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
@@ -106,6 +120,11 @@ const OLD_CORGI = "This corgi is older than the Projects list. Update Corgi: run
 
 // Corgi's word for an agent's state as one of the app's, or null.
 const STATUS = { working: "working", blocked: "blocked", done: "done", idle: "idle" };
+
+// A build as `corgi status --json` names one ({ version, commit, dirty }),
+// in a few letters: its commit, else its release.
+const buildName = (b) => [b.commit ? b.commit.slice(0, 7) : `Corgi ${b.version}`, ...(b.dirty ? ["modified"] : [])].join(" · ");
+const sameBuild = (a, b) => a.version === b.version && (a.commit ?? null) === (b.commit ?? null) && Boolean(a.dirty) === Boolean(b.dirty);
 
 // Where corgi may be, in order: what the installer wrote for this mod or the
 // Corgi mod, then the usual places.
@@ -160,6 +179,13 @@ export default class Projects extends View {
     // Corgi: its program, and what it says of each agent, by terminal.
     this.corgi = null;
     this.corgiAgents = new Map(); // terminal -> { role, task, worktree, state, project, ... }
+    this.corgiProjects = new Map(); // dir -> { base, supervisor, ... }
+    this.build = null; // the corgi that answers: { version, commit, dirty, source, newer }
+    this.daemon = null; // { running, pid, build, installed }
+    // The one merge under way, shown under its worker's row: { terminal,
+    // name, dir, branch, base, phase, outcome, problem }. Its phases: confirm,
+    // running, result, asking (the supervisor), asked.
+    this.merge = null;
     this.loading = false;
     this.again = false;
     this.agentKey = "";
@@ -247,6 +273,16 @@ export default class Projects extends View {
         for (const a of p.agents ?? []) if (a.terminal) found.set(a.terminal, { ...a, project: p.dir });
       }
       this.corgiAgents = found;
+      this.corgiProjects = new Map((status?.projects ?? []).map((p) => [p.dir, p]));
+      this.build = status?.corgi ?? null;
+      this.daemon = status?.daemon ?? null;
+      // A question about a worker that is gone, or no longer tagged, and a
+      // result with no row left to stand under, are put away.
+      const m = this.merge;
+      if (status && m && m.phase !== "running" && m.phase !== "asking") {
+        const worker = found.get(m.terminal);
+        if (!worker || (m.phase === "confirm" && worker.tag !== "merge")) this.merge = null;
+      }
       this.loading = false;
       cx.notify();
       if (this.again) {
@@ -271,6 +307,230 @@ export default class Projects extends View {
         // A corgi from before it built layouts: nothing to rebuild with.
       }
     });
+  }
+
+  // --- Merge --------------------------------------------------------------------
+
+  // A click on a worker's MERGE mark: asks under its row, or puts the
+  // question away again. One merge at a time: nothing while one runs.
+  askMerge(cx, a) {
+    const busy = this.merge?.phase === "running" || this.merge?.phase === "asking";
+    if (busy) return;
+    if (this.merge?.terminal === a.address && this.merge.phase === "confirm") this.merge = null;
+    else {
+      const c = a.corgi;
+      this.merge = { terminal: a.address, name: c.name, dir: c.project, branch: c.branch ?? c.name, base: this.corgiProjects.get(c.project)?.base ?? "the base branch", phase: "confirm" };
+    }
+    cx.notify();
+  }
+
+  // What `corgi merge ARGS` answered: its JSON, or a refusal saying why
+  // there is none.
+  async corgiMerge(args, what) {
+    if (!this.corgi) return { result: "refused", message: NO_CORGI };
+    try {
+      const r = await exec(this.corgi, ["merge", ...args], { timeout: MERGE_TIMEOUT_MS });
+      try {
+        return JSON.parse(r.stdout);
+      } catch (_) {
+        return { result: "refused", message: oneLine(r.stderr) || `corgi merge exited with ${r.code}` };
+      }
+    } catch (e) {
+      return { result: "refused", message: `${what} did not answer: ${e}` };
+    }
+  }
+
+  // The merge the dashboard's m runs once confirmed, with its checks.
+  // `extra`: --pull, or --skip-upstream, after a result that offered it.
+  runMerge(cx, extra) {
+    const m = this.merge;
+    if (!m || (m.phase !== "confirm" && m.phase !== "result")) return;
+    this.merge = { ...m, phase: "running", outcome: null, problem: null };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      const outcome = await this.corgiMerge([m.name, "--project", m.dir, "--json", ...extra], "The merge");
+      this.merge = { ...m, phase: "result", outcome, problem: null };
+      cx.notify();
+      this.refreshCorgi(cx);
+    });
+  }
+
+  // Whether the project's supervisor runs, to be asked to fix a merge: an
+  // inbox line would wait for one that does not.
+  supervised(dir) {
+    const supervisor = this.corgiProjects.get(dir)?.supervisor;
+    return Boolean(supervisor) && supervisor.state !== "exited";
+  }
+
+  // Hands what failed the merge to the project's supervisor, as the
+  // dashboard's s does: a line in its inbox, which Corgi's daemon types in.
+  askSupervisor(cx) {
+    const m = this.merge;
+    const o = m?.outcome;
+    if (m?.phase !== "result" || !o?.error) return;
+    this.merge = { ...m, phase: "asking", problem: null };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      // A push that failed left the branch merged, at this commit.
+      const landed = o.result === "push-failed" && o.commit ? ["--commit", o.commit] : [];
+      const answer = await this.corgiMerge([m.name, "--project", m.dir, "--json", "--ask-supervisor", o.error, ...landed], "Corgi");
+      if (answer.result === "asked") this.merge = { ...m, phase: "asked", answer };
+      // Not asked: the result stays, with why, and the button to try again.
+      else this.merge = { ...m, phase: "result", problem: oneLine(answer.message) || "The supervisor could not be asked." };
+      cx.notify();
+      this.refreshCorgi(cx);
+    });
+  }
+
+  // The MERGE mark of a worker tagged ready to merge: its row's way to the
+  // merge. It keeps its width; the worktree's name after it gives way first.
+  mergeMark(a, t) {
+    const busy = this.merge?.phase === "running" || this.merge?.phase === "asking";
+    const base = this.corgiProjects.get(a.corgi.project)?.base ?? "the base branch";
+    return div()
+      .id(`merge-${a.address}`)
+      .flex_none()
+      .px(5)
+      .rounded(4)
+      .bg(t.accent)
+      .text_color(t.accent_foreground)
+      .text_size(10)
+      .font_semibold()
+      .cursor_pointer()
+      .when(busy, (el) => el.opacity(0.5))
+      .hover((s) => s.opacity(0.88))
+      .tooltip(`Merge ${a.corgi.branch ?? a.corgi.name} into ${base} and push`)
+      // The mark's click is its own, not also the row's.
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        this.askMerge(cx, a);
+      })
+      .child("MERGE");
+  }
+
+  // Under the worker's row: the question, the merge running, how it went.
+  mergePanel(m, t) {
+    const o = m.outcome;
+    const button = (id, label, solid, onClick) =>
+      div()
+        .id(`${id}-${m.terminal}`)
+        .px(8)
+        .h(22)
+        .flex()
+        .flex_none()
+        .items_center()
+        .rounded(5)
+        .bg(solid ? t.solid : t.raised)
+        .text_color(solid ? t.solid_foreground : t.foreground)
+        .cursor_pointer()
+        .hover((s) => s.opacity(0.88))
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          onClick(cx);
+        })
+        .child(label);
+    const dismiss = button("merge-dismiss", "Dismiss", false, (cx) => {
+      this.merge = null;
+      cx.notify();
+    });
+    const waiting = (text) =>
+      h_flex().gap(7).items_center().text_color(t.muted)
+        .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
+        .child(div().flex_1().min_w(0).truncate().child(text));
+    // Green for what went well, yellow for a merge that landed but was not
+    // pushed, the color of what needs the person otherwise. Not the states'
+    // colors: a theme's `working` is amber, which would read as a warning.
+    const color = m.phase === "confirm" || m.phase === "running" ? t.border
+      : m.phase === "asked" || o.result === "merged" ? t.ansi2
+      : o.result === "push-failed" ? t.ansi3 : t.blocked;
+    const panel = v_flex()
+      .id(`merge-panel-${m.terminal}`)
+      .flex_none()
+      .ml(22)
+      .mb(4)
+      .p(7)
+      .gap(5)
+      .rounded(7)
+      .border_1()
+      .border_color(color)
+      .bg(t.surface)
+      .text_size(11.5)
+      .text_color(t.foreground);
+    const buttons = (...list) => h_flex().flex_wrap().gap(5).children(list.filter(Boolean));
+    if (m.phase === "confirm") {
+      return panel
+        .child(div().whitespace_normal().child(`Merge ${m.branch} into ${m.base} and push?`))
+        .child(buttons(
+          button("merge-cancel", "Cancel", false, (cx) => {
+            this.merge = null;
+            cx.notify();
+          }),
+          button("merge-confirm", "Merge + push", true, (cx) => this.runMerge(cx, [])),
+        ));
+    }
+    if (m.phase === "running") return panel.child(waiting("Merging…"));
+    if (m.phase === "asked") {
+      return panel
+        .child(div().whitespace_normal().child(oneLine(m.answer.message) || "Asked the supervisor to fix it."))
+        .child(buttons(dismiss));
+    }
+    const retry = o.reason === "behind" ? ["Pull, merge + push", ["--pull"]] : o.reason === "fetch-failed" ? ["Merge + push without fetching", ["--skip-upstream"]] : null;
+    // What failed, for a supervisor that runs to fix. A conflict went to it
+    // already: `corgi merge` aborts one and hands it over by itself.
+    const askable = Boolean(o.error) && this.supervised(m.dir);
+    return panel
+      .child(div().text_color(color).font_semibold().child(`${m.name}: ${o.result}`))
+      .child(div().whitespace_normal().child(oneLine(o.message)))
+      .when(Boolean(m.problem), (el) => el.child(div().text_color(t.blocked).whitespace_normal().child(m.problem)))
+      .when(m.phase === "asking", (el) => el.child(waiting("Asking the supervisor…")))
+      .when(m.phase === "result", (el) =>
+        el.child(buttons(
+          retry && button("merge-retry", retry[0], true, (cx) => this.runMerge(cx, retry[1])),
+          askable && button("merge-ask", "Ask supervisor to fix", !retry, (cx) => this.askSupervisor(cx)),
+          dismiss,
+        )),
+      );
+  }
+
+  // --- Which Corgi runs --------------------------------------------------------
+
+  // Under the list: the corgi that answers, and what is not as it should be:
+  // its checkout has commits it lacks (a branch merged since it was built),
+  // with what to run there; a daemon that does not run, or runs another
+  // build, with what starts it again. Nothing before Corgi answered; a
+  // corgi too old to say what it is still says whether its daemon runs.
+  versionLine(t) {
+    const b = this.build;
+    const d = this.daemon;
+    // Without the daemon no supervisor on the app is woken or handed over.
+    const stopped = d && !d.running ? `Corgi daemon ${d.installed ? "installed but not running" : "not running"}: supervisors won't be woken or handed over` : null;
+    if (!b && !stopped) return null;
+    const h = home();
+    const tilde = (dir) => (dir === h ? "~" : dir.startsWith(`${h}/`) ? `~${dir.slice(h.length)}` : dir);
+    const what = b && [`Corgi ${b.version}`, ...(b.commit ? [b.commit.slice(0, 7)] : []), ...(b.dirty ? ["modified"] : [])].join(" · ");
+    const newer = b?.newer ? `${b.newer.branch ?? "its checkout"} is newer` : null;
+    const other = b && d?.running && !(d.build && sameBuild(d.build, b)) ? `The daemon runs ${d.build ? `another build: ${buildName(d.build)}` : "an older build"}` : null;
+    const command = (text) => div().whitespace_normal().font_family("JetBrains Mono").text_size(10).text_color(t.muted).child(text);
+    return v_flex()
+      .id("corgi-version")
+      .flex_none()
+      .px(16)
+      .pt(4)
+      .pb(8)
+      .gap(2)
+      .text_size(10.5)
+      .text_color(t.dim)
+      .when(Boolean(b), (el) =>
+        el.child(
+          h_flex().gap(4).items_center()
+            .child(div().flex_shrink(1).min_w(0).truncate().child(what))
+            .when(Boolean(newer), (el) => el.child(div().flex_none().text_color(t.ansi3).child(`· ${newer}`))),
+        ),
+      )
+      .when(Boolean(newer), (el) => el.child(command(`${b.source ? `cd ${tilde(b.source)} && ` : ""}${INSTALL_COMMAND}`)))
+      // Either starts with the same command: it installs the service again,
+      // which starts the daemon on the corgi that answers.
+      .when(Boolean(stopped ?? other), (el) => el.child(div().text_color(t.blocked).whitespace_normal().child(stopped ?? other)).child(command(DAEMON_COMMAND)));
   }
 
   // --- Open project ------------------------------------------------------------
@@ -789,6 +1049,7 @@ export default class Projects extends View {
         const mine = by[r.w.id] ?? [];
         const lit = a.focused || (r.tree && r.w.active && mine[0] === a && !mine.some((x) => x.focused));
         out.push(this.agent(a, r, lit, t));
+        if (this.merge?.terminal === a.address) out.push(this.mergePanel(this.merge, t));
         order.push(a.address);
       }
       for (const k of kids) if (!(by[k.w.id] ?? []).length) out.push(this.row(k, t));
@@ -949,10 +1210,10 @@ export default class Projects extends View {
   }
 
   // One agent, on one line, left to right: its task, its harness's icon,
-  // its state, and the worktree it works in (nothing on the primary
-  // checkout). Too wide, it is cut from the right: the worktree's name
-  // first, down to nothing, and only then the task; the icon and the state
-  // stay whole.
+  // its state, the MERGE mark of a worker tagged ready to merge, and the
+  // worktree it works in (nothing on the primary checkout). Too wide, it is
+  // cut from the right: the worktree's name first, down to nothing, and only
+  // then the task; the icon, the state and the mark stay whole.
   // `on`: lit, as the agent with the focus or for its space, which is shown.
   agent(a, { w, g, at, tree }, on, t) {
     const worktree = a.corgi?.worktree ? base(a.corgi.worktree) : tree && g?.linked && at ? base(at) : "";
@@ -975,6 +1236,7 @@ export default class Projects extends View {
       .child(div().flex_shrink(1).min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
       .when(Boolean(pic), (el) => el.child(pic))
       .child(h_flex().w(14).flex_none().items_center().justify_center().child(stateMark(t, a.status)))
+      .when(a.corgi?.tag === "merge", (el) => el.child(this.mergeMark(a, t)))
       .when(Boolean(worktree), (el) => el.child(div().flex_shrink(WORKTREE_YIELDS).min_w(0).truncate().text_size(11).text_color(t.dim).child(worktree)));
   }
 
@@ -1001,6 +1263,7 @@ export default class Projects extends View {
   render() {
     const t = theme();
     const collapsed = narrow();
+    const version = collapsed ? null : this.versionLine(t);
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
     const sp = spaces();
     const ps = panes();
@@ -1028,6 +1291,7 @@ export default class Projects extends View {
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
         .children(this.grouped(t, collapsed, sp, ps)))
+      .when(Boolean(version), (el) => el.child(version))
       // Herdr's own layout unfolds the rail from its agents list, which Corgi's has not.
       .when(collapsed, (el) =>
         el.child(

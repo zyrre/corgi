@@ -134,6 +134,7 @@ cat >"$checkout/target/release/corgi" <<FAKE_CORGI
 #!/bin/sh
 echo "corgi \$*" >>"$log"
 [ "\$1" != app-layout ] || echo "built the Corgi layout"
+[ "\$*" != "--version --json" ] || echo '{"commit":"9505b68c","dirty":false,"source":"/checkout","version":"9.9.9"}'
 FAKE_CORGI
 chmod 755 "$work/Herdr.app/Contents/MacOS/Herdr" "$work/bin/hc" "$work/bin/aerospace" "$checkout/target/release/corgi"
 
@@ -171,6 +172,15 @@ status=$("$preview/fake/corgi" status --json)
 check "the canned corgi answers status, dated now" grep -q "\"generated\":\"$(date -u +%Y-%m-%d)T" <<<"$status"
 "$preview/fake/corgi" projects --json >/dev/null
 check "and passes the rest to the checkout's corgi" logged "corgi projects --json"
+built() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); c = d["corgi"]; assert (c["version"], c["commit"], c["newer"]) == ("9.9.9", "9505b68c", None) and d["daemon"]["build"]["commit"] == c["commit"]' "$preview/fake/status.json"; }
+check "the canned status names the checkout's build, and a daemon of the same" built
+"$preview/fake/corgi" merge w-cache --project /p --json >/dev/null
+check "a merge with no canned answer goes to the checkout's corgi" logged "corgi merge w-cache --project /p --json"
+echo '{"result":"merged"}' >"$preview/fake/merge.json"
+check "a canned merge answers, and merges nothing" test "$("$preview/fake/corgi" merge w-docs --project /p --json)" = '{"result":"merged"}'
+check "(the checkout's corgi is not run)" not_logged "corgi merge w-docs"
+echo '{"result":"asked"}' >"$preview/fake/ask.json"
+check "asking the supervisor has an answer of its own" test "$("$preview/fake/corgi" merge w-docs --project /p --json --ask-supervisor boom)" = '{"result":"asked"}'
 if grep -q display-of-the-person "$preview/home/window.json" 2>/dev/null; then
   check "the window is told the corner of the person's display" grep -Eq '"bounds":\[[0-9]+\.0,[0-9]+\.0,1280\.0,800\.0\]' "$preview/home/window.json"
 else

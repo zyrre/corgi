@@ -89,25 +89,42 @@ fn one_daemon_holds_a_cores_lock_and_says_its_pid() {
     let path = scratch.join("daemon").join("core.lock");
     let socket = Path::new("/run/hc.sock");
     assert!(!running_at(Some(path.clone())).running);
-    let held = take_lock_at(&path, socket).unwrap();
+    let build = r#"{"version":"0.2.3","commit":"5b50895"}"#;
+    let held = take_lock_at(&path, socket, build).unwrap();
     let running = running_at(Some(path.clone()));
     assert!(running.running);
     assert_eq!(running.pid, Some(std::process::id()));
-    let refused = take_lock_at(&path, socket).unwrap_err().to_string();
+    assert_eq!(running.build.as_deref(), Some(build));
+    let refused = take_lock_at(&path, socket, "another build")
+        .unwrap_err()
+        .to_string();
     assert!(
-        refused.contains(&format!("pid {}", std::process::id())),
+        refused.contains(&format!("(pid {})", std::process::id())),
         "{refused}"
     );
-    // The refused try left the holder's pid in place.
+    // The refused try left the holder's pid and build in place.
     assert_eq!(
-        fs::read_to_string(&path).unwrap().trim(),
-        std::process::id().to_string()
+        fs::read_to_string(&path).unwrap(),
+        format!("{}\n{build}\n", std::process::id())
     );
     // Unlocked, not only closed: a process another test spawns may hold a
     // copy of the descriptor for a moment.
     held.unlock().unwrap();
     drop(held);
-    assert!(!running_at(Some(path)).running);
+    // What the last daemon wrote is nobody's once it is gone.
+    let gone = running_at(Some(path.clone()));
+    assert_eq!((gone.running, gone.pid, gone.build), (false, None, None));
+
+    // A daemon from before the lock held a build: its pid alone.
+    fs::write(&path, format!("{}\n", std::process::id())).unwrap();
+    let old = fs::File::open(&path).unwrap();
+    old.lock().unwrap();
+    let running = running_at(Some(path));
+    assert_eq!(
+        (running.running, running.pid, running.build),
+        (true, Some(std::process::id()), None)
+    );
+    old.unlock().unwrap();
 }
 
 #[test]

@@ -16,7 +16,11 @@ Herdr's own layout with one list where Herdr has its Spaces and Agents
 lists: your spaces, each repository with its agents under it, one line each
 (the agent's task, its harness's icon, its state and the worktree it works
 in, in that order), and a `+` that opens a project: type a name or a path, and Enter shows
-its supervisor or starts it.
+its supervisor or starts it. A worker Corgi tagged ready to merge has a
+`MERGE` mark in its row: click it, confirm, and its branch is merged into
+the project's base branch and pushed, as `m` does in Corgi's dashboard. The
+last line says which Corgi runs (`Corgi 0.2.3 · 5b50895`) and whether a
+newer one has been merged since.
 
 They need the `corgi` command-line tool; `herdr-app/install.sh` in the
 Corgi repository installs the tool, both mods and the layout. The layout is
@@ -113,19 +117,50 @@ The Projects mod fills its block on `chrome`, text 13 px:
     12.5 px (medium weight for `Supervisor`); the harness's icon (14 px;
     Claude's now, Codex's or OpenCode's when it is one); the state, a
     spinning ring in `working`, a `!` tile in `blocked`, a dot in `done`, a
-    ring in `idle`; and the worktree's folder name in `dim` 11 px
+    ring in `idle`; on a worker tagged ready to merge, a `MERGE` mark
+    (10 px semibold, `accent_foreground` on `accent`, radius 4; tooltip
+    `Merge worktree/x into main and push`); and the worktree's folder name
+    in `dim` 11 px
     (`worktree-calm-forest-4f96`; nothing on the primary checkout). They
     follow one another, 7 px apart, from the left; nothing is pushed to the
     right edge. The supervisor is first; the rest keep the app's order. One
     line each: a row too wide is cut from the right, the worktree's name
     first, with `…`, down to nothing if need be, and only then the task;
-    the icon and the state stay whole.
+    the icon, the state and the mark stay whole.
+  - Under a worker's row, while its merge is asked about, runs or has
+    ended: a card indented like the row (22 px; `surface`, radius 7,
+    padding 7, text 11.5 px, its text wrapping) with a `border` outline
+    while it asks or runs, `ansi2` (green) for merged and for a supervisor
+    that was asked, `ansi3` (yellow) for a failed push, `blocked` otherwise.
+    It holds
+    `Merge worktree/x into main and push?` with `Cancel` (`raised`) and
+    `Merge + push` (`solid`); then a spinner and `Merging…`; then
+    `<worker>: merged` (or `conflicts`, `push-failed`, `refused`) in the
+    outline's color, semibold, Corgi's message, and its buttons, 22 px
+    high: `Pull, merge + push` or `Merge + push without fetching` when
+    Corgi offers it, `Ask supervisor to fix` when it failed and the
+    project's supervisor runs, and `Dismiss`.
   - A worktree's space with no agent in it keeps a 28 px row of its own
     under its project: a branch glyph and the space's name.
   - A space outside a repository with agents in it has their rows under it
     the same way.
   - The shown space's row is on `selected`; so is the agent with the focus,
     and, for a shown worktree space that has no row, its first agent.
+- **Which Corgi runs** (under the list, 16 px from the left, `dim`
+  10.5 px): `Corgi 0.2.3 · 5b50895`, the release and the commit the `corgi`
+  that answers was built from, with `· modified` for a build with
+  uncommitted changes, and the release alone for a build without Git. When
+  the checkout it was built in has commits the build lacks, `· main is
+  newer` (the branch checked out there) in `ansi3`, and under it, in
+  monospace 10 px `muted`, wrapping, what to run:
+  `cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh`. When the
+  daemon does not run, `Corgi daemon not running: supervisors won't be
+  woken or handed over` (`installed but not running` when its service is
+  installed) in `blocked`, wrapping, and `corgi daemon install` under it
+  the same way; when it runs another build, `The daemon runs another build:
+  4563c06` (or `an older build`) in its place. Nothing until Corgi has
+  answered; a `corgi` too old to say what it is shows no build, only a
+  daemon that is down.
 - **The rail** (the sidebar narrower than 160 px): no texts; the `+`, a
   32 px cell per space with its number and, on the right, the most urgent
   state in it (the spinner, the `!`, a dot for done), and `»` at the bottom.
@@ -226,6 +261,45 @@ The Projects list:
 - `New space` in the field makes a plain space (`space.new`), as `cmd-n`,
   the tab bar's `+` menu and the space menu still do; a machine's header
   keeps its own `+`.
+- `MERGE` is on a worker whose `tag` in `corgi status --json` is `merge`:
+  Corgi's supervisor tags a worker whose branch is ready to merge straight
+  into the base branch. A project that merges through merge or pull
+  requests is not tagged, so it has no mark. A click on the mark asks under
+  the row (and is not also the row's click); `Cancel`, or the mark again,
+  puts the question away. `Merge + push` runs `corgi merge <worker>
+  --project <dir> --json`: the merge Corgi's dashboard runs with `m`, with
+  its checks, in the project's primary checkout, pushed, which also clears
+  the tag and tells the supervisor in its inbox. One merge at a time: while
+  one runs the marks are dimmed and do nothing. Then the status is read
+  again.
+- The result stays under the row until `Dismiss`: `merged`; `conflicts`,
+  which Corgi has aborted and handed to the project's supervisor when one
+  runs (its message says so), and left in the primary checkout to resolve
+  when none does; `push-failed`, the branch merged but not pushed;
+  `refused`, with why. Refused because the base branch's upstream has new
+  commits, it offers `Pull, merge + push` (`--pull`); after a failed fetch,
+  `Merge + push without fetching` (`--skip-upstream`).
+- `Ask supervisor to fix` is offered on a failed push, a failed fetch, and
+  a merge that failed or was refused before it started (uncommitted changes
+  in the primary checkout, say): whenever Corgi's answer has an `error`,
+  and the project's supervisor is running (`supervisor` in the status, not
+  `exited`). It runs `corgi merge <worker> --project <dir> --json
+  --ask-supervisor <error>`, with `--commit <commit>` after a failed push:
+  a line in the supervisor's inbox, as `s` sends from the dashboard's merge
+  dialog, which `corgi daemon` types in. The card then says who was asked;
+  if nobody could be, why, with the button still there.
+- The last line is read from the same status: `corgi` (`version`, `commit`,
+  `dirty`, `source`, `newer`) and `daemon.build`. `newer` is Corgi's own
+  finding: the checkout the binary was built in (`source`) has commits its
+  `commit` lacks, which is the case after a branch was merged there. A
+  downloaded release was built elsewhere, so it is never "newer". A running
+  daemon whose `build` is not the answering `corgi`'s (version, commit and
+  `dirty` compared) is another build: the binary was rebuilt and the daemon
+  not restarted. A daemon that is not running (`daemon.running` false) wakes
+  no supervisor and delivers no inbox, a merge's line included, so it is
+  said first; `daemon.installed` only changes the words. `corgi daemon
+  install` is the answer to both: it installs the service again, which
+  starts the daemon on the `corgi` that answers.
 - `»` on the rail unfolds the sidebar (Herdr's own layout has it in its
   Agents list).
 
@@ -254,6 +328,8 @@ The Projects list:
   Herdr's icons (`mods/workspace-chrome/*.svg`, the programs' `icons/`).
   Programs: `git` (status and `rev-parse`, per space), `hc machine ls`,
   `corgi status --json`, `corgi projects --json …`, `corgi open … --json`,
+  `corgi merge … --json` (with `--pull`, `--skip-upstream`, or
+  `--ask-supervisor <error> [--commit <commit>]`),
   `corgi app-layout --home <app home> --json`. Files: `mods/projects/
   config.json` or `mods/corgi/config.json` (`{ "corgi": "<path>" }`).
 - The layout, `layouts/corgi.json`: no file of this folder, but what `corgi
@@ -269,14 +345,21 @@ The Projects list:
   supervisor's state folder, named by `corgi status`), and a watch on the
   folder holding the supervisors' state folders.
 - `corgi status --json` prints `{version: 2, generated, hc: {running,
-  error}, daemon: {running, pid, installed}, projects: [{name, dir,
+  error}, daemon: {running, pid, build: {version, commit, dirty} | null,
+  installed}, corgi: {version, commit, dirty, source, newer: {branch,
+  commits, commit} | null}, projects: [{name, dir,
   state_dir, base, supervisor, agents:
   [{name, role, state, task, model, harness, ctx_pct, cache: {state,
   minutes_left, tokens, estimated}, cwd, branch, worktree, tag, request_id,
   terminal}], questions: [{id, title, blocks, file}], inbox_pending,
   ledger: {needs_answer, ready_to_merge, dispatched}, backlog}]}`.
-  `corgi merge` prints `{result: merged | conflicts | push-failed | refused,
-  message, commit, reason}`.
+  `corgi merge` prints `{result: merged | conflicts | push-failed | refused
+  | asked, message, commit, reason, error}`: `reason` is why it was refused
+  (`unavailable`, `behind`, `fetch-failed`, `failed`, `no-agent`,
+  `no-supervisor`), `error` the failure alone when a supervisor could fix
+  it, and `asked` what `--ask-supervisor` answers. `corgi --version` prints
+  `corgi 0.2.3 (5b50895)`, and `--version --json` `{version, commit, dirty,
+  source}`.
 
 ## The Corgi layout
 
@@ -388,6 +471,28 @@ wants the overview on screen.
   and the state do not shrink (`flex_none`). Giving the task `flex_1`
   instead would make it the first to give way. A `\n` in a task starts a
   second line even when truncated: join the lines first.
+- The `MERGE` mark and the card's buttons sit inside or beside a clickable
+  row: each calls `cx.stop_propagation()` in its `on_click`, or the row's
+  click shows the agent's terminal too. The mark is `flex_none` like the
+  icon and the state, and stands before the worktree's name, so the name
+  still gives way first. The card is an element of the list after its row,
+  not a child of the row, which stays 26 px high.
+- Never run `corgi merge` from a test or a look at the mod: it merges and
+  pushes for real. `node scripts/test-app-mods.mjs` gives the mod canned
+  answers for it; Corgi's own tests merge in scratch repositories.
+- `Ask supervisor to fix` passes Corgi's `error`, not its `message`: the
+  message is written for the person (`Merge unavailable: …`, `merge again
+  with --skip-upstream`), the error is what the supervisor's line quotes. A
+  conflict needs no button: `corgi merge` hands it over itself.
+- The card's and the footer's colors are not the agent states': a theme's
+  `working` is amber and its `done` is whatever a finished agent's dot is,
+  so "merged" in `working` read as a warning. What went well is `ansi2`,
+  what landed but needs a look `ansi3`, what needs the person `blocked`.
+- The version line shows what the answering `corgi` says of itself, never
+  what the mod's files are: after an install the mod is reloaded and reads
+  the new binary's status within 5 seconds. A `corgi` from before `status`
+  had `corgi` shows no line, and a daemon from before its lock held a
+  build is `an older build`.
 - The field's keys (↑, ↓, Tab, Esc) are handled on the card around the
   input, which tracks a focus handle of its own; Enter is the input's
   `submit`. The input is focused when the field opens and once more a
@@ -424,6 +529,22 @@ wants the overview on screen.
   agent's terminal; `~`, other folders and a worktree with no agent still
   have their rows; the narrow rail shows a cell per space and `»` unfolds
   it.
+- A worker tagged MERGE has the mark in its row and no other row has one;
+  a click on it asks under the row without showing the agent's terminal;
+  `Cancel` puts the question away; `Merge + push` shows `Merging…`, then
+  `<worker>: merged` with Corgi's message, the commit is on the base
+  branch's remote, the mark is gone, and the supervisor's inbox holds the
+  merge's line. A merge that conflicts shows `conflicts` and that the
+  supervisor was asked; a refused or failed one shows why, and `Ask
+  supervisor to fix` only while the project's supervisor runs, which puts
+  one line in its inbox.
+- The last line of the list reads `Corgi <version> · <commit>`, the commit
+  `corgi --version` prints; after a branch is merged into the checkout that
+  `corgi` was built in, it adds `· main is newer` and `cd <checkout> &&
+  CORGI_BUILD=source herdr-app/install.sh`, and after that command has run
+  it shows the new commit alone; with the binary rebuilt and the daemon
+  not restarted, it warns that the daemon runs another build, and with the
+  daemon stopped, that it is not running, each with `corgi daemon install`.
 - `+`, then typing, narrows the known projects and completes a path; Enter
   on a project whose supervisor runs shows it; Enter on one without starts
   its supervisor, in the shell that waits in its primary checkout when

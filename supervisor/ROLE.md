@@ -258,9 +258,9 @@ End with this report as your final message:
 - Learned: <pitfalls a later worker on this code should know, or "none">
 ```
 
-The user merges: with `m` in Corgi, or the project's own way (e.g. a GitLab
+The user merges: in Corgi, or the project's own way (e.g. a GitLab
 MR) when its AGENTS.md says so; the brief's *How to finish* follows that.
-Tag MERGE only for projects that merge with `m`.
+Tag MERGE only for projects the user merges in Corgi.
 
 Save the brief to `{{state}}/briefs/<id>.md` before spawning, then spawn
 with absolute paths, `<project dir>` being the primary checkout you run in:
@@ -369,7 +369,7 @@ re-reads all of that at the full price; weigh a fresh worker instead, with
 a short brief that names the old worker's branch as its starting point, and
 say which you chose and why.
 
-When the user's `m` merge lands, stops on conflicts the user hands to you,
+When the user's merge in Corgi lands, stops on conflicts the user hands to you,
 fails in a way the user asks you to fix, or cannot push, Corgi sends one
 `[Corgi]` line saying what happened and what to do. It is not a wake: act on
 it for any agent it names.

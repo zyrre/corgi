@@ -76,10 +76,15 @@ pub struct Options {
     pub socket: PathBuf,
     /// The Corgi binary the wakes' lines name and the handovers start.
     pub corgi_bin: PathBuf,
+    /// What this daemon was built from, on one line, as its frontend words
+    /// it: kept in the lock for [`running`] to give back, so a daemon left
+    /// running an older build than the `corgi` beside it shows.
+    pub build: String,
 }
 
 /// The daemon's lock for the core at `socket`, held for its whole life:
-/// `daemon/<socket>.lock` in Corgi's state directory, holding its pid.
+/// `daemon/<socket>.lock` in Corgi's state directory, holding its pid on
+/// its first line and its build on its second.
 pub fn lock_path(socket: &Path) -> Option<PathBuf> {
     socket_state_file("daemon", socket, "lock")
 }
@@ -91,15 +96,15 @@ pub fn log_path() -> Option<PathBuf> {
 }
 
 /// Takes the daemon's lock for the core at `socket` and writes this
-/// process's id into it. Fails, naming the holder, when another daemon of
-/// the same core holds it.
-pub fn take_lock(socket: &Path) -> Result<fs::File> {
+/// process's id and `build` into it. Fails, naming the holder, when another
+/// daemon of the same core holds it.
+pub fn take_lock(socket: &Path, build: &str) -> Result<fs::File> {
     let path = lock_path(socket).context("Corgi has no state directory for the daemon's lock")?;
-    take_lock_at(&path, socket)
+    take_lock_at(&path, socket, build)
 }
 
 /// [`take_lock`] of the lock file at `path`.
-fn take_lock_at(path: &Path, socket: &Path) -> Result<fs::File> {
+fn take_lock_at(path: &Path, socket: &Path, build: &str) -> Result<fs::File> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
     }
@@ -117,22 +122,28 @@ fn take_lock_at(path: &Path, socket: &Path) -> Result<fs::File> {
         bail!(
             "another corgi daemon runs for the core at {} (pid {}); it holds {}",
             socket.display(),
-            holder.trim(),
+            holder.lines().next().unwrap_or_default().trim(),
             path.display()
         );
     }
     file.set_len(0)?;
     file.rewind()?;
     writeln!(file, "{}", std::process::id())?;
+    let build = build.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !build.is_empty() {
+        writeln!(file, "{build}")?;
+    }
     file.flush()?;
     Ok(file)
 }
 
-/// Whether a daemon runs for the core at `socket`, and its pid.
+/// Whether a daemon runs for the core at `socket`, its pid, and the build
+/// it wrote into its lock (none for a daemon from before it wrote one).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Running {
     pub running: bool,
     pub pid: Option<u32>,
+    pub build: Option<String>,
     pub lock: Option<PathBuf>,
 }
 
@@ -149,6 +160,7 @@ fn running_at(lock: Option<PathBuf>) -> Running {
         return Running {
             running: false,
             pid: None,
+            build: None,
             lock,
         };
     };
@@ -161,9 +173,15 @@ fn running_at(lock: Option<PathBuf>) -> Running {
     };
     let mut text = String::new();
     let _ = file.read_to_string(&mut text);
+    // A lock nobody holds keeps what its last daemon wrote: not this one's.
+    let mut lines = text.lines().map(str::trim).filter(|_| held);
     Running {
         running: held,
-        pid: held.then(|| text.trim().parse().ok()).flatten(),
+        pid: lines.next().and_then(|pid| pid.parse().ok()),
+        build: lines
+            .next()
+            .filter(|build| !build.is_empty())
+            .map(str::to_string),
         lock,
     }
 }
@@ -212,7 +230,7 @@ enum Feed {
 /// passes, and starts over whenever the core goes. Returns only when the
 /// lock is another daemon's.
 pub fn run(options: Options) -> Result<()> {
-    let _lock = take_lock(&options.socket)?;
+    let _lock = take_lock(&options.socket, &options.build)?;
     let mut waker = SupervisorWaker::for_hc(&options.socket);
     anyhow::ensure!(
         waker.lead_hc(),

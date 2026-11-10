@@ -26,6 +26,8 @@ use corgi_core::{
     supervisor,
 };
 
+use crate::version::Build;
+
 pub const DAEMON_USAGE: &str = "\
 Usage: corgi daemon
        corgi daemon install [--label LABEL]
@@ -48,7 +50,8 @@ per core; it waits for the core to start and starts none itself.
                 unit on Linux, started at login and again whenever it ends.
                 Run again to update: it replaces the service and restarts it.
   uninstall     stop the service and remove it
-  status        whether the service is installed, and whether a daemon runs
+  status        whether the service is installed, whether a daemon runs, and
+                the build it runs when that is not this binary's
 
 The service runs this binary with the PATH of your login shell and the
 HC_SESSION, HC_SOCKET, XDG_* and CORGI_* settings of the environment
@@ -121,6 +124,7 @@ fn run() -> Result<()> {
         client,
         socket,
         corgi_bin,
+        build: Build::this().identity().to_string(),
     })
 }
 
@@ -313,6 +317,7 @@ fn status(label: &str, json: bool) -> Result<()> {
                 "socket": socket,
                 "running": running.as_ref().is_some_and(|running| running.running),
                 "pid": running.as_ref().and_then(|running| running.pid),
+                "build": running.as_ref().and_then(build_value),
                 "log": log,
             })
         );
@@ -329,13 +334,21 @@ fn status(label: &str, json: bool) -> Result<()> {
         }
     );
     match (&socket, &running) {
-        (Some(socket), Some(running)) if running.running => println!(
-            "daemon: running (pid {}) for the core at {}",
-            running
-                .pid
-                .map_or_else(|| "unknown".to_string(), |pid| pid.to_string()),
-            socket.display()
-        ),
+        (Some(socket), Some(running)) if running.running => {
+            println!(
+                "daemon: running (pid {}) for the core at {}",
+                running
+                    .pid
+                    .map_or_else(|| "unknown".to_string(), |pid| pid.to_string()),
+                socket.display()
+            );
+            if let Some(other) = other_build(build_value(running).as_ref(), &Build::this()) {
+                println!(
+                    "build: the daemon runs {other}, not this {}; corgi daemon install restarts it",
+                    Build::this().line()
+                );
+            }
+        }
         (Some(socket), _) => println!("daemon: not running for the core at {}", socket.display()),
         (None, _) => println!("daemon: no core socket (HOME is not set)"),
     }
@@ -466,8 +479,33 @@ pub(crate) fn systemd_unit(program: &Path, environment: &[(String, String)], log
     )
 }
 
+/// The build a running daemon wrote into its lock ([`Build::identity`]):
+/// none for a daemon from before it wrote one.
+fn build_value(running: &daemon::Running) -> Option<serde_json::Value> {
+    serde_json::from_str(running.build.as_deref()?).ok()
+}
+
+/// What a running daemon's build is called when it is not `this` one: its
+/// version line, or `an older build` for a daemon that recorded none, which
+/// only one from before this did.
+fn other_build(daemon: Option<&serde_json::Value>, this: &Build) -> Option<String> {
+    let Some(daemon) = daemon else {
+        return Some("an older build".into());
+    };
+    (*daemon != this.identity()).then(|| {
+        Build {
+            version: daemon["version"].as_str().unwrap_or("?").to_string(),
+            commit: daemon["commit"].as_str().map(str::to_string),
+            dirty: daemon["dirty"].as_bool().unwrap_or(false),
+            source: None,
+        }
+        .line()
+    })
+}
+
 /// What `corgi status --json` says of the daemon of the core of this
-/// environment: whether one runs, and its pid, and whether the service
+/// environment: whether one runs, its pid and the build it runs (null for a
+/// daemon from before it recorded one), and whether the service
 /// `corgi daemon install` writes is installed.
 pub(crate) fn status_value() -> serde_json::Value {
     let running = hc::expected_socket().map(|socket| daemon::running(&socket));
@@ -475,6 +513,7 @@ pub(crate) fn status_value() -> serde_json::Value {
     serde_json::json!({
         "running": running.as_ref().is_some_and(|running| running.running),
         "pid": running.as_ref().and_then(|running| running.pid),
+        "build": running.as_ref().and_then(build_value),
         "installed": installed,
     })
 }
@@ -530,6 +569,38 @@ mod tests {
         ] {
             assert!(unit.contains(part), "{part}\nin\n{unit}");
         }
+    }
+
+    #[test]
+    fn a_daemon_of_another_build_is_named_and_one_of_this_build_is_not() {
+        let this = Build {
+            version: "0.2.3".into(),
+            commit: Some("5b508951c0ffee".into()),
+            dirty: false,
+            source: Some("/repos/corgi".into()),
+        };
+        // The checkout it was built in does not tell builds apart.
+        assert_eq!(other_build(Some(&this.identity()), &this), None);
+        let older =
+            serde_json::json!({"version": "0.2.3", "commit": "4563c06aaaaaaa", "dirty": true});
+        assert_eq!(
+            other_build(Some(&older), &this).as_deref(),
+            Some("corgi 0.2.3 (4563c06, modified)")
+        );
+        // A daemon from before the lock held a build.
+        assert_eq!(other_build(None, &this).as_deref(), Some("an older build"));
+        let running = |build: Option<&str>| daemon::Running {
+            running: true,
+            pid: Some(1),
+            build: build.map(str::to_string),
+            lock: None,
+        };
+        assert_eq!(
+            build_value(&running(Some(&this.identity().to_string()))),
+            Some(this.identity())
+        );
+        assert_eq!(build_value(&running(None)), None);
+        assert_eq!(build_value(&running(Some("not json"))), None);
     }
 
     #[test]

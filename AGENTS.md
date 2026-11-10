@@ -79,7 +79,16 @@ The supervisor's role and the `[Corgi]` lines Corgi types into its box
 (handover requests, merge, conflict and push lines) are pinned by tests in
 `crates/corgi-core/src/supervisor.rs`, and the merge lines also by the
 exact-inbox-text tests in `src/app/merge.rs`: change the wording, update
-both. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
+both. `Inboxes::pending_for` lists every line that waits; a newer line of
+the same key replaces an older one only when they go out.
+
+An error of `corgi merge` (`crates/corgi-core/src/merge.rs`, and what
+`src/app/status.rs` makes of it) reaches three readers: the merge dialogs of
+the dashboard and the desktop window, the card under a worker's row in the
+Herdr app's Projects list, and the supervisor, whose line quotes it when the
+user asks it to fix the merge (`--ask-supervisor`). Word it for all three:
+what went wrong and what to do about it, without a key (`m`, `s`), which
+only the dashboard has. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
 matter, since those tests match their text with `contains`. Another test
 there (`the_role_is_a_third_shorter_than_before_the_on_demand_parts_left_it`)
 caps `ROLE.md` at three quarters of 34,516 bytes, 25,887, and only 39 bytes
@@ -453,7 +462,9 @@ Test `corgi app-space` against a fake `herdr-app` (its tests do), never
 the user's app. The Corgi
 mod reads `corgi status --json` and runs `corgi merge`; both live in
 `src/app/status.rs` and see hc's agents alone, never the Herdr TUI's. The
-Projects mod reads the same status and runs `corgi projects` and `corgi
+Projects mod reads the same status, runs the same `corgi merge` from a
+tagged worker's MERGE mark (and `corgi merge … --ask-supervisor` for
+"Ask supervisor to fix"), and runs `corgi projects` and `corgi
 open` (`src/app/open.rs`). Check every change with
 `herdr-app check herdr-app/mods/corgi` and `herdr-app check
 herdr-app/mods/projects` (it writes `jsconfig.json` and
@@ -518,7 +529,21 @@ no repository. The agents are a script that reports a state to herdr-core
 (OSC 7501) and sleeps; their tasks and roles come from a canned `corgi
 status --json` (`target/app-preview/fake/corgi`), which passes every other
 command to the worktree's `target/release/corgi` with the preview's state
-directory. Change the made-up projects in `start_fakes` when a view needs
+directory. Its `corgi` and `daemon.build` are the worktree's own build
+(`corgi --version --json`), so the list's last line shows; edit
+`fake/status.json` for another (`"newer"`, a daemon that is down). A merge
+is canned too: with `fake/merge.json` holding what `corgi merge --json`
+would print (`fake/ask.json` for `--ask-supervisor`, `fake/merge.delay` the
+seconds it takes), nothing is merged; without it the worktree's `corgi`
+answers, on the preview's core. The window takes no clicks from a script,
+so a state behind one (the question under a MERGE mark, a card's button)
+is reached by saving a copy of the mod into the preview's home
+(`/tmp/corgi-ap-…/home/mods/projects/main.js`; the app reloads it) whose
+command loop calls the handler the click calls (`this.askMerge`,
+`this.runMerge`), then `do projects.<command>`; `start` again puts the
+worktree's own mod back. Take a shot a second after a reload: until each
+space's git is read, the worktrees' spaces show as rows of their own.
+Change the made-up projects in `start_fakes` when a view needs
 a state they lack. `scripts/test-app-preview` runs the script against a
 fake app, hc, AeroSpace and corgi, opening nothing: run it, and
 `shellcheck scripts/app-preview scripts/test-app-preview`, after changing
@@ -612,11 +637,45 @@ socket accepts a connection, so it may be run on the user's real core and
 state. Never run `corgi merge` against a real project; its tests use scratch
 repositories and a fake `hc` script.
 
-After reviewed changes are merged into the primary checkout, make them live
-from that primary checkout with `cargo build --release` and
-`herdr plugin link "$PWD"`. Reload Herdr configuration when actions or plugin
-metadata changed. Quit and reopen only the Corgi dashboard when the running
-process must pick up a rebuilt binary; do not restart Herdr.
+### After a merge
+
+After changes are merged into the primary checkout, the user makes them live
+with one command, run in that checkout:
+
+```bash
+CORGI_BUILD=source herdr-app/install.sh
+```
+
+It builds `target/release/corgi` from what is checked out, installs the
+daemon's service again, which restarts the daemon on the new binary, puts
+both mods into the app's home when they differ, and builds the Corgi layout
+again when Herdr's `main` changed. Nothing else needs reloading: the app
+reloads a mod the moment its files change (each shown copy starts over, so
+an open "Open project" field or a merge's result is gone) and a layout the
+moment its file changes, so a window already on the Corgi layout needs no
+`layout.switch` again (seen in the preview window: an install's swap of
+the mod's folder reloads it); a mod that failed to load keeps its old build
+running and shows in `herdr-app status`. The mods and the daemon run that
+checkout's `target/release/corgi`; `corgi` on `PATH`, which supervisors and
+workers run, is the same binary only while `~/.local/bin/corgi` links it,
+and the install says when it links another. A worker never runs this: it
+writes into the user's app home and restarts their daemon.
+
+The Projects list says when it is due: its last line names the build that
+answers (`Corgi 0.2.3 · 5b50895`, from `corgi --version`, which `build.rs`
+gives the commit), adds `· main is newer` with this command once the
+checkout the binary was built in has commits the build lacks, and warns
+when the daemon is not running or still runs another build (`corgi daemon
+install` starts it again). The dashboard in the Herdr TUI is a process of its own: quit and reopen
+it to run a rebuilt binary (and `herdr plugin link "$PWD"` after a change to
+`herdr-plugin.toml`); do not restart Herdr.
+
+`build.rs` runs again when the checkout's `HEAD` or a file that goes into
+the binary changes (its `INPUTS`: `src`, `crates/corgi-core`, `supervisor`,
+the manifests), so every commit rebuilds the root crate once, and a build
+with uncommitted changes to those says `modified`. A new directory whose
+files are compiled into the binary must be added to `INPUTS`, or a change
+there keeps the old commit and no `modified`.
 
 ## Testing Herdr's hooks
 
@@ -745,8 +804,15 @@ resume and space decisions, its lock, the event stream (a fake socket) and
 `hc/tests.rs` the watch-only viewer (a fake `hc` that paints in a
 pseudo-terminal) and the real paints in `fixtures/input_box/hc-observe-*`.
 `scripts/test-install` covers `herdr-app/install.sh`'s daemon and OpenCode
-parts with a fake release binary that logs its calls. A live test of the
-daemon stops and starts a core, so it never uses the user's:
+parts with a fake release binary that logs its calls. What a daemon says of
+itself (its lock, `corgi daemon status`, the `daemon` of `corgi status
+--json`) needs no core: `corgi daemon` run with `env -i`, a private `HOME`
+and `XDG_STATE_HOME`, `HC_SOCKET` naming a socket that does not exist and
+`CORGI_HC_BIN` a script that logs its calls takes its lock and waits,
+asking hc nothing; run the other commands in the same environment, and stop
+it by its pid (start it as `env -i … corgi daemon &`, not through a shell
+function, or `$!` is a subshell's). A live test of the
+daemon's passes stops and starts a core, so it never uses the user's:
 
 - Run a core of your own with a short state path (`HC_SESSION=x`,
   `XDG_STATE_HOME=~/.cdt/s`: the socket path limit is 103 bytes) and an

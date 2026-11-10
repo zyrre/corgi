@@ -827,8 +827,8 @@ pub fn merge_conflict_message(conflict: &MergeConflict<'_>) -> String {
         "{WAKE_PREFIX} The user's merge of {worker}{task}, branch {branch} in worktree {}, \
          into {base} conflicted in: {named}. Corgi aborted it, so the primary checkout is \
          clean. Have {worker} merge {base} into its own branch, resolve the conflicts \
-         there, rerun its checks and report; the user then merges again with m. The user \
-         asked for this by pressing the key, so do it even for an agent the user started: \
+         there, rerun its checks and report; the user then merges again. The user asked \
+         for this, so do it even for an agent the user started: \
          prompt it with [supervisor], append a ledger line for it with status \
          `needs-followup` (with a new entry if the ledger has none), and tell the user in \
          one line that it is on it. When it reports, check it as for done, and recommend \
@@ -887,7 +887,7 @@ pub fn merge_failed_message(failed: &MergeFailed<'_>) -> String {
          append a ledger line for it with status `needs-followup`), and fix the rest \
          yourself, but ask the user before committing, discarding or stashing changes of \
          theirs. Then tell the user in a line or two what was wrong and what was done; the \
-         user merges again with m, so never merge it, pull or push yourself.",
+         user merges again, so never merge it, pull or push yourself.",
         worktree.display(),
         primary.display(),
         one_line(error)
@@ -905,7 +905,7 @@ fn task_clause(task: &str) -> String {
     }
 }
 
-/// A merge of an agent's branch the user made with `m`, for its project's
+/// A merge of an agent's branch the user made in Corgi, for its project's
 /// supervisor.
 pub struct MergeLanded<'a> {
     /// The agent's name, as the supervisor's ledger has it if it dispatched it.
@@ -2231,17 +2231,19 @@ mod tests {
             "have w-fleet-cache fix what lies in its worktree or branch",
             "status `needs-followup`",
             "ask the user before committing, discarding or stashing changes of theirs",
-            "never merge it, pull or push yourself.",
+            "the user merges again, so never merge it, pull or push yourself.",
         ] {
             assert!(line.contains(rule), "{rule}: {line}");
         }
+        // The Herdr app has no key to merge with: the line names none.
+        assert!(!line.contains(" with m"), "{line}");
         // Git could not tell the branches of a merge refused before it ran.
         assert!(failed("", "").starts_with(
             "[Corgi] Merging w-fleet-cache (task \"Cache the fleet rows\") in worktree \
              /w/corgi-silver, into the primary checkout's branch in /repos/corgi failed: "
         ));
         assert!(ROLE.contains(
-            "When the user's `m` merge lands, stops on conflicts the user hands to you,\n\
+            "When the user's merge in Corgi lands, stops on conflicts the user hands to you,\n\
              fails in a way the user asks you to fix, or cannot push, Corgi sends one\n\
              `[Corgi]` line saying what happened and what to do."
         ));
@@ -2264,8 +2266,8 @@ mod tests {
                  branch worktree/w-fleet-json in worktree /wt/worktree-w-fleet-json, into main \
                  conflicted in: src/app/cli.rs. Corgi aborted it, so the primary checkout is \
                  clean. Have w-fleet-json merge main into its own branch, resolve the \
-                 conflicts there, rerun its checks and report; the user then merges again \
-                 with m."
+                 conflicts there, rerun its checks and report; the user then merges again. The \
+                 user asked for this, so do it even for an agent the user started:"
             ),
             "{line}"
         );
@@ -2278,6 +2280,12 @@ mod tests {
         ] {
             assert!(line.contains(rule), "{rule}");
         }
+        // The Herdr app has no key to merge with, or to hand a conflict
+        // over with: the line names none.
+        assert!(
+            !line.contains(" with m") && !line.contains("the key"),
+            "{line}"
+        );
     }
 
     #[test]

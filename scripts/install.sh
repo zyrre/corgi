@@ -157,9 +157,13 @@ actual=$(sha256 "$tmp/$asset")
   build_from_source "the downloaded $asset does not match its reviewed checksum pin (got $actual, expected $expected)"
 
 chmod 755 "$tmp/$asset"
+# "corgi 0.2.4", and after it the commit a build from Git names: "corgi 0.2.4
+# (5b50895)". Nothing else may follow the version: 0.2.40 is not 0.2.4.
 reported=$("$tmp/$asset" --version 2>/dev/null)
-[ "$reported" = "corgi $version" ] ||
-  build_from_source "the downloaded binary did not run or is not $version (it said: ${reported:-nothing})"
+case $reported in
+  "corgi $version" | "corgi $version ("*")") ;;
+  *) build_from_source "the downloaded binary did not run or is not $version (it said: ${reported:-nothing})" ;;
+esac
 
 # Rename, never copy over: macOS kills a binary rewritten in place.
 mv -f "$tmp/$asset" target/release/corgi ||

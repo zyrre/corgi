@@ -18,3 +18,4 @@ pub(crate) mod test_support;
 pub mod textfield;
 pub mod theme;
 pub mod ui;
+pub mod version;

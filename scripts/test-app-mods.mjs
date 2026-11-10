@@ -200,7 +200,11 @@ async function start(mod, w) {
       after: (_ms, tick) => tasks.push(Promise.resolve().then(() => tick(cx))),
     },
     focus_handle: () => ({ focus() {} }),
-    stop_propagation() {},
+    // How many clicks kept to themselves: a button inside a clickable row.
+    stopped: 0,
+    stop_propagation() {
+      this.stopped += 1;
+    },
   };
   const view = new module.default();
   view.init({}, cx);
@@ -686,6 +690,274 @@ const opens = (w) => w.execs.filter((call) => call[1] === 'open').map((call) => 
   await mod.settle();
   const said = texts(mod.render()).find((text) => text.startsWith('The corgi command was not found'));
   assert.ok(said && said.includes('herdr-app/install.sh') && !said.includes('Corgi space'), texts(mod.render()).join(' | '));
+}
+
+// --- Merge, on a worker tagged ready to merge ----------------------------------------------
+
+const BRANCH = 'worktree/calm-forest-4f96';
+// The window's status with w-cache tagged MERGE, and a supervisor in `state`
+// (null: none runs).
+function tagged(state = 'idle') {
+  const status = structuredClone(STATUS);
+  const [project] = status.projects;
+  Object.assign(project.agents[0], { tag: 'merge', branch: BRANCH, state: 'done' });
+  project.agents[2].branch = 'worktree/sunny-field-529d';
+  if (state) {
+    project.agents[1].state = state;
+    project.supervisor = project.agents[1];
+  } else project.agents.splice(1, 1);
+  return status;
+}
+const merges = (w) => w.execs.filter((call) => call[1] === 'merge').map((call) => call.slice(2));
+const panel = (mod) => byId(mod.render(), 'merge-panel-t3');
+// Clicks the mark and confirms: the merge has run, with `outcome`.
+async function merged(outcome, state) {
+  const w = window({ status: tagged(state), merge: (args) => (args.includes('--ask-supervisor') ? { result: 'asked', message: 'Asked weather-supervisor\nto fix the merge of w-cache' } : outcome) });
+  const mod = await projects(w);
+  click(mod.render(), 'merge-t3', mod.cx);
+  click(mod.render(), 'merge-confirm-t3', mod.cx);
+  await mod.settle();
+  return { w, mod };
+}
+
+{
+  let finish;
+  const w = window({ status: tagged(), merge: () => new Promise((resolve) => { finish = resolve; }) });
+  const mod = await projects(w);
+  let root = mod.render();
+  // The tagged worker's row has the mark, after its state and before its
+  // worktree's name, which still gives way first; no other row has one.
+  assert.deepEqual(ids(root, 'merge-'), ['merge-t3']);
+  const row = byId(root, 'agent-t3');
+  assert.deepEqual(row.children.map((child) => texts(child).join('')), ['Fix the cache so that it holds', '', '', 'MERGE', 'worktree-calm-forest-4f96']);
+  const [task, , , mark, worktree] = row.children.map(kept);
+  assert.ok('flex_none' in mark.calls, 'the mark stays whole');
+  assert.deepEqual(task.calls.flex_shrink, [1]);
+  assert.ok(worktree.calls.flex_shrink[0] >= 1000);
+  assert.deepEqual(mark.calls.tooltip, [`Merge ${BRANCH} into main and push`]);
+  assert.deepEqual(texts(byId(root, 'agent-t5')), ['Write the docs', 'worktree-sunny-field-529d'], 'an untagged worker has none');
+  assert.equal(panel(mod), null);
+
+  // A click on it asks under the row, and is not also the row's click.
+  const ran = w.ran.length;
+  click(root, 'merge-t3', mod.cx);
+  assert.equal(mod.cx.stopped, 1);
+  assert.equal(w.ran.length, ran, 'the agent is not shown');
+  root = mod.render();
+  assert.deepEqual(texts(panel(mod)), [`Merge ${BRANCH} into main and push?`, 'Cancel', 'Merge + push']);
+  // The question stands right under its worker's row.
+  const list = kept(byId(root, 'agent-t3'));
+  let siblings;
+  walk(root, (node) => {
+    if ((node.children ?? []).some((child) => kept(child) === list)) siblings = node.children.map((child) => kept(child).id);
+  });
+  assert.equal(siblings[siblings.indexOf('agent-t3') + 1], 'merge-panel-t3');
+
+  // Cancel puts it away, and nothing was merged; so does the mark again.
+  click(root, 'merge-cancel-t3', mod.cx);
+  assert.equal(panel(mod), null);
+  click(mod.render(), 'merge-t3', mod.cx);
+  assert.ok(panel(mod));
+  click(mod.render(), 'merge-t3', mod.cx);
+  assert.equal(panel(mod), null);
+  assert.deepEqual(merges(w), []);
+
+  // Confirmed, it runs the merge the dashboard's m runs, and says so.
+  click(mod.render(), 'merge-t3', mod.cx);
+  click(mod.render(), 'merge-confirm-t3', mod.cx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(merges(w), [['w-cache', '--project', REPO, '--json']]);
+  assert.deepEqual(texts(panel(mod)), ['Merging…']);
+  // While it runs, a second click starts nothing and puts nothing away.
+  click(mod.render(), 'merge-t3', mod.cx);
+  assert.deepEqual(texts(panel(mod)), ['Merging…']);
+  assert.equal(merges(w).length, 1);
+
+  // Merged: the result, and the status is read again (the tag is gone).
+  const reads = w.execs.filter((call) => call[1] === 'status').length;
+  w.programs[1] = corgi({ status: STATUS, merge: () => new Promise((resolve) => { finish = resolve; }) });
+  finish({ result: 'merged', message: `Merged and pushed ${BRANCH}\ninto main`, commit: 'abc1234', reason: null, error: null });
+  await mod.settle();
+  assert.deepEqual(texts(panel(mod)), ['w-cache: merged', `Merged and pushed ${BRANCH} into main`, 'Dismiss']);
+  // Green, not the amber of an agent that works.
+  assert.deepEqual(panel(mod).calls.border_color, ['#ansi2']);
+  assert.equal(w.execs.filter((call) => call[1] === 'status').length, reads + 1);
+  assert.deepEqual(ids(mod.render(), 'merge-t'), [], 'no mark is left');
+  click(mod.render(), 'merge-dismiss-t3', mod.cx);
+  assert.equal(panel(mod), null);
+}
+
+// A conflict: `corgi merge` aborted it and handed it to the supervisor
+// itself, so there is nothing left to ask.
+{
+  const message = `Merging ${BRANCH} into main stopped on conflicts in a.txt; aborted it and asked weather-supervisor to have w-cache merge main into its branch`;
+  const { mod } = await merged({ result: 'conflicts', message, commit: null, reason: null, error: null });
+  assert.deepEqual(texts(panel(mod)), ['w-cache: conflicts', message, 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#blocked']);
+}
+
+// A failed push: the branch is merged; a running supervisor can be asked
+// about the push, with the commit the merge landed at.
+{
+  const outcome = { result: 'push-failed', message: `Merged ${BRANCH} into main, but the push failed: main is protected`, commit: 'abc1234', reason: null, error: 'main is protected' };
+  const { w, mod } = await merged(outcome);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: push-failed', outcome.message, 'Ask supervisor to fix', 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#ansi3'], 'merged, but not pushed');
+  click(mod.render(), 'merge-ask-t3', mod.cx);
+  await mod.settle();
+  assert.deepEqual(merges(w).at(-1), ['w-cache', '--project', REPO, '--json', '--ask-supervisor', 'main is protected', '--commit', 'abc1234']);
+  assert.deepEqual(texts(panel(mod)), ['Asked weather-supervisor to fix the merge of w-cache', 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#ansi2']);
+  click(mod.render(), 'merge-dismiss-t3', mod.cx);
+  assert.equal(panel(mod), null);
+}
+
+// Refused because the upstream moved on: pulled first, at a click.
+{
+  const outcome = { result: 'refused', message: 'origin/main has 2 commit(s) main lacks; merge again with --pull to pull them in first', commit: null, reason: 'behind', error: null };
+  const { w, mod } = await merged(outcome);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: refused', outcome.message, 'Pull, merge + push', 'Dismiss']);
+  click(mod.render(), 'merge-retry-t3', mod.cx);
+  await mod.settle();
+  assert.deepEqual(merges(w).at(-1), ['w-cache', '--project', REPO, '--json', '--pull']);
+}
+
+// A failed fetch: merged without it at a click, or handed to the supervisor.
+{
+  const outcome = { result: 'refused', message: 'Could not fetch origin/main: no route; merge again with --skip-upstream to merge without it', commit: null, reason: 'fetch-failed', error: 'could not fetch origin/main: no route' };
+  const { w, mod } = await merged(outcome);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: refused', outcome.message, 'Merge + push without fetching', 'Ask supervisor to fix', 'Dismiss']);
+  click(mod.render(), 'merge-retry-t3', mod.cx);
+  await mod.settle();
+  assert.deepEqual(merges(w).at(-1), ['w-cache', '--project', REPO, '--json', '--skip-upstream']);
+}
+
+// Refused before it started (a dirty primary checkout): "Ask supervisor to
+// fix" only while the project's supervisor runs.
+{
+  const outcome = { result: 'refused', message: 'Merge unavailable: the primary checkout has uncommitted changes', commit: null, reason: 'unavailable', error: 'the primary checkout has uncommitted changes' };
+  for (const [state, offered] of [['idle', true], ['working', true], ['exited', false], [null, false]]) {
+    const { w, mod } = await merged(outcome, state);
+    assert.deepEqual(texts(panel(mod)), ['w-cache: refused', outcome.message, ...(offered ? ['Ask supervisor to fix'] : []), 'Dismiss'], `supervisor ${state}`);
+    assert.equal(byId(mod.render(), 'merge-ask-t3') !== null, offered);
+    if (state !== 'idle') continue;
+    // Asked: the line the dashboard's s sends, with the failure alone.
+    let answer;
+    w.programs[1] = corgi({ status: tagged(), merge: () => new Promise((resolve) => { answer = resolve; }) });
+    click(mod.render(), 'merge-ask-t3', mod.cx);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(merges(w).at(-1), ['w-cache', '--project', REPO, '--json', '--ask-supervisor', 'the primary checkout has uncommitted changes']);
+    assert.deepEqual(texts(panel(mod)), ['w-cache: refused', outcome.message, 'Asking the supervisor…']);
+    // The supervisor stopped meanwhile: said, and the result stays.
+    answer({ code: 1, stdout: JSON.stringify({ result: 'refused', message: `No supervisor of ${REPO} is running to ask`, reason: 'no-supervisor' }) });
+    await mod.settle();
+    assert.deepEqual(texts(panel(mod)), ['w-cache: refused', outcome.message, `No supervisor of ${REPO} is running to ask`, 'Ask supervisor to fix', 'Dismiss']);
+  }
+}
+
+// Nothing a supervisor could fix (no such worker, a corgi that names no
+// error): no button, even with a supervisor running.
+{
+  const { mod } = await merged({ result: 'refused', message: `No worker w-cache runs in ${REPO}`, commit: null, reason: 'no-agent', error: null });
+  assert.deepEqual(texts(panel(mod)), ['w-cache: refused', `No worker w-cache runs in ${REPO}`, 'Dismiss']);
+}
+
+// A merge that printed no JSON, or did not answer, is said as it is.
+{
+  const { mod } = await merged({ code: 2, stderr: 'corgi: unknown command\nor option: merge' });
+  assert.deepEqual(texts(panel(mod)), ['w-cache: refused', 'corgi: unknown command or option: merge', 'Dismiss']);
+  const w = window({ status: tagged() });
+  w.programs.push((command, args) => (args[0] === 'merge' ? Promise.reject(new Error('timed out')) : undefined));
+  w.programs.splice(1, 1, (command, args) => (args[0] === 'merge' ? undefined : corgi({ status: tagged(), 'app-layout': { result: 'unchanged' } })(command, args)));
+  const late = await projects(w);
+  click(late.render(), 'merge-t3', late.cx);
+  click(late.render(), 'merge-confirm-t3', late.cx);
+  await late.settle();
+  assert.deepEqual(texts(panel(late)), ['w-cache: refused', 'The merge did not answer: Error: timed out', 'Dismiss']);
+}
+
+// A question about a worker that lost its tag meanwhile is put away.
+{
+  const w = window({ status: tagged() });
+  const mod = await projects(w);
+  click(mod.render(), 'merge-t3', mod.cx);
+  assert.ok(panel(mod));
+  w.programs[1] = corgi({ status: STATUS });
+  await mod.tick(5000);
+  assert.equal(panel(mod), null);
+  assert.deepEqual(ids(mod.render(), 'merge-'), []);
+}
+
+// --- Which Corgi runs ------------------------------------------------------------------
+
+{
+  const COMMIT = '5b5089578d010404248f957f59845a3e75224ee9';
+  const build = { version: '0.2.3', commit: COMMIT, dirty: false };
+  const line = async (corgiBuild, daemon = {}) => {
+    const status = { ...STATUS, daemon: { ...STATUS.daemon, build, ...daemon } };
+    if (corgiBuild) status.corgi = { ...build, source: `${HOME}/repos/corgi`, newer: null, ...corgiBuild };
+    const mod = await projects(window({ status }));
+    const shown = byId(mod.render(), 'corgi-version');
+    return shown && texts(shown);
+  };
+  // The corgi that answers, built from what its checkout holds, with a
+  // daemon of the same build: one dim line, last in the list.
+  assert.deepEqual(await line({}), ['Corgi 0.2.3 · 5b50895']);
+  const mod = await projects(window({ status: { ...STATUS, daemon: { ...STATUS.daemon, build }, corgi: { ...build, source: `${HOME}/repos/corgi`, newer: null } } }));
+  assert.equal(texts(mod.render()).at(-1), 'Corgi 0.2.3 · 5b50895');
+  assert.deepEqual(await line({ dirty: true }, { build: { ...build, dirty: true } }), ['Corgi 0.2.3 · 5b50895 · modified']);
+  // A release built without Git names no commit.
+  assert.deepEqual(await line({ commit: null, source: null }, { build: { ...build, commit: null } }), ['Corgi 0.2.3']);
+
+  // A branch merged into its checkout since: said, with what to run there.
+  assert.deepEqual(
+    await line({ newer: { branch: 'main', commits: 2, commit: '79f57e6aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }),
+    ['Corgi 0.2.3 · 5b50895', '· main is newer', 'cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh'],
+  );
+  assert.deepEqual(
+    await line({ newer: { branch: null, commits: 1, commit: COMMIT } }),
+    ['Corgi 0.2.3 · 5b50895', '· its checkout is newer', 'cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh'],
+  );
+
+  // A daemon left running another build: said, with what restarts it.
+  assert.deepEqual(
+    await line({}, { build: { ...build, commit: '4563c06bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' } }),
+    ['Corgi 0.2.3 · 5b50895', 'The daemon runs another build: 4563c06', 'corgi daemon install'],
+  );
+  assert.deepEqual(await line({}, { build: { ...build, dirty: true } }), ['Corgi 0.2.3 · 5b50895', 'The daemon runs another build: 5b50895 · modified', 'corgi daemon install']);
+  assert.deepEqual(await line({}, { build: { version: '0.2.2', commit: null, dirty: false } }), ['Corgi 0.2.3 · 5b50895', 'The daemon runs another build: Corgi 0.2.2', 'corgi daemon install']);
+  // One from before daemons said what they were built from.
+  assert.deepEqual(await line({}, { build: null }), ['Corgi 0.2.3 · 5b50895', 'The daemon runs an older build', 'corgi daemon install']);
+  // Both at once.
+  assert.deepEqual(
+    await line({ newer: { branch: 'main', commits: 1, commit: COMMIT } }, { build: null }),
+    ['Corgi 0.2.3 · 5b50895', '· main is newer', 'cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh', 'The daemon runs an older build', 'corgi daemon install'],
+  );
+  // A daemon that does not run wakes no supervisor: said, with what starts
+  // it, whether its service is installed or not, and once only.
+  assert.deepEqual(
+    await line({}, { running: false, pid: null, build: null, installed: false }),
+    ['Corgi 0.2.3 · 5b50895', "Corgi daemon not running: supervisors won't be woken or handed over", 'corgi daemon install'],
+  );
+  assert.deepEqual(
+    await line({ newer: { branch: 'main', commits: 1, commit: COMMIT } }, { running: false, pid: null, build: null, installed: true }),
+    ['Corgi 0.2.3 · 5b50895', '· main is newer', 'cd ~/repos/corgi && CORGI_BUILD=source herdr-app/install.sh', "Corgi daemon installed but not running: supervisors won't be woken or handed over", 'corgi daemon install'],
+  );
+  // A corgi too old to say what it is still says that its daemon is down.
+  assert.deepEqual(await line(null, { running: false, pid: null, installed: true }), ["Corgi daemon installed but not running: supervisors won't be woken or handed over", 'corgi daemon install']);
+  {
+    const down = await projects(window({ status: { ...STATUS, daemon: { running: false, pid: null, installed: false } } }));
+    const warning = kept(byId(down.render(), 'corgi-version').children[0]);
+    assert.deepEqual(warning.calls.text_color, ['#blocked'], 'in the color of what needs the person');
+  }
+
+  // A corgi from before it said what it was built from, its daemon
+  // running: no line; nor on the rail.
+  assert.equal(await line(null), null);
+  const w = window({ status: { ...STATUS, corgi: { ...build, source: null, newer: null } } });
+  w.sidebar = 76;
+  const rail = await projects(w);
+  assert.equal(byId(rail.render(), 'corgi-version'), null);
 }
 
 // --- Corgi's layout, rebuilt when Herdr's changed ----------------------------------------

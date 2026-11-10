@@ -793,7 +793,7 @@ fn pull_upstream(project_root: &Path, branch: &str, upstream: &str) -> Result<()
     bail!(
         "pulling {upstream} into {branch} conflicted in {}, so Corgi aborted it and the \
          primary checkout is clean. Pull by hand in {} with git pull, resolve the \
-         conflicts, then merge again with m.",
+         conflicts, then merge again.",
         files.join(", "),
         project_root.display()
     )
