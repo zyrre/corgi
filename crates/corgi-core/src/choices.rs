@@ -148,11 +148,13 @@ impl ChoiceList {
     /// has to occur in the label, value, or detail, in any case. Depending on
     /// [`FreeText`], the filter itself follows as the last row(s).
     pub fn rows(&self) -> Vec<Choice> {
-        let words: Vec<String> = self
-            .filter
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .collect();
+        // A directory typed from ~ is matched as the full path the choices
+        // hold, so a known project stays listed while its path is typed.
+        let filter = match self.free_text {
+            FreeText::Directory => expand_home(self.filter.trim()),
+            FreeText::None | FreeText::Value => self.filter.clone(),
+        };
+        let words: Vec<String> = filter.split_whitespace().map(str::to_lowercase).collect();
         let mut rows: Vec<Choice> = self
             .choices
             .iter()
@@ -362,6 +364,30 @@ mod tests {
         // A relative path completes nothing.
         list.filter = "alp".into();
         assert!(list.rows().is_empty());
+    }
+
+    #[test]
+    fn a_known_directory_stays_listed_while_its_path_is_typed_from_the_home_directory() {
+        let Some(home) = crate::paths::home().and_then(|home| home.to_str().map(str::to_string))
+        else {
+            return;
+        };
+        let known = format!("{home}/corgi-choices-no-such-folder/weather");
+        let mut list = ChoiceList::new(
+            vec![Choice::labelled(known.clone(), "weather").detail(known.clone())],
+            "",
+            FreeText::Directory,
+        );
+        list.filter = "~/corgi-choices-no-such-folder/wea".into();
+        let rows = list.rows();
+        assert_eq!(rows[0].value, known, "{rows:?}");
+        // What is typed could also be a new project, offered after it.
+        assert_eq!(
+            rows[1],
+            Choice::new_project(format!("{home}/corgi-choices-no-such-folder/wea"))
+        );
+        list.filter = "~/corgi-choices-no-such-folder/other".into();
+        assert!(list.rows().iter().all(|row| row.value != known));
     }
 
     #[test]

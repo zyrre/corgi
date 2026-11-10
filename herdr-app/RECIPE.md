@@ -1,24 +1,37 @@
 # Corgi
 
-The Corgi space's overview: how each of your Corgi projects on herdr-core (`hc`), the
-Herdr app's backend, is doing: one block per project with its supervisor's
-state, its workers by state, the open questions waiting for you, the work
-ready to merge and the inbox items not yet delivered; projects that need you
-stand out. Above them, whether `corgi daemon`, which wakes the supervisors,
-is running. Click a project for its
-supervisor and workers (state, task, model, context, prompt cache, MERGE
-tag), its open questions with their full text, and a Merge button on each
-worker tagged ready to merge; click an agent to see its terminal. It needs
-the `corgi` command-line tool, which it installs by itself;
-`herdr-app/install.sh` in the Corgi repository installs the tool, the mod
-and the Corgi space.
+Two mods and a layout. The **Corgi** mod is the Corgi space's overview: how
+each of your Corgi projects on herdr-core (`hc`), the Herdr app's backend,
+is doing: one block per project with its supervisor's state, its workers by
+state, the open questions waiting for you, the work ready to merge and the
+inbox items not yet delivered; projects that need you stand out. Above them,
+whether `corgi daemon`, which wakes the supervisors, is running. Click a
+project for its supervisor and workers (state, task, model, context, prompt
+cache, MERGE tag), its open questions with their full text, and a Merge
+button on each worker tagged ready to merge; click an agent to see its
+terminal.
+
+The **Projects** mod is the sidebar of the **Corgi layout**, which is
+Herdr's own layout with one list where Herdr has its Spaces and Agents
+lists: your spaces, each repository with its agents under it, one line each
+(the agent's task, its harness's icon, its state and the worktree it works
+in), and a `+` that opens a project: type a name or a path, and Enter shows
+its supervisor or starts it.
+
+They need the `corgi` command-line tool, which the Corgi mod installs by
+itself; `herdr-app/install.sh` in the Corgi repository installs the tool,
+both mods, the layout and the Corgi space. The layout is not switched to:
+`herdr-app do layout.switch '{"name":"corgi"}'` shows it, and `"main"` shows
+Herdr's own again.
 
 <!-- preview.png is still to be made, from a look at the running window. -->
 
 ## What you see
 
-The mod is the only tab of a space of its own, named `Corgi`, first in the
-Spaces list, so `ctrl-1` (`space.select:1`) comes back to it. It docks
+### The Corgi space's overview
+
+The Corgi mod is the only tab of a space of its own, named `Corgi`, first in
+the list of spaces, so `ctrl-1` (`space.select:1`) comes back to it. It docks
 nowhere else (`mod.json`: `"place": "none"`). It fills the tab on the theme's
 `surface`, text 13 px; the views' content is a column at most 960 px wide,
 centred in a wider tab.
@@ -63,7 +76,57 @@ centred in a wider tab.
   fails, the error in `blocked`, the installer's last lines in a monospace
   box, the command to run by hand, and `Retry`.
 
+### The Corgi layout and its Projects list
+
+The layout (`layouts/corgi.json`, listed as "Corgi") is Herdr's shipped
+`main` as it is, except in the sidebar: the block that showed Herdr's
+`spaces` mod shows the `projects` mod, and the block that showed its
+`agents` mod is gone, so the one list takes the whole height between the
+brand row and the footer. It is built, never hand-written (below).
+
+The Projects mod fills its block on `chrome`, text 13 px:
+
+- **Header** (31 px): `Projects` in `dim` 11.5 px and a 26 px `+` button
+  (tooltip `Open project`), lit while its field is open.
+- **Open project** (only while open, under the header): a card (`surface`,
+  a `border` outline, radius 9) holding a text field (30 px, an `accent`
+  outline, placeholder `Project name or path…`); up to eight suggestions,
+  26 px each: the project's name, its folder from `~` in `dim` 11 px, cut
+  with `…`, and on the right where it is known from in `dim` 10.5 px (`2
+  agents`, `open in Herdr`, `nearby`, `recent`, `typed path`), `running` in
+  `working` when its supervisor runs, or `new project` in `accent`; the
+  highlighted one on `selected`; `N more: keep typing` when more match; then
+  `Starting <name>'s supervisor…` with a spinner while it starts, or why it
+  did not in `blocked`; and a `dim` 10.5 px line `Enter opens · Tab completes
+  · Esc` with `New space` on its right.
+- **The list** (scrolls): the spaces in order, under a header per machine
+  once one is not this computer, as Herdr's Spaces list has them.
+  - A space outside any repository (the Corgi space, `~`, another folder):
+    30 px, a colored 18 px avatar with its initial, its name.
+  - A project, a repository: the space on its primary checkout, drawn the
+    same way, with its branch and ahead/behind after the name only when
+    unusual. Under it, indented 22 px, one 26 px row per agent in it and in
+    the spaces on its worktrees: the harness's icon (14 px; Claude's now,
+    Codex's or OpenCode's when it is one), the task in 12.5 px (medium
+    weight for `Supervisor`), the worktree's folder name in `dim` 11 px
+    (`worktree-calm-forest-4f96`; nothing on the primary checkout), and the
+    state: a spinning ring in `working`, a `!` tile in `blocked`, a dot in
+    `done`, a ring in `idle`. The supervisor is first; the rest keep the
+    app's order. One line each: when it is too long the task is cut with `…`
+    first, down to 64 px, then the worktree's name.
+  - A worktree's space with no agent in it keeps a 28 px row of its own
+    under its project: a branch glyph and the space's name.
+  - A space outside a repository with agents in it has their rows under it
+    the same way.
+  - The shown space's row is on `selected`; so is the agent with the focus,
+    and, for a shown worktree space that has no row, its first agent.
+- **The rail** (the sidebar narrower than 160 px): no texts; the `+`, a
+  32 px cell per space with its number and, on the right, the most urgent
+  state in it (the spinner, the `!`, a dot for done), and `»` at the bottom.
+
 ## How it behaves
+
+The overview:
 
 - Agent states are Corgi's: `working`, `blocked`, `done`, `idle`, `unknown`
   and `exited`, each in the theme color of that name (`unknown` for the
@@ -103,17 +166,98 @@ centred in a wider tab.
   with the window closed; `corgi status --json` says whether it runs
   (`daemon.running`, `daemon.pid`) and whether its service is installed
   (`daemon.installed`), and the overview shows it.
+- When it starts it runs `corgi app-layout --home <app home> --json` once:
+  the Corgi layout is built again if Herdr's `main` changed. `Corgi layout
+  rebuilt` is a toast; a `main` it could not build from is a line in the
+  overview, `Corgi layout: kept the Corgi layout as it was built last: …` in
+  `blocked` (or in `dim` when there is no layout at all, such as without the
+  Projects mod). It never switches the window's layout.
+
+The Projects list:
+
+- A project's agents are those the app lists in its spaces (`agents()`), and
+  Corgi's that have reported no status yet or whose agent exited into its
+  shell, found by the pane their terminal is in. An agent Corgi runs
+  (`corgi status --json`, by its terminal) shows Corgi's task for it, and
+  `Supervisor` for a supervisor; one started by hand shows the title it gave
+  its terminal when that says something (not a folder, not `user@host`),
+  else its tab's name, else its program's.
+- Clicking a space shows it (`space.select`); dragging one reorders it
+  within its machine; clicking an agent shows its terminal (`agent.focus`);
+  a right-click on either opens the space's menu (Herdr's `menu` mod).
+  `agent.next` and `agent.prev` follow the list's order.
+- It reads `corgi status --json` when it starts, every 5 seconds, and when
+  the app's live agents change (compared once a second): as often as the
+  Corgi mod, never more. Each space's git is read as Herdr's Spaces list
+  reads it. Without a `corgi` it still lists every space and agent, by
+  their own titles.
+- `+` (or the command `projects.open`, for a key such as `"cmd-o":
+  "projects.open"` in `keys.json`) opens the field with the keyboard in it,
+  and again puts it away; on the rail it unfolds the sidebar first. Opened,
+  and after every key, it runs `corgi projects --json --query <text> --open
+  <folder>…` with the folders its spaces on this computer are in: Corgi's
+  known projects (those with agents, those open, the directories beside
+  them, those it remembers) narrowed by every word typed; for an absolute
+  path or one from `~`, the directories that complete it; and a name alone,
+  or a path that does not exist, as a new project (a name goes beside most
+  known projects). The first suggestion is preset. ↑/↓ move, Tab puts the
+  highlighted folder in the field with a `/` after it, Esc closes.
+- Enter (or a click on a suggestion) opens it. A project whose supervisor
+  runs, in a terminal the app shows, is shown at once (`agent.focus`).
+  Otherwise it runs `corgi open <dir> --json`, with `--create` for a new
+  project and a `--terminal <address>` for every shell the supervisor could
+  start in: panes whose program is a shell with no agent status, those of
+  the focused space first, then any other already in that folder. Corgi
+  then names the running supervisor's terminal; or starts the supervisor in
+  the first offered shell that waits at its prompt in the project's primary
+  checkout, which makes that terminal the supervisor's and its space the
+  project's, where its workers nest; or in a new terminal and space, as
+  `corgi supervisor <dir> --backend hc` does. A new project's directory is
+  created and recorded as Corgi's, so Claude Code's folder-trust question is
+  answered. On success the field closes and the supervisor's terminal is
+  shown; on a failure Corgi's message shows in the field, which stays open
+  with what was typed. A second Enter while one starts does nothing.
+- `New space` in the field makes a plain space (`space.new`), as `cmd-n`,
+  the tab bar's `+` menu and the space menu still do; a machine's header
+  keeps its own `+`.
+- `»` on the rail unfolds the sidebar (Herdr's own layout has it in its
+  Agents list).
 
 ## Built from
 
-- One mod, `mods/corgi/` (`main.js`, `mod.json`). Imports: `View`, `div`
-  from `gpui-kit`; `v_flex`, `h_flex` from `gpui-base`; `agents`, `exec`,
-  `home`, `appHome`, `readTextFile`, `watchFolder`, `theme`, `run` from
-  `herdr`. App commands: `agent.focus`. No keys or overlays.
+- The Corgi mod, `mods/corgi/` (`main.js`, `mod.json`: `"place": "none"`).
+  Imports: `View`, `div` from `gpui-kit`; `v_flex`, `h_flex` from
+  `gpui-base`; `agents`, `exec`, `home`, `appHome`, `readTextFile`,
+  `watchFolder`, `theme`, `run`, `notify` from `herdr`. App commands:
+  `agent.focus`. No keys or overlays.
 - Programs: `corgi --version`, `corgi status --help`,
-  `corgi status --json`, `corgi merge … --json`, and, to install,
-  `sh -c` running `curl` on the release's `herdr-app/install.sh` with
-  `--version <VERSION> --cli-only`.
+  `corgi status --json`, `corgi merge … --json`, `corgi app-layout --home
+  <app home> --json`, and, to install, `sh -c` running `curl` on the
+  release's `herdr-app/install.sh` with `--version <VERSION> --cli-only`.
+- The Projects mod, `mods/projects/` (`main.js`, `mod.json`: `"place":
+  "none"`, `"title": "Projects"`). It began as a copy of Herdr's `spaces`
+  mod (herdr-app 0.1.14) and is Corgi's own since: it follows no later
+  version of it. Imports: `View`, `div`, `image`, `svg` from `gpui-kit`;
+  `v_flex`, `h_flex`, `InputState`, `Input` from `gpui-base`; `spaces`,
+  `machines`, `panes`, `agents`, `focused`, `run`, `openOverlay`, `exec`,
+  `hc`, `theme`, `shared`, `setShared`, `setAgentOrder`, `watchFolder`,
+  `window`, `layout`, `notify`, `home`, `appHome`, `readTextFile`,
+  `nextCommand` from `herdr`. App commands: `space.select`, `space.move`,
+  `space.new`, `agent.focus`, `layout.resize`; its own command `open`
+  (`projects.open`). It opens Herdr's `menu` mod as a popup and draws
+  Herdr's icons (`mods/workspace-chrome/*.svg`, the programs' `icons/`).
+  Programs: `git` (status and `rev-parse`, per space), `hc machine ls`,
+  `corgi status --json`, `corgi projects --json …`, `corgi open … --json`,
+  `corgi app-layout --home <app home> --json`. Files: `mods/projects/
+  config.json` or `mods/corgi/config.json` (`{ "corgi": "<path>" }`).
+- The layout, `layouts/corgi.json`: no file of this folder, but what `corgi
+  app-layout` builds from the app's own `layouts/main.json` (see "The Corgi
+  layout").
+- `corgi projects --json` prints `{query, parent, projects: [{dir, name,
+  badge, new, supervisor}]}`; `corgi open … --json` prints `{result: started
+  | running | failed, message, project, name, terminal, created, place: new
+  | own | shell}`; `corgi app-layout --json` prints `{result: made | rebuilt
+  | unchanged | kept | missing, message, layout}`.
 - Files: `mods/corgi/config.json` (`{ "corgi": "<path>" }`, written by
   `herdr-app/install.sh`), each question's file (`questions/Q<n>.md` in the
   supervisor's state folder, named by `corgi status`), and a watch on the
@@ -127,6 +271,36 @@ centred in a wider tab.
   ledger: {needs_answer, ready_to_merge, dispatched}, backlog}]}`.
   `corgi merge` prints `{result: merged | conflicts | push-failed | refused,
   message, commit, reason}`.
+
+## The Corgi layout
+
+- `corgi app-layout [--home DIR]` builds it, and `herdr-app/install.sh`
+  runs that after the Projects mod is in place: it reads the app home's
+  `layouts/main.json`, finds the node `sidebar`, and in it changes the one
+  block whose `content.mod` is `spaces` to show `projects` (the block keeps
+  its id `spaces`, its size and everything else) and removes the one block
+  whose `content.mod` is `agents`. Nothing else differs from `main`. The
+  file is written in one rename, and only when it differs from the one
+  there, since the app reloads a layout the moment its file changes.
+- Herdr replaces its shipped `main` whole on every start, so the layout is
+  built again from it: by each install, and by each of Corgi's mods once
+  when it starts. The build is a function of `main` alone, so comparing its
+  result with the file in place says whether `main` changed.
+- A `main` that is missing, is not JSON, has no `sidebar`, or has another
+  number of `spaces` and `agents` blocks in it than one each, is not
+  guessed at: nothing is written, the last build stays in use, and the
+  command, the Corgi mod's overview and a toast of the Projects mod say
+  why. The same holds for a home with no `mods/projects/main.js`: the
+  layout would show a mod the app does not have.
+- It never switches the window to the layout, and neither does the install:
+  it prints `herdr-app do layout.switch '{"name":"corgi"}'`. A layout is
+  listed under its file's name, so `corgi.json` is "Corgi" in Settings and
+  the palette. The sidebar's width and the other things a person changes by
+  hand are the app's own per layout, so the Corgi layout starts with
+  Herdr's default width, not the one `main` was dragged to.
+- `corgi app-layout remove` (run by `herdr-app/install.sh --uninstall`)
+  deletes the file when it is one Corgi built (it shows the `projects`
+  mod), after switching a window that shows it to `main`.
 
 ## The Corgi space
 
@@ -155,7 +329,7 @@ centred in a wider tab.
 
 ## Watch out
 
-- The mod is nothing without `corgi`, and copying the mod folder in does not
+- The Corgi mod is nothing without `corgi`, and copying the mod folder in does not
   bring it. On start, and whenever no usable `corgi` is found, the mod looks
   in `config.json`'s path, `corgi` on `PATH`, `~/.local/bin/corgi`,
   `~/.local/share/corgi/target/release/corgi` and `~/.cargo/bin/corgi`, and
@@ -187,10 +361,61 @@ centred in a wider tab.
   must have its newlines joined (tasks and question titles can hold them).
 - The mod runs only while the window is open, so it delivers nothing to
   supervisors: that stays with Corgi.
+- Never edit Herdr's shipped `layouts/main.json` or its `spaces` and
+  `agents` mods: Herdr replaces them whole on every start and moves an
+  edited one aside. The Corgi layout is a file of its own for that reason.
+- The Projects mod is one mod standing where two stood, so what only
+  Herdr's Agents list did, it must: `setAgentOrder` on every render (or
+  `agent.next` and `agent.prev` follow no list), and the `»` that unfolds
+  the rail (on macOS the brand row has no room for its toggle there).
+- An agent's row is found by its terminal's address in `corgi status
+  --json`. Before the first read, and with no `corgi`, every agent shows by
+  its own title; a row must never wait for Corgi.
+- The task is `flex_1` with a minimum width and the worktree's name a
+  plain shrinking element, both truncating: that order of giving way (the
+  task first, then the name) comes from the flex basis, not from anything
+  measured. A `\n` in a task starts a second line even when truncated:
+  join the lines first.
+- The field's keys (↑, ↓, Tab, Esc) are handled on the card around the
+  input, which tracks a focus handle of its own; Enter is the input's
+  `submit`. The input is focused when the field opens and once more a
+  moment later, since it is drawn only after the click that opened it.
+- `corgi projects` is run after every key, one read at a time with the
+  newest text last; an answer for text that has since changed is dropped.
+  A `corgi` older than the command answers `unknown command`: say so.
+- A shell is offered to `corgi open` only by what the app knows of its pane
+  (a shell program, no agent status); Corgi decides, on hc's word, whether
+  that shell really waits at its prompt in the project's primary checkout.
+  Never start a supervisor by typing into a pane from the mod.
+- `herdr-app check` renders the first frame, where the field is closed and
+  the window has no agents. To check the field and the agent rows, check a
+  scratch copy of the mod whose `init` opens the field and whose `render`
+  adds rows made from made-up agents; `node scripts/test-app-mods.mjs` in
+  the Corgi repository runs both mods' other views with stand-ins.
 
 ## Done when
 
-- `herdr-app check mods/corgi` passes.
+- `herdr-app check mods/corgi` and `herdr-app check mods/projects` pass.
+- After `herdr-app/install.sh`, `layouts/corgi.json` is there and differs
+  from `layouts/main.json` only in the sidebar's two blocks; the window
+  still shows the layout it showed; after `herdr-app do layout.switch
+  '{"name":"corgi"}'` the sidebar is one list titled Projects, with no
+  Agents list under it.
+- Projects shows each repository with its agents in one-line rows (icon,
+  task, worktree, state) that cut with `…`, the supervisor first; a click on
+  one shows that agent's terminal; the Corgi space, `~` and a worktree with
+  no agent still have their rows; the narrow rail shows a cell per space
+  and `»` unfolds it.
+- `+`, then typing, narrows the known projects and completes a path; Enter
+  on a project whose supervisor runs shows it; Enter on one without starts
+  its supervisor, in the shell that waits in its primary checkout when
+  there is one (a worker spawned afterwards is a tab of that space or nests
+  under it, and `corgi fleet` lists both), else in a new space; a new name
+  creates the directory beside the other projects and starts its supervisor
+  with no folder-trust question left open.
+- With `layouts/main.json` changed (in a scratch app home), the next start
+  of either mod rebuilds `corgi.json` from it; with its sidebar's blocks
+  gone, `corgi.json` stays as it was and the overview says why.
 - After `herdr-app/install.sh`, a `Corgi` space is first in the Spaces list
   and its only tab shows the overview; running the install again leaves one
   Corgi space; it is still there after the app is quit and reopened.

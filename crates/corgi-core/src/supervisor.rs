@@ -255,7 +255,7 @@ pub fn prepare_for(project_root: &str, corgi_bin: &Path, backend: Backend) -> Re
 }
 
 /// [`prepare_for`] under the Corgi state directory `base`.
-fn prepare_at(
+pub(crate) fn prepare_at(
     base: &Path,
     project_root: &str,
     corgi_bin: &Path,

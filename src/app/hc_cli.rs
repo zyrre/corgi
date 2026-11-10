@@ -141,17 +141,7 @@ pub(super) fn supervisor(
     let client = HcClient::from_env()?;
     let root = hc_project_root(project);
     anyhow::ensure!(!is_home(&root), SUPERVISOR_HOME_REFUSAL);
-    let agents = hc::agents::agents(&client)?;
-    // A supervisor whose agent exited into its kept shell starts again
-    // there: same terminal, name and space, and its workers keep reporting.
-    let exited = agents
-        .iter()
-        .find(|agent| agent.supervisor && agent.exited && agent.project_root == root)
-        .cloned();
-    let others: Vec<DashboardAgent> = agents
-        .into_iter()
-        .filter(|agent| Some(&agent.info.pane_id) != exited.as_ref().map(|e| &e.info.pane_id))
-        .collect();
+    let (exited, others) = exited_supervisor(hc::agents::agents(&client)?, &root);
     let mut plan = supervisor_plan(
         &others,
         &root,
@@ -161,31 +151,158 @@ pub(super) fn supervisor(
         task,
     )?;
     plan.extra_args = options.agent_args.clone();
+    let shell = match options.terminal.as_deref() {
+        Some(terminal) => Shell::Named(terminal),
+        None => Shell::New,
+    };
+    let (launched, _) = start_supervisor(
+        &client,
+        &mut plan,
+        exited.as_ref(),
+        options.name.as_deref(),
+        shell,
+    )?;
+    Ok(launched_json(&plan, &launched))
+}
+
+/// The supervisor of the project at `root` whose agent exited into its kept
+/// shell, if there is one, and the other agents: a supervisor starts again
+/// in that terminal, which keeps its name and space, and its workers keep
+/// reporting.
+pub(super) fn exited_supervisor(
+    agents: Vec<DashboardAgent>,
+    root: &str,
+) -> (Option<DashboardAgent>, Vec<DashboardAgent>) {
+    let exited = agents
+        .iter()
+        .find(|agent| agent.supervisor && agent.exited && agent.project_root == root)
+        .cloned();
+    let others = agents
+        .into_iter()
+        .filter(|agent| Some(&agent.info.pane_id) != exited.as_ref().map(|e| &e.info.pane_id))
+        .collect();
+    (exited, others)
+}
+
+/// The existing shell terminal a supervisor may start in.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Shell<'a> {
+    /// None: a new terminal of Corgi's.
+    New,
+    /// This one (an address or a name), or nothing starts.
+    Named(&'a str),
+    /// The first of these with a shell waiting at its prompt in the
+    /// project's primary checkout, else a new terminal.
+    Offered(&'a [String]),
+}
+
+/// Where [`start_supervisor`] started the supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Started {
+    /// A new terminal, in the space Corgi gives the project.
+    New,
+    /// The project's own supervisor terminal, at its shell since its agent
+    /// exited.
+    Own,
+    /// A shell the person had open, which is the supervisor's from now on.
+    Shell,
+}
+
+impl Started {
+    pub(super) fn word(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Own => "own",
+            Self::Shell => "shell",
+        }
+    }
+}
+
+/// Starts `plan`, the supervisor of the project `plan.project`, and
+/// remembers the project: in its own terminal when `exited` is that
+/// terminal at its shell, else in the terminal `shell` names or offers, else
+/// in a new one named `name` (default: `<project>-supervisor`). `plan.name`
+/// becomes the name of the terminal it started in.
+pub(super) fn start_supervisor(
+    client: &HcClient,
+    plan: &mut LaunchPlan,
+    exited: Option<&DashboardAgent>,
+    name: Option<&str>,
+    shell: Shell,
+) -> Result<(Launched, Started)> {
+    let root = plan.project.to_string_lossy().into_owned();
     let corgi_bin = supervisor::corgi_bin(None)?;
+    let named = match shell {
+        Shell::Named(target) => Some(client.get(target)?),
+        _ => None,
+    };
     if let Some(exited) = exited {
+        // One supervisor terminal per project: its own waits for it.
+        anyhow::ensure!(
+            named
+                .as_ref()
+                .is_none_or(|terminal| terminal.address == exited.info.pane_id),
+            "{root}'s supervisor terminal {} ({}) is at its shell: run corgi supervisor without \
+             --terminal to start there, or close that terminal first",
+            exited.info.display_name(),
+            exited.info.pane_id
+        );
         plan.name = exited.info.display_name().to_string();
         eprintln!(
             "{root}'s supervisor terminal {} ({}) is at its shell: starting the supervisor there",
             plan.name, exited.info.pane_id
         );
         let launched = hc::launch::relaunch_supervisor(
-            &client,
-            &plan,
+            client,
+            plan,
             &corgi_bin,
             &exited.info.pane_id,
             &mut Said,
         )?;
         remember_project(&root);
-        return Ok(launched_json(&plan, &launched));
+        return Ok((launched, Started::Own));
+    }
+    let adopt = named.or_else(|| match shell {
+        Shell::Offered(terminals) => terminals.iter().find_map(|target| {
+            client.find(target).ok().flatten().filter(|terminal| {
+                hc::launch::adoption_refusal(terminal).is_none() && shell_is_in(terminal, &root)
+            })
+        }),
+        _ => None,
+    });
+    if let Some(terminal) = adopt {
+        plan.name = terminal.display_name().to_string();
+        if name.is_some() {
+            eprintln!(
+                "--name is not used: {} keeps the name it has",
+                terminal.address
+            );
+        }
+        eprintln!(
+            "Starting {root}'s supervisor in the shell of {} ({})",
+            plan.name, terminal.address
+        );
+        let launched =
+            hc::launch::adopt_terminal(client, plan, &corgi_bin, &terminal.address, &mut Said)?;
+        remember_project(&root);
+        return Ok((launched, Started::Shell));
     }
     let project_name = dir_name(&root).unwrap_or(supervisor::UNNAMED_PROJECT);
-    plan.name = match options.name.as_deref() {
-        Some(requested) => free_name(&client, requested, false)?,
-        None => free_name(&client, &format!("{project_name}-supervisor"), false)?,
+    plan.name = match name {
+        Some(requested) => free_name(client, requested, false)?,
+        None => free_name(client, &format!("{project_name}-supervisor"), false)?,
     };
-    let launched = hc::launch::launch_supervisor(&client, &plan, &corgi_bin, &mut Said)?;
+    let launched = hc::launch::launch_supervisor(client, plan, &corgi_bin, &mut Said)?;
     remember_project(&root);
-    Ok(launched_json(&plan, &launched))
+    Ok((launched, Started::New))
+}
+
+/// Whether the shell in front of `terminal` is in the directory `root`, a
+/// project's primary checkout without symlinks.
+fn shell_is_in(terminal: &hc::Terminal, root: &str) -> bool {
+    terminal.foreground.as_ref().is_some_and(|foreground| {
+        fs::canonicalize(&foreground.cwd).is_ok_and(|cwd| cwd == Path::new(root))
+    })
 }
 
 /// Writes `root` down among the projects Corgi used, as a launch on the
@@ -198,7 +315,7 @@ fn remember_project(root: &str) {
 /// What `corgi spawn` and `corgi supervisor` print of an agent started on
 /// hc: the fields they print on the Herdr TUI, with the terminal's address
 /// as `terminal` (and as `pane_id`, for a script that reads that).
-fn launched_json(plan: &LaunchPlan, launched: &Launched) -> serde_json::Value {
+pub(super) fn launched_json(plan: &LaunchPlan, launched: &Launched) -> serde_json::Value {
     serde_json::json!({
         "name": launched.name,
         "terminal": launched.terminal.address,

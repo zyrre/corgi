@@ -154,8 +154,22 @@ impl HerdrApp {
         Ok(Some(listing.spaces))
     }
 
+    /// The layout the window shows (`herdr-app status`), or `None` when no
+    /// window is open.
+    pub fn shown_layout(&self) -> Result<Option<String>> {
+        let Some(out) = self.call(&["status"])? else {
+            return Ok(None);
+        };
+        let status: Value =
+            serde_json::from_str(&out).context("read what herdr-app status printed")?;
+        Ok(status
+            .get("layout")
+            .and_then(Value::as_str)
+            .map(str::to_string))
+    }
+
     /// Runs app command `name` with `args`; `None` when no window is open.
-    fn command(&self, name: &str, args: Value) -> Result<Option<Value>> {
+    pub(crate) fn command(&self, name: &str, args: Value) -> Result<Option<Value>> {
         let Some(out) = self.call(&["do", name, &args.to_string()])? else {
             return Ok(None);
         };

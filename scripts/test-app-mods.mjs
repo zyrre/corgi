@@ -1,0 +1,710 @@
+// Runs the Herdr app's mods (herdr-app/mods/*) under Node, past the first
+// frame `herdr-app check` renders: with stand-ins for the app's `gpui-kit`,
+// `gpui-base` and `herdr` modules, a made-up window (spaces, panes, agents)
+// and canned answers for the programs a mod runs. A stand-in element keeps
+// its texts, children and handlers, so a test reads what a view shows and
+// clicks and types in it. Nothing here asks a real app, hc or corgi.
+//
+//   node scripts/test-app-mods.mjs
+
+import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
+
+const HOME = '/Users/jane';
+const APP = `${HOME}/.config/herdr-app`;
+const CORGI = `${HOME}/repos/corgi/target/release/corgi`;
+
+// --- the stand-in modules ------------------------------------------------------
+
+// An element: every builder call returns it; children, texts and handlers
+// are kept. `.when` runs its callback only when its condition holds, and the
+// callback must give back the element it got, as in the app.
+// What was kept of each element: { kind, args, children, handlers, id, calls }.
+const KEPT = new WeakMap();
+const kept = (el) => (el && typeof el === 'object' ? KEPT.get(el) ?? el : el);
+
+function element(kind, args = []) {
+  const target = { kind, args, children: [], handlers: {}, id: null, calls: {} };
+  const proxy = new Proxy({}, {
+    get(_target, name) {
+      if (typeof name !== 'string' || name === 'then') return undefined;
+      return (...a) => {
+        if (name === 'child') target.children.push(a[0]);
+        else if (name === 'children') target.children.push(...a[0]);
+        else if (name === 'when') {
+          if (a[0]) assert.equal(a[1](proxy), proxy, 'a .when callback must return the element it was given');
+        } else if (name === 'id') target.id = a[0];
+        else if (name === 'on_mouse_down' || name === 'on_mouse_up') target.handlers[`${name}:${a[0]}`] = a[1];
+        else if (name.startsWith('on_')) target.handlers[name] = a[0];
+        else if (name === 'hover') a[0](element('style'));
+        else target.calls[name] = a;
+        return proxy;
+      };
+    },
+  });
+  KEPT.set(proxy, target);
+  return proxy;
+}
+
+// The retained text of an input: `type` is the person typing.
+class InputState {
+  static new(options = {}) {
+    return new InputState(options);
+  }
+  constructor(options) {
+    this.text = options.value ?? '';
+    this.placeholder = options.placeholder ?? '';
+    this.handlers = {};
+    this.focused = 0;
+  }
+  value() {
+    return this.text;
+  }
+  set_value(next) {
+    this.text = next;
+  }
+  on(event, handler) {
+    this.handlers[event] = handler;
+    return true;
+  }
+  focus() {
+    this.focused += 1;
+  }
+}
+
+const kit = {
+  View: class View {},
+  div: () => element('div'),
+  svg: (path) => element('svg', [path]),
+  image: (path) => element('image', [path]),
+  v_flex: () => element('v_flex'),
+  h_flex: () => element('h_flex'),
+  InputState,
+  Input: { new: (state) => element('input', [state]) },
+};
+
+// What the window holds and what the mod did to it.
+function world(overrides = {}) {
+  const w = {
+    spaces: [],
+    panes: [],
+    agents: [],
+    terminals: [],
+    focused: null,
+    sidebar: 268,
+    shared: {},
+    files: {},
+    programs: [], // [(command, args, options) => result | promise | undefined]
+    ran: [], // app commands: [name, args]
+    execs: [], // programs run: [command, ...args]
+    toasts: [],
+    commands: [], // `<mod>.<command>`s waiting for the mod, as from a key
+    agentOrder: null,
+    ...overrides,
+  };
+  const colors = new Proxy({}, { get: (_t, name) => (typeof name === 'string' ? `#${name}` : undefined) });
+  w.api = {
+    spaces: () => w.spaces,
+    panes: () => w.panes,
+    agents: () => w.agents,
+    terminals: () => w.terminals,
+    machines: () => [{ name: null, layout: 'ready' }],
+    focused: () => w.focused,
+    layout: () => ({ id: 'root', children: [{ id: 'sidebar', size: { px: w.sidebar }, children: [] }] }),
+    window: () => ({ platform: 'macos', active: true, fullscreen: false }),
+    theme: () => colors,
+    shared: (key) => w.shared[key],
+    setShared: (key, value) => {
+      w.shared[key] = value;
+      return null;
+    },
+    setAgentOrder: (order) => {
+      w.agentOrder = order;
+      return null;
+    },
+    run: (name, args) => {
+      w.ran.push([name, args]);
+      if (name === 'layout.resize' && args.id === 'sidebar') w.sidebar = args.px;
+      return null;
+    },
+    notify: (toast) => {
+      w.toasts.push(toast);
+      return 'toast';
+    },
+    openOverlay: (spec) => {
+      w.ran.push(['overlay', spec]);
+      return 'overlay';
+    },
+    home: () => HOME,
+    appHome: () => APP,
+    readTextFile: async (path) => w.files[path] ?? null,
+    // The commands sent so far, then none: a mod's loop for them ends.
+    nextCommand: () => (w.commands.length ? Promise.resolve(w.commands.shift()) : Promise.reject(new Error('no more commands in a test'))),
+    // No folder is watched here: a mod falls back to its timers.
+    watchFolder: () => Promise.reject(new Error('no watch in a test')),
+    hc: async () => ({ code: 0, stdout: '{"machines":[]}', stderr: '' }),
+    exec: async (command, args = [], options = {}) => {
+      w.execs.push([command, ...args]);
+      for (const program of w.programs) {
+        // An answer, or the promise of one; nothing when it is another program.
+        const result = program(command, args, options);
+        if (result !== undefined) return { code: 0, stdout: '', stderr: '', ...(await result) };
+      }
+      throw new Error(`${command}: not installed`);
+    },
+  };
+  return w;
+}
+
+const HERDR_EXPORTS = [
+  'spaces', 'panes', 'agents', 'terminals', 'machines', 'focused', 'layout', 'window', 'theme', 'shared', 'setShared',
+  'setAgentOrder', 'run', 'notify', 'openOverlay', 'home', 'appHome', 'readTextFile', 'watchFolder', 'nextCommand', 'hc', 'exec',
+];
+const sources = {
+  'gpui-kit': 'const k = globalThis.__kit; export const View = k.View, div = k.div, svg = k.svg, image = k.image;',
+  'gpui-base': 'const k = globalThis.__kit; export const v_flex = k.v_flex, h_flex = k.h_flex, InputState = k.InputState, Input = k.Input;',
+  herdr: HERDR_EXPORTS.map((name) => `export const ${name} = (...a) => globalThis.__world.api.${name}(...a);`).join('\n'),
+};
+globalThis.__kit = kit;
+globalThis.localStorage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+registerHooks({
+  resolve(specifier, context, next) {
+    if (specifier in sources) return { url: `stand-in:${specifier}`, shortCircuit: true };
+    return next(specifier, context);
+  },
+  load(url, context, next) {
+    if (url.startsWith('stand-in:')) return { format: 'module', source: sources[url.slice(9)], shortCircuit: true };
+    // A mod has no package.json to say its main.js is a module.
+    return next(url, url.includes('/herdr-app/mods/') ? { ...context, format: 'module' } : context);
+  },
+});
+
+let copies = 0;
+// A mod, started in the window `w`: its view, and what its tasks and timers are.
+async function start(mod, w) {
+  globalThis.__world = w;
+  // A fresh module each time: a mod keeps state at its top level.
+  const module = await import(new URL(`../herdr-app/mods/${mod}/main.js?copy=${copies++}`, import.meta.url));
+  const tasks = [];
+  const cx = {
+    notified: 0,
+    timers: [],
+    notify() {
+      this.notified += 1;
+    },
+    spawn(task) {
+      tasks.push(Promise.resolve(task(cx)));
+    },
+    timer: {
+      every: (ms, tick) => cx.timers.push({ ms, tick }),
+      after: (_ms, tick) => tasks.push(Promise.resolve().then(() => tick(cx))),
+    },
+    focus_handle: () => ({ focus() {} }),
+    stop_propagation() {},
+  };
+  const view = new module.default();
+  view.init({}, cx);
+  // Runs until no task is left running, the ones started meanwhile too.
+  const settle = async () => {
+    while (tasks.length) await tasks.shift();
+  };
+  // One round of the timers of a period.
+  const tick = async (ms) => {
+    for (const timer of cx.timers.filter((timer) => timer.ms === ms)) timer.tick(cx);
+    await settle();
+  };
+  await settle();
+  return { view, cx, settle, tick, render: () => view.render(cx) };
+}
+
+// --- reading a rendered view -----------------------------------------------------
+
+function walk(el, visit) {
+  const node = kept(el);
+  if (node === null || typeof node !== 'object') return;
+  visit(node);
+  for (const child of node.children ?? []) walk(child, visit);
+}
+
+// Every text under `el`, in the order it is drawn.
+function texts(el) {
+  const out = [];
+  const collect = (el) => {
+    const node = kept(el);
+    if (typeof node === 'string') out.push(node);
+    else if (node && typeof node === 'object') for (const child of node.children ?? []) collect(child);
+  };
+  collect(el);
+  return out;
+}
+
+function byId(root, id) {
+  let found = null;
+  walk(root, (node) => {
+    if (node.id === id) found ??= node;
+  });
+  return found;
+}
+
+function ids(root, prefix) {
+  const out = [];
+  walk(root, (node) => {
+    if (typeof node.id === 'string' && node.id.startsWith(prefix)) out.push(node.id);
+  });
+  return out;
+}
+
+function click(root, id, cx, handler = 'on_click') {
+  const node = byId(root, id);
+  assert.ok(node, `nothing is drawn with the id ${id}`);
+  assert.ok(node.handlers[handler], `${id} has no ${handler}`);
+  node.handlers[handler]({ click_count: 1 }, cx);
+}
+
+// --- a window like the one the brief describes -------------------------------------
+
+const REPO = `${HOME}/repos/weather`;
+const TREES = `${HOME}/.herdr/worktrees/weather`;
+const CLAUDE = { key: 'claude', name: 'Claude Code', icon: 'icons/claude.svg', tint: true, shell: false, agent: true };
+const SHELL = { key: 'shell', name: 'zsh', icon: null, tint: false, shell: true, agent: false };
+
+function space(id, name, folder, extra = {}) {
+  return { id, index: 0, name, named: false, folder, machine: null, branch: null, active: false, status: null, tabs: [{ id: `tab-${id}`, index: 1, name: '1', named: false, active: true }], ...extra };
+}
+function pane(spaceId, terminal, cwd, program, extra = {}) {
+  return { pane: `pane-${terminal}`, terminal, tab: `tab-${spaceId}`, title: '', cwd, branch: null, status: null, app: null, program, focused: false, zoomed: false, ...extra };
+}
+function agent(spaceId, terminal, status, title, extra = {}) {
+  return { address: terminal, pane: `pane-${terminal}`, space: spaceId, space_name: spaceId, tab: `tab-${spaceId}`, status, app: 'claude-code', program: CLAUDE, title, seq: 1, pinned: false, focused: false, ...extra };
+}
+
+// The folders that are checkouts, for the stand-in git: [top, common git dir].
+const CHECKOUTS = {
+  [REPO]: [REPO, `${REPO}/.git`],
+  [`${TREES}/worktree-calm-forest-4f96`]: [`${TREES}/worktree-calm-forest-4f96`, `${REPO}/.git`],
+  [`${TREES}/worktree-sunny-field-529d`]: [`${TREES}/worktree-sunny-field-529d`, `${REPO}/.git`],
+  [`${TREES}/worktree-quiet-lake-0a1b`]: [`${TREES}/worktree-quiet-lake-0a1b`, `${REPO}/.git`],
+};
+function git(command, args, options) {
+  if (command !== 'git') return undefined;
+  const checkout = CHECKOUTS[options.cwd];
+  if (!checkout) return { code: 128, stderr: 'fatal: not a git repository' };
+  if (args.includes('status')) return { stdout: '# branch.head main\n# branch.ab +0 -0\n' };
+  if (args.includes('--show-toplevel')) return { stdout: `${checkout[0]}\n` };
+  return { stdout: `${checkout[1]}\n` };
+}
+
+const STATUS = {
+  version: 2,
+  generated: '2026-11-10T07:00:00Z',
+  hc: { running: true, error: null },
+  daemon: { running: true, pid: 4242, installed: true },
+  projects: [{
+    name: 'weather', dir: REPO, state_dir: `${HOME}/.local/state/corgi/supervisors/weather`, base: 'main',
+    supervisor: null, questions: [], inbox_pending: 0, backlog: 0, ledger: { needs_answer: 0, ready_to_merge: 0, dispatched: 0 },
+    agents: [
+      { name: 'w-cache', role: 'worker', state: 'working', task: 'Fix the cache\nso that it holds', terminal: 't3', worktree: `${TREES}/worktree-calm-forest-4f96`, cwd: `${TREES}/worktree-calm-forest-4f96` },
+      { name: 'weather-supervisor', role: 'supervisor', state: 'done', task: 'Supervisor', terminal: 't2', worktree: null, cwd: REPO },
+      // Started, and has reported no status yet: the app lists no agent for it.
+      { name: 'w-docs', role: 'worker', state: 'unknown', task: 'Write the docs', terminal: 't5', worktree: `${TREES}/worktree-sunny-field-529d`, cwd: `${TREES}/worktree-sunny-field-529d` },
+    ],
+  }],
+};
+
+// corgi, as the mods run it: `answers` by its first argument, each the JSON
+// it prints, a whole result ({ code, stdout, stderr }), or a function of
+// its arguments giving either, or the promise of either.
+function corgi(answers) {
+  return (command, args) => {
+    if (command !== CORGI) return undefined;
+    const answer = answers[args[0]];
+    if (answer === undefined) return { code: 2, stderr: `corgi: unknown command or option: ${args[0]}` };
+    return Promise.resolve(typeof answer === 'function' ? answer(args) : answer).then((value) =>
+      'stdout' in value || 'code' in value ? value : { stdout: JSON.stringify(value) });
+  };
+}
+
+function window(answers = {}) {
+  const w = world({
+    spaces: [
+      space('sp-corgi', 'Corgi', HOME, { named: true }),
+      space('sp-weather', 'weather', REPO),
+      space('sp-calm', 'worktree-calm-forest-4f96', `${TREES}/worktree-calm-forest-4f96`),
+      space('sp-sunny', 'worktree-sunny-field-529d', `${TREES}/worktree-sunny-field-529d`),
+      space('sp-quiet', 'worktree-quiet-lake-0a1b', `${TREES}/worktree-quiet-lake-0a1b`),
+      space('sp-home', '~', HOME, { active: true }),
+    ],
+    panes: [
+      pane('sp-weather', 't2', REPO, CLAUDE),
+      pane('sp-weather', 't9', REPO, SHELL),
+      pane('sp-calm', 't3', `${TREES}/worktree-calm-forest-4f96`, CLAUDE),
+      pane('sp-calm', 't4', `${TREES}/worktree-calm-forest-4f96`, CLAUDE),
+      pane('sp-sunny', 't5', `${TREES}/worktree-sunny-field-529d`, CLAUDE, { title: 'claude' }),
+      pane('sp-quiet', 't6', `${TREES}/worktree-quiet-lake-0a1b`, SHELL),
+      pane('sp-home', 't7', HOME, CLAUDE),
+      pane('sp-home', 't8', HOME, SHELL, { focused: true }),
+    ],
+    agents: [
+      agent('sp-weather', 't2', 'idle', 'Weather supervisor'),
+      agent('sp-calm', 't3', 'working', '✳ Fixing the cache'),
+      // Started by hand in the same worktree.
+      agent('sp-calm', 't4', 'blocked', '✳ Review the cache fix'),
+      agent('sp-home', 't7', 'done', '~/notes'),
+    ],
+    focused: { space: 'sp-home', tab: 'tab-sp-home', pane: 'pane-t8', terminal: 't8' },
+    files: { [`${APP}/mods/corgi/config.json`]: JSON.stringify({ corgi: CORGI }) },
+  });
+  w.programs = [git, corgi({ status: STATUS, 'app-layout': { result: 'unchanged', message: 'up to date' }, ...answers })];
+  return w;
+}
+
+// The Projects mod with git read for every space.
+async function projects(w) {
+  const mod = await start('projects', w);
+  await mod.tick(250);
+  return mod;
+}
+
+// --- the Projects list ---------------------------------------------------------------
+
+{
+  const w = window();
+  const mod = await projects(w);
+  const root = mod.render();
+  const drawn = texts(root);
+  assert.equal(drawn[0], 'Projects');
+  // Spaces outside a repository as Spaces shows them; a project with its
+  // agents under it, the supervisor first, in place of its worktrees' rows;
+  // a worktree with no agent keeps its row.
+  assert.deepEqual(ids(root, 'space-').concat(), ['space-sp-corgi', 'space-sp-weather', 'space-sp-quiet', 'space-sp-home']);
+  assert.deepEqual(
+    drawn.slice(1),
+    [
+      'C', 'Corgi',
+      'W', 'weather',
+      'Supervisor',
+      'Fix the cache so that it holds', 'worktree-calm-forest-4f96',
+      'Review the cache fix', 'worktree-calm-forest-4f96', '!',
+      'Write the docs', 'worktree-sunny-field-529d',
+      'worktree-quiet-lake-0a1b',
+      '~', '~',
+      // A title that is only a folder says nothing: the program's name.
+      'Claude Code',
+    ],
+    drawn.join(' | '),
+  );
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7']);
+  // agent.next and agent.prev follow the list.
+  assert.deepEqual(w.agentOrder, ['t2', 't3', 't4', 't5', 't7']);
+
+  // One line each: the task takes what is left and is cut first, but never
+  // to nothing; then the worktree's name is cut.
+  const row = byId(root, 'agent-t3');
+  const [pic, task, worktree, state] = row.children.map(kept);
+  assert.ok('truncate' in task.calls && 'flex_1' in task.calls, 'the task is cut with an ellipsis');
+  assert.deepEqual(task.calls.min_w, [64]);
+  assert.ok('truncate' in worktree.calls && !('flex_none' in worktree.calls), 'then the worktree');
+  assert.deepEqual(worktree.calls.min_w, [0]);
+  // The harness's icon, and the spinner of a working agent.
+  assert.deepEqual(pic.args, ['icons/claude.svg']);
+  assert.deepEqual(kept(state.children[0]).args, ['mods/workspace-chrome/spinner.svg']);
+  assert.ok('spin' in kept(state.children[0]).calls);
+  assert.deepEqual(texts(byId(root, 'agent-t4')).slice(-1), ['!'], 'a blocked agent');
+  // On the primary checkout there is no worktree to name.
+  assert.deepEqual(texts(byId(root, 'agent-t2')), ['Supervisor']);
+
+  // A click shows the agent's terminal; a space's row shows the space.
+  click(root, 'agent-t5', mod.cx);
+  assert.deepEqual(w.ran.at(-1), ['agent.focus', { terminal: 't5' }]);
+  click(root, 'space-sp-quiet', mod.cx, 'on_mouse_down:left');
+  click(root, 'space-sp-quiet', mod.cx, 'on_mouse_up:left');
+  assert.deepEqual(w.ran.at(-1), ['space.select', { id: 'sp-quiet' }]);
+  // Right-click on an agent is its space's menu.
+  click(root, 'agent-t3', mod.cx, 'on_mouse_down:right');
+  assert.deepEqual(w.ran.at(-1)[1].props, { tab: 'space', target: { id: 'sp-calm' } });
+
+  // Corgi is read as often as the Corgi mod reads it, and no more.
+  assert.deepEqual(mod.cx.timers.map((timer) => timer.ms).sort((a, b) => a - b), [250, 1000, 5000, 15000]);
+  const reads = () => w.execs.filter((call) => call[1] === 'status').length;
+  const before = reads();
+  await mod.tick(5000);
+  assert.equal(reads(), before + 1);
+  await mod.tick(1000);
+  assert.equal(reads(), before + 2, 'the first look at the live agents');
+  await mod.tick(1000);
+  assert.equal(reads(), before + 2, 'unchanged agents read nothing');
+  w.agents[1].status = 'done';
+  await mod.tick(1000);
+  assert.equal(reads(), before + 3, 'a changed agent does');
+}
+
+// The space that is shown is lit: its own row, or the agent standing for it.
+{
+  const w = window();
+  w.spaces.at(-1).active = false;
+  w.spaces[2].active = true;
+  const mod = await projects(w);
+  let root = mod.render();
+  assert.ok('bg' in byId(root, 'agent-t3').calls, 'the first agent of the shown worktree');
+  assert.ok(!('bg' in byId(root, 'agent-t4').calls));
+  w.agents[2].focused = true;
+  root = mod.render();
+  assert.ok(!('bg' in byId(root, 'agent-t3').calls));
+  assert.ok('bg' in byId(root, 'agent-t4').calls, 'the agent with the focus');
+}
+
+// Without corgi the list still shows every space and agent, by its own title.
+{
+  const w = window();
+  w.programs = [git];
+  const mod = await projects(w);
+  const drawn = texts(mod.render());
+  assert.deepEqual(
+    drawn.slice(3),
+    ['W', 'weather', 'Weather supervisor', 'Fixing the cache', 'worktree-calm-forest-4f96', 'Review the cache fix', 'worktree-calm-forest-4f96', '!', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code'],
+    drawn.join(' | '),
+  );
+}
+
+// The rail: a cell per space, no texts but their numbers, and a way back.
+{
+  const w = window();
+  w.sidebar = 76;
+  w.spaces[2].status = 'working';
+  const mod = await projects(w);
+  let root = mod.render();
+  assert.deepEqual(texts(root), ['1', '·', '2', '·', '3', '4', '·', '5', '·', '6', '·', '»']);
+  assert.deepEqual(ids(root, 'agent-'), []);
+  assert.equal(byId(root, 'open-project'), null);
+  click(root, 'space-sp-calm', mod.cx);
+  assert.deepEqual(w.ran.at(-1), ['space.select', { id: 'sp-calm' }]);
+  // The + unfolds the sidebar and opens the field.
+  click(root, 'project-open', mod.cx);
+  await mod.settle();
+  assert.equal(w.sidebar, 268);
+  root = mod.render();
+  assert.ok(byId(root, 'open-project'), 'the field is open');
+  assert.equal(texts(root)[0], 'Projects');
+  // And » alone unfolds it.
+  w.sidebar = 76;
+  click(mod.render(), 'rail-unfold', mod.cx);
+  assert.equal(w.sidebar, 268);
+}
+
+// --- Open project ----------------------------------------------------------------------
+
+const SUGGESTED = {
+  query: '',
+  parent: `${HOME}/repos`,
+  projects: [
+    { dir: REPO, name: 'weather', badge: '3 agents', new: false, supervisor: 't2' },
+    { dir: `${HOME}/repos/zebra`, name: 'zebra', badge: 'nearby', new: false, supervisor: null },
+    { dir: `${HOME}/repos/api`, name: 'api', badge: 'recent', new: false, supervisor: null },
+  ],
+};
+// What `corgi projects` answers: by its --query.
+const listing = (byQuery) => (args) => byQuery[args[args.indexOf('--query') + 1]] ?? { ...SUGGESTED, projects: [] };
+const key = (root, cx, name) => byId(root, 'open-project').handlers.on_key_down({ key: name, modifiers: {} }, cx);
+async function type(mod, text) {
+  mod.view.input.text = text;
+  mod.view.input.handlers.change({}, mod.cx);
+  await mod.settle();
+}
+async function enter(mod) {
+  mod.view.input.handlers.submit({}, mod.cx);
+  await mod.settle();
+}
+const opens = (w) => w.execs.filter((call) => call[1] === 'open').map((call) => call.slice(1));
+
+{
+  const fresh = { dir: `${HOME}/repos/fresh`, name: 'fresh', badge: 'new project', new: true, supervisor: null };
+  const answers = {
+    projects: listing({
+      '': SUGGESTED,
+      ze: { ...SUGGESTED, projects: [SUGGESTED.projects[1], { dir: `${HOME}/repos/ze`, name: 'ze', badge: 'new project', new: true, supervisor: null }] },
+      fresh: { ...SUGGESTED, projects: [fresh] },
+      '~/re': { ...SUGGESTED, projects: [{ dir: `${HOME}/repos`, name: 'repos', badge: 'typed path', new: false, supervisor: null }] },
+      '~/repos/': SUGGESTED,
+      nothing: { ...SUGGESTED, projects: [] },
+    }),
+    open: (args) => (args[1].endsWith('/api')
+      ? { code: 1, stdout: JSON.stringify({ result: 'failed', message: 'hc: t9 is blocked\n(permission)' }) }
+      : { result: 'started', message: 'Started', project: args[1], name: 'x-supervisor', terminal: 't20', created: args.includes('--create'), place: 'shell' }),
+  };
+  const w = window(answers);
+  const mod = await projects(w);
+  assert.equal(byId(mod.render(), 'open-project'), null, 'closed until + is clicked');
+  assert.deepEqual(byId(mod.render(), 'project-open').calls.tooltip, ['Open project']);
+
+  click(mod.render(), 'project-open', mod.cx);
+  await mod.settle();
+  assert.ok(mod.view.input.focused > 0, 'the field takes the keyboard');
+  // Corgi's known projects, with the folders the list's spaces are in.
+  const asked = w.execs.filter((call) => call[1] === 'projects').at(-1);
+  assert.deepEqual(asked.slice(1, 5), ['projects', '--json', '--query', '']);
+  assert.deepEqual(asked.filter((_arg, n) => asked[n - 1] === '--open'), [HOME, REPO, `${TREES}/worktree-calm-forest-4f96`, `${TREES}/worktree-sunny-field-529d`, `${TREES}/worktree-quiet-lake-0a1b`]);
+  let root = mod.render();
+  assert.deepEqual(texts(byId(root, 'open-project')).slice(0, 9), ['weather', '~/repos/weather', 'running', 'zebra', '~/repos/zebra', 'nearby', 'api', '~/repos/api', 'recent']);
+  assert.ok('bg' in byId(root, 'open-0').calls, 'the first is preset');
+
+  // Enter on a project whose supervisor runs shows it, and starts nothing.
+  await enter(mod);
+  assert.deepEqual(w.ran.at(-1), ['agent.focus', { terminal: 't2' }]);
+  assert.deepEqual(opens(w), []);
+  assert.equal(byId(mod.render(), 'open-project'), null, 'and the field is put away');
+
+  // Typing narrows; the arrows move; Enter starts the supervisor, offering
+  // the shells that wait: the focused space's first, then one in the project.
+  click(mod.render(), 'project-open', mod.cx);
+  await mod.settle();
+  assert.equal(mod.view.input.value(), '', 'opened empty again');
+  await type(mod, 'ze');
+  root = mod.render();
+  assert.deepEqual(texts(byId(root, 'open-project')).slice(0, 6), ['zebra', '~/repos/zebra', 'nearby', 'ze', '~/repos/ze', 'new project']);
+  key(root, mod.cx, 'down');
+  assert.ok('bg' in byId(mod.render(), 'open-1').calls);
+  key(mod.render(), mod.cx, 'down');
+  assert.ok('bg' in byId(mod.render(), 'open-0').calls, 'around to the first');
+  await enter(mod);
+  assert.deepEqual(opens(w), [['open', `${HOME}/repos/zebra`, '--json', '--terminal', 't8']]);
+  assert.deepEqual(w.ran.at(-1), ['agent.focus', { terminal: 't20' }]);
+  assert.equal(byId(mod.render(), 'open-project'), null);
+
+  // A shell that waits in the project itself is offered after the focused
+  // space's: in another space, only when it is in that folder.
+  w.panes.push(pane('sp-weather', 't10', `${HOME}/repos/zebra`, SHELL));
+  click(mod.render(), 'project-open', mod.cx);
+  await type(mod, 'ze');
+  await enter(mod);
+  assert.deepEqual(opens(w).at(-1), ['open', `${HOME}/repos/zebra`, '--json', '--terminal', 't8', '--terminal', 't10']);
+
+  // A new name is made beside the others.
+  click(mod.render(), 'project-open', mod.cx);
+  await type(mod, 'fresh');
+  assert.deepEqual(texts(byId(mod.render(), 'open-project')).slice(0, 3), ['fresh', '~/repos/fresh', 'new project']);
+  await enter(mod);
+  assert.deepEqual(opens(w).at(-1).slice(0, 4), ['open', `${HOME}/repos/fresh`, '--json', '--create']);
+
+  // Tab completes a path, and its directories come next.
+  click(mod.render(), 'project-open', mod.cx);
+  await type(mod, '~/re');
+  key(mod.render(), mod.cx, 'tab');
+  await mod.settle();
+  assert.equal(mod.view.input.value(), '~/repos/');
+  assert.deepEqual(w.execs.filter((call) => call[1] === 'projects').at(-1).slice(3, 5), ['--query', '~/repos/']);
+  assert.equal(texts(byId(mod.render(), 'open-project'))[0], 'weather');
+
+  // A failure shows in the field, which stays open with what was typed.
+  await type(mod, '');
+  key(mod.render(), mod.cx, 'up');
+  const ran = w.ran.length;
+  await enter(mod);
+  root = mod.render();
+  assert.ok(byId(root, 'open-project'), 'still open');
+  assert.ok(texts(root).includes('hc: t9 is blocked (permission)'), texts(root).join(' | '));
+  assert.equal(w.ran.length, ran, 'and nothing is shown');
+  // Typing again clears it.
+  await type(mod, 'nothing');
+  root = mod.render();
+  assert.ok(!texts(root).includes('hc: t9 is blocked (permission)'));
+  assert.ok(texts(root).includes('No project or folder by that name.'));
+  await enter(mod);
+  assert.ok(texts(mod.render()).some((text) => text.startsWith('Nothing to open by that name')));
+
+  // Esc puts the field away; a plain space is one click from it.
+  key(mod.render(), mod.cx, 'escape');
+  assert.equal(byId(mod.render(), 'open-project'), null);
+  click(mod.render(), 'project-open', mod.cx);
+  await mod.settle();
+  click(mod.render(), 'open-plain-space', mod.cx);
+  assert.deepEqual(w.ran.at(-1), ['space.new', undefined]);
+  assert.equal(byId(mod.render(), 'open-project'), null);
+}
+
+// `projects.open`, as a key of the person's sends it, is the +.
+{
+  const w = window({ projects: SUGGESTED });
+  w.commands.push('open');
+  const mod = await projects(w);
+  assert.ok(byId(mod.render(), 'open-project'), 'the field is open');
+  assert.equal(texts(byId(mod.render(), 'open-project'))[0], 'weather');
+}
+
+// While a supervisor starts the field says so, and a second Enter starts nothing.
+{
+  let finish;
+  const w = window({
+    projects: { ...SUGGESTED, projects: [SUGGESTED.projects[1]] },
+    open: () => new Promise((resolve) => { finish = resolve; }),
+  });
+  const mod = await projects(w);
+  click(mod.render(), 'project-open', mod.cx);
+  await mod.settle();
+  mod.view.input.handlers.submit({}, mod.cx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(texts(mod.render()).includes("Starting zebra's supervisor…"));
+  mod.view.input.handlers.submit({}, mod.cx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(opens(w).length, 1);
+  finish({ result: 'started', terminal: 't30' });
+  await mod.settle();
+  assert.deepEqual(w.ran.at(-1), ['agent.focus', { terminal: 't30' }]);
+}
+
+// A corgi from before `corgi projects` says so instead of listing nothing.
+{
+  const w = window();
+  const mod = await projects(w);
+  click(mod.render(), 'project-open', mod.cx);
+  await mod.settle();
+  assert.ok(texts(mod.render()).some((text) => text.startsWith('This corgi is older than the Projects list')));
+}
+
+// --- Corgi's layout, rebuilt when Herdr's changed ----------------------------------------
+
+{
+  const w = window({ 'app-layout': { result: 'rebuilt', message: 'rebuilt the Corgi layout' } });
+  await projects(w);
+  assert.deepEqual(w.execs.find((call) => call[1] === 'app-layout'), [CORGI, 'app-layout', '--home', APP, '--json']);
+  assert.deepEqual(w.toasts.map((toast) => toast.title), ['Corgi layout rebuilt']);
+  // It never switches the window's layout.
+  assert.ok(!w.ran.some(([name]) => name.startsWith('layout.switch')));
+}
+{
+  const w = window({ 'app-layout': { result: 'kept', message: "kept the Corgi layout as it was built last:\nthe sidebar of Herdr's main layout has 0 spaces" } });
+  await projects(w);
+  assert.equal(w.toasts.length, 1);
+  assert.equal(w.toasts[0].level, 'warning');
+  assert.equal(w.toasts[0].body, "kept the Corgi layout as it was built last: the sidebar of Herdr's main layout has 0 spaces");
+}
+{
+  const w = window();
+  await projects(w);
+  assert.deepEqual(w.toasts, [], 'an unchanged layout says nothing');
+}
+
+// The Corgi mod builds it too, and its overview says why when it could not.
+{
+  const versions = { '--version': { stdout: 'corgi 9.9.9\n' }, status: (args) => (args[1] === '--help' ? { stdout: 'Usage: corgi status --json' } : STATUS) };
+  let w = window({ ...versions, 'app-layout': { result: 'kept', message: 'kept the Corgi layout as it was built last: no node called sidebar' } });
+  let mod = await start('corgi', w);
+  assert.deepEqual(w.execs.find((call) => call[1] === 'app-layout'), [CORGI, 'app-layout', '--home', APP, '--json']);
+  assert.ok(texts(mod.render()).includes('Corgi layout: kept the Corgi layout as it was built last: no node called sidebar'));
+  assert.deepEqual(w.toasts, []);
+  // Once per start, however often the status is read.
+  await mod.tick(5000);
+  assert.equal(w.execs.filter((call) => call[1] === 'app-layout').length, 1);
+
+  w = window({ ...versions, 'app-layout': { result: 'rebuilt', message: 'rebuilt' } });
+  mod = await start('corgi', w);
+  assert.deepEqual(w.toasts.map((toast) => toast.title), ['Corgi layout rebuilt']);
+  assert.ok(!texts(mod.render()).some((text) => text.startsWith('Corgi layout:')));
+
+  w = window(versions);
+  mod = await start('corgi', w);
+  const drawn = texts(mod.render());
+  assert.ok(drawn.includes('weather'), drawn.join(' | '));
+  assert.ok(!drawn.some((text) => text.startsWith('Corgi layout:')));
+}
+
+console.log('app mods: ok');

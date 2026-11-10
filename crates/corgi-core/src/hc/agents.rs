@@ -121,13 +121,14 @@ pub fn agent_info(terminal: &Terminal) -> AgentInfo {
     });
     AgentInfo {
         agent: Some(kind),
-        name: terminal.name.clone().filter(|name| !name.is_empty()),
+        // A terminal nobody named (a shell of the Herdr app that became a
+        // supervisor's) goes by its address, which hc takes wherever it
+        // takes a name.
+        name: Some(terminal.display_name().to_string()),
         state,
         pane_id: terminal.address.clone(),
         workspace_id: terminal.label(SPACE_LABEL).unwrap_or_default().to_string(),
-        // The folder the agent started in, where its harness keeps its
-        // session; never a tool's folder that happens to be in front.
-        cwd: Some(terminal.cwd.clone()),
+        cwd: Some(agent_cwd(terminal).to_string()),
         revision: terminal.turn,
         state_change_seq: terminal.turn,
         title: Some(terminal.title.clone()).filter(|title| !title.trim().is_empty()),
@@ -135,6 +136,18 @@ pub fn agent_info(terminal: &Terminal) -> AgentInfo {
         agent_session,
         terminal_id: Some(terminal.address.clone()),
         ..AgentInfo::default()
+    }
+}
+
+/// The folder the agent works in, where its harness keeps its session: the
+/// one its terminal started in, never a tool's folder that happens to be in
+/// front. A supervisor always runs in its project's primary checkout,
+/// whatever folder the shell it was started in began in (a terminal the
+/// person had open, see [`super::launch::adopt_terminal`]).
+fn agent_cwd(terminal: &Terminal) -> &str {
+    match terminal.label(PROJECT_LABEL) {
+        Some(root) if terminal.label(ROLE_LABEL) == Some(SUPERVISOR_ROLE) => root,
+        _ => &terminal.cwd,
     }
 }
 
@@ -178,8 +191,8 @@ fn dashboard_agent(
         .to_string();
     // Spawn's worktrees are outside the primary checkout; a directory
     // checkout is the project itself or a folder in it.
-    let worktree_checkout =
-        (!Path::new(&terminal.cwd).starts_with(&root)).then(|| terminal.cwd.clone());
+    let cwd = agent_cwd(terminal);
+    let worktree_checkout = (!Path::new(cwd).starts_with(&root)).then(|| cwd.to_string());
     let worktree_label = worktree_checkout
         .as_deref()
         .and_then(checkout_label)
