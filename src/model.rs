@@ -1,3 +1,6 @@
+//! An agent as Corgi sees it: what herdr-core says of its terminal, what
+//! Corgi labelled it with, and what its session file says.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

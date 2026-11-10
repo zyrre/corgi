@@ -157,13 +157,16 @@ fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd)> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    // macOS takes the size by `*mut`, Linux by `*const`: a raw pointer
+    // passes as either, where `&mut size` fails clippy on Linux.
+    let size: *mut libc::winsize = &mut size;
     let opened = unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut size,
+            size,
         )
     };
     if opened != 0 {
