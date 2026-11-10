@@ -17,7 +17,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     git::{ensure_git_clean, git_current_branch, git_failure_detail, git_output, git_upstream},
     inbox::{Item, Kind},
-    model::DashboardAgent,
+    model::Agent,
     progress::Progress,
     supervisor::{self, MergeConflict, MergeFailed, MergeLanded},
     waker::Inboxes,
@@ -141,7 +141,7 @@ impl std::error::Error for Conflicts {}
 /// out in the project's primary checkout, and the upstream to check.
 /// Refused for an agent that is not in a linked worktree, or whose
 /// checkouts are not ready to merge.
-pub fn merge_form(agent: &DashboardAgent) -> Result<MergeWorktreeForm> {
+pub fn merge_form(agent: &Agent) -> Result<MergeWorktreeForm> {
     let Some(worktree_checkout) = agent.worktree_checkout.as_deref() else {
         bail!("Merge is available only for an agent in a linked worktree");
     };
@@ -154,7 +154,7 @@ pub fn merge_form(agent: &DashboardAgent) -> Result<MergeWorktreeForm> {
             .info
             .name
             .clone()
-            .unwrap_or_else(|| agent.info.pane_id.clone()),
+            .unwrap_or_else(|| agent.info.address.clone()),
         project_root,
         worktree_checkout,
         source_branch,
@@ -168,7 +168,7 @@ pub fn merge_form(agent: &DashboardAgent) -> Result<MergeWorktreeForm> {
 /// far as Git can still tell its branches, for the line that hands it to
 /// the supervisor. `None` for an agent not in a linked worktree, which has
 /// nothing to merge and so nothing to fix.
-pub fn failed_form(agent: &DashboardAgent) -> Option<MergeWorktreeForm> {
+pub fn failed_form(agent: &Agent) -> Option<MergeWorktreeForm> {
     let worktree_checkout = PathBuf::from(agent.worktree_checkout.as_deref()?);
     let project_root = PathBuf::from(&agent.project_root);
     let branch = |cwd: &Path| git_current_branch(cwd).unwrap_or_default();
@@ -177,7 +177,7 @@ pub fn failed_form(agent: &DashboardAgent) -> Option<MergeWorktreeForm> {
             .info
             .name
             .clone()
-            .unwrap_or_else(|| agent.info.pane_id.clone()),
+            .unwrap_or_else(|| agent.info.address.clone()),
         source_branch: branch(&worktree_checkout),
         target_branch: branch(&project_root),
         project_root,
@@ -194,7 +194,7 @@ pub fn failed_form(agent: &DashboardAgent) -> Option<MergeWorktreeForm> {
 /// none runs now, and not written for a project that never had one.
 pub fn tell_supervisor_about_merge(
     inboxes: &Inboxes,
-    agents: &[DashboardAgent],
+    agents: &[Agent],
     form: &MergeWorktreeForm,
     commit: &str,
     push_error: Option<&str>,
@@ -305,7 +305,7 @@ fn landed<'a>(
 }
 
 /// The name of the running supervisor of the project at `project_root`.
-pub fn project_supervisor(agents: &[DashboardAgent], project_root: &Path) -> Option<String> {
+pub fn project_supervisor(agents: &[Agent], project_root: &Path) -> Option<String> {
     agents
         .iter()
         .filter(|agent| agent.supervisor && Path::new(&agent.project_root) == project_root)
@@ -464,7 +464,7 @@ fn push_failure_detail(output: &std::process::Output) -> String {
 }
 
 /// Fetches `branch`'s upstream from its remote, without asking for
-/// credentials on the terminal the dashboard draws on. An upstream in the
+/// credentials on a terminal nobody watches. An upstream in the
 /// same repository (remote `.`) has nothing to fetch.
 fn fetch_upstream(project_root: &Path, branch: &str) -> Result<()> {
     let remote = git_output(
@@ -719,14 +719,14 @@ mod tests {
         let inboxes = Inboxes::in_dir(&scratch);
         let form = reviewed_merge();
         let root = "/repos/corgi";
-        let agent = |name: &str, supervisor| DashboardAgent {
+        let agent = |name: &str, supervisor| Agent {
             info: crate::model::AgentInfo {
                 name: Some(name.into()),
                 ..Default::default()
             },
             project_root: root.into(),
             supervisor,
-            ..DashboardAgent::default()
+            ..Agent::default()
         };
         let worker = agent("w-reviewed-agent", false);
 

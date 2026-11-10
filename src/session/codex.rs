@@ -310,7 +310,7 @@ pub fn codex_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
 
 /// A Codex custom tool call. Newer Codex versions route tools through a small
 /// JavaScript `exec` program, but that transport is not useful to somebody
-/// scanning the dashboard. Recover literal shell commands from the program,
+/// reading what the agent ran. Recover literal shell commands from the program,
 /// or at least name the tool(s) it invokes, rather than showing `exec(...)`.
 pub fn codex_custom_tool_call(name: &str, payload: &Value) -> (ActivityKind, String) {
     if name != "exec" {

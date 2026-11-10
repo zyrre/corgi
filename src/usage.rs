@@ -56,12 +56,12 @@ impl Provider {
         }
     }
 
-    /// Human label used in the dashboard.
+    /// The provider's name for a person.
     pub fn label(self) -> &'static str {
         self.harness().title()
     }
 
-    /// Title of this provider's usage card in the dashboard header.
+    /// Title of this provider's usage card in the Projects list.
     pub fn card_title(self) -> &'static str {
         match self {
             Provider::Codex => "CODEX",

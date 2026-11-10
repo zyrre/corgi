@@ -1,14 +1,13 @@
 //! A supervisor's inbox: every wake, merge line, merge-conflict line and note
 //! meant for a project's supervisor, kept in `inbox.jsonl` in its state
-//! directory so that none is lost when the dashboard that types them into the
-//! supervisor's input box closes, restarts, or another dashboard takes over
-//! the wake lock.
+//! directory so that none is lost when the daemon that types them into the
+//! supervisor's input box stops or restarts.
 //!
 //! The file is append-only JSON lines of two kinds: an item, and a record
 //! that items were delivered. An item no record names is undelivered, and an
 //! id is added only once. Only this module writes the file, each write under
-//! `inbox.lock`: the dashboard calls it in process, and everything else
-//! through `corgi notify`. Readers take no lock and skip a last line still
+//! `inbox.lock`: the daemon and `corgi merge` call it in process, and
+//! everything else through `corgi notify`. Readers take no lock and skip a last line still
 //! being written; a writer that finds such a line cut short ends it first.
 //! Once the file grows past [`COMPACT_AT`] bytes it is rewritten with every
 //! undelivered item and only the newest delivered ones, so reading it stays
@@ -53,7 +52,7 @@ pub const INLINE_REPORT_MAX: usize = 4 * 1024;
 /// past it, a wake names the command that prints its report instead.
 pub const PROMPT_REPORT_BUDGET: usize = 12 * 1024;
 /// How long an item has waited undelivered before the footer of the
-/// command-line tools counts it while a dashboard delivers: until then it
+/// command-line tools counts it while a daemon delivers: until then it
 /// is only waiting for the supervisor's turn to end.
 pub const FOOTER_AFTER_SECS: u64 = 5 * 60;
 /// The size past which a write compacts the inbox.
@@ -104,9 +103,10 @@ pub struct Item {
     pub id: String,
     /// When it was added, RFC 3339 in UTC.
     pub ts: String,
-    /// The project root, as the dashboard knows it.
+    /// The project root, as its agents' `corgi.project` label holds it.
     pub project: String,
-    /// Who added it: `dashboard`, `merge`, `notify`, or a name a script gave.
+    /// Who added it: `daemon`, `merge`, `notify`, or a name a script gave
+    /// (`dashboard` on items from before the daemon).
     pub source: String,
     pub kind: Kind,
     /// The agent it is about, if any.
@@ -115,8 +115,9 @@ pub struct Item {
     /// That agent's state, lowercase, for a wake.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
-    /// That agent's pane and `state_change_seq`, for a wake: what tells its
-    /// report from one of another agent of the same name, or an older one.
+    /// The address of that agent's terminal and its `state_change_seq`, for
+    /// a wake: what tells its report from one of another agent of the same
+    /// name, or an older one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -178,7 +179,7 @@ impl Item {
     /// the supervisor's own agents with an inline report that fits what is left
     /// of `budget`, a line saying the report follows, the report quoted, and
     /// an end line. Quoting each line keeps a report from passing for a
-    /// line of the dashboard's own.
+    /// line of Corgi's own.
     fn prompt(&self, budget: &mut usize) -> String {
         if let (true, Some(report), Some(agent)) = (self.own, &self.report, &self.agent) {
             let quoted = report
@@ -459,7 +460,7 @@ pub fn mark_delivered(dir: &Path, ids: &[String], to: &str) -> Result<()> {
 
 /// The footer the command-line tools print when the supervisor of the project
 /// at `root`, whose state directory is `dir`, has missed items, naming the
-/// command that shows them. While a dashboard `delivering` runs, only items
+/// command that shows them. While a daemon delivers (`delivering`), only items
 /// that have waited [`FOOTER_AFTER_SECS`] by `now` count, since the others
 /// are only waiting for the supervisor's turn to end; without one, all do.
 pub fn footer(
@@ -613,7 +614,7 @@ pub fn file_safe(text: &str) -> String {
 }
 
 /// The inboxes of every supervisor under Corgi's state directory `base`, for
-/// finding the report of an agent whose pane is gone.
+/// finding the report of an agent whose terminal is gone.
 pub fn all_state_dirs(base: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = fs::read_dir(base.join("supervisors"))
         .into_iter()
@@ -867,7 +868,7 @@ mod tests {
         Item {
             id: id.into(),
             project: "/repos/weather".into(),
-            source: "dashboard".into(),
+            source: "daemon".into(),
             agent: Some(agent.into()),
             state: Some("done".into()),
             key: agent.into(),
@@ -957,7 +958,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        // Quoted, a report cannot pass for the dashboard's own lines.
+        // Quoted, a report cannot pass for Corgi's own lines.
         assert_eq!(
             prompt_text(&[&own]),
             "[Corgi] w-forecast is done. Its report follows, quoted, so you need not run \
@@ -1186,7 +1187,7 @@ mod tests {
         let footer = |delivering| footer(&dir, "/opt/corgi", root, delivering, now);
         assert_eq!(footer(false), None);
         append(&dir, at(10)).unwrap();
-        // While a dashboard delivers, a fresh one only waits for the supervisor's
+        // While a daemon delivers, a fresh one only waits for the supervisor's
         // turn; without one, it is missed.
         assert_eq!(footer(true), None);
         assert_eq!(
@@ -1212,7 +1213,7 @@ mod tests {
         assert_eq!(footer(false), None);
     }
 
-    /// A write cut short (the dashboard or `corgi notify` killed mid-write,
+    /// A write cut short (the daemon or `corgi notify` killed mid-write,
     /// a full disk) leaves a last line without its newline. The next append
     /// continues that line, so the item it adds never parses, though
     /// `append` reported it added.

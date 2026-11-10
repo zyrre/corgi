@@ -1,11 +1,10 @@
-//! Everything Corgi knows about one agent harness: its Herdr kind and title,
+//! Everything Corgi knows about one agent harness: its kind and title,
 //! where its CLI is, the flags it starts on, its offline models, what it
 //! supports, how a supervisor runs on it, and which session file it writes.
 //!
-//! Herdr reports an agent's kind as a string and the new-agent form takes a
-//! harness typed by hand, so a kind Corgi knows nothing about stays
-//! [`Harness::Other`] and keeps working with the defaults every harness
-//! shares.
+//! A kind is a string (`--harness`, a terminal's `corgi.harness` label), so
+//! one Corgi knows nothing about stays [`Harness::Other`] and keeps working
+//! with the defaults every harness shares.
 
 use std::{
     env, fmt, fs,
@@ -25,7 +24,7 @@ const CODEX_REASONING_EFFORT_CONFIG: &str = "model_reasoning_effort";
 /// Claude Code takes its effort level as a plain flag.
 const CLAUDE_EFFORT_FLAG: &str = "--effort";
 
-/// One agent harness, by the kind Herdr reports for it.
+/// One agent harness, by its kind.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Harness {
     Claude,
@@ -33,7 +32,7 @@ pub enum Harness {
     Gemini,
     Copilot,
     OpenCode,
-    /// A kind Corgi has no knowledge of, exactly as Herdr or the user wrote it.
+    /// A kind Corgi has no knowledge of, exactly as it was written.
     Other(Box<str>),
 }
 
@@ -48,8 +47,8 @@ pub enum SessionFormat {
 }
 
 impl Harness {
-    /// The harnesses the new-agent form offers, in its order. Any other kind
-    /// Herdr supports can still be typed into the field.
+    /// The harnesses Corgi knows, in the order a default is picked from. Any
+    /// other kind can still be named with `--harness`.
     pub const KNOWN: &'static [Harness] = &[
         Harness::Codex,
         Harness::Claude,
@@ -61,7 +60,7 @@ impl Harness {
     /// The harnesses a supervisor runs on, the first being the default.
     pub const SUPERVISOR_HARNESSES: &'static [Harness] = &[Harness::Claude, Harness::Codex];
 
-    /// The harness Herdr reports as `kind`. The match is exact, so every kind
+    /// The harness of `kind`. The match is exact, so every kind
     /// comes back from [`Harness::kind`] as it went in.
     pub fn from_kind(kind: &str) -> Self {
         match kind {
@@ -79,7 +78,7 @@ impl Harness {
         Self::from_kind(&text.trim().to_lowercase())
     }
 
-    /// Herdr's kind for this harness, which is also its CLI's name.
+    /// The kind of this harness, which is also its CLI's name.
     pub fn kind(&self) -> &str {
         match self {
             Self::Claude => "claude",
@@ -118,8 +117,8 @@ impl Harness {
 
     /// Locates the harness's CLI. `CORGI_CODEX_BIN` / `CORGI_CLAUDE_BIN` win,
     /// then `PATH`, then the usual per-user and package-manager directories.
-    /// The fallback matters because Herdr runs plugin panes with a minimal
-    /// `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`).
+    /// The fallback matters because a service such as `corgi daemon` runs
+    /// with a minimal `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`).
     pub fn executable(&self) -> Option<PathBuf> {
         let override_var = match self {
             Self::Codex => Some("CORGI_CODEX_BIN"),
@@ -268,7 +267,7 @@ impl Harness {
 }
 
 impl fmt::Display for Harness {
-    /// Herdr's kind, the way the harness is named everywhere Corgi shows it.
+    /// Its kind, the way the harness is named everywhere Corgi shows it.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.kind())
     }
@@ -277,7 +276,7 @@ impl fmt::Display for Harness {
 /// A Codex supervisor's permissions, without its role. Commands run in the
 /// workspace-write sandbox, which keeps the supervisor's writes to the
 /// project and its `state_dir`; network access is what lets them reach
-/// Herdr's socket, which `herdr` and `corgi` need. Anything else the sandbox
+/// herdr-core's socket, which `hc` and `corgi` need. Anything else the sandbox
 /// refuses, such as the bootstrap's `git init`, Codex asks the user to
 /// approve.
 pub fn codex_supervisor_flags(state_dir: &Path) -> Vec<String> {
@@ -319,7 +318,7 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 /// Finds the CLI named `binary` in [`candidate_dirs`], so a harness is found
-/// from a Herdr plugin pane's minimal `PATH` as well as from a login shell.
+/// from a service's minimal `PATH` as well as from a login shell.
 pub fn find_executable(binary: &str) -> Option<PathBuf> {
     candidate_dirs()
         .into_iter()
@@ -473,7 +472,7 @@ mod tests {
             assert_eq!(harness.to_string(), harness.kind());
         }
         assert_eq!(Harness::from_kind("opencode"), Harness::OpenCode);
-        // Herdr's kind is matched exactly, so any other string, in any case,
+        // A kind is matched exactly, so any other string, in any case,
         // is kept as it was written.
         for kind in ["aider", "Codex", " claude ", "agent", ""] {
             let harness = Harness::from_kind(kind);
@@ -632,7 +631,7 @@ mod tests {
 
     #[test]
     fn harness_clis_are_looked_for_beyond_a_minimal_path() {
-        // Herdr plugin panes run with only the system directories on PATH, so
+        // A service runs with only the system directories on PATH, so
         // every harness CLI, OpenCode's included, is also looked for where the
         // package managers and its own installer put it.
         let dirs = candidate_dirs();

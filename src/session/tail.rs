@@ -42,7 +42,7 @@ impl<F: Fold> Tail<F> {
     /// growing size; every later one reads only the appended bytes, back from
     /// their end too. Either stops as soon as what it has read completes the
     /// fold, and a field that is never recorded costs one read of the largest
-    /// window, not one per refresh. Each byte is parsed once.
+    /// window, not one per read. Each byte is parsed once.
     pub fn update(&mut self, path: &Path, windows: &[u64], read: impl Fn(&Value) -> F) {
         if file_length(path) < self.end {
             *self = Self::default();

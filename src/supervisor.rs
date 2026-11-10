@@ -2,16 +2,16 @@
 //! the project's knowledge and high-level context, writes briefs, and
 //! dispatches and follows the workers that carry them out.
 //!
-//! Corgi launches it as Claude Code or Codex in the root tab of the project's
-//! workspace, with the role below in its instructions rather than its
-//! conversation, so compaction does not lose it. Its memory is a directory of
-//! plain files under Corgi's state directory, outside the repository. The
-//! dashboard wakes it when one of its project's agents stops, and hands it
-//! over to a fresh session once its context is half full (on Claude Code, or
-//! at 200k tokens) and it has sat idle nearly as long as its prompt cache lives
-//! (so the handover comes as the
-//! cache is about to go cold, not while it is warm), or once it has sat idle
-//! that long with its context grown to twice its baseline.
+//! Corgi launches it as Claude Code or Codex in a kept herdr-core terminal in
+//! the project's primary checkout, with the role below in its instructions
+//! rather than its conversation, so compaction does not lose it. Its memory
+//! is a directory of plain files under Corgi's state directory, outside the
+//! repository. `corgi daemon` wakes it when one of its project's agents
+//! stops, and hands it over to a fresh session once its context is half full
+//! (on Claude Code, or at 200k tokens) and it has sat idle nearly as long as
+//! its prompt cache lives (so the handover comes as the cache is about to go
+//! cold, not while it is warm), or once it has sat idle that long with its
+//! context grown to twice its baseline.
 
 use std::{
     env, fs,
@@ -31,11 +31,11 @@ use crate::{
 
 /// The role, with `{{corgi}}` and `{{state}}` standing for the Corgi binary
 /// and the project's state directory, and the placeholders of [`STEERING`]
-/// for the commands that steer workers on the backend they run on.
+/// for the `hc` commands that steer workers.
 const ROLE: &str = include_str!("../supervisor/ROLE.md");
 
 /// How to hand over to a fresh session, which `corgi role handover` prints
-/// when the dashboard asks for it rather than the role holding it all the
+/// when the daemon asks for it rather than the role holding it all the
 /// time. The same placeholders as [`ROLE`].
 const HANDOVER: &str = include_str!("../supervisor/HANDOVER.md");
 
@@ -174,8 +174,8 @@ fn move_state_dir(dir: &Path, old: &Path) -> Result<Option<String>> {
 /// Once written, the project has a supervisor that the inbox can reach.
 pub const ROLE_FILE: &str = "ROLE.md";
 
-/// What a project is called, in its state directory, its workspace label and
-/// the supervisor's name, when its root has no directory name of its own.
+/// What a project is called, in its state directory and the supervisor's
+/// name, when its root has no directory name of its own.
 pub const UNNAMED_PROJECT: &str = "project";
 
 /// A project's state directory, ready for a supervisor to start in: the files
@@ -191,8 +191,8 @@ pub struct Prepared {
     pub warning: Option<String>,
 }
 
-/// Chooses a development build for supervisors' commands on purpose, instead
-/// of the installed plugin.
+/// Chooses the build supervisors' commands call on purpose, instead of the
+/// running one.
 const BIN_OVERRIDE_ENV: &str = "CORGI_BIN";
 
 /// What `CORGI_BIN` was called while the supervisor was the Project handler,
@@ -201,22 +201,14 @@ const BIN_OVERRIDE_ENV: &str = "CORGI_BIN";
 const OLD_BIN_OVERRIDE_ENVS: [&str; 2] = ["CORGI_HANDLER_BIN", "CORGI_STEWARD_BIN"];
 
 /// The Corgi binary a supervisor's commands call: `CORGI_BIN` (or an older
-/// name of it) when it is set, else the release build of the installed plugin
-/// (what the dashboard runs), else the running binary. A worktree build therefore launches
-/// supervisors that still use the installed Corgi unless told otherwise.
-pub fn corgi_bin(installed_plugin_root: Option<&Path>) -> Result<PathBuf> {
+/// name of it) when it is set, else the running binary.
+pub fn corgi_bin() -> Result<PathBuf> {
     if let Some(path) = [BIN_OVERRIDE_ENV]
         .into_iter()
         .chain(OLD_BIN_OVERRIDE_ENVS)
         .find_map(|name| env::var_os(name).filter(|path| !path.is_empty()))
     {
         return Ok(PathBuf::from(path));
-    }
-    if let Some(bin) = installed_plugin_root
-        .map(|root| root.join("target").join("release").join("corgi"))
-        .filter(|bin| bin.is_file())
-    {
-        return Ok(bin);
     }
     env::current_exe().context("find the Corgi binary")
 }
@@ -427,7 +419,7 @@ pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> 
     )
 }
 
-/// How a line from the dashboard starts, so the supervisor and the user can
+/// How a line from Corgi starts, so the supervisor and the user can
 /// tell it from a message the user typed: the app's name, which is not the
 /// `[supervisor]` the supervisor starts its own prompts to workers with.
 pub const WAKE_PREFIX: &str = "[Corgi]";
@@ -517,17 +509,19 @@ pub const HANDOVER_NOTE: &str = "handover.md";
 /// Where the supervisor that took over keeps the notes it read.
 pub const HANDOVERS_DIR: &str = "handovers";
 
-/// The pane token recording that a supervisor session was asked for its
-/// handover note, as `<unix seconds> <session>`, so a dashboard that takes
-/// over waking does not ask the same session again.
+/// The token recording that a supervisor session was asked for its handover
+/// note, as `<unix seconds> <session>`, so a daemon that starts again does
+/// not ask the same session again. It is kept as a label of the
+/// supervisor's terminal ([`crate::hc::HANDOVER_LABEL`]).
 pub const HANDOVER_TOKEN: &str = "corgi_handover";
 
-/// The pane token recording a supervisor session's baseline, the context it
-/// had when its first turn ended, as `<tokens> <session>`, so a dashboard
-/// that restarts or takes over waking measures growth from the same point.
+/// The token recording a supervisor session's baseline, the context it had
+/// when its first turn ended, as `<tokens> <session>`, so a daemon that
+/// starts again measures growth from the same point
+/// ([`crate::hc::BASELINE_LABEL`]).
 pub const BASELINE_TOKEN: &str = "corgi_baseline";
 
-/// The value of a `<value> <session>` pane token, if it is `session`'s.
+/// The value of a `<value> <session>` token, if it is `session`'s.
 fn session_token<T: std::str::FromStr>(token: Option<&str>, session: &str) -> Option<T> {
     token
         .and_then(|token| token.split_once(' '))
@@ -535,11 +529,11 @@ fn session_token<T: std::str::FromStr>(token: Option<&str>, session: &str) -> Op
         .and_then(|(value, _)| value.parse().ok())
 }
 
-/// The pane token a supervisor sets with `corgi tag NAME merge` when it
+/// The token a supervisor sets with `corgi tag NAME merge` when it
 /// recommends the user merge the agent's branch, as `<state> <change>`: the
 /// agent's resting state and `state_change_seq` when it was tagged, so a tag
-/// the agent has since worked past no longer applies, even before the
-/// dashboard that wakes supervisors clears it.
+/// the agent has since worked past no longer applies
+/// ([`crate::hc::TAG_AT_LABEL`]).
 pub const MERGE_TOKEN: &str = "corgi_merge";
 
 /// The [`MERGE_TOKEN`] value for an agent tagged while in `state` at
@@ -563,8 +557,8 @@ pub enum MergeTag {
 
 /// What `info`'s merge tag means for it now. The tag applies while the agent
 /// rests where it was tagged: at the same state change, or idle after being
-/// tagged done, which is how Herdr shows a done agent once the user has
-/// looked at it. An agent that is working or blocked, done at another state
+/// tagged done, which is how a done agent shows once the user has looked at
+/// it. An agent that is working or blocked, done at another state
 /// change, or idle at another one after being tagged idle, has worked since.
 pub fn merge_tag(info: &AgentInfo) -> MergeTag {
     let Some(value) = info.tokens.get(MERGE_TOKEN) else {
@@ -586,8 +580,7 @@ pub fn merge_tag(info: &AgentInfo) -> MergeTag {
     }
 }
 
-/// Native identity belongs to the live agent. A status-line `session` token
-/// can survive pane reuse, so it must never establish supervisor ownership.
+/// The id of the session the agent's harness keeps, when Corgi knows it.
 pub fn native_session(info: &AgentInfo) -> Option<&str> {
     info.agent_session
         .as_ref()
@@ -906,16 +899,15 @@ enum Rest {
     Blocked,
 }
 
-/// One agent's states, as the dashboard sees them refresh by refresh,
-/// reduced to the ones worth waking its supervisor for. Nothing wakes until the
-/// agent has been seen working, so neither the state it had when the
-/// dashboard started nor a question on its way up (such as folder trust)
-/// counts. After that: each time it rests after working, and each change
-/// between blocked and stopped. The same resting state again, with a newer
-/// state change, means it went through another state between two refreshes,
-/// which counts as having worked. It is kept on disk between dashboards, so
-/// one that starts later, or takes over the wake lock, reports what changed
-/// while none ran.
+/// One agent's states, as the daemon sees them pass by pass, reduced to
+/// the ones worth waking its supervisor for. Nothing wakes until the agent
+/// has been seen working, so neither the state it had when the daemon
+/// started nor a question on its way up (such as folder trust) counts.
+/// After that: each time it rests after working, and each change between
+/// blocked and stopped. The same resting state again, with a newer state
+/// change, means it went through another state between two passes, which
+/// counts as having worked. It is kept on disk, so a daemon that starts
+/// later reports what changed while none ran.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Transitions {
@@ -956,7 +948,7 @@ impl Transitions {
     }
 }
 
-/// What the dashboard sees of a supervisor at one refresh, for its handover.
+/// What the daemon sees of a supervisor at one pass, for its handover.
 #[derive(Debug, Clone, Copy)]
 pub struct Sighting<'a> {
     /// The harness's session identity: a handover is once per session.
@@ -966,17 +958,16 @@ pub struct Sighting<'a> {
     pub context_percent: Option<u8>,
     /// The tokens of its context, when its session file records them.
     pub context_tokens: Option<u64>,
-    /// Whether another agent of its project is working or blocked. The
-    /// dashboard cannot tell which of them the supervisor dispatched, so any
-    /// of them counts as one of its workers.
+    /// Whether another agent of its project is working or blocked. Any of
+    /// them counts as one of its workers, whoever started it.
     pub workers_busy: bool,
-    /// The session's [`HANDOVER_TOKEN`], if its pane carries one.
+    /// The session's [`HANDOVER_TOKEN`], if its terminal carries one.
     pub token: Option<&'a str>,
-    /// The session's [`BASELINE_TOKEN`], if its pane carries one.
+    /// The session's [`BASELINE_TOKEN`], if its terminal carries one.
     pub baseline_token: Option<&'a str>,
 }
 
-/// When the dashboard hands a supervisor over, for one refresh.
+/// When the daemon hands a supervisor over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Thresholds {
     /// Context usage, in percent of the window, from which a rested
@@ -996,10 +987,6 @@ pub enum Cache {
     /// supervisor has rested this many seconds. Both the context threshold
     /// and the idle trigger wait for it.
     Expires(u64),
-    /// The harness has an idle time, but this dashboard cannot time a rest
-    /// (a hook: it runs only when something happens), so it asks for
-    /// nothing and leaves that to a dashboard.
-    Untimed,
     /// The harness has no known cache life ([`handover_idle_secs`] is
     /// `None`), so none can be waited for: a rested supervisor at the
     /// context threshold is handed over at once, as before the cache
@@ -1008,14 +995,9 @@ pub enum Cache {
 }
 
 impl Cache {
-    /// The cache of a supervisor on `harness` for a waker that can time a
-    /// rest (`timed`) or cannot.
-    pub fn of(harness: &Harness, timed: bool) -> Self {
-        match (handover_idle_secs(harness), timed) {
-            (Some(secs), true) => Self::Expires(secs),
-            (Some(_), false) => Self::Untimed,
-            (None, _) => Self::Unknown,
-        }
+    /// The cache of a supervisor on `harness`.
+    pub fn of(harness: &Harness) -> Self {
+        handover_idle_secs(harness).map_or(Self::Unknown, Self::Expires)
     }
 }
 
@@ -1035,7 +1017,7 @@ pub enum Trigger {
     Update,
 }
 
-/// What to do about a supervisor's handover at this refresh.
+/// What to do about a supervisor's handover at this pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandoverStep {
     /// Ask it for its note, recording the request at the given time.
@@ -1047,7 +1029,7 @@ pub enum HandoverStep {
     NoNote,
 }
 
-/// Where one project's supervisor is in handing over, refresh by refresh.
+/// Where one project's supervisor is in handing over, pass by pass.
 ///
 /// A session is asked once it is idle or done (never working, and never
 /// blocked on a question), has rested for its idle time (its prompt cache is
@@ -1055,22 +1037,22 @@ pub enum HandoverStep {
 /// worker busy, at least twice its baseline. A context at the threshold alone
 /// asks nothing while the cache is warm, however long the session has run
 /// without resting. A harness with no known idle time has no cache to wait
-/// for: it is asked at its first rest at the threshold ([`Cache::Unknown`]). The baseline is its context at the first refresh that
-/// finds it resting with a context: the end of its first turn when the
-/// dashboard saw that, else the first rest this dashboard saw, which only
-/// asks for more growth. It is kept on the pane as [`BASELINE_TOKEN`]; the
-/// rest itself is timed from the first refresh that saw it, so a dashboard
-/// that restarts or takes over waking starts that clock again. Its answer is
+/// for: it is asked at its first rest at the threshold ([`Cache::Unknown`]).
+/// The baseline is its context at the first pass that finds it resting with
+/// a context: the end of its first turn when the daemon saw that, else the
+/// first rest it saw, which only asks for more growth. It is kept on the
+/// terminal as [`BASELINE_TOKEN`]; the rest itself is timed from the first
+/// pass that saw it, so a daemon that restarts starts that clock again. Its
+/// answer is
 /// the turn that follows: when that turn ends, a note written since the
 /// request means the session is replaced, and no note means it stays. It is
 /// asked again only after a later turn of its own, so a supervisor that keeps
-/// failing to write the note is not asked at every refresh. A request the
+/// failing to write the note is not asked at every pass. A request the
 /// supervisor never takes up (its state does not change within
 /// [`HANDOVER_ANSWER_SECS`]) counts as no note.
 ///
-/// It is kept on disk between refreshes (`wake/<socket>.handovers.json`),
-/// since Herdr's hooks and every dashboard take turns at waking: whoever
-/// holds the wake lock takes it up and leaves it for the next.
+/// It is kept on disk (`wake/<socket>.handovers.json`), so a daemon that
+/// starts again takes it up where the last one left it.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Handover {
@@ -1086,10 +1068,10 @@ pub struct Handover {
 /// How long a supervisor has to start the turn a handover request asks for.
 const HANDOVER_ANSWER_SECS: u64 = 120;
 
-/// How long a replacement may run before it counts as failed: the process
-/// running it can end before it records how it went (a dashboard that quits,
-/// a hook past its time limit), and wakes wait while one runs. A replacement
-/// itself takes under a minute (see `waker::replace_supervisor`).
+/// How long a replacement may run before it counts as failed: the daemon
+/// running it can end before it records how it went, and wakes wait while
+/// one runs. A replacement itself takes under a minute (see
+/// `waker::hc::replace_supervisor`).
 pub const REPLACEMENT_SECS: u64 = 180;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1119,7 +1101,8 @@ impl Handover {
     /// `limits` as the thresholds. `note_since(at)` says whether the note was
     /// written since the request made at `at`, and `may_type()`, asked only
     /// when a request or the replacement is due, whether Corgi may type into
-    /// the supervisor's pane now: one that cannot stays due for a later refresh.
+    /// the supervisor's terminal now: one that cannot stays due for a later
+    /// pass.
     pub fn observe(
         &mut self,
         seen: Sighting,
@@ -1136,7 +1119,7 @@ impl Handover {
         }
         if self.session != seen.session {
             self.session = seen.session.to_string();
-            // A request this session already had, from a dashboard that woke
+            // A request this session already had, from a daemon that woke
             // supervisors before this one, is still the one being answered.
             self.phase = session_token(seen.token, seen.session).map_or(Phase::Watching, |at| {
                 Phase::Asked {
@@ -1214,8 +1197,7 @@ impl Handover {
     /// rested that long, when its prompt cache is about to expire, a context
     /// at the threshold is [`Trigger::Full`], or [`Trigger::Tokens`] when only
     /// the token threshold is met, at once; failing that, one grown
-    /// past its baseline with no worker busy is [`Trigger::Idle`]. A waker
-    /// that cannot time a rest ([`Cache::Untimed`]) asks for nothing. A
+    /// past its baseline with no worker busy is [`Trigger::Idle`]. A
     /// harness with no idle time ([`Cache::Unknown`]) has no cache to wait
     /// for: a context at the threshold is `Full` at the first rest.
     fn trigger(&self, seen: Sighting, limits: Thresholds, now: u64) -> Option<Trigger> {
@@ -1223,7 +1205,6 @@ impl Handover {
         let rested = now.saturating_sub(since);
         match limits.cache {
             Cache::Expires(idle) if rested < idle => return None,
-            Cache::Untimed => return None,
             Cache::Expires(_) | Cache::Unknown => {}
         }
         if seen
@@ -1271,7 +1252,7 @@ impl Handover {
     }
 
     /// The session's baseline context in tokens, once one is recorded, for
-    /// the dashboard to keep on its pane.
+    /// the daemon to keep on its terminal.
     pub fn baseline(&self) -> Option<u64> {
         self.baseline
     }
@@ -1356,7 +1337,7 @@ mod tests {
         assert_eq!(done, "done 7");
         assert_eq!(tag(None, Done, 7), MergeTag::None);
         assert_eq!(tag(Some(&done), Done, 7), MergeTag::Applies);
-        // Herdr shows a done agent idle once the user has looked at it.
+        // A done agent shows idle once the user has looked at it.
         assert_eq!(tag(Some(&done), Idle, 9), MergeTag::Applies);
         assert_eq!(tag(Some(&idle), Idle, 7), MergeTag::Applies);
         // An idle agent gets to done, or to idle again, only by working.
@@ -1523,7 +1504,7 @@ mod tests {
                     _ => {}
                 }
 
-                // Until a session starts, the dashboard reads the old
+                // Until a session starts, the daemon reads the old
                 // directory where it is: the handover note and launch of the
                 // session that is handing over.
                 assert_eq!(current_state_dir(dir.clone(), &old), *real, "{left:?}");
@@ -1754,8 +1735,8 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_between_two_refreshes_still_wakes() {
-        // Done, then a steered turn that ended before the next refresh.
+    fn a_turn_between_two_passes_still_wakes() {
+        // Done, then a steered turn that ended before the next pass.
         assert_eq!(
             wakes(&[(Working, 1), (Done, 2), (Done, 9)]),
             [None, Some(Done), Some(Done)]
@@ -1764,7 +1745,7 @@ mod tests {
 
     #[test]
     fn nothing_before_the_first_work_wakes() {
-        // What an agent was doing when the dashboard started is not news.
+        // What an agent was doing when the daemon started is not news.
         assert_eq!(wakes(&[(Done, 4)]), [None]);
         assert_eq!(wakes(&[(Blocked, 4), (Idle, 5)]), [None, None]);
         // Nor is a new agent's startup question, answered before its task.
@@ -1772,7 +1753,7 @@ mod tests {
             wakes(&[(Blocked, 1), (Idle, 2), (Working, 3), (Done, 4)]),
             [None, None, None, Some(Done)]
         );
-        // An agent the dashboard first sees at work is armed at once.
+        // An agent the daemon first sees at work is armed at once.
         assert_eq!(wakes(&[(Working, 7), (Done, 8)]), [None, Some(Done)]);
     }
 
@@ -2055,7 +2036,7 @@ mod tests {
     }
 
     #[test]
-    fn supervisors_call_the_installed_plugin_build_when_there_is_one() {
+    fn supervisors_call_the_running_binary_unless_told_otherwise() {
         if env::var_os(BIN_OVERRIDE_ENV).is_some()
             || OLD_BIN_OVERRIDE_ENVS
                 .iter()
@@ -2063,19 +2044,8 @@ mod tests {
         {
             return;
         }
-        let root = env::temp_dir().join(format!("corgi-plugin-root-{}", std::process::id()));
-        let bin = root.join("target").join("release").join("corgi");
-        fs::create_dir_all(bin.parent().expect("release dir")).expect("create release dir");
-        fs::write(&bin, "").expect("create installed binary");
-        assert_eq!(corgi_bin(Some(&root)).expect("installed build"), bin);
-        fs::remove_dir_all(&root).ok();
-        // Without an installed build, the running binary is the fallback.
         assert_eq!(
-            corgi_bin(Some(&root)).expect("fallback"),
-            env::current_exe().expect("current exe")
-        );
-        assert_eq!(
-            corgi_bin(None).expect("fallback"),
+            corgi_bin().expect("the running binary"),
             env::current_exe().expect("current exe")
         );
     }
@@ -2114,7 +2084,7 @@ mod tests {
         }
     }
 
-    /// The steps of one supervisor session's handover, refresh by refresh, a
+    /// The steps of one supervisor session's handover, pass by pass, a
     /// second apart, with the note written when `note` says so.
     fn handover_steps(steps: &[(AgentState, u64, u8)], note: bool) -> Vec<Option<HandoverStep>> {
         let mut handover = Handover::default();
@@ -2169,7 +2139,7 @@ mod tests {
                     (Working, 2, 60),
                     (Working, 2, 61),
                     (Done, 3, 62),
-                    // Replacing: nothing more, whatever the refreshes show.
+                    // Replacing: nothing more, whatever the passes show.
                     (Done, 3, 62),
                     (Idle, 4, 62),
                 ],
@@ -2185,7 +2155,7 @@ mod tests {
                 None,
             ]
         );
-        // A turn that passed between two refreshes ended too.
+        // A turn that passed between two passes ended too.
         assert_eq!(
             handover_steps(&[(Idle, 1, 60), (Done, 3, 60)], true),
             [
@@ -2196,8 +2166,8 @@ mod tests {
     }
 
     #[test]
-    fn a_handover_kept_on_disk_between_refreshes_goes_as_one_kept_in_memory() {
-        // Each refresh by another process: the handover is read from the
+    fn a_handover_kept_on_disk_between_passes_goes_as_one_kept_in_memory() {
+        // Each pass by another process: the handover is read from the
         // file the one before wrote.
         let steps = [
             (Idle, 1, 60),
@@ -2322,7 +2292,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_that_cannot_go_out_stays_due_for_a_later_refresh() {
+    fn a_request_that_cannot_go_out_stays_due_for_a_later_pass() {
         let mut handover = Handover::default();
         let idle = seen(Idle, 1, 60);
         let asked = &std::cell::Cell::new(0);
@@ -2431,7 +2401,7 @@ mod tests {
         );
         step(seen(Working, 2, 60), 11, false);
         assert_eq!(step(seen(Done, 3, 60), 13, true), (None, true));
-        // A turn passed between two refreshes: the note is stale.
+        // A turn passed between two passes: the note is stale.
         assert_eq!(
             step(seen(Done, 5, 61), 30, false),
             (Some(HandoverStep::Ask(30, Trigger::Update)), true)
@@ -2469,8 +2439,8 @@ mod tests {
     }
 
     #[test]
-    fn a_dashboard_taking_over_waking_does_not_ask_the_same_session_again() {
-        // The first dashboard asked at 900 and went away during the turn.
+    fn a_daemon_taking_over_waking_does_not_ask_the_same_session_again() {
+        // The first daemon asked at 900 and went away during the turn.
         let token = "900 s1";
         let mut handover = Handover::default();
         let working = Sighting {
@@ -2581,7 +2551,7 @@ mod tests {
             context_tokens: Some(tokens),
             ..seen(Idle, 4, percent)
         };
-        // The rest is timed from the first refresh that sees it, at second 0.
+        // The rest is timed from the first pass that sees it, at second 0.
         let steps = |seen, limits, seconds: &[u64]| {
             let mut handover = Handover::default();
             handover.observe(seen, limits, 0, |_| false, || true);
@@ -2744,7 +2714,7 @@ mod tests {
                 "{busy:?}"
             );
         }
-        // A turn passed between two refreshes restarts it too.
+        // A turn passed between two passes restarts it too.
         assert_eq!(
             idle_steps(&[(0, idle(Idle, 4, 60_000)), (last, idle(Done, 6, 60_000))]),
             [None, None]
@@ -2776,7 +2746,7 @@ mod tests {
         let ask = |at| Some(HandoverStep::Ask(at, Trigger::Full(50)));
         // Past the threshold, a supervisor that has rested less than the idle
         // time is left alone, since its cache is still warm; at exactly the
-        // idle time it is asked at that refresh, with no further wait.
+        // idle time it is asked at that pass, with no further wait.
         assert_eq!(
             full_steps(55, false, &[0, 1, 600, last - 1, last, last + 1]),
             [None, None, None, None, ask(last), ask(last + 1)]
@@ -2790,7 +2760,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_context_asks_in_one_refresh_after_a_run_without_rest() {
+    fn a_full_context_asks_in_one_pass_after_a_run_without_rest() {
         let last = CLAUDE_IDLE_SECS;
         // Working past the threshold is no rest: the clock starts when it
         // rests, and the request comes `last` seconds after, in one step.
@@ -2851,40 +2821,6 @@ mod tests {
     }
 
     #[test]
-    fn a_waker_that_cannot_time_a_rest_asks_for_nothing() {
-        // A hook, which has no cache clock of its own, leaves asking to a
-        // dashboard, however full the context and long the rest.
-        let untimed = Thresholds {
-            percent: 50,
-            tokens: None,
-            cache: Cache::Untimed,
-        };
-        let full = Sighting {
-            context_percent: Some(90),
-            ..idle(Idle, 4, 200_000)
-        };
-        let mut handover = Handover::default();
-        for at in [0, 1, CLAUDE_IDLE_SECS, 100 * CLAUDE_IDLE_SECS] {
-            assert_eq!(handover.observe(full, untimed, at, |_| true, || true), None);
-        }
-        // Its rest is still recorded, so a dashboard taking over, which reads
-        // the record, finds it.
-        assert_eq!(
-            handover.observe(full, CLAUDE, 100 * CLAUDE_IDLE_SECS, |_| true, || true),
-            Some(HandoverStep::Ask(100 * CLAUDE_IDLE_SECS, Trigger::Full(50)))
-        );
-        // Nor is the idle trigger its to pull.
-        let grown = idle(Idle, 4, 60_000);
-        let mut handover = Handover::default();
-        for at in [0, CLAUDE_IDLE_SECS] {
-            assert_eq!(
-                handover.observe(grown, untimed, at, |_| true, || true),
-                None
-            );
-        }
-    }
-
-    #[test]
     fn a_harness_with_no_idle_time_is_handed_over_at_its_first_rest_past_the_threshold() {
         let unknown = Thresholds {
             percent: 50,
@@ -2933,20 +2869,10 @@ mod tests {
             Handover::default().observe(unreadable, unknown, 7, |_| true, || true),
             None
         );
-        // The harness decides: Claude Code and Codex know their cache life,
-        // and the hooks cannot time it.
-        assert!(matches!(
-            Cache::of(&Harness::Claude, true),
-            Cache::Expires(_)
-        ));
-        assert!(matches!(
-            Cache::of(&Harness::Codex, true),
-            Cache::Expires(_)
-        ));
-        assert_eq!(Cache::of(&Harness::Claude, false), Cache::Untimed);
-        assert_eq!(Cache::of(&Harness::Codex, false), Cache::Untimed);
-        assert_eq!(Cache::of(&Harness::Gemini, true), Cache::Unknown);
-        assert_eq!(Cache::of(&Harness::Gemini, false), Cache::Unknown);
+        // The harness decides: Claude Code and Codex know their cache life.
+        assert!(matches!(Cache::of(&Harness::Claude), Cache::Expires(_)));
+        assert!(matches!(Cache::of(&Harness::Codex), Cache::Expires(_)));
+        assert_eq!(Cache::of(&Harness::Gemini), Cache::Unknown);
     }
 
     #[test]
@@ -2990,9 +2916,9 @@ mod tests {
     }
 
     #[test]
-    fn the_baseline_is_the_first_rest_seen_and_kept_on_the_pane_across_dashboards() {
+    fn the_baseline_is_the_first_rest_seen_and_kept_on_the_terminal_across_daemons() {
         let last = CLAUDE_IDLE_SECS;
-        // The dashboard saw the session start: its first turn ends at 30,000.
+        // The daemon saw the session start: its first turn ends at 30,000.
         let mut handover = Handover::default();
         let first = |state, change, tokens| Sighting {
             baseline_token: None,
@@ -3005,13 +2931,13 @@ mod tests {
         handover.observe(first(Working, 3, 50_000), CLAUDE, 2, |_| true, || true);
         handover.observe(first(Done, 4, 60_000), CLAUDE, 3, |_| true, || true);
         assert_eq!(handover.baseline(), Some(30_000));
-        // A dashboard that restarts, or takes over waking, reads the pane's
+        // A daemon that restarts reads the terminal's
         // token: the same session, grown twofold, is asked after a rest.
         assert_eq!(
             idle_steps(&[(0, idle(Idle, 4, 60_000)), (last, idle(Idle, 4, 60_000))]),
             [None, ASK_IDLE]
         );
-        // Without its token, the first rest this dashboard sees is the
+        // Without its token, the first rest this daemon sees is the
         // baseline, which only ever asks for more growth.
         let unrecorded = Sighting {
             baseline_token: Some("30000 s0"),

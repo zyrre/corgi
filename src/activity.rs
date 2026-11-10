@@ -1,7 +1,6 @@
-//! Turn a visible terminal screen into one short, safe description of an agent's
-//! current activity.  This is deliberately heuristic: Herdr tells us which kind
-//! of agent owns a pane, while the terminal remains the source of the useful
-//! human-facing detail.
+//! Text of an agent made safe to show: redacted of common credentials, on
+//! one line or with its paragraphs kept, and capped. Also the one screen
+//! Corgi reads for itself: Claude Code's folder-trust question.
 
 use std::sync::LazyLock;
 

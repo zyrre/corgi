@@ -1,12 +1,10 @@
 //! Corgi's agents among hc's terminals: the terminals Corgi labelled (see the
-//! label constants in [`super`]), as the same [`DashboardAgent`] rows the
-//! Herdr TUI's snapshot gives, so `corgi fleet`, `report`, `digest` and `tag`
-//! read both alike.
+//! label constants in [`super`]), each as an [`Agent`] that `corgi fleet`,
+//! `status`, `report`, `digest`, `tag` and the daemon read.
 //!
-//! A terminal stands in for a pane: its address is the row's `pane_id`, its
-//! hc `turn` the `state_change_seq`, and its labels the pane tokens Corgi
-//! reads (`corgi.request` as `corgi_request`, `corgi.task` as `task`, a
-//! merge tag as `corgi_merge`).
+//! A terminal's hc `turn` is the agent's `state_change_seq`, and its labels
+//! are the tokens Corgi reads (`corgi.request` as `corgi_request`,
+//! `corgi.task` as `task`, a merge tag as `corgi_merge`).
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -14,7 +12,7 @@ use anyhow::Result;
 
 use crate::{
     launch::CORGI_REQUEST_TOKEN,
-    model::{AgentInfo, AgentSession, AgentState, DashboardAgent},
+    model::{Agent, AgentInfo, AgentSession, AgentState},
     paths::{dir_name, is_home},
     rows::{SCRATCH_GROUP, SUPERVISOR_NAME, checkout_label, task_summary},
     session::SessionReader,
@@ -27,9 +25,6 @@ use super::{
     REQUEST_LABEL, ROLE_LABEL, SESSION_LABEL, SPACE_LABEL, SUPERVISOR_ROLE, TAG_AT_LABEL,
     TAG_LABEL, TASK_LABEL, Terminal, WORKER_ROLE,
 };
-
-/// The source an hc agent's session identity is recorded under.
-const SESSION_SOURCE: &str = "hc";
 
 /// The programs a kept supervisor terminal falls back to when its agent has
 /// exited: the shells hc starts, by the name the OS gives their process.
@@ -50,23 +45,23 @@ pub fn corgi_terminals(client: &HcClient) -> Result<Vec<Terminal>> {
     Ok(terminals)
 }
 
-/// Every agent Corgi runs on hc, as dashboard rows in the dashboard's order,
-/// with what their session files say.
-pub fn agents(client: &HcClient) -> Result<Vec<DashboardAgent>> {
+/// Every agent Corgi runs on hc, sorted ([`sort_agents`]), with what their
+/// session files say.
+pub fn agents(client: &HcClient) -> Result<Vec<Agent>> {
     let terminals = corgi_terminals(client)?;
-    Ok(dashboard_agents(&terminals, None))
+    Ok(agents_of(&terminals, None))
 }
 
-/// The rows of `terminals`, reading session files under `home` in place of
-/// `$HOME` when it is given (for tests).
-pub fn dashboard_agents(terminals: &[Terminal], home: Option<&Path>) -> Vec<DashboardAgent> {
+/// The agents in `terminals`, reading session files under `home` in place
+/// of `$HOME` when it is given (for tests).
+pub fn agents_of(terminals: &[Terminal], home: Option<&Path>) -> Vec<Agent> {
     let infos: Vec<AgentInfo> = terminals.iter().map(agent_info).collect();
     let mut sessions = session_reader(home);
     sessions.retain(infos.iter());
-    let mut agents: Vec<DashboardAgent> = terminals
+    let mut agents: Vec<Agent> = terminals
         .iter()
         .zip(infos)
-        .filter_map(|(terminal, info)| dashboard_agent(terminal, info, &mut sessions))
+        .filter_map(|(terminal, info)| agent_of(terminal, info, &mut sessions))
         .collect();
     sort_agents(&mut agents);
     agents
@@ -82,7 +77,7 @@ fn session_reader(_home: Option<&Path>) -> SessionReader {
     SessionReader::default()
 }
 
-/// The terminal as the agent pane it stands for.
+/// What hc and Corgi's labels say of the agent in `terminal`.
 pub fn agent_info(terminal: &Terminal) -> AgentInfo {
     let kind = terminal.label(HARNESS_LABEL).unwrap_or("agent").to_string();
     let mut tokens = BTreeMap::new();
@@ -112,8 +107,6 @@ pub fn agent_info(terminal: &Terminal) -> AgentInfo {
     }
     let agent_session = terminal.label(SESSION_LABEL).map(|value| AgentSession {
         agent: kind.clone(),
-        kind: "session".into(),
-        source: SESSION_SOURCE.into(),
         value: value.to_string(),
     });
     AgentInfo {
@@ -123,16 +116,13 @@ pub fn agent_info(terminal: &Terminal) -> AgentInfo {
         // takes a name.
         name: Some(terminal.display_name().to_string()),
         state,
-        pane_id: terminal.address.clone(),
-        workspace_id: terminal.label(SPACE_LABEL).unwrap_or_default().to_string(),
+        address: terminal.address.clone(),
+        space: terminal.label(SPACE_LABEL).unwrap_or_default().to_string(),
         cwd: Some(agent_cwd(terminal).to_string()),
-        revision: terminal.turn,
         state_change_seq: terminal.turn,
         title: Some(terminal.title.clone()).filter(|title| !title.trim().is_empty()),
         tokens,
         agent_session,
-        terminal_id: Some(terminal.address.clone()),
-        ..AgentInfo::default()
     }
 }
 
@@ -174,13 +164,9 @@ pub fn shell_in_front(terminal: &Terminal) -> bool {
     })
 }
 
-/// The row of `terminal`, whose pane is `info`, or `None` when Corgi did not
-/// label it with a project.
-fn dashboard_agent(
-    terminal: &Terminal,
-    info: AgentInfo,
-    sessions: &mut SessionReader,
-) -> Option<DashboardAgent> {
+/// The agent in `terminal`, which `info` describes, or `None` when Corgi
+/// did not label it with a project.
+fn agent_of(terminal: &Terminal, info: AgentInfo, sessions: &mut SessionReader) -> Option<Agent> {
     let root = terminal.label(PROJECT_LABEL)?.to_string();
     let supervisor = terminal.label(ROLE_LABEL) == Some(SUPERVISOR_ROLE);
     let repo_name = dir_name(&root)
@@ -208,9 +194,9 @@ fn dashboard_agent(
     let task = if supervisor {
         SUPERVISOR_NAME.to_string()
     } else {
-        task_summary(&info, None, &in_project, None, facts.task.as_deref())
+        task_summary(&info, &in_project, facts.task.as_deref())
     };
-    Some(DashboardAgent {
+    Some(Agent {
         project_group,
         project_root: root,
         worktree_checkout,
@@ -227,27 +213,27 @@ fn dashboard_agent(
     })
 }
 
-/// `corgi tag` on hc: the same checks as on the Herdr TUI, with the tag kept
-/// in the terminal's [`TAG_LABEL`] and [`TAG_AT_LABEL`].
+/// `corgi tag`: the checks of [`tag_agent_with`], with the tag kept in the
+/// terminal's [`TAG_LABEL`] and [`TAG_AT_LABEL`].
 pub fn tag(
     client: &HcClient,
-    agents: &[DashboardAgent],
+    agents: &[Agent],
     root: &str,
     options: &TagOptions,
 ) -> Result<String> {
     tag_agent_with(agents, root, options, |agent, at| {
-        write_tag(client, &agent.info.pane_id, at)
+        write_tag(client, &agent.info.address, at)
     })
 }
 
 /// Clears the merge tag of `agent` once its branch is merged, as
 /// `corgi tag --clear` does, and drops it from the row too. An agent without
 /// one is left alone.
-pub fn clear_merge_tag(client: &HcClient, agent: &mut DashboardAgent) -> Result<()> {
+pub fn clear_merge_tag(client: &HcClient, agent: &mut Agent) -> Result<()> {
     if !agent.info.tokens.contains_key(MERGE_TOKEN) {
         return Ok(());
     }
-    write_tag(client, &agent.info.pane_id, None)?;
+    write_tag(client, &agent.info.address, None)?;
     agent.info.tokens.remove(MERGE_TOKEN);
     Ok(())
 }
@@ -268,7 +254,7 @@ fn write_tag(client: &HcClient, address: &str, at: Option<&str>) -> Result<()> {
 /// blocked, working, done, idle, then unknown. Agents sharing a state are
 /// ordered by when they entered it, the most recent first
 /// (`state_change_seq`), then by name, then by terminal address.
-fn sort_agents(agents: &mut [DashboardAgent]) {
+fn sort_agents(agents: &mut [Agent]) {
     agents.sort_by(|left, right| {
         left.scratch
             .cmp(&right.scratch)
@@ -286,7 +272,7 @@ fn sort_agents(agents: &mut [DashboardAgent]) {
                     .to_lowercase()
                     .cmp(&right.info.display_name().to_lowercase())
             })
-            .then_with(|| left.info.pane_id.cmp(&right.info.pane_id))
+            .then_with(|| left.info.address.cmp(&right.info.address))
     });
 }
 

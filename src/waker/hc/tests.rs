@@ -31,10 +31,10 @@ struct FakeCore {
 }
 
 impl Core for FakeCore {
-    fn ready(&mut self, supervisor: &DashboardAgent) -> Ready {
+    fn ready(&mut self, supervisor: &Agent) -> Ready {
         self.looks += 1;
         self.ready
-            .get(&supervisor.info.pane_id)
+            .get(&supervisor.info.address)
             .copied()
             .unwrap_or(Ready::Yes)
     }
@@ -48,7 +48,7 @@ impl Core for FakeCore {
         }
     }
 
-    fn report(&mut self, agent: &DashboardAgent) -> Capture {
+    fn report(&mut self, agent: &Agent) -> Capture {
         Capture::Found(Some(Captured {
             text: format!("{} finished the forecast.", agent.info.display_name()),
             transcript: true,
@@ -73,16 +73,10 @@ impl Core for FakeCore {
     }
 }
 
-fn agent(
-    name: &str,
-    address: &str,
-    supervisor: bool,
-    state: AgentState,
-    turn: u64,
-) -> DashboardAgent {
-    DashboardAgent {
+fn agent(name: &str, address: &str, supervisor: bool, state: AgentState, turn: u64) -> Agent {
+    Agent {
         info: AgentInfo {
-            pane_id: address.into(),
+            address: address.into(),
             name: Some(name.into()),
             state,
             state_change_seq: turn,
@@ -91,16 +85,16 @@ fn agent(
         },
         project_root: ROOT.into(),
         supervisor,
-        ..DashboardAgent::default()
+        ..Agent::default()
     }
 }
 
-fn supervisor(state: AgentState, turn: u64) -> DashboardAgent {
+fn supervisor(state: AgentState, turn: u64) -> Agent {
     agent(SUPERVISOR, "t1", true, state, turn)
 }
 
 /// A worker the supervisor spawned (it carries a request id).
-fn worker(state: AgentState, turn: u64) -> DashboardAgent {
+fn worker(state: AgentState, turn: u64) -> Agent {
     let mut worker = agent("w-forecast", "t2", false, state, turn);
     worker
         .info
@@ -110,8 +104,8 @@ fn worker(state: AgentState, turn: u64) -> DashboardAgent {
 }
 
 fn led(scratch: &ScratchDir) -> SupervisorWaker {
-    let mut waker = SupervisorWaker::for_hc_in(scratch);
-    assert!(waker.lead_hc());
+    let mut waker = SupervisorWaker::for_core_in(scratch);
+    assert!(waker.lead());
     waker
 }
 
@@ -125,7 +119,7 @@ fn a_stop_waits_for_a_resting_supervisor_with_an_empty_box_then_goes_once() {
     let corgi = Path::new(CORGI);
     use AgentState::{Done, Working};
 
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[supervisor(Done, 1), worker(Working, 0)],
         corgi,
@@ -135,7 +129,7 @@ fn a_stop_waits_for_a_resting_supervisor_with_an_empty_box_then_goes_once() {
 
     // The worker is done while the user writes in the supervisor's box.
     core.ready.insert("t1".into(), Ready::Drafting);
-    let said = waker.tick_hc(&mut core, &[supervisor(Done, 1), worker(Done, 1)], corgi, 1);
+    let said = waker.tick(&mut core, &[supervisor(Done, 1), worker(Done, 1)], corgi, 1);
     assert!(core.sent.is_empty());
     assert!(
         said.contains(&format!(
@@ -147,8 +141,8 @@ fn a_stop_waits_for_a_resting_supervisor_with_an_empty_box_then_goes_once() {
 
     // Its shell in front, or a turn of its own: still nothing.
     core.ready.insert("t1".into(), Ready::Busy);
-    waker.tick_hc(&mut core, &[supervisor(Done, 1), worker(Done, 1)], corgi, 2);
-    waker.tick_hc(
+    waker.tick(&mut core, &[supervisor(Done, 1), worker(Done, 1)], corgi, 2);
+    waker.tick(
         &mut core,
         &[supervisor(Working, 1), worker(Done, 1)],
         corgi,
@@ -157,7 +151,7 @@ fn a_stop_waits_for_a_resting_supervisor_with_an_empty_box_then_goes_once() {
     assert!(core.sent.is_empty());
 
     core.ready.insert("t1".into(), Ready::Yes);
-    let said = waker.tick_hc(&mut core, &[supervisor(Done, 2), worker(Done, 1)], corgi, 4);
+    let said = waker.tick(&mut core, &[supervisor(Done, 2), worker(Done, 1)], corgi, 4);
     assert_eq!(core.sent.len(), 1, "{:?}", core.sent);
     let (address, text) = &core.sent[0];
     assert_eq!(address, "t1");
@@ -172,7 +166,7 @@ fn a_stop_waits_for_a_resting_supervisor_with_an_empty_box_then_goes_once() {
     assert!(said.iter().any(|line| line.contains("Delivered the inbox")));
     assert_eq!(waker.undelivered_for(ROOT), 0);
 
-    waker.tick_hc(&mut core, &[supervisor(Done, 2), worker(Done, 1)], corgi, 5);
+    waker.tick(&mut core, &[supervisor(Done, 2), worker(Done, 1)], corgi, 5);
     assert_eq!(core.sent.len(), 1, "sent once");
 }
 
@@ -187,13 +181,13 @@ fn a_blocked_worker_wakes_with_hcs_command_and_a_refused_send_is_tried_again() {
     let corgi = Path::new(CORGI);
     use AgentState::{Blocked, Done, Working};
 
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[supervisor(Done, 1), worker(Working, 0)],
         corgi,
         0,
     );
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[supervisor(Done, 1), worker(Blocked, 0)],
         corgi,
@@ -202,7 +196,7 @@ fn a_blocked_worker_wakes_with_hcs_command_and_a_refused_send_is_tried_again() {
     // hc refused before typing (say, the supervisor turned blocked): kept.
     assert_eq!(core.sent.len(), 1);
     assert_eq!(waker.undelivered_for(ROOT), 1);
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[supervisor(Done, 1), worker(Blocked, 0)],
         corgi,
@@ -224,23 +218,21 @@ fn a_supervisor_is_looked_at_once_per_pass() {
     core.ready.insert("t1".into(), Ready::Drafting);
     let corgi = Path::new(CORGI);
     use AgentState::{Done, Working};
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[supervisor(Done, 1), worker(Working, 0)],
         corgi,
         0,
     );
     assert_eq!(core.looks, 0, "nothing to type, nothing to look at");
-    waker.tick_hc(&mut core, &[supervisor(Done, 1), worker(Done, 1)], corgi, 1);
+    waker.tick(&mut core, &[supervisor(Done, 1), worker(Done, 1)], corgi, 1);
     assert_eq!(core.looks, 1);
 }
 
-fn full_supervisor(state: AgentState, turn: u64) -> DashboardAgent {
+fn full_supervisor(state: AgentState, turn: u64) -> Agent {
     let mut supervisor = supervisor(state, turn);
     supervisor.info.agent_session = Some(AgentSession {
         agent: "claude".into(),
-        kind: "session".into(),
-        source: "hc".into(),
         value: "s-1".into(),
     });
     supervisor.context_percent = Some(60);
@@ -258,9 +250,9 @@ fn a_full_supervisor_is_asked_for_its_note_when_its_cache_is_about_to_go_cold_th
     let idle = crate::supervisor::handover_idle_secs(&crate::harness::Harness::Claude).unwrap();
 
     // The rest is timed from the first pass that sees it.
-    waker.tick_hc(&mut core, &[full_supervisor(Done, 3)], corgi, 1_000);
+    waker.tick(&mut core, &[full_supervisor(Done, 3)], corgi, 1_000);
     assert!(core.sent.is_empty());
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[full_supervisor(Done, 3)],
         corgi,
@@ -268,7 +260,7 @@ fn a_full_supervisor_is_asked_for_its_note_when_its_cache_is_about_to_go_cold_th
     );
     assert!(core.sent.is_empty(), "the cache is still warm");
     let asked_at = 1_000 + idle;
-    let said = waker.tick_hc(&mut core, &[full_supervisor(Done, 3)], corgi, asked_at);
+    let said = waker.tick(&mut core, &[full_supervisor(Done, 3)], corgi, asked_at);
     assert_eq!(core.sent.len(), 1, "{said:?}");
     let (address, request) = &core.sent[0];
     assert_eq!(address, "t1");
@@ -282,7 +274,7 @@ fn a_full_supervisor_is_asked_for_its_note_when_its_cache_is_about_to_go_cold_th
     assert!(waker.handing_over_any());
 
     // It writes its note in a turn, and rests.
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[full_supervisor(Working, 3)],
         corgi,
@@ -291,7 +283,7 @@ fn a_full_supervisor_is_asked_for_its_note_when_its_cache_is_about_to_go_cold_th
     let dir = waker.inbox_dir(ROOT).unwrap();
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(crate::supervisor::HANDOVER_NOTE), "# Handover\n").unwrap();
-    waker.tick_hc(&mut core, &[full_supervisor(Done, 4)], corgi, asked_at + 30);
+    waker.tick(&mut core, &[full_supervisor(Done, 4)], corgi, asked_at + 30);
     assert_eq!(
         core.replaced,
         [Replacement {
@@ -306,7 +298,7 @@ fn a_full_supervisor_is_asked_for_its_note_when_its_cache_is_about_to_go_cold_th
     let mut said = Vec::new();
     while Instant::now() < deadline && !waker.replacements.is_empty() {
         std::thread::sleep(Duration::from_millis(20));
-        said = waker.tick_hc(&mut core, &[full_supervisor(Done, 4)], corgi, asked_at + 40);
+        said = waker.tick(&mut core, &[full_supervisor(Done, 4)], corgi, asked_at + 40);
     }
     assert!(
         said.contains(&format!("{SUPERVISOR} handed over to a fresh session")),
@@ -323,8 +315,8 @@ fn a_supervisor_with_a_draft_is_not_asked_for_its_note() {
     core.ready.insert("t1".into(), Ready::Drafting);
     let corgi = Path::new(CORGI);
     let idle = crate::supervisor::handover_idle_secs(&crate::harness::Harness::Claude).unwrap();
-    waker.tick_hc(&mut core, &[full_supervisor(AgentState::Done, 3)], corgi, 0);
-    waker.tick_hc(
+    waker.tick(&mut core, &[full_supervisor(AgentState::Done, 3)], corgi, 0);
+    waker.tick(
         &mut core,
         &[full_supervisor(AgentState::Done, 3)],
         corgi,
@@ -338,10 +330,10 @@ fn a_supervisor_with_a_draft_is_not_asked_for_its_note() {
 fn one_waker_leads_a_core_and_its_records_are_named_after_the_core() {
     let scratch = ScratchDir::new("hc-waker");
     let _first = led(&scratch);
-    let mut second = SupervisorWaker::for_hc_in(&scratch);
-    assert!(!second.lead_hc());
+    let mut second = SupervisorWaker::for_core_in(&scratch);
+    assert!(!second.lead());
 
-    let waker = SupervisorWaker::for_hc(Path::new("/run/hc/x.sock"));
+    let waker = SupervisorWaker::for_core(Path::new("/run/hc/x.sock"));
     let record = waker.record_file().unwrap();
     assert!(
         record.ends_with("wake/_run_hc_x_sock.seen.json"),
@@ -371,7 +363,7 @@ fn a_send_hc_refused_before_typing_is_tried_again_and_any_other_failure_is_unkno
 }
 
 /// A second worker the supervisor spawned, at `address`.
-fn other_worker(name: &str, address: &str, state: AgentState, turn: u64) -> DashboardAgent {
+fn other_worker(name: &str, address: &str, state: AgentState, turn: u64) -> Agent {
     let mut worker = agent(name, address, false, state, turn);
     worker
         .info
@@ -411,7 +403,7 @@ fn while_agents_are_paused_no_supervisor_is_typed_into_and_wakes_wait_for_resume
     let corgi = Path::new(CORGI);
     use AgentState::{Done, Idle, Working};
 
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[
             supervisor(Done, 1),
@@ -424,7 +416,7 @@ fn while_agents_are_paused_no_supervisor_is_typed_into_and_wakes_wait_for_resume
     // Pause stops w-forecast (Esc, then its exit ends its terminal);
     // w-tides finishes its turn meanwhile, and the supervisor rests.
     mark(&path, "w-forecast", "t2", Phase::Stopping);
-    waker.tick_hc(
+    waker.tick(
         &mut core,
         &[
             supervisor(Done, 1),
@@ -435,7 +427,7 @@ fn while_agents_are_paused_no_supervisor_is_typed_into_and_wakes_wait_for_resume
         101,
     );
     mark(&path, "w-forecast", "t2", Phase::Paused);
-    let said = waker.tick_hc(
+    let said = waker.tick(
         &mut core,
         &[supervisor(Done, 1), other_worker("w-tides", "t3", Done, 1)],
         corgi,
@@ -450,7 +442,7 @@ fn while_agents_are_paused_no_supervisor_is_typed_into_and_wakes_wait_for_resume
         said.iter()
             .any(|line| line.starts_with("Agents are paused"))
     );
-    assert!(waker.paused_hc());
+    assert!(waker.pause_in_force());
     // w-tides's wake waits in the inbox; the paused worker added none.
     let pending = waker.inboxes.pending_for(ROOT);
     assert_eq!(pending.len(), 1, "{pending:?}");
@@ -458,7 +450,7 @@ fn while_agents_are_paused_no_supervisor_is_typed_into_and_wakes_wait_for_resume
     // Resume starts w-forecast again in a new terminal: its return wakes no
     // one, its mark goes, and the waiting wake goes out.
     mark(&path, "w-forecast", "t9", Phase::Resuming);
-    let said = waker.tick_hc(
+    let said = waker.tick(
         &mut core,
         &[
             supervisor(Done, 1),
@@ -473,7 +465,7 @@ fn while_agents_are_paused_no_supervisor_is_typed_into_and_wakes_wait_for_resume
         "{said:?}"
     );
     assert!(!path.exists());
-    assert!(!waker.paused_hc());
+    assert!(!waker.pause_in_force());
     assert_eq!(core.sent.len(), 1, "{:?}", core.sent);
     let text = &core.sent[0].1;
     assert!(text.contains("w-tides is done"), "{text}");

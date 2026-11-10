@@ -4,14 +4,9 @@
 
 use std::path::Path;
 
-use crate::{
-    harness::Harness,
-    model::{AgentInfo, WorkspaceInfo},
-    paths::dir_name,
-};
+use crate::{harness::Harness, model::AgentInfo, paths::dir_name};
 
-/// What the dashboard calls a project's supervisor: its role, capitalised as
-/// a label. There is one per project, so the project heading says whose it is.
+/// The task of a project's supervisor: its role, capitalised as a label.
 pub const SUPERVISOR_NAME: &str = "Supervisor";
 
 /// The heading of the agents running in the home directory, which is never a
@@ -19,11 +14,9 @@ pub const SUPERVISOR_NAME: &str = "Supervisor";
 pub const SCRATCH_GROUP: &str = "Scratch";
 /// Shown until an agent CLI has summarized what the session is about.
 const NO_TASK_SUMMARY: &str = "No task yet";
-/// The session ID a status-line bridge reports for a pane.
-pub const STATUS_LINE_SESSION_TOKEN: &str = "session";
 
-/// The directory name of a checkout, without the `worktree-` prefix Herdr adds
-/// to every worktree it creates.
+/// The directory name of a checkout, without the `worktree-` prefix of the
+/// worktrees Corgi makes.
 pub fn checkout_label(checkout_path: &str) -> Option<&str> {
     dir_name(checkout_path)
         .map(|part| part.strip_prefix("worktree-").unwrap_or(part))
@@ -32,43 +25,20 @@ pub fn checkout_label(checkout_path: &str) -> Option<&str> {
 
 /// A few words describing what the agent is working on.
 ///
-/// Claude Code normally supplies a generated terminal title, with any Herdr
-/// task token taking priority. Codex's Herdr task token is currently a
-/// machine-readable slug, so its generated thread name—and, while it is
-/// pending, the first real transcript prompt—wins ahead of that token and its
-/// often branch-like pane title.
+/// Claude Code's task is the one Corgi labelled its terminal with at launch
+/// (the brief's title), then the title it gave its terminal, then its first
+/// real transcript prompt. Codex titles its terminal with a branch-like
+/// slug, so for it the transcript prompt comes first.
 ///
 /// Until the agent has summarized anything the title is still the CLI's own
 /// name or the directory it started in, which says nothing about the task, so
 /// those stand-ins are rejected in favour of an explicit placeholder.
-pub fn task_summary(
-    info: &AgentInfo,
-    workspace: Option<&WorkspaceInfo>,
-    project: &str,
-    codex_title: Option<&str>,
-    transcript_task: Option<&str>,
-) -> String {
-    let herdr_task = info.tokens.get("task").map(String::as_str);
-    let workspace_task = workspace
-        .and_then(|workspace| workspace.tokens.get("task"))
-        .map(String::as_str);
+pub fn task_summary(info: &AgentInfo, project: &str, transcript_task: Option<&str>) -> String {
+    let labelled = info.tokens.get("task").map(String::as_str);
     let candidates = if info.harness() == Harness::Codex {
-        vec![
-            codex_title,
-            transcript_task,
-            info.title.as_deref(),
-            herdr_task,
-            workspace_task,
-            info.terminal_title_stripped.as_deref(),
-        ]
+        [transcript_task, info.title.as_deref(), labelled]
     } else {
-        vec![
-            herdr_task,
-            workspace_task,
-            info.title.as_deref(),
-            info.terminal_title_stripped.as_deref(),
-            transcript_task,
-        ]
+        [labelled, info.title.as_deref(), transcript_task]
     };
     candidates
         .into_iter()
@@ -107,89 +77,64 @@ fn describes_a_task(candidate: &str, info: &AgentInfo, project: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::model::{AgentInfo, WorkspaceInfo};
-
     use super::*;
 
     #[test]
     fn the_task_summary_comes_from_the_agents_own_session_title() {
-        let workspace = WorkspaceInfo {
-            workspace_id: "w1".into(),
-            label: "corgi".into(),
-            ..WorkspaceInfo::default()
-        };
         let titled = AgentInfo {
             agent: Some("claude".into()),
             cwd: Some("/repos/corgi".into()),
-            terminal_title_stripped: Some("Agent session status line".into()),
+            title: Some("Agent session status line".into()),
             ..AgentInfo::default()
         };
         assert_eq!(
-            task_summary(&titled, Some(&workspace), "corgi", None, None),
+            task_summary(&titled, "corgi", None),
             "Agent session status line"
         );
 
         // Before the first turn the title is only the CLI's own name.
         let fresh = AgentInfo {
-            terminal_title_stripped: Some("Claude Code".into()),
+            title: Some("Claude Code".into()),
             ..titled.clone()
         };
-        assert_eq!(
-            task_summary(&fresh, Some(&workspace), "corgi", None, None),
-            NO_TASK_SUMMARY
-        );
+        assert_eq!(task_summary(&fresh, "corgi", None), NO_TASK_SUMMARY);
 
-        // Shells and CLIs that title a pane with its directory say nothing
-        // about the task either.
+        // Shells and CLIs that title a terminal with its directory say
+        // nothing about the task either.
         let directory = AgentInfo {
-            terminal_title_stripped: Some("corgi".into()),
+            title: Some("corgi".into()),
             ..titled.clone()
         };
-        assert_eq!(
-            task_summary(&directory, Some(&workspace), "corgi", None, None),
-            NO_TASK_SUMMARY
-        );
+        assert_eq!(task_summary(&directory, "corgi", None), NO_TASK_SUMMARY);
 
-        // A reported token is metadata rather than a repurposed window title.
-        let mut tokened = titled.clone();
-        tokened
+        // The task Corgi labelled the terminal with wins over its title.
+        let mut labelled = titled.clone();
+        labelled
             .tokens
             .insert("task".into(), "Publish the release notes".into());
         assert_eq!(
-            task_summary(&tokened, Some(&workspace), "corgi", None, None),
+            task_summary(&labelled, "corgi", None),
             "Publish the release notes"
         );
 
-        // Codex's generated app-server title wins over its prompt fallback and
-        // the machine-readable Herdr token that otherwise resembles a branch.
-        let mut codex = AgentInfo {
+        // Codex's first prompt wins over its branch-like title.
+        let codex = AgentInfo {
             agent: Some("codex".into()),
             cwd: Some("/repos/corgi".into()),
-            terminal_title_stripped: Some("after-the-agent-status-working-idle".into()),
+            title: Some("after-the-agent-status-working-idle".into()),
             ..AgentInfo::default()
         };
-        codex
-            .tokens
-            .insert("task".into(), "after-the-agent-status-working-idle".into());
         assert_eq!(
             task_summary(
                 &codex,
-                Some(&workspace),
                 "corgi",
-                Some("Investigate task summaries"),
-                Some("Show a task summary for Codex sessions"),
-            ),
-            "Investigate task summaries"
-        );
-        assert_eq!(
-            task_summary(
-                &codex,
-                Some(&workspace),
-                "corgi",
-                None,
-                Some("Show a task summary for Codex sessions"),
+                Some("Show a task summary for Codex sessions")
             ),
             "Show a task summary for Codex sessions"
+        );
+        assert_eq!(
+            task_summary(&codex, "corgi", None),
+            "after-the-agent-status-working-idle"
         );
     }
 }

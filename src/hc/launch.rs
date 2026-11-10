@@ -64,7 +64,7 @@ pub const SESSION_VARIABLES: [&str; 10] = [
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_EXECPATH",
     "CLAUDE_CODE_MESSAGING_*",
-    // The pane and session of a Herdr TUI, which would point Corgi there.
+    // The pane and session of a Herdr TUI the core was started from.
     "HERDR_*",
 ];
 
@@ -124,7 +124,7 @@ const POLL: Duration = Duration::from_millis(250);
 const TRUST_SETTLE: Duration = Duration::from_secs(2);
 const TRUST_ATTEMPTS: usize = 6;
 
-/// The worktrees Corgi makes go where the Herdr TUI makes them:
+/// The worktrees Corgi makes go where Herdr makes its own:
 /// `~/.herdr/worktrees/<repo>/worktree-<name>`, on branch `worktree/<name>`.
 const WORKTREES_DIR: &str = ".herdr/worktrees";
 const ADJECTIVES: [&str; 16] = [
@@ -173,7 +173,7 @@ pub fn launch_supervisor(
 /// as [`launch_supervisor`] would in a new one: the terminal keeps its
 /// address, its name, its space, and the workers that report to the
 /// project. Its session labels are replaced before the agent starts. A
-/// `plan` whose role names a handover pane starts with the takeover prompt,
+/// `plan` whose supervisor takes over starts with the takeover prompt,
 /// which has the new session read the note its predecessor left.
 pub fn relaunch_supervisor(
     client: &HcClient,
@@ -309,9 +309,7 @@ pub(super) fn start_supervisor_with(
     )?;
     let prompt_file = prepared.state_dir.join(FIRST_PROMPT_FILE);
     let prompt = match &plan.role {
-        Role::Supervisor {
-            handover_pane: Some(_),
-        } => {
+        Role::Supervisor { takes_over: true } => {
             let archive = supervisor::handover_archive(&prepared.state_dir, unix_now());
             supervisor::takeover_prompt(&root, &prepared.state_dir, &archive)
         }
@@ -450,8 +448,8 @@ fn disown(client: &HcClient, address: &str) {
 /// which a supervisor still needs, rather than add to them; a project's
 /// `.codex/config.toml` would land in the user's repository and apply to
 /// every Codex session there; and `CODEX_HOME` would replace the user's
-/// whole Codex home, login included. So the argument stays what the Herdr
-/// TUI passes, and only the typed line names a file.
+/// whole Codex home, login included. So the instructions stay an argument,
+/// and only the typed line names a file.
 pub fn supervisor_role_args(harness: &Harness, prepared: &Prepared) -> Result<Vec<String>> {
     let mut args =
         harness.supervisor_args(&prepared.role_file, &prepared.role, &prepared.state_dir);
@@ -823,7 +821,7 @@ pub fn new_session_id() -> Result<String> {
 }
 
 /// Creates a worktree of the repository whose primary checkout is `root`,
-/// from its `HEAD`, where the Herdr TUI would: returns its path and branch.
+/// from its `HEAD`: returns its path and branch.
 pub fn create_worktree(root: &Path) -> Result<(PathBuf, String)> {
     let home = home().context("HOME is not set, so there is no ~/.herdr/worktrees")?;
     create_worktree_in(&home.join(WORKTREES_DIR), root)
@@ -869,7 +867,7 @@ pub fn create_worktree_in(base: &Path, root: &Path) -> Result<(PathBuf, String)>
     bail!("found no free worktree name under {}", dir.display())
 }
 
-/// A name like the Herdr TUI gives its worktrees: `calm-otter-1f2e`.
+/// A name like Herdr gives its worktrees: `calm-otter-1f2e`.
 fn worktree_slug() -> Result<String> {
     let mut bytes = [0u8; 4];
     fs::File::open("/dev/urandom")
@@ -928,7 +926,7 @@ fn wait_for_agent(client: &HcClient, address: &str) -> Result<Terminal> {
 }
 
 /// Answers Claude Code's folder-trust question in `address` with Yes, and
-/// does nothing else, as a Herdr TUI launch does: only when exactly that
+/// does nothing else: only when exactly that
 /// question is on screen, about `cwd`, in a project Corgi created. Waits up
 /// to [`TRUST_WAIT`] for the question, and stops at once when the agent
 /// reports a status (it asks nothing then). A question left for the user

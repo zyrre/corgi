@@ -41,9 +41,8 @@ supervisor once it rests with its agent in front and nothing in its input box.
 It also hands a supervisor whose context is full, or whose prompt cache is
 about to go cold, over to a fresh session in the same terminal, and gives
 each kept terminal whose program the core lost (a core stop, a reboot) its
-resume command, once. It acts only on the terminals Corgi labelled on hc,
-never on the Herdr TUI, whose plugin hooks do the same there. One daemon runs
-per core; it waits for the core to start and starts none itself.
+resume command, once. It acts only on the terminals Corgi labelled. One
+daemon runs per core; it waits for the core to start and starts none itself.
 
   (no command)  run in the foreground, logging to stderr
   install       run it as a service: a LaunchAgent on macOS, a systemd user
@@ -119,7 +118,7 @@ pub fn daemon_command(args: &[String]) -> Result<()> {
 fn run() -> Result<()> {
     let client = HcClient::from_env()?;
     let socket = hc::expected_socket().context("no HOME, so there is no hc socket to wait for")?;
-    let corgi_bin = supervisor::corgi_bin(None)?;
+    let corgi_bin = supervisor::corgi_bin()?;
     daemon::run(Options {
         client,
         socket,

@@ -706,10 +706,10 @@ fn append(path: &Path, text: &str) {
         .expect("append to session file");
 }
 
-fn agent(kind: &str, pane_id: &str, session: &str, cwd: &str) -> AgentInfo {
+fn agent(kind: &str, address: &str, session: &str, cwd: &str) -> AgentInfo {
     AgentInfo {
         agent: Some(kind.into()),
-        pane_id: pane_id.into(),
+        address: address.into(),
         cwd: Some(cwd.into()),
         agent_session: Some(AgentSession {
             value: session.into(),
@@ -829,7 +829,7 @@ fn a_session_file_written_after_a_miss_is_found_once_the_miss_expires() {
         &path,
         &[r#"{"type":"user","message":{"role":"user","content":"Fix it"}}"#],
     );
-    // The miss is trusted for a while, so a refresh does not search again.
+    // The miss is trusted for a while, so the next read does not search again.
     assert_eq!(reader.facts(&agent).task, None);
     age_lookups(&mut reader, MISS_RETRY);
     assert_eq!(reader.facts(&agent).task.as_deref(), Some("Fix it"));

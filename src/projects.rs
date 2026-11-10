@@ -1,13 +1,11 @@
-//! The projects a new agent can be started in, and how the form lists them.
+//! The projects a supervisor can be started in, and how `corgi projects`
+//! lists them for the Herdr app's "Open project" field.
 //!
-//! Herdr represents a project with a repository workspace. Corgi creates one
-//! separate, agentless and metadata-marked workspace per repository when it
-//! first starts an agent there, so its workers do not depend on the dashboard
-//! workspace that launched them. A project here is simply a directory a new
-//! agent can be created from, and it becomes known in one of three ways: an
-//! agent is running in it, a Herdr workspace is open in it, or Corgi used it
-//! before and wrote it down. The written-down list lives in one plain text
-//! file, one absolute path per line, most recently used first.
+//! A project is simply a directory, usually a repository's primary checkout,
+//! and it becomes known in one of three ways: an agent is running in it, a
+//! space of the Herdr app is open in it, or Corgi used it before and wrote it
+//! down. The written-down list lives in one plain text file, one absolute
+//! path per line, most recently used first.
 
 use std::{
     env, fs,
@@ -16,7 +14,7 @@ use std::{
 
 use crate::{
     choices::Choice,
-    model::{DashboardAgent, WorkspaceInfo},
+    model::Agent,
     paths::{corgi_state_dir, dir_name, home},
 };
 
@@ -28,9 +26,9 @@ const REMEMBERED_LIMIT: usize = 50;
 pub enum ProjectSource {
     /// One or more agent sessions run in it right now.
     Agents(usize),
-    /// A Herdr workspace is open in it, without an agent.
+    /// A space of the Herdr app is open in it, without an agent.
     Open,
-    /// A sibling directory of a project currently open in Corgi or Herdr.
+    /// A sibling directory of a project with agents or open in the app.
     Nearby,
     /// Corgi started an agent there before, or saw it open, and remembers it.
     Remembered,
@@ -54,7 +52,7 @@ impl ProjectSource {
 pub struct Project {
     /// Absolute path: the repository's primary checkout, or a plain directory.
     pub root: String,
-    /// The directory name, which is how the dashboard headings name projects.
+    /// The directory name, which is how the Projects list names projects.
     pub name: String,
     pub source: ProjectSource,
 }
@@ -206,16 +204,12 @@ fn parse_roots(text: &str) -> Vec<String> {
     roots
 }
 
-/// Every project a new agent can be created in, in the order the project list shows
-/// them: projects with agents first, then open Herdr workspaces, nearby
-/// directories beside those open projects, then remembered ones most recently
+/// Every project to offer, in the order the project list shows them:
+/// projects with agents first, then the folders `open` in the Herdr app,
+/// nearby directories beside those, then remembered ones most recently
 /// used first. A path appears once, under its most informative source, and a
 /// remembered directory that no longer exists is left out.
-pub fn known_projects(
-    agents: &[DashboardAgent],
-    workspaces: &[WorkspaceInfo],
-    memory: &ProjectMemory,
-) -> Vec<Project> {
+pub fn known_projects(agents: &[Agent], open: &[String], memory: &ProjectMemory) -> Vec<Project> {
     let mut projects: Vec<Project> = Vec::new();
     for agent in agents {
         let root = agent.project_root.trim();
@@ -233,18 +227,18 @@ pub fn known_projects(
         }
     }
     projects.sort_by_key(|project| project.name.to_lowercase());
-    let mut open: Vec<Project> = Vec::new();
-    for root in workspaces.iter().filter_map(WorkspaceInfo::repo_root) {
+    let mut opened: Vec<Project> = Vec::new();
+    for root in open.iter().filter(|root| !root.is_empty()) {
         if projects
             .iter()
-            .chain(&open)
-            .all(|project| project.root != root)
+            .chain(&opened)
+            .all(|project| &project.root != root)
         {
-            open.push(project(root, ProjectSource::Open));
+            opened.push(project(root, ProjectSource::Open));
         }
     }
-    open.sort_by_key(|project| project.name.to_lowercase());
-    projects.extend(open);
+    opened.sort_by_key(|project| project.name.to_lowercase());
+    projects.extend(opened);
     let nearby_roots: Vec<String> = projects
         .iter()
         .map(|project| project.root.clone())
@@ -265,7 +259,7 @@ pub fn known_projects(
 
 /// Adds visible Git repositories beside `root` that Corgi does not know yet.
 /// Open repositories tend to be collected under one `projects` directory, so
-/// this makes the next repository available without first opening it in Herdr.
+/// this makes the next repository available without first opening it.
 /// A plain folder there (a `worktrees` folder, notes) is no project to offer;
 /// one Corgi knows is listed under its own source, and a typed path still
 /// reaches any folder.
@@ -398,7 +392,7 @@ mod tests {
         parse_roots, path_completions, project_choices,
     };
     use crate::choices::Choice;
-    use crate::model::{DashboardAgent, WorkspaceInfo, WorkspaceWorktreeInfo};
+    use crate::model::Agent;
     use crate::paths::dir_name;
     use crate::test_support::ScratchDir;
 
@@ -416,22 +410,10 @@ mod tests {
         }
     }
 
-    fn agent_in(root: &str) -> DashboardAgent {
-        DashboardAgent {
+    fn agent_in(root: &str) -> Agent {
+        Agent {
             project_root: root.into(),
-            ..DashboardAgent::default()
-        }
-    }
-
-    fn primary_workspace(root: &str) -> WorkspaceInfo {
-        WorkspaceInfo {
-            worktree: Some(WorkspaceWorktreeInfo {
-                repo_root: root.into(),
-                checkout_path: root.into(),
-                is_linked_worktree: false,
-                ..WorkspaceWorktreeInfo::default()
-            }),
-            ..WorkspaceInfo::default()
+            ..Agent::default()
         }
     }
 
@@ -524,10 +506,7 @@ mod tests {
                 agent_in("/repos/corgi"),
                 agent_in("/repos/corgi"),
             ],
-            &[
-                primary_workspace("/repos/corgi"),
-                primary_workspace("/repos/open"),
-            ],
+            &["/repos/corgi".to_string(), "/repos/open".to_string()],
             &memory,
         );
 
@@ -627,7 +606,7 @@ mod tests {
 
         let projects = known_projects(
             &[],
-            &[primary_workspace(supervisor.to_string_lossy().as_ref())],
+            &[supervisor.to_string_lossy().into_owned()],
             &ProjectMemory::default(),
         );
 

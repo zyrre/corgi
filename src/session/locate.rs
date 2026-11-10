@@ -1,4 +1,4 @@
-//! Finding the session file of a pane: a Claude Code transcript under
+//! Finding the session file of an agent: a Claude Code transcript under
 //! `projects/` in its configuration directory (`CLAUDE_CONFIG_DIR` or
 //! `~/.claude`), or a Codex rollout under `~/.codex/sessions`.
 
@@ -9,7 +9,7 @@ use std::{
 
 use super::{tail::Head, text::field};
 
-/// Rollouts considered when a Codex pane has no session identity and has to be
+/// Rollouts considered when a Codex agent has no session identity and has to be
 /// matched by its working directory instead.
 pub const CODEX_ROLLOUT_SCAN: usize = 40;
 /// Directory levels below `~/.codex/sessions` that hold rollouts: the year,
@@ -83,8 +83,8 @@ pub fn newest_file(directory: &Path) -> Option<PathBuf> {
 ///
 /// Codex stores rollouts in `sessions/<year>/<month>/<day>` and ends every
 /// file name with the thread ID, so a known session is a match by name, found
-/// by listing the days newest first without looking at any file's age. A pane
-/// whose thread Herdr never learned falls back to the most recently written
+/// by listing the days newest first without looking at any file's age. An
+/// agent without a session id falls back to the most recently written
 /// rollout started in the same directory, which does have to compare the ages
 /// of every candidate.
 pub fn codex_rollout(

@@ -1,15 +1,14 @@
 //! herdr-core (`hc`), the backend of the Herdr app: the client Corgi runs its
-//! agents through when it is not on the Herdr TUI.
+//! agents through.
 //!
 //! The client shells out to `hc … --json` and reads the one JSON value it
 //! prints, the simpler of the two ways `docs/herdr-app-port.md` weighs (the
 //! other being hc's JSON-RPC socket, whose framed attach is not documented).
-//! Every call starts one short-lived `hc` process, as [`crate::herdr`] opens
-//! one socket connection per request.
+//! Every call starts one short-lived `hc` process.
 //!
-//! Corgi finds its agents among hc's terminals by their labels, which take
-//! the place of the Herdr TUI's pane tokens (see the constants below and
-//! [`agents`]). [`launch`] starts supervisors and workers there.
+//! Corgi finds its agents among hc's terminals by their labels (see the
+//! constants below and [`agents`]). [`launch`] starts supervisors and
+//! workers there.
 
 pub mod agents;
 pub mod close;
@@ -43,10 +42,10 @@ pub const PROJECT_LABEL: &str = "corgi.project";
 pub const ROLE_LABEL: &str = "corgi.role";
 pub const SUPERVISOR_ROLE: &str = "supervisor";
 pub const WORKER_ROLE: &str = "worker";
-/// The `corgi spawn --request-id` a worker was started with; the hc
-/// counterpart of [`crate::launch::CORGI_REQUEST_TOKEN`].
+/// The `corgi spawn --request-id` a worker was started with, read as
+/// [`crate::launch::CORGI_REQUEST_TOKEN`].
 pub const REQUEST_LABEL: &str = "corgi.request";
-/// What the dashboard's TASK column shows for the agent.
+/// What the agent was asked to do, in a few words: `corgi fleet`'s TASK.
 pub const TASK_LABEL: &str = "corgi.task";
 /// The harness's kind: `claude`, `codex` or `opencode`.
 pub const HARNESS_LABEL: &str = "corgi.harness";

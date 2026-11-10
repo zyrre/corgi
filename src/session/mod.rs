@@ -1,13 +1,12 @@
 //! Facts read from the session files the agent CLIs write for themselves: the
-//! model answering, its effort, how full its context window is, the
-//! original task, the newest thing said in the conversation, and the newest
-//! tool call.
+//! model answering, its effort, how full its context window is, its prompt
+//! cache, the original task, and the newest reply, which is an agent's
+//! report.
 //!
-//! Neither Herdr nor its agent integrations publish which model answers in a
-//! pane, and Codex has no status-line hook that could report one, so Corgi
-//! reads the transcripts instead of depending on a bridge being installed. The
-//! same files hold every prompt, reply, thought, and tool call in full, where
-//! the terminal shows an abbreviated and scrolling picture of them:
+//! herdr-core does not say which model answers in a terminal, so Corgi reads
+//! the transcripts. The same files hold every prompt, reply, thought, and
+//! tool call in full, where the terminal shows an abbreviated and scrolling
+//! picture of them:
 //!
 //! - Claude Code appends every turn to
 //!   `~/.claude/projects/<slugged cwd>/<session id>.jsonl`. The newest
@@ -15,34 +14,29 @@
 //!   usage of that request; `text`, `thinking`, and `tool_use` blocks carry
 //!   the conversation. Every record is timestamped, and the usage says which
 //!   prompt-cache lifetime the request was written with, which together give
-//!   the moment the session's cache lapses. The newest timestamp is also when
-//!   the session last did anything.
+//!   the moment the session's cache lapses.
 //! - Codex appends `~/.codex/sessions/<y>/<m>/<d>/rollout-<stamp>-<thread>.jsonl`,
 //!   whose `token_count` events carry the usage together with the model's own
 //!   context window, and whose `response_item` records carry the conversation.
-//!   Every record is timestamped there too.
-//!   Its generated task name comes from the app server, but the first real user
-//!   prompt here is a safe cross-harness fallback while that name is pending.
-//!   OpenAI's prompt cache is automatic and its exact lifetime is not reported.
+//!   Every record is timestamped there too. The first real user prompt is
+//!   the session's task. OpenAI's prompt cache is automatic and its exact lifetime is not reported.
 //!   For GPT-5.6, a cache hit or write does establish the documented 30-minute
 //!   minimum retention period, so Corgi can show a clearly marked estimate.
 //!
-//! Herdr publishes the session identity of an agent pane as
-//! `agent_session.value`, so the right file is found without guessing which
-//! of the running sessions a pane belongs to. A Claude Code pane Herdr has no
-//! identity for is found by the `session` token a status-line bridge reports,
-//! and only failing both by its working directory, which no other live Claude
-//! Code pane may share.
+//! Corgi labels an agent's terminal with its session id at launch
+//! (`agent_session.value`), so the right file is found without guessing
+//! which of the running sessions a terminal belongs to. A Claude Code
+//! terminal without one is found by its working directory, which no other
+//! live Claude Code terminal may share.
 //!
-//! A dashboard reads every agent's file about once a second, so the reading is
+//! The daemon reads every agent's file at each pass, so the reading is
 //! incremental. The first read of a file scans back from its end only as far
 //! as it must to find every fact, and each later read parses only the records
 //! appended since, keeping what older records said until a newer one says
-//! otherwise. Both harnesses reduce a record to the same events, so the
-//! dashboard rows and the expanded transcript read one parser per harness.
+//! otherwise. Both harnesses reduce a record to the same events.
 //!
 //! Every reader fails soft: a session file that is missing, unreadable, or
-//! holds no usage record yet leaves the row without a model and without a
+//! holds no usage record yet leaves the agent without a model and without a
 //! percentage, rather than showing a wrong one.
 
 mod claude;
@@ -70,20 +64,19 @@ use crate::{
     harness::{SessionFormat, claude_config_dirs},
     model::{Activity, AgentInfo, PromptCache},
     paths::home,
-    rows::STATUS_LINE_SESSION_TOKEN,
 };
 
 /// Tails of a session file scanned for the newest usage record. A single tool
 /// result can be megabytes, so the window grows before the file is given up on
 /// rather than reading all of it at once. The same windows bound a read of
-/// what was appended since, should a file grow by more than a refresh's worth.
+/// what was appended since, should a file grow by more than one read's worth.
 const TAIL_STEPS: [u64; 3] = [64 * 1024, 512 * 1024, 4 * 1024 * 1024];
 /// The first user prompt is normally close to the beginning of a transcript.
-/// Bound this fallback so a large, active session never makes dashboard refresh
+/// Bound this fallback so a large, active session never makes a read take
 /// time proportional to its complete history.
 const TASK_HEAD_BYTES: u64 = 512 * 1024;
 /// How long a failed lookup is trusted. A session that has not written its
-/// file yet must be found soon after, without rescanning on every refresh.
+/// file yet must be found soon after, without rescanning on every read.
 const MISS_RETRY: Duration = Duration::from_secs(5);
 /// How long a failed Codex lookup keeps its retries to the newest days of the
 /// sessions tree before searching all of it again, for a session resumed from
@@ -135,11 +128,11 @@ pub enum TurnState {
     Open,
 }
 
-/// Resolves the session file of every agent pane and follows what it says.
+/// Resolves the session file of every agent and follows what it says.
 ///
 /// Lookups and reads are cached: a file is read again only when it has grown,
 /// and then only the records appended since, which is what makes a
-/// per-refresh call cheap even while several agents are working.
+/// call per pass cheap even while several agents are working.
 #[derive(Debug, Default)]
 pub struct SessionReader {
     files: HashMap<String, Lookup>,
@@ -149,19 +142,19 @@ pub struct SessionReader {
     /// The directory session files are looked for under, when it is not
     /// `$HOME`. It stands in for `CLAUDE_CONFIG_DIR` too.
     home: Option<PathBuf>,
-    /// Working directories more than one live Claude Code pane runs in, as of
-    /// the last [`retain`](Self::retain). The newest transcript of one of them
-    /// could be any of those panes', so it is never a pane's fallback.
+    /// Working directories more than one live Claude Code agent runs in, as
+    /// of the last [`retain`](Self::retain). The newest transcript of one of
+    /// them could be any of those agents', so it is never one's fallback.
     shared_claude_cwds: HashSet<String>,
 }
 
-/// Where the session file of one pane was found, if anywhere, and when.
+/// Where the session file of one agent was found, if anywhere, and when.
 #[derive(Debug)]
 struct Lookup {
     path: Option<PathBuf>,
     at: Instant,
     /// Whether the file is only the newest of the working directory, which a
-    /// session started since in the same pane (say by `/clear`) replaces.
+    /// session started since in the same terminal replaces.
     by_cwd: bool,
     /// When a lookup last searched every Codex day rather than the newest.
     searched_everywhere_at: Instant,
@@ -182,8 +175,8 @@ enum HarnessFile {
 }
 
 impl SessionReader {
-    /// A reader for lookups among `live`, the agent panes now running, so an
-    /// unidentified pane is not given the transcript of another one of them.
+    /// A reader for lookups among `live`, the agents now running, so one
+    /// without a session id is not given the transcript of another.
     pub fn among<'a>(live: impl Iterator<Item = &'a AgentInfo>) -> Self {
         let mut reader = Self::default();
         reader.retain(live);
@@ -246,9 +239,9 @@ impl SessionReader {
         parsed.facts.clone()
     }
 
-    /// Forgets the sessions of panes that are gone, so a long-lived dashboard
-    /// does not accumulate the transcripts of closed agents, and notes which
-    /// working directories the live Claude Code panes share.
+    /// Forgets the sessions of terminals that are gone, so the daemon does
+    /// not accumulate the transcripts of closed agents, and notes which
+    /// working directories the live Claude Code terminals share.
     pub fn retain<'a>(&mut self, live: impl Iterator<Item = &'a AgentInfo>) {
         let live: Vec<&AgentInfo> = live.collect();
         let mut claude_cwds = HashSet::new();
@@ -269,11 +262,10 @@ impl SessionReader {
     }
 
     fn session_file(&mut self, info: &AgentInfo) -> Option<PathBuf> {
-        // An unidentified scratch Codex pane can be real, but its cwd is
-        // shared with other live and historical sessions. Never borrow one
-        // of their transcripts or retain its facts across pane reuse. The
-        // same holds for a Claude Code pane in a directory another live one
-        // works in: the newest transcript there may be the other's.
+        // A Codex agent without a session id shares its cwd with other live
+        // and historical sessions: never borrow one of their transcripts.
+        // The same holds for a Claude Code agent in a directory another
+        // live one works in: the newest transcript there may be the other's.
         let session_id = session_id(info);
         let by_cwd = session_id.is_none();
         if by_cwd
@@ -336,36 +328,21 @@ fn claude_dirs(home: Option<&Path>) -> Vec<PathBuf> {
     }
 }
 
-/// The session one pane shows: Herdr's identity of it, else, for Claude
-/// Code, the `session` token a status-line bridge reports for the pane.
-///
-/// Herdr learns a Claude Code session only from its own Claude integration.
-/// A bridge reports the new session when Claude Code next draws its status
-/// line, so after `/clear`, or in a pane reused by another session, the token
-/// names the old session until then. Codex draws no status line, so a token
-/// on a Codex pane cannot be its own.
+/// The id of the session in the agent's terminal, as Corgi labelled the
+/// terminal with it at launch.
 fn session_id(info: &AgentInfo) -> Option<&str> {
-    let native = info
-        .agent_session
+    info.agent_session
         .as_ref()
-        .map(|session| session.value.as_str());
-    let reported = (info.harness().session_format() == Some(SessionFormat::Claude))
-        .then(|| info.tokens.get(STATUS_LINE_SESSION_TOKEN))
-        .flatten()
-        .map(String::as_str);
-    native
-        .into_iter()
-        .chain(reported)
-        .map(str::trim)
+        .map(|session| session.value.trim())
         // An identity names a file in a directory, never a path.
-        .find(|session| !session.is_empty() && !session.contains('/'))
+        .filter(|session| !session.is_empty() && !session.contains('/'))
 }
 
-/// Identity of the session shown in one pane. The pane ID alone would keep a
-/// stale transcript after `/clear` starts a new session in the same pane.
+/// Identity of the session in one terminal. The address alone would keep a
+/// stale transcript after a new session starts in the same terminal.
 fn session_key(info: &AgentInfo) -> String {
     let session = session_id(info).unwrap_or_default();
-    format!("{}:{}:{session}", info.kind(), info.pane_id)
+    format!("{}:{}:{session}", info.kind(), info.address)
 }
 
 fn context_percent(tokens: u64, window: u64) -> u8 {

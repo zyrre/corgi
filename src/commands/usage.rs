@@ -1,6 +1,5 @@
-//! `corgi usage --json`: the plan usage of each installed harness, as the
-//! dashboard's CLAUDE and CODEX cards show it, for the Herdr app's Projects
-//! list. It reads through the cache every Corgi process shares
+//! `corgi usage --json`: the plan usage of each installed harness, for the
+//! CLAUDE and CODEX cards of the Herdr app's Projects list. It reads through the cache every Corgi process shares
 //! (`crate::usage_cache`), so however often it runs, the provider is
 //! asked at most once per [`USAGE_REFRESH_INTERVAL`] on the machine, and
 //! only by whichever process finds the cache stale first.

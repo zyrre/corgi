@@ -235,7 +235,7 @@ impl LedgerEntry {
 /// Whether `entry` is about the agent named `name` now, spawned with the
 /// request id `request`: the entry names it, is the request's own entry, or
 /// names the agent the request's entry was written for, since a worker that
-/// Herdr renamed keeps its request id but not its name. `ledger` is every
+/// was renamed keeps its request id but not its name. `ledger` is every
 /// id's newest entry.
 fn entry_is_about(
     entry: &LedgerEntry,

@@ -9,7 +9,7 @@ use crate::{
     digest,
     git::{git_current_branch, git_output},
     launch::CORGI_REQUEST_TOKEN,
-    model::{AgentState, DashboardAgent},
+    model::{Agent, AgentState},
     supervisor,
 };
 
@@ -27,17 +27,17 @@ pub struct TagOptions {
 /// [`supervisor::MERGE_TOKEN`] value to tag it with, or `None` to clear its
 /// tag. Every check is made before `write` is called.
 pub fn tag_agent_with(
-    agents: &[DashboardAgent],
+    agents: &[Agent],
     root: &str,
     options: &TagOptions,
-    write: impl FnOnce(&DashboardAgent, Option<&str>) -> Result<()>,
+    write: impl FnOnce(&Agent, Option<&str>) -> Result<()>,
 ) -> Result<String> {
     let name = options.name.as_str();
     let agent = agents
         .iter()
         .find(|agent| {
             agent.project_root == root
-                && (agent.info.name.as_deref() == Some(name) || agent.info.pane_id == name)
+                && (agent.info.name.as_deref() == Some(name) || agent.info.address == name)
         })
         .with_context(|| format!("no agent named {name} in {root}"))?;
     let info = &agent.info;

@@ -10,7 +10,7 @@ use std::{
 };
 
 use super::{
-    agents::{agent_state, dashboard_agents, shell_in_front, tag},
+    agents::{agent_state, agents_of, shell_in_front, tag},
     launch::{
         Place, SESSION_VARIABLES, Start, adoption_refusal, agent_argv, agent_script,
         answer_folder_trust, create_worktree_in, current_project_space, harness_command,
@@ -346,17 +346,17 @@ fn labelled_terminals_become_rows_with_their_sessions_facts() {
         }),
         ..Terminal::default()
     };
-    let agents = dashboard_agents(&[worker, supervisor], Some(&home));
+    let agents = agents_of(&[worker, supervisor], Some(&home));
     assert_eq!(agents.len(), 2);
     let supervisor = agents.iter().find(|agent| agent.supervisor).unwrap();
-    assert_eq!(supervisor.info.pane_id, "t1");
+    assert_eq!(supervisor.info.address, "t1");
     assert_eq!(supervisor.task, "Supervisor");
     assert!(supervisor.exited);
     let worker = agents.iter().find(|agent| !agent.supervisor).unwrap();
     assert_eq!(worker.project_root, "/repos/weather");
     assert_eq!(worker.worktree_checkout.as_deref(), Some(worktree));
-    assert_eq!(worker.info.pane_id, "t4");
-    assert_eq!(worker.info.workspace_id, "corgi-weather");
+    assert_eq!(worker.info.address, "t4");
+    assert_eq!(worker.info.space, "corgi-weather");
     assert_eq!(worker.info.state, AgentState::Done);
     assert_eq!(worker.info.state_change_seq, 3);
     assert_eq!(worker.info.kind(), "claude");
@@ -387,9 +387,9 @@ fn a_tag_set_without_where_applies_while_the_agent_rests() {
         turn: 5,
         ..Terminal::default()
     };
-    assert!(dashboard_agents(std::slice::from_ref(&terminal), None)[0].ready_to_merge());
+    assert!(agents_of(std::slice::from_ref(&terminal), None)[0].ready_to_merge());
     terminal.status.as_mut().unwrap().state = "working".into();
-    assert!(!dashboard_agents(&[terminal], None)[0].ready_to_merge());
+    assert!(!agents_of(&[terminal], None)[0].ready_to_merge());
 }
 
 #[test]
@@ -432,13 +432,13 @@ fn tag_on_hc_checks_as_on_herdr_and_writes_labels() {
         project: None,
     };
     let root = root.to_string_lossy().into_owned();
-    let working = dashboard_agents(&[terminal("working")], None);
+    let working = agents_of(&[terminal("working")], None);
     let refused = tag(&hc.client(), &working, &root, &options(true)).unwrap_err();
     assert!(
         refused.to_string().contains("weather is working"),
         "{refused}"
     );
-    let done = dashboard_agents(&[terminal("done")], None);
+    let done = agents_of(&[terminal("done")], None);
     let empty = tag(&hc.client(), &done, &root, &options(true)).unwrap_err();
     assert!(empty.to_string().contains("no commits ahead"), "{empty}");
     git(&worktree, &["commit", "-q", "--allow-empty", "-m", "work"]);
@@ -1003,8 +1003,7 @@ fn a_codex_supervisors_role_reaches_it_through_a_file_not_the_typed_line() {
         fs::metadata(&file).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    // The typed line names the file; the agent gets the same arguments as
-    // on the Herdr TUI.
+    // The typed line names the file, and the agent gets its arguments.
     let line = shell_line(&agent_argv(&scratch, None, &{
         let mut command = vec![
             "/bin/sh".to_string(),
@@ -1074,9 +1073,7 @@ fn a_supervisor_starts_again_only_in_a_terminal_with_its_shell_in_front() {
         Harness::Claude,
         Checkout::ProjectRoot,
     );
-    plan.role = Role::Supervisor {
-        handover_pane: Some("t3".into()),
-    };
+    plan.role = Role::Supervisor { takes_over: true };
     let error = super::launch::relaunch_supervisor(
         &hc.client(),
         &plan,
@@ -1222,9 +1219,7 @@ fn supervisor_plan(root: &Path) -> LaunchPlan {
     plan.name = "t7".into();
     plan.prompt = String::new();
     plan.request_id = None;
-    plan.role = Role::Supervisor {
-        handover_pane: None,
-    };
+    plan.role = Role::Supervisor { takes_over: false };
     plan
 }
 
@@ -1312,9 +1307,9 @@ fn a_supervisor_started_in_an_open_shell_makes_that_terminal_and_space_the_proje
         serde_json::from_value(value).unwrap()
     };
     assert_eq!(labelled.label(SPACE_LABEL), Some("sp1"));
-    let rows = dashboard_agents(&[labelled], Some(&*scratch));
+    let rows = agents_of(&[labelled], Some(&*scratch));
     assert!(rows[0].supervisor && !rows[0].exited);
-    assert_eq!(rows[0].info.workspace_id, "sp1");
+    assert_eq!(rows[0].info.space, "sp1");
     // The app named it nothing: it goes by its address.
     assert_eq!(rows[0].info.display_name(), "t7");
 }
@@ -1427,7 +1422,7 @@ fn a_supervisor_works_in_its_project_whatever_folder_its_shell_started_in() {
         super::agents::agent_info(&supervisor).cwd.as_deref(),
         Some("/repos/weather")
     );
-    let rows = dashboard_agents(&[supervisor], Some(Path::new("/nonexistent")));
+    let rows = agents_of(&[supervisor], Some(Path::new("/nonexistent")));
     assert_eq!(rows[0].worktree_checkout, None);
     // A worker's folder is its terminal's.
     value["labels"]["corgi.role"] = "worker".into();

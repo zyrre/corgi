@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::harness::Harness;
 
+/// An agent's state, as its harness reports it to hc. It is written, in
+/// lower case, into the daemon's record of the agents it follows.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentState {
@@ -27,56 +29,41 @@ impl AgentState {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The session an agent's harness keeps, as Corgi labelled its terminal
+/// with it at launch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentSession {
-    #[serde(default)]
+    /// The harness whose session it is, as its kind.
     pub agent: String,
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub source: String,
-    #[serde(default)]
+    /// The harness's own id of the session, which names its file.
     pub value: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// What herdr-core says of an agent's terminal, and what Corgi labelled it
+/// with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AgentInfo {
-    #[serde(default)]
-    pub launch_pending: bool,
-    #[serde(default)]
-    pub interactive_ready: bool,
-    #[serde(default)]
+    /// The harness's kind: `claude`, `codex`, …
     pub agent: Option<String>,
-    #[serde(default)]
-    pub display_agent: Option<String>,
-    #[serde(default)]
+    /// The terminal's name, else its address.
     pub name: Option<String>,
-    #[serde(default, rename = "agent_status")]
     pub state: AgentState,
-    pub pane_id: String,
-    pub workspace_id: String,
-    pub tab_id: String,
-    #[serde(default)]
+    /// The terminal's address (`t7`), which every `hc` command takes.
+    pub address: String,
+    /// The Herdr app space the terminal is in (`herdr.space`), or empty.
+    pub space: String,
+    /// The folder the agent works in.
     pub cwd: Option<String>,
-    #[serde(default)]
-    pub foreground_cwd: Option<String>,
-    #[serde(default)]
-    pub focused: bool,
-    #[serde(default)]
-    pub revision: u64,
-    #[serde(default)]
+    /// hc's count of the terminal's turns, which goes up at every change of
+    /// state.
     pub state_change_seq: u64,
-    #[serde(default)]
+    /// The title the harness gave its terminal.
     pub title: Option<String>,
-    #[serde(default)]
-    pub terminal_title_stripped: Option<String>,
-    #[serde(default)]
+    /// Corgi's labels on the terminal, by the short names the rest of Corgi
+    /// reads them by: the spawn's request id, the task, the merge tag, and
+    /// a supervisor's handover request and baseline.
     pub tokens: BTreeMap<String, String>,
-    #[serde(default)]
     pub agent_session: Option<AgentSession>,
-    /// Herdr's id for the pane's terminal, which a Herdr restart replaces.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terminal_id: Option<String>,
 }
 
 impl AgentInfo {
@@ -84,79 +71,39 @@ impl AgentInfo {
         self.agent.as_deref().unwrap_or("agent")
     }
 
-    /// The harness Herdr detected in this pane.
+    /// The harness that runs in this terminal.
     pub fn harness(&self) -> Harness {
         Harness::from_kind(self.kind())
     }
 
     pub fn display_name(&self) -> &str {
-        self.display_agent
-            .as_deref()
-            .or(self.name.as_deref())
-            .unwrap_or_else(|| self.kind())
+        self.name.as_deref().unwrap_or_else(|| self.kind())
     }
 
     pub fn cwd(&self) -> &str {
-        self.foreground_cwd
-            .as_deref()
-            .or(self.cwd.as_deref())
-            .unwrap_or("")
+        self.cwd.as_deref().unwrap_or("")
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceInfo {
-    pub workspace_id: String,
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub tokens: BTreeMap<String, String>,
-    /// Git checkout provenance Herdr attaches to workspaces that belong to a
-    /// worktree group. Absent for plain workspaces.
-    #[serde(default)]
-    pub worktree: Option<WorkspaceWorktreeInfo>,
-}
-
-impl WorkspaceInfo {
-    /// The primary checkout of the repository this workspace works in, when
-    /// Herdr knows it. New worktrees must be created from this directory.
-    pub fn repo_root(&self) -> Option<&str> {
-        self.worktree
-            .as_ref()
-            .map(|worktree| worktree.repo_root.as_str())
-            .filter(|root| !root.is_empty())
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceWorktreeInfo {
-    #[serde(default)]
-    pub repo_name: String,
-    #[serde(default)]
-    pub repo_root: String,
-    #[serde(default)]
-    pub checkout_path: String,
-    #[serde(default)]
-    pub is_linked_worktree: bool,
-}
-
+/// One agent Corgi runs: its terminal, and what its project and its
+/// session file say of it.
 #[derive(Debug, Clone, Default)]
-pub struct DashboardAgent {
+pub struct Agent {
     pub info: AgentInfo,
     /// The name of the repository related sessions share, which they are
     /// sorted by; `Scratch` for the scratch sessions.
     pub project_group: String,
-    /// Directory a sibling agent should be created from: the repository's
-    /// primary checkout when the agent works in a worktree, else its cwd.
+    /// The project the agent belongs to: its repository's primary checkout,
+    /// as its terminal's `corgi.project` label holds it.
     pub project_root: String,
-    /// Path of the agent's linked worktree checkout, when it has one. Closing
-    /// such an agent removes the checkout instead of only the workspace.
+    /// Path of the agent's linked worktree checkout, when it has one: what
+    /// `corgi merge` merges from, and `corgi close` removes.
     pub worktree_checkout: Option<String>,
     /// A few words describing what the agent is working on, as the agent CLI
     /// itself summarizes the session.
     pub task: String,
     /// Model answering this session, read from the agent CLI's own session
-    /// file or from pane metadata.
+    /// file.
     pub model: Option<String>,
     /// Thinking/reasoning effort selected for this session, when the agent
     /// reports one.
@@ -170,20 +117,20 @@ pub struct DashboardAgent {
     /// let Corgi derive a conservative minimum lifetime from a cache hit or
     /// write in the rollout.
     pub cache: Option<PromptCache>,
-    /// The agent in the root tab of its project's Corgi workspace: the
-    /// project's supervisor, shown by that name and first in its project.
+    /// The project's supervisor (`corgi.role=supervisor`), first in its
+    /// project.
     pub supervisor: bool,
     /// The agent runs in the home directory itself, which is never a
     /// project: a scratch session, grouped under Scratch, that no supervisor
     /// hears about.
     pub scratch: bool,
-    /// The agent Corgi launched in this pane has dropped to its shell: the
-    /// row stands for it, offers Resume (`restart::resume`) and nothing
-    /// else acts on it. Its `info` describes the pane, with no session.
+    /// A supervisor whose agent has exited into the kept shell it was
+    /// started from: `corgi supervisor` and `corgi open` start it again
+    /// there.
     pub exited: bool,
 }
 
-impl DashboardAgent {
+impl Agent {
     /// Whether a supervisor has tagged the agent ready for the user to merge, and
     /// it still rests where it was tagged, so it shows as MERGE.
     pub fn ready_to_merge(&self) -> bool {

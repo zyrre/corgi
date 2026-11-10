@@ -240,8 +240,8 @@ pub fn claude_events<'a>(record: &'a Value, emit: &mut dyn FnMut(Event<'a>)) {
 }
 
 /// Claude Code's initial human prompt, skipping the CLI's injected and
-/// sidechain records. Terminal titles remain the preferred Claude summary;
-/// this only fills a row before that title reaches Herdr or when it is absent.
+/// sidechain records. The task Corgi labelled the terminal with and its
+/// title come first for Claude Code; this is the fallback.
 pub fn claude_task(record: &Value) -> Option<String> {
     if record["isSidechain"] == true || record["isMeta"] == true || record["type"] != "user" {
         return None;
@@ -363,7 +363,7 @@ pub fn claude_model_family(model_id: &str) -> String {
         .to_string()
 }
 
-/// A model ID as Claude Code writes it, shortened for one dashboard row:
+/// A model ID as Claude Code writes it, shortened for `corgi fleet`'s MODEL:
 /// `claude-fable-5-1` reads as `Fable 5.1`. A session in a long window its model
 /// does not have by default says so, because it changes what its percentage
 /// means.
@@ -410,7 +410,7 @@ fn env_truthy(value: &str) -> bool {
 }
 
 /// The value of `CLAUDE_CODE_DISABLE_1M_CONTEXT` in Corgi's own environment,
-/// the nearest thing it can read to what a session in a Herdr pane inherited.
+/// the nearest thing it can read to what a session in a terminal inherited.
 pub fn claude_disable_long_context_env() -> Option<String> {
     std::env::var(DISABLE_LONG_CONTEXT).ok()
 }

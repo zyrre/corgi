@@ -6,13 +6,13 @@
 use anyhow::Result;
 
 mod activity;
-mod app;
 mod app_layout;
 mod app_space;
 mod backlog;
 #[cfg(test)]
 mod brand_tile;
 mod choices;
+mod commands;
 mod digest;
 mod draft;
 mod git;
@@ -82,46 +82,46 @@ fn main() -> Result<()> {
         // scripts/install.sh runs this to check a downloaded release binary.
         Some("--version" | "-V") => version::version_command(&args[2..]),
         None | Some("--help" | "-h" | "help") => usage(USAGE),
-        Some("spawn") if help() => usage(app::SPAWN_USAGE),
-        Some("spawn") => app::spawn(&args[2..]),
-        Some("supervisor") if help() => usage(app::SUPERVISOR_USAGE),
-        Some("supervisor") => app::supervisor_command(&args[2..]),
-        Some("fleet") if help() => usage(app::FLEET_USAGE),
-        Some("fleet") => app::fleet(&args[2..]),
-        Some("digest") if help() => usage(app::DIGEST_USAGE),
-        Some("digest") => app::digest(&args[2..]),
-        Some("report") if help() => usage(app::REPORT_USAGE),
-        Some("report") => app::report(&args[2..]),
-        Some("notify") if help() => usage(app::NOTIFY_USAGE),
-        Some("notify") => app::notify(&args[2..]),
-        Some("inbox") if help() => usage(app::INBOX_USAGE),
-        Some("inbox") => app::inbox_command(&args[2..]),
-        Some("status") if help() => usage(app::STATUS_USAGE),
-        Some("status") => app::status_command(&args[2..]),
-        Some("usage") if help() => usage(app::USAGE_USAGE),
-        Some("usage") => app::usage_command(&args[2..]),
-        Some("merge") if help() => usage(app::MERGE_USAGE),
-        Some("merge") => app::merge_command(&args[2..]),
-        Some("close") if help() => usage(app::CLOSE_USAGE),
-        Some("close") => app::close_command(&args[2..]),
-        Some("pause") if help() => usage(app::PAUSE_USAGE),
-        Some("pause") => app::pause_command(&args[2..]),
-        Some("resume") if help() => usage(app::RESUME_USAGE),
-        Some("resume") => app::resume_command(&args[2..]),
-        Some("tag") if help() => usage(app::TAG_USAGE),
-        Some("tag") => app::tag_command(&args[2..]),
-        Some("role") if help() => usage(app::ROLE_USAGE),
-        Some("role") => app::role_command(&args[2..]),
-        Some("daemon") if help() => usage(app::DAEMON_USAGE),
-        Some("daemon") => app::daemon_command(&args[2..]),
-        Some("app-space") if help() => usage(app::APP_SPACE_USAGE),
-        Some("app-space") => app::app_space_command(&args[2..]),
-        Some("app-layout") if help() => usage(app::APP_LAYOUT_USAGE),
-        Some("app-layout") => app::app_layout_command(&args[2..]),
-        Some("projects") if help() => usage(app::PROJECTS_USAGE),
-        Some("projects") => app::projects_command(&args[2..]),
-        Some("open") if help() => usage(app::OPEN_USAGE),
-        Some("open") => app::open_command(&args[2..]),
+        Some("spawn") if help() => usage(commands::SPAWN_USAGE),
+        Some("spawn") => commands::spawn_command(&args[2..]),
+        Some("supervisor") if help() => usage(commands::SUPERVISOR_USAGE),
+        Some("supervisor") => commands::supervisor_command(&args[2..]),
+        Some("fleet") if help() => usage(commands::FLEET_USAGE),
+        Some("fleet") => commands::fleet_command(&args[2..]),
+        Some("digest") if help() => usage(commands::DIGEST_USAGE),
+        Some("digest") => commands::digest_command(&args[2..]),
+        Some("report") if help() => usage(commands::REPORT_USAGE),
+        Some("report") => commands::report_command(&args[2..]),
+        Some("notify") if help() => usage(commands::NOTIFY_USAGE),
+        Some("notify") => commands::notify_command(&args[2..]),
+        Some("inbox") if help() => usage(commands::INBOX_USAGE),
+        Some("inbox") => commands::inbox_command(&args[2..]),
+        Some("status") if help() => usage(commands::STATUS_USAGE),
+        Some("status") => commands::status_command(&args[2..]),
+        Some("usage") if help() => usage(commands::USAGE_USAGE),
+        Some("usage") => commands::usage_command(&args[2..]),
+        Some("merge") if help() => usage(commands::MERGE_USAGE),
+        Some("merge") => commands::merge_command(&args[2..]),
+        Some("close") if help() => usage(commands::CLOSE_USAGE),
+        Some("close") => commands::close_command(&args[2..]),
+        Some("pause") if help() => usage(commands::PAUSE_USAGE),
+        Some("pause") => commands::pause_command(&args[2..]),
+        Some("resume") if help() => usage(commands::RESUME_USAGE),
+        Some("resume") => commands::resume_command(&args[2..]),
+        Some("tag") if help() => usage(commands::TAG_USAGE),
+        Some("tag") => commands::tag_command(&args[2..]),
+        Some("role") if help() => usage(commands::ROLE_USAGE),
+        Some("role") => commands::role_command(&args[2..]),
+        Some("daemon") if help() => usage(commands::DAEMON_USAGE),
+        Some("daemon") => commands::daemon_command(&args[2..]),
+        Some("app-space") if help() => usage(commands::APP_SPACE_USAGE),
+        Some("app-space") => commands::app_space_command(&args[2..]),
+        Some("app-layout") if help() => usage(commands::APP_LAYOUT_USAGE),
+        Some("app-layout") => commands::app_layout_command(&args[2..]),
+        Some("projects") if help() => usage(commands::PROJECTS_USAGE),
+        Some("projects") => commands::projects_command(&args[2..]),
+        Some("open") if help() => usage(commands::OPEN_USAGE),
+        Some("open") => commands::open_command(&args[2..]),
         // A mistyped command, or one this version does not have, says so.
         _ => {
             eprintln!(

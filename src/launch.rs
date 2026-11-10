@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     git::trust_root,
     harness::Harness,
-    model::DashboardAgent,
+    model::Agent,
     paths::{dir_name, is_home},
     progress::Progress,
     projects::{is_created_project, record_created_project},
@@ -20,13 +20,13 @@ use crate::{
 };
 
 /// Why the home directory gets no supervisor.
-pub const SUPERVISOR_HOME_REFUSAL: &str = "The home directory is not a project, so it has no supervisor; t in the dashboard starts a scratch agent there";
-/// The pane token that tags a worker `corgi spawn --request-id` started
+pub const SUPERVISOR_HOME_REFUSAL: &str = "The home directory is not a project, so it has no supervisor; corgi spawn --project ~ starts a scratch agent there";
+/// The token that tags a worker `corgi spawn --request-id` started
 /// with that id, so a retried spawn finds the worker instead of starting a
 /// second one.
 pub const CORGI_REQUEST_TOKEN: &str = "corgi_request";
 
-/// Where a new agent's workspace is rooted.
+/// Where a new agent works.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Checkout {
     /// A fresh Git worktree of the project's repository, so every agent edits
@@ -35,9 +35,7 @@ pub enum Checkout {
     Worktree,
     /// The project directory as it is, shared with whatever already runs there.
     Directory,
-    /// The root tab of the project's Corgi workspace itself, in the primary
-    /// checkout. That tab is where a coordinating agent such as the supervisor lives,
-    /// so only `corgi spawn` offers it; the form's list does not.
+    /// The project's primary checkout itself, where its supervisor lives.
     ProjectRoot,
 }
 
@@ -58,9 +56,9 @@ impl Checkout {
     }
 }
 
-/// Everything one new agent is started with. The dashboard form, the Omarchy
-/// popup, and `corgi spawn` all fill one in, so every launch takes the same
-/// checkout, start, and first-prompt sequence.
+/// Everything one new agent is started with. `corgi spawn`, `corgi
+/// supervisor`, `corgi open` and a supervisor's handover all fill one in, so
+/// every launch takes the same checkout, start, and first-prompt sequence.
 pub struct LaunchPlan {
     pub name: String,
     pub harness: Harness,
@@ -74,7 +72,7 @@ pub struct LaunchPlan {
     /// Arguments for the agent CLI itself, after the model and effort.
     pub extra_args: Vec<String>,
     pub role: Role,
-    /// The `corgi spawn --request-id` the worker's pane is tagged with.
+    /// The `corgi spawn --request-id` the worker's terminal is labelled with.
     pub request_id: Option<String>,
 }
 
@@ -82,12 +80,11 @@ pub struct LaunchPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Role {
     Worker,
-    /// The project's supervisor: its pane is marked so the dashboard recognizes
-    /// it wherever it goes.
+    /// The project's supervisor.
     Supervisor {
-        /// The pane of a supervisor that handed over and exited, where its
-        /// successor starts instead of in a new or found pane.
-        handover_pane: Option<String>,
+        /// Whether it takes over from a session that handed over and
+        /// exited, whose note it starts from.
+        takes_over: bool,
     },
 }
 
@@ -99,7 +96,7 @@ pub fn launch_args(plan: &LaunchPlan) -> Vec<String> {
     args
 }
 
-/// `value` as a Herdr agent name: lower-case ASCII letters, digits, `-` and
+/// `value` as an agent's name: lower-case ASCII letters, digits, `-` and
 /// `_`, starting with a letter and at most 32 characters long.
 pub fn sanitize_agent_name(value: &str) -> String {
     let mut output = String::new();
@@ -164,13 +161,13 @@ pub fn supervisor_harness_error(harness: &Harness) -> String {
     )
 }
 
-/// The launch the dashboard's supervisor key starts for `root`: the harness,
-/// model, effort and arguments its supervisor was last launched with, `saved`,
-/// else the new-agent form's preset harness (or the first a supervisor runs on)
-/// with the harness's own defaults. It has no task, so the supervisor greets
-/// with the state of the project.
-pub fn dashboard_supervisor_plan(
-    agents: &[DashboardAgent],
+/// The launch `corgi open` starts for `root`: the harness, model, effort and
+/// arguments its supervisor was last launched with, `saved`, else the
+/// `preset` harness (or the first a supervisor runs on) with the harness's
+/// own defaults. It has no task, so the supervisor greets with the state of
+/// the project.
+pub fn saved_supervisor_plan(
+    agents: &[Agent],
     root: &str,
     saved: Option<supervisor::Launch>,
     preset: impl FnOnce() -> Harness,
@@ -198,7 +195,7 @@ pub fn dashboard_supervisor_plan(
 /// The launch of `root`'s supervisor on `harness`, refused while one is already
 /// running.
 pub fn supervisor_plan(
-    agents: &[DashboardAgent],
+    agents: &[Agent],
     root: &str,
     harness: Harness,
     model: String,
@@ -235,9 +232,7 @@ pub fn supervisor_plan(
         project: PathBuf::from(root),
         checkout: Checkout::ProjectRoot,
         extra_args: Vec::new(),
-        role: Role::Supervisor {
-            handover_pane: None,
-        },
+        role: Role::Supervisor { takes_over: false },
         request_id: None,
     })
 }
@@ -246,7 +241,7 @@ pub fn supervisor_plan(
 mod tests {
     use std::{fs, path::Path};
 
-    use crate::model::{AgentInfo, DashboardAgent};
+    use crate::model::{Agent, AgentInfo};
 
     use super::*;
 
@@ -271,7 +266,7 @@ mod tests {
 
     #[test]
     fn a_supervisor_launch_is_named_after_its_project_and_refused_while_one_runs() {
-        let mut agents: Vec<DashboardAgent> = Vec::new();
+        let mut agents: Vec<Agent> = Vec::new();
         let plan = supervisor_plan(
             &agents,
             "/repos/weather",
@@ -288,14 +283,14 @@ mod tests {
         assert_eq!(plan.checkout, Checkout::ProjectRoot);
         assert!(matches!(plan.role, Role::Supervisor { .. }));
 
-        agents = vec![DashboardAgent {
+        agents = vec![Agent {
             info: AgentInfo {
                 name: Some("supervisor-weather".into()),
                 ..AgentInfo::default()
             },
             project_root: "/repos/weather".into(),
             supervisor: true,
-            ..DashboardAgent::default()
+            ..Agent::default()
         }];
         let refused = supervisor_plan(
             &agents,
@@ -327,25 +322,19 @@ mod tests {
     }
 
     #[test]
-    fn the_supervisor_key_launches_as_last_time_else_on_the_form_presets() {
-        let agents: Vec<DashboardAgent> = Vec::new();
+    fn a_supervisor_is_opened_as_last_time_else_on_the_preset_harness() {
+        let agents: Vec<Agent> = Vec::new();
         let root = "/repos/weather";
-        // Nothing saved: the form's preset harness and its own defaults.
-        let plan = dashboard_supervisor_plan(&agents, root, None, || Harness::Codex).expect("plan");
+        // Nothing saved: the preset harness and its own defaults.
+        let plan = saved_supervisor_plan(&agents, root, None, || Harness::Codex).expect("plan");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!((plan.model.as_str(), plan.effort.as_str()), ("", ""));
         assert_eq!(plan.prompt, "");
         assert_eq!(plan.checkout, Checkout::ProjectRoot);
         assert_eq!(plan.project, Path::new(root));
-        assert!(matches!(
-            plan.role,
-            Role::Supervisor {
-                handover_pane: None
-            }
-        ));
+        assert!(matches!(plan.role, Role::Supervisor { takes_over: false }));
         // A preset no supervisor runs on falls back to the first that does.
-        let plan =
-            dashboard_supervisor_plan(&agents, root, None, || Harness::OpenCode).expect("plan");
+        let plan = saved_supervisor_plan(&agents, root, None, || Harness::OpenCode).expect("plan");
         assert_eq!(plan.harness, Harness::SUPERVISOR_HARNESSES[0]);
         // The last launch wins over the preset.
         let saved = supervisor::Launch {
@@ -354,8 +343,8 @@ mod tests {
             effort: "high".into(),
             extra_args: vec!["--search".into()],
         };
-        let plan = dashboard_supervisor_plan(&agents, root, Some(saved), || Harness::Claude)
-            .expect("plan");
+        let plan =
+            saved_supervisor_plan(&agents, root, Some(saved), || Harness::Claude).expect("plan");
         assert_eq!(plan.harness, Harness::Codex);
         assert_eq!(plan.model, "gpt-5-codex");
         assert_eq!(plan.effort, "high");

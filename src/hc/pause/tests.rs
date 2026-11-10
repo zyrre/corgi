@@ -295,10 +295,10 @@ fn paused(path: &Path) -> Vec<(String, Phase)> {
         .collect()
 }
 
-fn row(terminal: &Terminal) -> DashboardAgent {
-    DashboardAgent {
+fn row(terminal: &Terminal) -> Agent {
+    Agent {
         info: AgentInfo {
-            pane_id: terminal.address.clone(),
+            address: terminal.address.clone(),
             name: terminal.name.clone(),
             state: agent_state(terminal),
             ..AgentInfo::default()
@@ -306,7 +306,7 @@ fn row(terminal: &Terminal) -> DashboardAgent {
         project_root: ROOT.into(),
         supervisor: terminal.label(ROLE_LABEL) == Some(SUPERVISOR_ROLE),
         exited: shell_in_front(terminal) || !terminal.is_live(),
-        ..DashboardAgent::default()
+        ..Agent::default()
     }
 }
 
@@ -544,7 +544,7 @@ fn settle_lets_go_of_agents_seen_back_and_of_stale_marks_only() {
     let core = fleet();
     pause_with(&core, &path, None, 1_000, &mut Silent).unwrap();
     // Still paused: nothing is let go of, however long it stays so.
-    let rows: Vec<DashboardAgent> = core.terminals().unwrap().iter().map(row).collect();
+    let rows: Vec<Agent> = core.terminals().unwrap().iter().map(row).collect();
     assert!(settle(&path, &rows, 1_000_000).is_empty());
 
     resume_with(&core, &path, 2_000, &mut Silent).unwrap();

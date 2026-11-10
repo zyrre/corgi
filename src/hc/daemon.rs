@@ -1,6 +1,6 @@
-//! `corgi daemon`: what the Herdr TUI's plugin hooks do for supervisors on
-//! the TUI, for supervisors on herdr-core (`hc`), with the Herdr app's window
-//! open or not (`docs/herdr-app-port.md`, Design A).
+//! `corgi daemon`: wakes supervisors on herdr-core (`hc`), delivers their
+//! inboxes and hands them over, with the Herdr app's window open or not
+//! (`docs/herdr-app-port.md`, Design A).
 //!
 //! One daemon runs per core, holding a lock for its whole life. It follows
 //! the core's events from its socket and, on each event that concerns one of
@@ -14,7 +14,7 @@
 //!    (a core stop, a reboot) its resume line, once ([`needs_resume`]),
 //!    unless its agent is paused ([`resume_line`]);
 //! 2. adds the wakes, moves the handovers on, and types each supervisor's
-//!    inbox in when it may be typed into ([`SupervisorWaker::tick_hc`]).
+//!    inbox in when it may be typed into ([`SupervisorWaker::tick`]).
 //!    While `corgi pause` holds any agent ([`pause`]), the paused agents'
 //!    stops wake no one, and no supervisor is typed into and no handover
 //!    moves on until `corgi resume`: the wakes wait in the inboxes.
@@ -50,7 +50,7 @@ use anyhow::{Context, Result, bail};
 
 use super::{
     HcClient, PID_LABEL, RESUME_LABEL, Terminal,
-    agents::{corgi_terminals, dashboard_agents, shell_in_front},
+    agents::{agents_of, corgi_terminals, shell_in_front},
     events::{EventStream, Message, concerns_corgi},
     pause,
 };
@@ -236,9 +236,9 @@ enum Feed {
 /// lock is another daemon's.
 pub fn run(options: Options) -> Result<()> {
     let _lock = take_lock(&options.socket, &options.build)?;
-    let mut waker = SupervisorWaker::for_hc(&options.socket);
+    let mut waker = SupervisorWaker::for_core(&options.socket);
     anyhow::ensure!(
-        waker.lead_hc(),
+        waker.lead(),
         "another process holds the wake lock of the core at {}",
         options.socket.display()
     );
@@ -399,16 +399,14 @@ impl Daemon {
             .map(|path| pause::Holds::read(&path))
             .unwrap_or_default();
         let mut said = self.resume(&terminals, &holds);
-        let agents = dashboard_agents(&terminals, None);
-        said.extend(self.waker.tick_hc(
-            &mut self.core,
-            &agents,
-            &self.options.corgi_bin,
-            unix_now(),
-        ));
+        let agents = agents_of(&terminals, None);
+        said.extend(
+            self.waker
+                .tick(&mut self.core, &agents, &self.options.corgi_bin, unix_now()),
+        );
         said.append(&mut self.core.notes);
         self.busy = self.waker.handing_over_any()
-            || !self.waker.paused_hc()
+            || !self.waker.pause_in_force()
                 && agents.iter().any(|agent| {
                     agent.supervisor
                         && matches!(agent.info.state, AgentState::Done | AgentState::Idle)

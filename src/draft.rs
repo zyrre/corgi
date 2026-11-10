@@ -1,5 +1,5 @@
 //! Whether a supervisor's input box holds text the user is writing, read from
-//! its visible screen, so the dashboard never types a wake into a draft.
+//! its visible screen, so the daemon never types a wake into a draft.
 //!
 //! The screen is read with its styling, because plain text cannot tell a
 //! draft from what a harness shows dim in an empty box: Claude Code's prompt
@@ -123,7 +123,7 @@ fn dim_after(mut dim: bool, params: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Screens read from Claude Code 2.1 panes through Herdr; Codex's are
+    /// Screens read from Claude Code 2.1 in a Herdr TUI pane; Codex's are
     /// rebuilt from its composer's layout, as no Codex was at hand.
     const CLAUDE_EMPTY: &str = include_str!("fixtures/input_box/claude_empty.ansi");
     const CLAUDE_SUGGESTION: &str = include_str!("fixtures/input_box/claude_suggestion.ansi");

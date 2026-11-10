@@ -1,5 +1,4 @@
-//! Closing a worker on hc, as the Herdr TUI's close does for an agent in a
-//! plain linked worktree (`crate::close`): a checkout with uncommitted or
+//! Closing a worker (`corgi close`): a checkout with uncommitted or
 //! untracked changes is refused once, unless forced; then the worker's
 //! terminal is ended and removed, by its address, and its worktree removed
 //! with `git worktree remove` in the primary checkout. The branch stays.
@@ -21,7 +20,7 @@ use serde_json::{Value, json};
 
 use crate::{
     git::{git_current_branch, git_output},
-    model::DashboardAgent,
+    model::Agent,
 };
 
 use super::{HcClient, SPACE_LABEL};
@@ -122,13 +121,13 @@ impl Worktree {
 /// `options.keep_worktree`. The branch always stays.
 pub fn close_worker(
     client: &HcClient,
-    agents: &[DashboardAgent],
+    agents: &[Agent],
     name: &str,
     root: &str,
     caller: Option<&str>,
     options: CloseOptions,
 ) -> CloseOutcome {
-    let named = |agent: &&DashboardAgent| {
+    let named = |agent: &&Agent| {
         agent.project_root == root
             && (agent.info.display_name() == name || agent.info.name.as_deref() == Some(name))
     };
@@ -149,7 +148,7 @@ pub fn close_worker(
             format!("{name} is the supervisor of {root}: only a worker is closed this way"),
         );
     }
-    let address = agent.info.pane_id.as_str();
+    let address = agent.info.address.as_str();
     if caller == Some(address) {
         return CloseOutcome::refused(
             "self",
@@ -254,7 +253,7 @@ pub fn close_worker(
 /// `root` (never the primary checkout), with its branch. A worker in a
 /// folder that is no worktree of the project has none: only its terminal
 /// closes.
-fn linked_worktree(agent: &DashboardAgent, root: &str) -> Result<Option<Worktree>> {
+fn linked_worktree(agent: &Agent, root: &str) -> Result<Option<Worktree>> {
     let Some(checkout) = agent.worktree_checkout.as_deref() else {
         return Ok(None);
     };
@@ -330,8 +329,8 @@ fn end_terminal(client: &HcClient, address: &str) -> Result<()> {
 /// the app then keeps. Corgi's agents are read from the rows; any other
 /// terminal of the space (the person's shell) is asked of hc. It is only
 /// said, never acted on.
-fn shared_space(client: &HcClient, agent: &DashboardAgent, agents: &[DashboardAgent]) -> usize {
-    let space = agent.info.workspace_id.as_str();
+fn shared_space(client: &HcClient, agent: &Agent, agents: &[Agent]) -> usize {
+    let space = agent.info.space.as_str();
     if space.is_empty() {
         return 0;
     }
@@ -340,14 +339,12 @@ fn shared_space(client: &HcClient, agent: &DashboardAgent, agents: &[DashboardAg
             .iter()
             // hc filtered by the label; a fake of it in a test does not.
             .filter(|terminal| {
-                terminal.label(SPACE_LABEL) == Some(space) && terminal.address != agent.info.pane_id
+                terminal.label(SPACE_LABEL) == Some(space) && terminal.address != agent.info.address
             })
             .count(),
         Err(_) => agents
             .iter()
-            .filter(|other| {
-                other.info.workspace_id == space && other.info.pane_id != agent.info.pane_id
-            })
+            .filter(|other| other.info.space == space && other.info.address != agent.info.address)
             .count(),
     }
 }
@@ -372,22 +369,22 @@ mod tests {
         repo: PathBuf,
         worktree: PathBuf,
         hc: FakeHc,
-        agents: Vec<DashboardAgent>,
+        agents: Vec<Agent>,
     }
 
-    fn row(name: &str, address: &str, space: &str, root: &Path, cwd: &Path) -> DashboardAgent {
+    fn row(name: &str, address: &str, space: &str, root: &Path, cwd: &Path) -> Agent {
         let checkout = (cwd != root).then(|| cwd.to_string_lossy().into_owned());
-        DashboardAgent {
+        Agent {
             info: AgentInfo {
-                pane_id: address.into(),
+                address: address.into(),
                 name: Some(name.into()),
-                workspace_id: space.into(),
+                space: space.into(),
                 cwd: Some(cwd.to_string_lossy().into_owned()),
                 ..AgentInfo::default()
             },
             project_root: root.to_string_lossy().into_owned(),
             worktree_checkout: checkout,
-            ..DashboardAgent::default()
+            ..Agent::default()
         }
     }
 

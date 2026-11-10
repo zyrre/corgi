@@ -1,12 +1,11 @@
-//! The waker on herdr-core (`hc`), for `corgi daemon`: the same passes the
-//! Herdr TUI's hooks and dashboards make ([`SupervisorWaker::observe`],
-//! [`SupervisorWaker::deliver`], the handovers), made by one long-lived
-//! process per core, which holds the core's wake lock for as long as it
-//! runs and can time a rest, so it also asks Claude Code and Codex
-//! supervisors for their handover when their prompt cache is about to go
-//! cold.
+//! The waker's pass over a herdr-core (`hc`), for `corgi daemon`:
+//! [`SupervisorWaker::observe`], the handovers and
+//! [`SupervisorWaker::deliver`], made by one long-lived process per core,
+//! which holds the core's wake lock for as long as it runs and can time a
+//! rest, so it asks Claude Code and Codex supervisors for their handover
+//! when their prompt cache is about to go cold.
 //!
-//! What differs from the TUI is how the core is reached ([`Core`]):
+//! How the core is reached ([`Core`]):
 //!
 //! - a supervisor is typed into only while it rests (`done` or `idle`) with
 //!   its agent in front, never its shell, as a fresh look at its terminal
@@ -20,7 +19,7 @@
 //!   terminal ([`crate::hc::HANDOVER_LABEL`], [`crate::hc::BASELINE_LABEL`]).
 //!
 //! Its records (`seen.json`, `handovers.json`, the lock) are named after
-//! the hc core's socket, so they are never a Herdr TUI session's.
+//! the core's socket, so each core has its own.
 
 use std::{
     cell::RefCell,
@@ -45,7 +44,7 @@ use crate::{
         pause::Holds as PauseHolds,
     },
     job::Job,
-    model::{AgentState, DashboardAgent},
+    model::{Agent, AgentState},
     progress::Silent,
     session::SessionReader,
     supervisor,
@@ -95,12 +94,12 @@ pub struct Replacement {
 /// one. [`HcCore`] is the real one.
 pub trait Core {
     /// Whether Corgi may type into `supervisor` now.
-    fn ready(&mut self, supervisor: &DashboardAgent) -> Ready;
+    fn ready(&mut self, supervisor: &Agent) -> Ready;
     /// Pastes `text` into the terminal `address` and presses Enter, never
     /// forced, and says how that went.
     fn send(&mut self, address: &str, text: &str) -> Delivery;
     /// The report of `agent`, which rests.
-    fn report(&mut self, agent: &DashboardAgent) -> Capture;
+    fn report(&mut self, agent: &Agent) -> Capture;
     /// Sets `labels` on the terminal `address`; an empty value removes one.
     fn label(&mut self, address: &str, labels: &[(&str, &str)]) -> Result<()>;
     /// Starts `replacement` in the background.
@@ -110,20 +109,20 @@ pub trait Core {
 impl SupervisorWaker {
     /// A waker for the hc core listening on `socket`, whose records are
     /// named after that socket.
-    pub fn for_hc(socket: &Path) -> Self {
+    pub fn for_core(socket: &Path) -> Self {
         let mut waker = Self::default();
         waker.socket = Some(socket.to_path_buf());
-        waker.hc_pause = crate::hc::pause::record_path(socket);
+        waker.pause_file = crate::hc::pause::record_path(socket);
         waker
     }
 
-    /// [`SupervisorWaker::for_hc`] keeping its inboxes, records and lock
+    /// [`SupervisorWaker::for_core`] keeping its inboxes, records and lock
     /// under `base`, as [`SupervisorWaker::in_dir`] does.
     #[cfg(test)]
-    pub fn for_hc_in(base: &Path) -> Self {
+    pub fn for_core_in(base: &Path) -> Self {
         let mut waker = Self::in_dir(base);
         waker.socket = Some(base.join("hc.sock"));
-        waker.hc_pause = Some(base.join("pause.json"));
+        waker.pause_file = Some(base.join("pause.json"));
         waker
     }
 
@@ -131,7 +130,7 @@ impl SupervisorWaker {
     /// daemon does, and takes up what the waker before it left on disk: the
     /// agents it followed and the handovers. Returns whether it got the
     /// lock; another process holding it wakes this core's supervisors.
-    pub fn lead_hc(&mut self) -> bool {
+    pub fn lead(&mut self) -> bool {
         let Some(path) = self
             .lock_path
             .clone()
@@ -152,10 +151,10 @@ impl SupervisorWaker {
     /// supervisor's inbox in when it may be typed into. `corgi_bin` is the
     /// binary the wakes' lines name, and `now` the time in Unix seconds.
     /// Returns what happened worth logging.
-    pub fn tick_hc(
+    pub fn tick(
         &mut self,
         core: &mut dyn Core,
-        agents: &[DashboardAgent],
+        agents: &[Agent],
         corgi_bin: &Path,
         now: u64,
     ) -> Vec<String> {
@@ -168,7 +167,7 @@ impl SupervisorWaker {
         // and while any agent is paused nothing is typed into any
         // supervisor and no handover moves on (`hc::pause`).
         let holds = self
-            .hc_pause
+            .pause_file
             .as_deref()
             .map(PauseHolds::read)
             .unwrap_or_default();
@@ -179,7 +178,7 @@ impl SupervisorWaker {
         said.extend(self.observe(agents, corgi_bin, |agent| core.borrow_mut().report(agent)));
         // What this pass followed is recorded: an agent seen back after
         // Resume is taken up from here, and its mark goes.
-        if let Some(path) = &self.hc_pause
+        if let Some(path) = &self.pause_file
             && !holds.is_empty()
         {
             said.extend(
@@ -188,7 +187,7 @@ impl SupervisorWaker {
                     .map(|name| format!("{name} is back after Resume")),
             );
         }
-        self.hc_paused = holds.in_force;
+        self.pause_in_force = holds.in_force;
         // The replacements that ended since the last pass.
         let mut finished = Vec::new();
         self.replacements.retain_mut(|(root, replacement)| {
@@ -223,9 +222,9 @@ impl SupervisorWaker {
         // One look per supervisor and pass: a handover that waits for a
         // draft and the inbox ask the same.
         let mut looked: HashMap<String, Ready> = HashMap::new();
-        let mut ready = |agent: &DashboardAgent| -> Ready {
+        let mut ready = |agent: &Agent| -> Ready {
             *looked
-                .entry(agent.info.pane_id.clone())
+                .entry(agent.info.address.clone())
                 .or_insert_with(|| core.borrow_mut().ready(agent))
         };
         let percent = supervisor::handover_percent();
@@ -233,7 +232,7 @@ impl SupervisorWaker {
         let actions = self.hand_over(
             agents,
             percent,
-            |harness| supervisor::Cache::of(harness, true),
+            supervisor::Cache::of,
             now,
             |root, at| {
                 inboxes
@@ -254,7 +253,7 @@ impl SupervisorWaker {
                         supervisor::handover_request(corgi_bin, &action.root, &dir, trigger)
                     });
                     let sent = match &request {
-                        Some(request) => core.borrow_mut().send(&action.pane_id, request),
+                        Some(request) => core.borrow_mut().send(&action.address, request),
                         None => Delivery::Refused,
                     };
                     if sent == Delivery::Sent {
@@ -274,7 +273,7 @@ impl SupervisorWaker {
                     let job = core.borrow_mut().replace(Replacement {
                         root: action.root.clone(),
                         name: action.name.clone(),
-                        address: action.pane_id.clone(),
+                        address: action.address.clone(),
                         harness: action.harness.clone(),
                     });
                     self.replacements.push((root, job));
@@ -288,7 +287,7 @@ impl SupervisorWaker {
         let addresses: HashMap<String, String> = agents
             .iter()
             .filter(|agent| agent.supervisor)
-            .filter_map(|agent| Some((agent.info.name.clone()?, agent.info.pane_id.clone())))
+            .filter_map(|agent| Some((agent.info.name.clone()?, agent.info.address.clone())))
             .collect();
         let mut held = Vec::new();
         let undelivered = self.deliver(
@@ -339,8 +338,8 @@ impl SupervisorWaker {
     /// Whether a pause was in force at the last pass: nothing is typed
     /// into a supervisor then, so an inbox that waits calls for no early
     /// pass.
-    pub fn paused_hc(&self) -> bool {
-        self.hc_paused
+    pub fn pause_in_force(&self) -> bool {
+        self.pause_in_force
     }
 
     /// Whether `root`'s supervisor has items no delivery took yet.
@@ -363,7 +362,7 @@ fn keep_tokens(core: &mut dyn Core, action: &HandoverAction, handover: Option<&s
         labels.push((BASELINE_LABEL, baseline));
     }
     if !labels.is_empty() {
-        let _ = core.label(&action.pane_id, &labels);
+        let _ = core.label(&action.address, &labels);
     }
 }
 
@@ -388,8 +387,8 @@ impl HcCore {
 }
 
 impl Core for HcCore {
-    fn ready(&mut self, supervisor: &DashboardAgent) -> Ready {
-        let address = &supervisor.info.pane_id;
+    fn ready(&mut self, supervisor: &Agent) -> Ready {
+        let address = &supervisor.info.address;
         let terminal = match self.client.find(address) {
             Ok(Some(terminal)) if terminal.is_live() => terminal,
             _ => return Ready::Busy,
@@ -404,8 +403,7 @@ impl Core for HcCore {
             Ok(paint) => match draft::holds_draft(&supervisor.info.harness(), &paint) {
                 Some(true) => Ready::Drafting,
                 Some(false) => Ready::Yes,
-                // As on the Herdr TUI, a box Corgi cannot find holds nothing
-                // back.
+                // A box Corgi cannot find holds nothing back.
                 None => {
                     self.notes.push(format!(
                         "Found no input box on {address}'s screen; typing anyway"
@@ -413,8 +411,8 @@ impl Core for HcCore {
                     Ready::Yes
                 }
             },
-            // As on the Herdr TUI, a screen that cannot be read holds
-            // nothing back, rather than the inbox waiting for good.
+            // A screen that cannot be read holds nothing back, rather
+            // than the inbox waiting for good.
             Err(error) => {
                 self.notes.push(format!(
                     "Could not read {address}'s screen for a draft ({error:#}); typing anyway"
@@ -438,12 +436,12 @@ impl Core for HcCore {
         delivery_of(&result)
     }
 
-    fn report(&mut self, agent: &DashboardAgent) -> Capture {
+    fn report(&mut self, agent: &Agent) -> Capture {
         if let Some(capture) = transcript_report(&self.sessions.facts(&agent.info)) {
             return capture;
         }
         self.client
-            .read(&agent.info.pane_id, 120)
+            .read(&agent.info.address, 120)
             .ok()
             .map(|text| Captured {
                 text: text.trim_end().to_string(),
@@ -518,7 +516,7 @@ fn replace_supervisor(
         token: None,
         root: root.clone(),
         name: name.clone(),
-        pane_id: address.clone(),
+        address: address.clone(),
         session: String::new(),
         harness: harness.clone(),
         change: 0,

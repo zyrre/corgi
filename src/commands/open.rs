@@ -1,8 +1,8 @@
 //! `corgi projects` and `corgi open`: what the Herdr app's Projects mod runs
 //! for its "Open project" field. `projects` lists the projects Corgi knows,
 //! filtered by what is typed, with the directories that complete a typed
-//! path and where a new name would be created, exactly as the new-agent
-//! forms list them ([`crate::choices::ChoiceList`]). `open` opens one:
+//! path and where a new name would be created
+//! ([`crate::choices::ChoiceList`]). `open` opens one:
 //! it says which terminal its supervisor runs in, or starts it on herdr-core
 //! (`hc`), in a shell the mod offers when that shell waits in the project's
 //! primary checkout, else in a new terminal.
@@ -19,24 +19,27 @@ use crate::{
     choices::{Choice, ChoiceList},
     harness::{EFFORT_LEVELS, Harness, default_harness},
     hc::{self, HcClient},
-    launch::{SUPERVISOR_HOME_REFUSAL, create_project, dashboard_supervisor_plan, supervisor_plan},
-    model::{DashboardAgent, WorkspaceInfo, WorkspaceWorktreeInfo},
+    launch::{SUPERVISOR_HOME_REFUSAL, create_project, saved_supervisor_plan, supervisor_plan},
+    model::Agent,
     paths::{expand_home, is_home},
     progress::Progress,
     projects::{Project, ProjectMemory, known_projects, new_project_parent, project_choices},
     supervisor,
 };
 
-use super::hc_cli::{self, Shell, Started, hc_project_root};
+use super::{
+    launch::{self, Shell, Started},
+    project_root_of,
+};
 
 pub const PROJECTS_USAGE: &str = "\
 Usage: corgi projects --json [--query TEXT] [--open DIR]...
 
-Prints the projects to offer for \"Open project\" as one JSON object, in the
-order the new-agent form lists them: projects with agents on herdr-core (hc),
+Prints the projects to offer for \"Open project\" as one JSON object, in
+this order: projects with agents on herdr-core (hc),
 the ones open in the Herdr app (each --open DIR, a folder a space is in),
 Git repositories beside those, then the ones Corgi remembers. With --query only
-those matching every word of TEXT, and, as the form does:
+those matching every word of TEXT, and:
 
   an absolute path (or ~/…)  the directories that complete it, the directory
                              itself once it exists, and the path as a new
@@ -70,10 +73,10 @@ app's backend, as the app's \"Open project\" does:
                            terminal and space, as corgi supervisor does
 
 It starts on the harness, model and effort the project's supervisor last ran
-with, else the new-agent form's preset harness; the options override them.
+with, else the default harness (see corgi spawn --help); the options override
+them.
 A PROJECT that does not exist is an error unless --create is given: then the
-directory is created, as the new-agent form creates a new project, and
-recorded as Corgi's own, so Claude Code's folder-trust question about it is
+directory is created and recorded as Corgi's own, so Claude Code's folder-trust question about it is
 answered. With --json it prints {\"result\", \"message\", \"project\", \"name\",
 \"terminal\", \"created\", \"place\"} (place: new, own or shell), and on a failure
 {\"result\": \"failed\", \"message\"} with exit code 1.";
@@ -114,27 +117,19 @@ pub fn projects_command(args: &[String]) -> Result<()> {
 
 /// The object `corgi projects --json` prints: the projects known from
 /// `agents` (Corgi's on hc), the folders `open` in the Herdr app and
-/// `memory`, as the rows the new-agent form's project list shows for `query`.
+/// `memory`, as the rows the "Open project" list shows for `query`.
 pub(crate) fn projects_value(
-    agents: &[DashboardAgent],
+    agents: &[Agent],
     open: &[String],
     memory: &ProjectMemory,
     query: &str,
 ) -> Value {
-    let workspaces: Vec<WorkspaceInfo> = open
+    let open: Vec<String> = open
         .iter()
-        .map(|dir| hc_project_root(Path::new(&expand_home(dir.trim()))))
+        .map(|dir| project_root_of(Path::new(&expand_home(dir.trim()))))
         .filter(|root| !is_home(root))
-        .map(|root| WorkspaceInfo {
-            worktree: Some(WorkspaceWorktreeInfo {
-                checkout_path: root.clone(),
-                repo_root: root,
-                ..WorkspaceWorktreeInfo::default()
-            }),
-            ..WorkspaceInfo::default()
-        })
         .collect();
-    let known = without_duplicates(known_projects(agents, &workspaces, memory));
+    let known = without_duplicates(known_projects(agents, &open, memory));
     let parent = new_project_parent(&known);
     let mut list = ChoiceList::new(project_choices(&known));
     if let Some(parent) = &parent {
@@ -169,19 +164,19 @@ fn without_duplicates(projects: Vec<Project>) -> Vec<Project> {
 }
 
 /// One row of `corgi projects --json`.
-fn project_row(choice: &Choice, agents: &[DashboardAgent]) -> Value {
+fn project_row(choice: &Choice, agents: &[Agent]) -> Value {
     json!({
         "dir": choice.value,
         "name": choice.label,
         "badge": choice.badge,
         "new": choice.badge == Choice::new_project("").badge,
-        "supervisor": running_supervisor(agents, &choice.value).map(|agent| &agent.info.pane_id),
+        "supervisor": running_supervisor(agents, &choice.value).map(|agent| &agent.info.address),
     })
 }
 
 /// The supervisor of the project at `root` among `agents`, while its agent
 /// runs: one at its shell waits to be started again.
-fn running_supervisor<'a>(agents: &'a [DashboardAgent], root: &str) -> Option<&'a DashboardAgent> {
+fn running_supervisor<'a>(agents: &'a [Agent], root: &str) -> Option<&'a Agent> {
     agents
         .iter()
         .find(|agent| agent.supervisor && !agent.exited && agent.project_root == root)
@@ -301,22 +296,22 @@ fn project_dir(typed: &str, create: bool) -> Result<(PathBuf, bool)> {
 /// what `corgi open --json` prints.
 fn open_project(client: &HcClient, options: &OpenOptions) -> Result<Value> {
     let (dir, created) = project_dir(&options.project, options.create)?;
-    let root = hc_project_root(&dir);
+    let root = project_root_of(&dir);
     anyhow::ensure!(!is_home(&root), SUPERVISOR_HOME_REFUSAL);
     let agents = hc::agents::agents(client)?;
     if let Some(running) = running_supervisor(&agents, &root) {
         let name = running.info.display_name();
         return Ok(json!({
             "result": "running",
-            "message": format!("{root}'s supervisor {name} runs in {}", running.info.pane_id),
+            "message": format!("{root}'s supervisor {name} runs in {}", running.info.address),
             "project": root,
             "name": name,
-            "terminal": running.info.pane_id,
+            "terminal": running.info.address,
             "created": false,
             "place": Value::Null,
         }));
     }
-    let (exited, others) = hc_cli::exited_supervisor(agents, &root);
+    let (exited, others) = launch::exited_supervisor(agents, &root);
     let mut plan = match &options.harness {
         Some(harness) => supervisor_plan(
             &others,
@@ -330,7 +325,7 @@ fn open_project(client: &HcClient, options: &OpenOptions) -> Result<Value> {
             let saved = supervisor::state_dir(&root)
                 .ok()
                 .and_then(|dir| supervisor::saved_launch(&dir));
-            dashboard_supervisor_plan(&others, &root, saved, default_harness)?
+            saved_supervisor_plan(&others, &root, saved, default_harness)?
         }
     };
     if let Some(model) = &options.model {
@@ -344,7 +339,7 @@ fn open_project(client: &HcClient, options: &OpenOptions) -> Result<Value> {
         );
         plan.effort = effort.clone();
     }
-    let (launched, started) = hc_cli::start_supervisor(
+    let (launched, started) = launch::start_supervisor(
         client,
         &mut plan,
         exited.as_ref(),
@@ -380,14 +375,14 @@ mod tests {
         words.iter().map(|word| word.to_string()).collect()
     }
 
-    fn supervisor(root: &str, terminal: &str, exited: bool) -> DashboardAgent {
-        let mut agent = DashboardAgent {
+    fn supervisor(root: &str, terminal: &str, exited: bool) -> Agent {
+        let mut agent = Agent {
             project_root: root.into(),
             supervisor: true,
             exited,
-            ..DashboardAgent::default()
+            ..Agent::default()
         };
-        agent.info.pane_id = terminal.into();
+        agent.info.address = terminal.into();
         agent
     }
 
@@ -480,9 +475,9 @@ mod tests {
         fs::create_dir_all(repos.join("worktrees")).unwrap();
         let agents = [
             supervisor(&weather, "t3", false),
-            DashboardAgent {
+            Agent {
                 project_root: weather.clone(),
-                ..DashboardAgent::default()
+                ..Agent::default()
             },
         ];
         let memory = ProjectMemory::default();
@@ -553,7 +548,7 @@ mod tests {
             running_supervisor(&agents, "/repos/weather")
                 .unwrap()
                 .info
-                .pane_id,
+                .address,
             "t3"
         );
     }

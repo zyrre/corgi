@@ -12,7 +12,7 @@ import { agents, exec, home, appHome, readTextFile, watchFolder, theme, run } fr
 // "Releasing"); the mod installs or updates corgi to this version and no other.
 const VERSION = "0.2.3";
 // The installer, from the release's own tag: it installs that tag's corgi,
-// verified against the reviewed checksum pins, without the Herdr TUI plugin.
+// verified against the reviewed checksum pins.
 const INSTALLER = `https://raw.githubusercontent.com/zyrre/corgi/v${VERSION}/herdr-app/install.sh`;
 // What the person can run by hand when the mod's own install fails.
 const BY_HAND = `curl -fsSL ${INSTALLER} | sh -s -- --version ${VERSION}`;
@@ -39,7 +39,7 @@ async function candidates() {
     const config = JSON.parse((await readTextFile(`${appHome()}/mods/corgi/config.json`)) ?? "{}");
     if (config.corgi) list.push(config.corgi);
   } catch (_) {
-    // No config: the mod was added on its own, or by the TUI plugin's install.
+    // No config: the mod was added on its own (install.sh --mod-only).
   }
   const h = home();
   list.push("corgi", `${h}/.local/bin/corgi`, `${h}/.local/share/corgi/target/release/corgi`, `${h}/.cargo/bin/corgi`);

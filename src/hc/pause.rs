@@ -56,7 +56,7 @@ use super::{
     agents::{agent_state, corgi_terminals, shell_in_front},
 };
 use crate::{
-    draft, harness::Harness, model::AgentState, model::DashboardAgent, paths::socket_state_file,
+    draft, harness::Harness, model::Agent, model::AgentState, paths::socket_state_file,
     progress::Progress,
 };
 
@@ -154,9 +154,9 @@ impl PausedAgent {
     }
 
     /// Whether `agent`, a row, is this agent's.
-    fn is_row(&self, agent: &DashboardAgent) -> bool {
+    fn is_row(&self, agent: &Agent) -> bool {
         agent.project_root == self.project
-            && (agent.info.pane_id == self.address
+            && (agent.info.address == self.address
                 || agent.info.name.as_deref() == Some(self.name.as_str()))
     }
 }
@@ -257,12 +257,12 @@ impl Holds {
             .any(|paused| paused.address == terminal.address || paused.owns(terminal))
     }
 
-    /// The panes (terminal addresses) of `agents` that are marked agents'.
-    pub fn panes(&self, agents: &[DashboardAgent]) -> HashSet<String> {
+    /// The terminal addresses of `agents` that are marked agents'.
+    pub fn panes(&self, agents: &[Agent]) -> HashSet<String> {
         agents
             .iter()
             .filter(|agent| self.agents.iter().any(|paused| paused.is_row(agent)))
-            .map(|agent| agent.info.pane_id.clone())
+            .map(|agent| agent.info.address.clone())
             .collect()
     }
 
@@ -284,7 +284,7 @@ impl Holds {
 /// halfway). Called after the pass recorded what it saw, so the next one
 /// takes the agent up from there and wakes no one for its return. Returns
 /// the names it let go of.
-pub fn settle(path: &Path, agents: &[DashboardAgent], now: u64) -> Vec<String> {
+pub fn settle(path: &Path, agents: &[Agent], now: u64) -> Vec<String> {
     let settled = |record: &Record| -> Vec<String> {
         record
             .agents

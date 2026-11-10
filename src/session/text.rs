@@ -14,7 +14,7 @@ use crate::{
 };
 
 /// Claude Code wraps a prompt that arrived as a multi-line bracketed paste,
-/// which is how Herdr submits one, in these tags when it records the turn.
+/// which is how hc submits one, in these tags when it records the turn.
 pub static PASTED_CONTENT_TAG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"</?pasted_content(?:\s[^>]*)?>").expect("valid pasted content regex")
 });
@@ -138,9 +138,8 @@ impl Conversation {
     }
 
     /// The newest assistant reply or question, whole: `corgi report`'s
-    /// source. Unlike [`Self::message`], the text keeps its paragraphs and is
-    /// not cut to a dashboard row's length, because a worker's closing report
-    /// is meant to be read in full rather than skimmed.
+    /// source. The text keeps its paragraphs and is not cut, because a
+    /// worker's closing report is meant to be read in full.
     pub fn report(&self) -> Option<Activity> {
         let (kind, text) = self.reply.as_ref()?;
         Some(describe_block(*kind, text, usize::MAX))
@@ -232,8 +231,8 @@ pub fn task_prompt(text: &str) -> Option<String> {
 
 /// A user turn that can describe the session, rather than context injected by
 /// the harness. Codex currently writes AGENTS.md as a plain user message, so
-/// `is_spoken` alone would make the dashboard label the session with project
-/// instructions instead of the user's task.
+/// `is_spoken` alone would take the project instructions for the user's
+/// task.
 pub fn is_task_prompt(text: &str) -> bool {
     let trimmed = text.trim_start();
     is_spoken(trimmed)

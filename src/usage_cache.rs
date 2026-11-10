@@ -1,9 +1,9 @@
 //! One plan-usage reading per provider, shared by every Corgi process on the
 //! machine through a file under `$XDG_STATE_HOME/corgi/usage/`.
 //!
-//! Each dashboard and Omarchy bar stream used to ask the provider on its own,
-//! so reloads and extra dashboards multiplied the requests until Anthropic
-//! answered HTTP 429. Now a process reads the cache first and uses it while it
+//! Were every `corgi usage` to ask the provider on its own, each window of
+//! the Herdr app would multiply the requests until Anthropic answered HTTP
+//! 429. So a process reads the cache first and uses it while it
 //! is younger than the refresh interval. Once it is stale, whichever process
 //! takes the provider's lock without waiting fetches and writes the cache;
 //! the others keep what they have and find the new reading on a later check.
@@ -48,8 +48,7 @@ impl CachedUsage {
     }
 }
 
-/// How old a cached reading may be before a process fetches a new one: the
-/// dashboard's, the desktop window's and `corgi usage`'s interval alike, so
+/// How old a cached reading may be before a process fetches a new one, so
 /// the provider is asked at most once a minute on the machine.
 pub const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 

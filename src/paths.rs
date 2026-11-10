@@ -71,9 +71,9 @@ pub fn dir_name<P: AsRef<Path> + ?Sized>(path: &P) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-/// A file of Corgi's state kept per Herdr session: `<kind>/<socket>.<extension>`
-/// in the state directory, the socket path spelled with only ASCII letters,
-/// digits and underscores, so that each Herdr session has its own.
+/// A file of Corgi's state kept per herdr-core: `<kind>/<socket>.<extension>`
+/// in the state directory, the core's socket path spelled with only ASCII
+/// letters, digits and underscores, so that each core has its own.
 pub fn socket_state_file(kind: &str, socket: &Path, extension: &str) -> Option<PathBuf> {
     let name = spelled(&socket.to_string_lossy());
     corgi_state_dir().map(|dir| dir.join(kind).join(format!("{name}.{extension}")))
