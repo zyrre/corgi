@@ -12,9 +12,9 @@ button on each worker tagged ready to merge; click an agent to see its
 terminal.
 
 The **Projects** mod is a sidebar list that stands in your layout where
-Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, one line each
-(the agent's task, its harness's icon, its state and the worktree it works
-in, in that order), and a `+` that opens a project: type a name or a path, and Enter shows
+Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, two lines each
+(the agent's task with its state at the right; under it, smaller, its
+harness's icon, its model and how full its context is), and a `+` that opens a project: type a name or a path, and Enter shows
 its supervisor or starts it. A worker Corgi tagged ready to merge has a
 `MERGE` mark in its row: click it, confirm, and its branch is merged into
 the project's base branch and pushed, as `m` does in Corgi's dashboard;
@@ -151,21 +151,24 @@ The Projects mod fills its block on `chrome`, text 13 px:
     30 px, a colored 18 px avatar with its initial, its name.
   - A project, a repository: the space on its primary checkout, drawn the
     same way, with its branch and ahead/behind after the name only when
-    unusual. Under it, indented 22 px, one 26 px row per agent in it and in
-    the spaces on its worktrees, which reads left to right: the task in
-    12.5 px (medium weight for `Supervisor`); the harness's icon (14 px;
-    Claude's now, Codex's or OpenCode's when it is one); the state, a
+    unusual. Under it, indented 22 px, one 38 px row per agent in it and in
+    the spaces on its worktrees, on two lines. The first (18 px): the task
+    in 12.5 px (medium weight for `Supervisor`), cut with `…` before it
+    reaches the state, which keeps its place at the row's right edge: a
     spinning ring in `working`, a `!` tile in `blocked`, a dot in `done`, a
-    ring in `idle`; on a worker tagged ready to merge, a `MERGE` mark
-    (10 px semibold, `accent_foreground` on `accent`, radius 4; tooltip
-    `Merge worktree/x into main and push`); and the worktree's folder name
-    in `dim` 11 px
-    (`worktree-calm-forest-4f96`; nothing on the primary checkout). They
-    follow one another, 7 px apart, from the left; nothing is pushed to the
-    right edge. The supervisor is first; the rest keep the app's order. One
-    line each: a row too wide is cut from the right, the worktree's name
-    first, with `…`, down to nothing if need be, and only then the task;
-    the icon, the state and the mark stay whole.
+    ring in `idle`. The second (16 px), in `dim` 11 px, 5 px apart from
+    the left: the harness's icon (12 px; Claude's now, Codex's or
+    OpenCode's when it is one), the model (`Opus 5.5`, cut with `…` if the
+    line runs out), a `·`, and the context fill (`33%`), from `model` and
+    `ctx_pct` in `corgi status --json`. What is not known is left out with
+    nothing in its place (no `·` without both): an agent started by hand
+    shows its icon alone. On a worker tagged ready to merge, the `MERGE`
+    mark stands at the right end of the second line (10 px semibold,
+    `accent_foreground` on `accent`, radius 4; tooltip `Merge worktree/x
+    into main and push`). The worktree's folder name
+    (`worktree-calm-forest-4f96`; nothing on the primary checkout) is not
+    drawn; it is the row's tooltip. The supervisor is first; the rest keep
+    the app's order. The state, the icon, the fill and the mark stay whole.
   - Under a worker's row, while its merge is asked about, runs or has
     ended: a card indented like the row (22 px; `surface`, radius 7,
     padding 7, text 11.5 px, its text wrapping) with a `border` outline
@@ -549,20 +552,18 @@ wants the overview on screen.
 - An agent's row is found by its terminal's address in `corgi status
   --json`. Before the first read, and with no `corgi`, every agent shows by
   its own title; a row must never wait for Corgi.
-- A row is cut from the right by flex alone, nothing is measured: the task
-  and the worktree's name both truncate with a minimum width of 0 and
-  neither grows; the task shrinks by a factor of 1 and the name by 1000,
-  and flex takes the overflow from each in proportion to its factor times
-  its width, so the name is gone before the task loses a letter. The icon
-  and the state do not shrink (`flex_none`). Giving the task `flex_1`
-  instead would make it the first to give way. A `\n` in a task starts a
+- A row is two `h_flex` lines in a `v_flex` of a fixed height, laid out
+  by flex alone, nothing measured. On the first, the task is `flex_1` with
+  a minimum width of 0 and truncates, so it fills the line and the state
+  (`flex_none`, 14 px wide) stands at the right edge whatever the task's
+  length. On the second, the model truncates with a minimum width of 0;
+  the icon, the `·`, the fill and the mark are `flex_none`, and a `flex_1`
+  spacer before the mark pushes it to the right. A `\n` in a task starts a
   second line even when truncated: join the lines first.
 - The `MERGE` mark and the card's buttons sit inside or beside a clickable
   row: each calls `cx.stop_propagation()` in its `on_click`, or the row's
-  click shows the agent's terminal too. The mark is `flex_none` like the
-  icon and the state, and stands before the worktree's name, so the name
-  still gives way first. The card is an element of the list after its row,
-  not a child of the row, which stays 26 px high.
+  click shows the agent's terminal too. The card is an element of the list
+  after its row, not a child of the row, which stays 38 px high.
 - Never run `corgi merge` from a test or a look at the mod: it merges and
   pushes for real. `node scripts/test-app-mods.mjs` gives the mod canned
   answers for it; Corgi's own tests merge in scratch repositories.
@@ -615,10 +616,11 @@ wants the overview on screen.
   narrowed, the word "Corgi" goes first, then "Herdr", and the logos and
   `+` stay whole; the rail shows what Herdr's row shows
   there; the footer is Herdr's.
-- Projects shows each repository with its agents in one-line rows (task,
-  icon, state, worktree), the supervisor first; in a sidebar too narrow for
-  a row, its worktree's name is cut with `…` and then gone before its task
-  is cut, and the icon and the state are whole; a click on a row shows that
+- Projects shows each repository with its agents in two-line rows (the
+  task with its state at the right edge; then the icon, model and context
+  fill, dim), the supervisor first; in a narrow sidebar the task is cut
+  with `…` and the state keeps its place, and an agent without a model or
+  fill shows neither, with no placeholder; a click on a row shows that
   agent's terminal; `~`, other folders and a worktree with no agent still
   have their rows; the narrow rail shows a cell per space and `»` unfolds
   it.

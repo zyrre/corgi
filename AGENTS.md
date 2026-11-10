@@ -546,7 +546,8 @@ view needs, and `stop` removes all of it.
 
 The window shows made-up projects: `alpha` with a supervisor and four
 workers in worktrees (working, blocked, idle and done, one tagged to
-merge, one with a long task and one with a short one), `beta` with a
+merge, one with a long task, one with a short one and one with no model or
+context fill in its status), `beta` with a
 working supervisor and an agent started by hand, and `notes`, a folder in
 no repository. The agents are a script that reports a state to herdr-core
 (OSC 7501) and sleeps; their tasks and roles come from a canned `corgi

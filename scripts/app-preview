@@ -209,13 +209,16 @@ fake_worktree() {
   [[ -d "$2" ]] || git -C "$1" worktree add -q -b "worktree/${2##*/worktree-}" "$2"
 }
 
-# One agent of the canned status: name, role, state, task, terminal, folder, worktree, tag.
+# One agent of the canned status: name, role, state, task, terminal, folder,
+# worktree, tag, harness, model, context fill (an empty model or fill: none).
 status_agent() {
-  local worktree=null tag=null
+  local worktree=null tag=null model=null ctx=null
   [[ -z "$7" ]] || worktree="\"$7\""
   [[ -z "$8" ]] || tag="\"$8\""
+  [[ -z "${10:-}" ]] || model="\"${10}\""
+  [[ -z "${11:-}" ]] || ctx="${11}"
   printf '{"name":"%s","role":"%s","state":"%s","task":"%s","terminal":"%s","cwd":"%s","worktree":%s,"tag":%s,' "$1" "$2" "$3" "$4" "$5" "$6" "$worktree" "$tag"
-  printf '"branch":"%s","harness":"claude","model":"Opus 5.5","ctx_pct":18,"request_id":null,' "$([[ -n "$7" ]] && echo "worktree/${7##*/worktree-}" || echo main)"
+  printf '"branch":"%s","harness":"%s","model":%s,"ctx_pct":%s,"request_id":null,' "$([[ -n "$7" ]] && echo "worktree/${7##*/worktree-}" || echo main)" "${9:-claude}" "$model" "$ctx"
   printf '"cache":{"estimated":false,"minutes_left":55,"state":"warm","tokens":126636}}'
 }
 
@@ -277,13 +280,13 @@ AGENT
     [[ -z "$build" ]] || printf '"corgi":%s,"newer":null},' "${build%\}}"
     printf '"hc":{"error":null,"running":true},"projects":['
     status_project alpha "$a" 1 1 \
-      "$(status_agent alpha-supervisor supervisor "done" Supervisor "$a_sup" "$a" '' '')" \
-      "$(status_agent w-export-columns worker working "Rename the export columns and keep the old names readable for one release" "$a_w1" "$trees/alpha/worktree-quiet-river-1a2b" "$trees/alpha/worktree-quiet-river-1a2b" '')" \
-      "$(status_agent w-login-test worker blocked "Fix the flaky login test" "$a_w2" "$trees/alpha/worktree-tall-pine-3c4d" "$trees/alpha/worktree-tall-pine-3c4d" '')" \
-      "$(status_agent w-docs worker idle "Docs" "$a_w3" "$trees/alpha/worktree-warm-hill-5e6f" "$trees/alpha/worktree-warm-hill-5e6f" '')" \
-      "$(status_agent w-cache worker "done" "Cache the parsed schedule between runs" "$a_w4" "$trees/alpha/worktree-dry-lake-7a8b" "$trees/alpha/worktree-dry-lake-7a8b" merge)"
+      "$(status_agent alpha-supervisor supervisor "done" Supervisor "$a_sup" "$a" '' '' claude 'Opus 5.5' 33)" \
+      "$(status_agent w-export-columns worker working "Rename the export columns and keep the old names readable for one release" "$a_w1" "$trees/alpha/worktree-quiet-river-1a2b" "$trees/alpha/worktree-quiet-river-1a2b" '' claude 'Opus 5.5' 62)" \
+      "$(status_agent w-login-test worker blocked "Fix the flaky login test" "$a_w2" "$trees/alpha/worktree-tall-pine-3c4d" "$trees/alpha/worktree-tall-pine-3c4d" '' codex 'GPT-5.6' 41)" \
+      "$(status_agent w-docs worker idle "Docs" "$a_w3" "$trees/alpha/worktree-warm-hill-5e6f" "$trees/alpha/worktree-warm-hill-5e6f" '' opencode)" \
+      "$(status_agent w-cache worker "done" "Cache the parsed schedule between runs" "$a_w4" "$trees/alpha/worktree-dry-lake-7a8b" "$trees/alpha/worktree-dry-lake-7a8b" merge claude 'Sonnet 5.5' 87)"
     printf ','
-    status_project beta "$b" 0 0 "$(status_agent beta-supervisor supervisor working Supervisor "$b_sup" "$b" '' '')"
+    status_project beta "$b" 0 0 "$(status_agent beta-supervisor supervisor working Supervisor "$b_sup" "$b" '' '' claude 'Opus 5.5' 12)"
     printf ']}\n'
   } >"$fake/status.json"
 
