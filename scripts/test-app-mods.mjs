@@ -570,6 +570,160 @@ async function projects(w) {
   assert.equal(w.sidebar, 268);
 }
 
+// --- Pull, from a checkout's ↓N ----------------------------------------------------------
+
+// A window whose primary checkout is 3 behind origin/main and whose
+// worktree with no agent (quiet-lake) 2 behind origin/spike; `pull(cwd)`
+// answers each pull, and is called only for one. `pulls` keeps each pull's
+// folder and what ran. A pull is a shell that runs `git pull --ff-only`
+// alone, with no prompt for a login.
+const PULL_SH = /^ssh="\$\{GIT_SSH_COMMAND:-\$\(git config --get core\.sshCommand\)\}"; export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="\$\{ssh:-ssh\} -o BatchMode=yes"; exec git pull --ff-only$/;
+function behindWindow(pull) {
+  const w = window();
+  const behind = { [REPO]: 3, [`${TREES}/worktree-quiet-lake-0a1b`]: 2 };
+  const upstream = { [REPO]: 'origin/main', [`${TREES}/worktree-quiet-lake-0a1b`]: 'origin/spike' };
+  w.pulls = [];
+  w.programs = [
+    (command, args, options) => {
+      if (command === 'sh') {
+        assert.equal(args[0], '-c');
+        assert.match(args[1], PULL_SH);
+        w.pulls.push({ cwd: options.cwd, args: ['pull', '--ff-only'] });
+        return pull(options.cwd);
+      }
+      if (command !== 'git') return undefined;
+      if (args.includes('status') && behind[options.cwd] !== undefined) {
+        return { stdout: `# branch.head ${options.cwd === REPO ? 'main' : 'spike'}\n# branch.upstream ${upstream[options.cwd]}\n# branch.ab +1 -${behind[options.cwd]}\n` };
+      }
+      return git(command, args, options);
+    },
+    corgi({ status: STATUS }),
+  ];
+  w.behind = behind;
+  return w;
+}
+const REPO_KEY = JSON.stringify([null, REPO]);
+const QUIET_KEY = JSON.stringify([null, `${TREES}/worktree-quiet-lake-0a1b`]);
+// A click on a ↓N: the press and the release, both its own.
+function pressPull(root, key, cx) {
+  const before = cx.stopped;
+  click(root, `pull-${key}`, cx, 'on_mouse_down:left');
+  click(root, `pull-${key}`, cx, 'on_mouse_up:left');
+  assert.equal(cx.stopped, before + 2, 'the row under the mark neither shows its space nor drags');
+}
+
+// Only a checkout that is behind has a ↓N to click, with its count and upstream.
+{
+  const w = behindWindow(() => ({}));
+  const mod = await projects(w);
+  const root = mod.render();
+  assert.deepEqual(ids(root, 'pull-'), [`pull-${REPO_KEY}`, `pull-${QUIET_KEY}`]);
+  const mark = byId(root, `pull-${REPO_KEY}`);
+  assert.deepEqual(texts(mark), ['↓3']);
+  assert.ok('cursor_pointer' in mark.calls);
+  assert.deepEqual(mark.calls.tooltip, ['Pull 3 commits from origin/main']);
+  assert.deepEqual(texts(byId(root, `space-sp-weather`)).slice(-2), ['↑1', '↓3'], 'the ahead mark stays as it is');
+  // Up to date: no mark at all.
+  const plain = await projects(window());
+  assert.deepEqual(ids(plain.render(), 'pull-'), []);
+}
+
+// A click runs exactly `git pull --ff-only` in that row's checkout; done,
+// git is read again, the ↓N goes and nothing else is shown.
+{
+  let finish;
+  const w = behindWindow(() => new Promise((resolve) => { finish = resolve; }));
+  const mod = await projects(w);
+  pressPull(mod.render(), QUIET_KEY, mod.cx);
+  assert.deepEqual(w.pulls, [{ cwd: `${TREES}/worktree-quiet-lake-0a1b`, args: ['pull', '--ff-only'] }]);
+  // Pulling: dimmed, with a spinner, and no other click starts one.
+  let root = mod.render();
+  const mark = byId(root, `pull-${QUIET_KEY}`);
+  assert.ok('opacity' in mark.calls);
+  assert.ok(!('cursor_pointer' in mark.calls));
+  assert.equal(kept(mark.children[0]).kind, 'svg');
+  pressPull(root, QUIET_KEY, mod.cx);
+  pressPull(root, REPO_KEY, mod.cx);
+  assert.equal(w.pulls.length, 1, 'nothing runs while a pull is in flight');
+  assert.deepEqual(byId(root, `pull-${REPO_KEY}`).calls.tooltip, ['Another pull is running']);
+  w.behind[`${TREES}/worktree-quiet-lake-0a1b`] = 0;
+  finish({ stdout: 'Fast-forward\n' });
+  await mod.settle();
+  root = mod.render();
+  assert.deepEqual(ids(root, 'pull-'), [`pull-${REPO_KEY}`]);
+  assert.deepEqual(ids(root, 'pull-card-'), []);
+  // Only the pull was run: no merge, stash or reset, and nothing of the app.
+  assert.deepEqual(w.execs.filter(([command, ...args]) => !(command === 'git' && (args.includes('status') || args.includes('rev-parse'))) && command !== CORGI).map(([command, flag]) => [command, flag]), [['sh', '-c']]);
+  // The next pull may run.
+  pressPull(root, REPO_KEY, mod.cx);
+  assert.deepEqual(w.pulls.at(-1), { cwd: REPO, args: ['pull', '--ff-only'] });
+}
+
+// Each way a pull fails, said plainly in a card under the row, with Dismiss.
+{
+  const failures = [
+    [
+      { code: 128, stderr: 'hint: Diverging branches can\'t be fast-forwarded, you need to either:\nhint:\nhint: \tgit merge --no-ff\nfatal: Not possible to fast-forward, aborting.\n' },
+      'Can\'t fast-forward: main and origin/main have diverged',
+    ],
+    [
+      { code: 1, stdout: 'Updating 1234567..89abcde\n', stderr: 'error: Your local changes to the following files would be overwritten by merge:\n\tsrc/a.rs\n\tREADME.md\nPlease commit your changes or stash them before you merge.\nAborting\n' },
+      'Local changes would be overwritten: src/a.rs, README.md',
+    ],
+    [
+      { code: 1, stderr: 'error: The following untracked working tree files would be overwritten by merge:\n\tnotes.txt\nPlease move or remove them before you merge.\nAborting\n' },
+      'Untracked files would be overwritten: notes.txt',
+    ],
+    [
+      { code: 128, stderr: 'ssh: Could not resolve hostname gitlab.example.com: nodename nor servname provided\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\n' },
+      'Couldn\'t reach origin: Could not resolve hostname gitlab.example.com: nodename nor servname provided',
+    ],
+    [Promise.reject(new Error('timed out after 120000 ms')), 'git pull did not finish: timed out after 120000 ms'],
+    // A login it may not ask for: at once, not after the timeout.
+    [{ code: 128, stderr: 'fatal: could not read Username for \'https://gitlab.example.com\': terminal prompts disabled\n' }, 'Needs a login: run git pull in a terminal once'],
+    [{ code: 128, stderr: 'git@gitlab.example.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n' }, 'Needs a login: run git pull in a terminal once'],
+    [{ code: 128, stderr: 'Host key verification failed.\nfatal: Could not read from remote repository.\n' }, 'Needs a login: run git pull in a terminal once'],
+  ];
+  for (const [answer, said] of failures) {
+    const w = behindWindow(() => answer);
+    const mod = await projects(w);
+    pressPull(mod.render(), REPO_KEY, mod.cx);
+    await mod.settle();
+    let root = mod.render();
+    assert.deepEqual(ids(root, 'pull-card-'), [`pull-card-${REPO_KEY}`]);
+    assert.deepEqual(texts(byId(root, `pull-card-${REPO_KEY}`)), [said, 'Dismiss']);
+    // Under the project's row, before its agents.
+    const list = ids(root, '');
+    assert.equal(list.indexOf(`pull-card-${REPO_KEY}`), list.indexOf(`pull-${REPO_KEY}`) + 1, list.join(' '));
+    assert.ok(list.indexOf(`pull-card-${REPO_KEY}`) < list.indexOf('agent-t2'), list.join(' '));
+    assert.ok(byId(root, `pull-${REPO_KEY}`), 'still behind: the mark stays, to try again');
+    assert.equal(w.pulls.length, 1);
+    const before = mod.cx.stopped;
+    click(root, `pull-dismiss-${REPO_KEY}`, mod.cx);
+    assert.equal(mod.cx.stopped, before + 1);
+    root = mod.render();
+    assert.deepEqual(ids(root, 'pull-card-'), []);
+  }
+}
+
+// A worktree's row shows its card under itself; brought up to date some
+// other way, the card goes by itself.
+{
+  const w = behindWindow(() => ({ code: 128, stderr: 'fatal: Not possible to fast-forward, aborting.\n' }));
+  const mod = await projects(w);
+  pressPull(mod.render(), QUIET_KEY, mod.cx);
+  await mod.settle();
+  let root = mod.render();
+  assert.deepEqual(texts(byId(root, `pull-card-${QUIET_KEY}`)), ['Can\'t fast-forward: spike and origin/spike have diverged', 'Dismiss']);
+  const list = ids(root, '');
+  assert.ok(list.indexOf(`pull-card-${QUIET_KEY}`) > list.indexOf('space-sp-quiet'));
+  w.behind[`${TREES}/worktree-quiet-lake-0a1b`] = 0;
+  mod.view.refreshGit([QUIET_KEY], mod.cx);
+  await mod.settle();
+  root = mod.render();
+  assert.deepEqual(ids(root, 'pull-'), [`pull-${REPO_KEY}`]);
+}
+
 // --- Open project ----------------------------------------------------------------------
 
 const SUGGESTED = {

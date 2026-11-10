@@ -205,6 +205,24 @@ fake_repo() {
   git -C "$1" -c user.name=preview -c user.email=preview@example.invalid commit -q --allow-empty -m "A made-up project"
 }
 
+# Puts a made-up project behind an upstream of its own (a bare repository
+# beside it): folder, origin, commits behind, commits ahead. Pulling it with
+# none ahead fast-forwards; with some it has diverged, and a pull fails.
+fake_behind() {
+  [[ -d "$2" ]] && return 0
+  local i
+  git init -q --bare -b main "$2"
+  git -C "$1" remote add origin "$2"
+  for ((i = 1; i <= $3; i++)); do
+    git -C "$1" -c user.name=preview -c user.email=preview@example.invalid commit -q --allow-empty -m "Upstream change $i"
+  done
+  git -C "$1" push -q -u origin main
+  git -C "$1" reset -q --hard "HEAD~$3"
+  for ((i = 1; i <= $4; i++)); do
+    git -C "$1" -c user.name=preview -c user.email=preview@example.invalid commit -q --allow-empty -m "Local change $i"
+  done
+}
+
 fake_worktree() {
   [[ -d "$2" ]] || git -C "$1" worktree add -q -b "worktree/${2##*/worktree-}" "$2"
 }
@@ -252,6 +270,9 @@ AGENT
   local a="$fake/alpha" b="$fake/beta" trees="$fake/worktrees"
   fake_repo "$a"
   fake_repo "$b"
+  # A project's ↓N: alpha's pulls, beta's has diverged.
+  fake_behind "$a" "$fake/origins/alpha.git" 3 0
+  fake_behind "$b" "$fake/origins/beta.git" 2 1
   mkdir -p "$trees/alpha" "$notes"
   fake_worktree "$a" "$trees/alpha/worktree-quiet-river-1a2b"
   fake_worktree "$a" "$trees/alpha/worktree-tall-pine-3c4d"
