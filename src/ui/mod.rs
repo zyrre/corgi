@@ -27,13 +27,10 @@ mod sessions;
 mod status;
 
 use agents::draw_agents;
-pub(crate) use dialogs::{close_dialog_lines, merge_dialog_lines};
 use dialogs::{draw_close_workspace, draw_merge_worktree, draw_notice, draw_pause};
 use header::{HEADER_HEIGHT, draw_header};
-pub(crate) use header::{HERD_WIDTH, herd_header, show_usage_card, usage_lines_for_slot};
 use new_agent::{draw_new_agent, draw_new_agent_launch};
 use prompt::draw_prompt;
-pub(crate) use status::status_fields;
 
 // Every color comes from the theme's roles (see `crate::theme`), so the
 // dashboard follows the terminal's own palette, light or dark. A worker a
@@ -287,15 +284,6 @@ fn legend_width(keys: &[LegendKey], separator: &str) -> usize {
         .map(|(key, label, _)| key.width() + 2 + 1 + label.width())
         .sum();
     entries + separator.width() * keys.len().saturating_sub(1)
-}
-
-/// The keys of a legend as plain words, `Enter merge · Esc cancel`, for a
-/// frontend that draws no keycaps.
-pub(crate) fn legend_text(keys: &[LegendKey]) -> String {
-    keys.iter()
-        .map(|(key, label, _)| format!("{key} {label}"))
-        .collect::<Vec<_>>()
-        .join(" · ")
 }
 
 /// The faint rule a popup draws over its keys.

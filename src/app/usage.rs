@@ -9,8 +9,7 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use corgi_core::{
-    protocol::UsageCard,
-    usage::{Provider, installed_providers},
+    usage::{PlanUsage, Provider, installed_providers},
     usage_cache::{CachedUsage, USAGE_REFRESH_INTERVAL, cached_plan_usage, shared_plan_usage},
 };
 
@@ -65,6 +64,20 @@ pub fn usage_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// One provider's reading, as the command prints it.
+#[derive(serde::Serialize)]
+struct UsageCard {
+    provider: Provider,
+    /// `CODEX`, `CLAUDE`.
+    title: String,
+    /// The last good reading.
+    usage: Option<PlanUsage>,
+    /// When it was read, Unix seconds.
+    fetched_at: Option<u64>,
+    /// Why the last reading failed.
+    error: Option<String>,
+}
+
 /// The command's object for each provider's reading at `now`: `None` while
 /// nothing is cached yet (another process is fetching the first reading).
 fn usage_value(readings: Vec<(Provider, Option<CachedUsage>)>, now: u64) -> Value {
@@ -91,7 +104,7 @@ fn usage_value(readings: Vec<(Provider, Option<CachedUsage>)>, now: u64) -> Valu
 
 #[cfg(test)]
 mod tests {
-    use corgi_core::usage::{PlanUsage, UsageWindow};
+    use corgi_core::usage::UsageWindow;
 
     use super::*;
 

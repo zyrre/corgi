@@ -97,7 +97,7 @@ pub(crate) fn close_dialog_lines(form: &CloseWorkspaceForm) -> DialogContent<'_>
 pub(super) fn draw_pause(
     frame: &mut Frame<'_>,
     area: Rect,
-    form: &corgi_core::protocol::PauseForm,
+    form: &corgi_core::pause::PauseForm,
 ) -> Drawn {
     let words = corgi_core::pause::confirmation(form);
     let mut lines = vec![

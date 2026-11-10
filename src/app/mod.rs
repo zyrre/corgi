@@ -58,14 +58,12 @@ pub(crate) use prompt::PromptForm;
 // Omarchy bar endpoints.
 mod app_layout;
 mod app_space;
-mod bar;
 mod cards;
 mod cli;
 mod daemon;
 mod hc_cli;
 mod hc_pause;
 pub use hc_pause::{PAUSE_USAGE, RESUME_USAGE, pause_command, resume_command};
-mod navigate;
 mod status;
 mod usage;
 pub use status::{
@@ -76,9 +74,7 @@ pub(crate) mod orphans;
 pub use app_layout::{APP_LAYOUT_USAGE, app_layout_command};
 pub use app_space::{APP_SPACE_USAGE, app_space_command};
 mod open;
-pub use bar::{bar_action, bar_new_agent, bar_new_options, bar_prompt, bar_stream, bar_transcript};
 pub(crate) use cards::{CardMemory, is_card, project_runs};
-pub(crate) use cli::digest_summary;
 pub use cli::{
     DIGEST_USAGE, FLEET_USAGE, INBOX_USAGE, NOTIFY_USAGE, RECOVERY_USAGE, REPORT_USAGE, ROLE_USAGE,
     SPAWN_USAGE, SUPERVISOR_USAGE, TAG_USAGE, digest, fleet, inbox_command, notify,
@@ -89,9 +85,7 @@ pub use edit::{EDIT_USAGE, edit_command};
 pub use open::{OPEN_USAGE, PROJECTS_USAGE, open_command, projects_command};
 pub use orphans::{ORPHANS_USAGE, orphans_command};
 mod hook;
-pub(crate) use edit::{open_checkout, selection_file, write_selection};
 pub use hook::{HOOK_USAGE, hook_command};
-pub use navigate::bar_navigate;
 use rows::codex_thread_id;
 pub use setup::{SETUP_USAGE, setup};
 

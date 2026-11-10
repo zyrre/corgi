@@ -33,13 +33,38 @@ use crate::{
     herdr::HerdrClient,
     model::{AgentInfo, AgentState, DashboardAgent},
     progress::Progress,
-    protocol::{PauseForm, PauseProject},
     recovery::native,
     restart::{self, Launched, Paused, Record},
     rows::SCRATCH_GROUP,
     supervisor,
     time::unix_now,
 };
+
+/// What `pause_all` stops, for the confirmation ([`confirmation`] words
+/// it).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PauseForm {
+    /// How many agents it stops.
+    pub agents: usize,
+    /// How many of them are working or waiting on a question now: their
+    /// current turn is lost.
+    pub working: usize,
+    /// The agents by project, in the dashboard's order.
+    pub projects: Vec<PauseProject>,
+    /// The agents it leaves running, each as `name: why`.
+    pub left: Vec<String>,
+}
+
+/// One project's share of a [`PauseForm`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PauseProject {
+    /// The project's heading (`Scratch` for the scratch sessions).
+    pub project: String,
+    pub supervisors: usize,
+    pub workers: usize,
+    /// The names of those working now.
+    pub working: Vec<String>,
+}
 
 /// How long a mark may stay on a pane whose agent still runs and was not
 /// resumed: longer than a pause takes, so one that never stopped its agent

@@ -297,6 +297,30 @@ pub(crate) fn status_value(
     })
 }
 
+/// `Q2: Keep the old flag?` as its handle, `Q2`, and title. A question
+/// without a number keeps its whole text as its title.
+fn split_question(question: &str) -> (String, String) {
+    let question = question.trim();
+    if let Some((handle, title)) = question.split_once(':')
+        && let Some(number) = question_number(handle)
+    {
+        return (format!("Q{number}"), title.trim().to_string());
+    }
+    (String::new(), question.to_string())
+}
+
+/// The number of a question's handle, `Q3`, `q3` or `3`.
+fn question_number(handle: &str) -> Option<u32> {
+    let handle = handle.trim();
+    let digits = handle
+        .strip_prefix('Q')
+        .or_else(|| handle.strip_prefix('q'))
+        .unwrap_or(handle);
+    (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| digits.parse().ok())
+        .flatten()
+}
+
 /// One project of `corgi status --json`.
 fn project_value(agents: &[DashboardAgent], inboxes: &Inboxes, root: &str, now: u64) -> Value {
     let rows: Vec<&DashboardAgent> = agents
@@ -316,7 +340,7 @@ fn project_value(agents: &[DashboardAgent], inboxes: &Inboxes, root: &str, now: 
     let questions: Vec<Value> = all_open_questions(&ledger)
         .into_iter()
         .map(|(agent, question)| {
-            let (id, title) = crate::serve::split_question(&question);
+            let (id, title) = split_question(&question);
             let file = state_dir
                 .as_ref()
                 .filter(|_| !id.is_empty())

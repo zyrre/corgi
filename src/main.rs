@@ -34,7 +34,6 @@ Commands:
   app-layout  Put Corgi's Projects list into the Herdr app's layout, or take it out
   projects    List the projects to offer for Open project, as JSON
   open        Open a project: name its supervisor's terminal, or start it
-  serve       Speak the frontend protocol on stdio, for a desktop GUI
 
 Run corgi COMMAND --help for a command's options, and corgi --version for the
 version and the commit it was built from (--version --json for both as JSON).";
@@ -104,48 +103,8 @@ fn main() -> Result<()> {
         Some("projects") => corgi::app::projects_command(&args[2..]),
         Some("open") if help() => usage(corgi::app::OPEN_USAGE),
         Some("open") => corgi::app::open_command(&args[2..]),
-        Some("serve") if help() => usage(corgi::serve::SERVE_USAGE),
-        Some("serve") => corgi::serve::serve_command(&args[2..]),
         Some("setup") if help() => usage(corgi::app::SETUP_USAGE),
         Some("setup") => corgi::app::setup(&args[2..]),
-        Some("--bar-stream") => {
-            let socket = args
-                .get(2)
-                .ok_or_else(|| anyhow::anyhow!("--bar-stream requires a Herdr socket path"))?;
-            corgi::app::bar_stream(socket)
-        }
-        Some("--bar-transcript") => {
-            let socket = args
-                .get(2)
-                .ok_or_else(|| anyhow::anyhow!("--bar-transcript requires a Herdr socket path"))?;
-            let pane_id = args
-                .get(3)
-                .ok_or_else(|| anyhow::anyhow!("--bar-transcript requires a pane ID"))?;
-            corgi::app::bar_transcript(socket, pane_id)
-        }
-        Some("--bar-prompt") => {
-            anyhow::ensure!(args.len() == 4, "--bar-prompt requires socket and pane ID");
-            corgi::app::bar_prompt(&args[2], &args[3])
-        }
-        Some("--bar-action") => {
-            anyhow::ensure!(
-                args.len() == 5,
-                "--bar-action requires socket, pane ID, and x or m"
-            );
-            corgi::app::bar_action(&args[2], &args[3], &args[4])
-        }
-        Some("--bar-new-options") => {
-            anyhow::ensure!(
-                args.len() == 6,
-                "--bar-new-options requires socket, pane ID, harness and model"
-            );
-            corgi::app::bar_new_options(&args[2], &args[3], &args[4], &args[5])
-        }
-        Some("--bar-new-agent") => corgi::app::bar_new_agent(
-            args.get(2)
-                .ok_or_else(|| anyhow::anyhow!("missing socket"))?,
-        ),
-        Some("--bar-navigate") => std::process::exit(corgi::app::bar_navigate(&args[2..])),
         _ if starts_dashboard(&args[1..]) => corgi::app::run(),
         // Not the dashboard, so that a mistyped command, or one this version
         // does not have yet, says so instead of opening it.

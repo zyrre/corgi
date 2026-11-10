@@ -1,7 +1,7 @@
 //! A supervisor's backlog: the things to build later it keeps in
 //! `backlog.md` in its state directory, beside `decisions.md`. The
-//! supervisor writes it; Corgi only reads it, for the desktop window's side
-//! panel.
+//! supervisor writes it; Corgi only reads it, to count its entries in
+//! `corgi status --json`.
 //!
 //! The file is an optional `# ` title and intro, then one entry per
 //! `## <heading>`, whose text runs to the next `## ` or the end. A missing
@@ -13,7 +13,15 @@ use std::{
     path::Path,
 };
 
-use crate::protocol::BacklogEntry;
+/// One `## <heading>` entry of a supervisor's `backlog.md`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BacklogEntry {
+    /// The text after `## `.
+    pub heading: String,
+    /// The Markdown up to the next `## ` or the file's end, without its
+    /// heading line.
+    pub text: String,
+}
 
 /// The backlog, in the supervisor's state directory.
 pub const BACKLOG_FILE: &str = "backlog.md";
