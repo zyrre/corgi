@@ -56,7 +56,7 @@ mkdir -p "$checkout/scripts" "$checkout/herdr-app" "$checkout/target/release" "$
 cp "$script_dir/app-preview" "$script_dir/install.sh" "$checkout/scripts/"
 cp "$script_dir/../herdr-app/install.sh" "$checkout/herdr-app/"
 cp -R "$script_dir/../herdr-app/mods" "$checkout/herdr-app/mods"
-cp "$script_dir/../herdr-plugin.toml" "$checkout/"
+cp "$script_dir/../Cargo.toml" "$checkout/"
 printf '{\n  "state": "windowed",\n  "display": "display-of-the-person"\n}\n' >"$work/home/.config/herdr-app/window.json"
 : >"$log"
 

@@ -6,7 +6,7 @@
 #   herdr-app/install.sh [--version X.Y.Z] [--home DIR] [--cli-only | --mod-only] [--no-daemon]
 #   herdr-app/install.sh --uninstall [--cli] [--home DIR]
 #
-# Run again to update. Needs no Herdr TUI and no Herdr TUI plugin.
+# Run again to update.
 #
 # Without a Corgi checkout around it (piped, as above, or saved on its own),
 # it first clones https://github.com/zyrre/corgi into $CORGI_CHECKOUT
@@ -14,8 +14,7 @@
 # release tag vX.Y.Z (--version; default: the main branch) and runs that
 # checkout's copy of this script with the same arguments. A release tag
 # does not hold its own checksum pins (they are reviewed after the release),
-# so the tag's checkout takes checksums/vX.Y.Z.sha256 from the main branch,
-# as `herdr plugin install` reads them there.
+# so the tag's checkout takes checksums/vX.Y.Z.sha256 from the main branch.
 #
 # In a checkout:
 #   - the CLI: scripts/install.sh puts the checkout's version of corgi at
@@ -26,8 +25,8 @@
 #     (CORGI_BUILD=source builds anyway, CORGI_BUILD=release downloads
 #     anyway); then
 #     ~/.local/bin/corgi ($CORGI_BIN_DIR, else $XDG_BIN_HOME/corgi) links to
-#     it, unless something else is there: a file, or a working link elsewhere
-#     (such as the Herdr TUI plugin's), is left alone
+#     it, unless something else is there: a file, or a working link
+#     elsewhere, is left alone
 #   - the daemon: `corgi daemon install` runs `corgi daemon` as a service of
 #     the user's session (a LaunchAgent on macOS, a systemd user unit on
 #     Linux), restarted with the new binary on every run, so supervisors on
@@ -59,14 +58,14 @@
 # is made only by hand, with `corgi app-space`; one that is there is left.
 #
 #   --version X.Y.Z  the release to install; in a checkout it must be the
-#                    checkout's own (herdr-plugin.toml), so nothing else is
+#                    checkout's own (Cargo.toml), so nothing else is
 #                    ever installed in its place
 #   --cli-only       the CLI, the daemon, OpenCode's plugin, the Projects mod
 #                    and the layout, without the Corgi mod (the Corgi
 #                    mod runs this to install corgi)
-#   --mod-only       the mods and the layout alone, with no config.json
-#                    (scripts/install.sh runs this during `herdr plugin
-#                    install`)
+#   --mod-only       the mods and the layout alone, with no config.json, so
+#                    the mods run the corgi on PATH (scripts/app-preview
+#                    installs its window's mods this way)
 #   --no-daemon      leaves the daemon as it is
 #   --uninstall      puts Herdr's Spaces and Agents back where Projects is in
 #                    the layouts (no layout is deleted), removes the mods,
@@ -175,7 +174,7 @@ bin="$root/target/release/corgi"
 bin_dir=${CORGI_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}
 link="$bin_dir/corgi"
 
-own_version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$root/herdr-plugin.toml" | head -n 1)
+own_version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' "$root/Cargo.toml" | head -n 1)
 if [ -n "$version" ] && [ "$version" != "$own_version" ]; then
   die "this checkout is Corgi $own_version, not $version; install $version from its release instead"
 fi
@@ -371,9 +370,8 @@ link_cli() {
 }
 
 if [ -z "$mod_only" ]; then
-  # The pinned download when HEAD is the release tag, else a source build. It links nothing
-  # (that is for `herdr plugin install`) and leaves the mod to this script.
-  CORGI_LINK=0 CORGI_APP_MOD=0 sh "$root/scripts/install.sh" || die "installing the corgi CLI failed"
+  # The pinned download when HEAD is the release tag, else a source build.
+  sh "$root/scripts/install.sh" || die "installing the corgi CLI failed"
   reported=$("$bin" --version 2>/dev/null) || reported=
   [ -n "$reported" ] || die "$bin does not run"
   say "corgi CLI: $reported at $bin"
@@ -452,7 +450,7 @@ install_mod corgi-brand
 # --- the layout ------------------------------------------------------------------------
 # The Projects list in the sidebar of the layout the window shows: a shipped
 # one is cloned to corgi first, and an open window switched to the clone.
-# --mod-only has a corgi when scripts/install.sh has just built it.
+# --mod-only has a corgi when the checkout was built before.
 if [ -x "$bin" ]; then
   app_layout --app "$app" || say "could not put the Projects list into the layout; run $bin app-layout to try again"
 else

@@ -84,10 +84,7 @@ pub use daemon::{DAEMON_USAGE, daemon_command};
 pub use edit::{EDIT_USAGE, edit_command};
 pub use open::{OPEN_USAGE, PROJECTS_USAGE, open_command, projects_command};
 pub use orphans::{ORPHANS_USAGE, orphans_command};
-mod hook;
-pub use hook::{HOOK_USAGE, hook_command};
 use rows::codex_thread_id;
-pub use setup::{SETUP_USAGE, setup};
 
 // The dashboard's side of the periodic refresh, the launch sequence and
 // session recovery. The work itself, with the project workspace Corgi owns,
@@ -98,7 +95,7 @@ mod pause;
 pub(crate) mod recovery;
 mod refresh;
 mod resume;
-use corgi_core::{markers, notice, progress, project_main, rows, setup, sweep, waker};
+use corgi_core::{markers, notice, progress, project_main, rows, sweep, waker};
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
 use progress::JobReport;
 use refresh::{QUIT_WAIT, RefreshLog, RefreshState, Refreshed, is_due};

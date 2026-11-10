@@ -1,24 +1,23 @@
 #!/usr/bin/env bash
-# Shell tests for scripts/install.sh against a fake release and a fake `cargo`.
+# Shell tests for scripts/install.sh and herdr-app/install.sh against a fake
+# release, a fake `cargo` and a fake `herdr-app`.
 #
 # Run directly: scripts/test-install
 #
-# Each test gets a fresh plugin checkout (the install script and a manifest)
-# and a fake release directory served through CORGI_DOWNLOAD_URL as a file://
-# URL. The fake cargo "builds" by writing a marker binary and appends one line
-# to calls.log, so a test can tell a download from a source build without
-# compiling anything.
+# Each test gets a fresh checkout (the install script and a Cargo.toml naming
+# the version) and a fake release directory served through CORGI_DOWNLOAD_URL
+# as a file:// URL. The fake cargo "builds" by writing a marker binary and
+# appends one line to calls.log, so a test can tell a download from a source
+# build without compiling anything.
 #
 # HOME is a fresh folder in each test, so linking the command never touches
-# the real ~/.local/bin. A test that installs the way Herdr does puts the
-# checkout at plugins/.tmp-install-*/checkout and afterwards moves it to
-# plugins/github/<id>-<hash>, as Herdr does once the build passes.
+# the real ~/.local/bin.
 #
 # The fake release binary records every call but --version in calls.log, so
 # `corgi daemon install` never reaches launchd or systemd, and the Herdr app
 # installer finds OpenCode only where a test puts a fake one.
 set -euo pipefail
-unset XDG_BIN_HOME CORGI_BIN_DIR CORGI_LINK CORGI_BUILD XDG_CONFIG_HOME XDG_STATE_HOME \
+unset XDG_BIN_HOME CORGI_BIN_DIR CORGI_BUILD XDG_CONFIG_HOME XDG_STATE_HOME \
   CORGI_OPENCODE_PLUGIN CORGI_OPENCODE_BIN
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,7 +31,6 @@ work_root="$(mktemp -d "${TMPDIR:-/tmp}/corgi-install-test.XXXXXX")"
 trap 'rm -rf "$work_root"' EXIT
 
 version=0.4.2
-plugin_id=io.github.zyrre.corgi
 
 # The fake release is served as a file:// URL, which only curl can fetch.
 if ! command -v curl >/dev/null 2>&1; then
@@ -63,8 +61,7 @@ new_state() {
   local state="$work_root/$1"
   mkdir -p "$state/checkout/scripts" "$state/checkout/checksums" "$state/release" "$state/bin" "$state/home"
   cp "$install_script" "$state/checkout/scripts/install.sh"
-  cp "$script_dir/link-command.sh" "$state/checkout/scripts/link-command.sh"
-  printf 'id = "%s"\nversion = "%s"\n' "$plugin_id" "$version" >"$state/checkout/herdr-plugin.toml"
+  printf '[package]\nname = "corgi"\nversion = "%s"\n' "$version" >"$state/checkout/Cargo.toml"
   : >"$state/calls.log"
 
   cat >"$state/bin/cargo" <<'FAKE_CARGO'
@@ -111,38 +108,6 @@ FAKE_CORGI
     >"$state/checkout/checksums/v$version.sha256"
 }
 
-# Like new_state, but the checkout sits where Herdr builds an install;
-# $state/checkout links to it.
-new_herdr_state() {
-  local state
-  state="$(new_state "$1")"
-  mkdir -p "$state/plugins/.tmp-install-123-456"
-  mv "$state/checkout" "$state/plugins/.tmp-install-123-456/checkout"
-  ln -s "$state/plugins/.tmp-install-123-456/checkout" "$state/checkout"
-  echo "$state"
-}
-
-# Where Herdr moves the checkout once the build has passed.
-final_checkout() {
-  local hash
-  hash="$(printf %s "$plugin_id" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c 1-12)"
-  echo "$(cd "$1/plugins" && pwd -P)/github/$plugin_id-$hash"
-}
-
-# Does what Herdr does after a passing build.
-finish_herdr_install() {
-  local state="$1" final
-  final="$(final_checkout "$state")"
-  mkdir -p "$(dirname "$final")"
-  mv "$state/plugins/.tmp-install-123-456/checkout" "$final"
-  ln -sfn "$final" "$state/checkout"
-}
-
-# What the corgi command in bin folder $1 says, run through its link.
-command_version() {
-  "$1/corgi" --version 2>/dev/null || echo "no corgi command"
-}
-
 link_of() {
   if [[ -L "$1" ]]; then readlink "$1"; else echo "not a link"; fi
 }
@@ -153,7 +118,7 @@ make_git_checkout() {
   git -C "$checkout" add .
   git -C "$checkout" -c user.name=test -c user.email=test@example.com commit -q -m release
   git -C "$checkout" tag "v$version"
-  echo "# after the release" >>"$checkout/herdr-plugin.toml"
+  echo "# after the release" >>"$checkout/Cargo.toml"
   git -C "$checkout" -c user.name=test -c user.email=test@example.com commit -q -am "past the release"
 }
 
@@ -295,19 +260,6 @@ test_build_override() {
   check_stderr "unknown override: says it is ignored" "ignoring CORGI_BUILD=nonsense" "$state"
 }
 
-# --- test: Herdr's own plugin install downloads whatever its HEAD ----------
-test_herdr_checkout_past_tag_downloads() {
-  local state status=0
-  state="$(new_herdr_state herdr-past-tag)"
-  publish_release "$state" "corgi $version"
-  make_git_checkout "$state"
-
-  run_install "$state" || status=$?
-  check "herdr past tag: exit status" "0" "$status"
-  check "herdr past tag: installs the release binary" "corgi $version" "$(installed "$state")"
-  check "herdr past tag: cargo not run" "0" "$(count_cargo "$state")"
-}
-
 # --- test: uncommitted changes build from source ---------------------------
 test_dirty_checkout_builds_from_source() {
   local state status=0
@@ -429,11 +381,11 @@ ATTACKER
   check_stderr "replacement attack: rejects local pin mismatch" "does not match its reviewed checksum pin" "$state"
 }
 
-# Untrusted pin data cannot reach even --version, or a later command link.
+# Untrusted pin data cannot reach even --version.
 test_invalid_pins() {
   local state kind pins status
   for kind in missing empty malformed short-hash invalid-hex duplicate conflicting wrong-version wrong-asset missing-platform extra-field malformed-other; do
-    state="$(new_herdr_state "pin-$kind")"
+    state="$(new_state "pin-$kind")"
     publish_release "$state" "corgi $version"
     # Marker-bearing remote bytes remain unauthorized regardless of pin failure.
     # shellcheck disable=SC2016 # HOME must expand only if the payload executes.
@@ -467,8 +419,7 @@ test_invalid_pins() {
     check "pin $kind: never executes remote bytes" no \
       "$([[ -e "$state/home/replacement-executed" ]] && echo yes || echo no)"
     check "pin $kind: builds local source" 1 "$(count_cargo "$state")"
-    finish_herdr_install "$state"
-    check "pin $kind: links source binary" "corgi built from source" "$(command_version "$state/home/.local/bin")"
+    check "pin $kind: installs the source binary" "corgi built from source" "$(installed "$state")"
     check_stderr "pin $kind: explains fallback" "reviewed checksum pin" "$state"
   done
 }
@@ -514,164 +465,6 @@ test_no_cargo_fails_clearly() {
   CORGI_BUILD=source PATH="/usr/bin:/bin" run_install "$state" || status=$?
   check "no cargo: exits non-zero" "1" "$status"
   check_stderr "no cargo: says cargo is missing" "cargo is not installed" "$state"
-}
-
-# --- test: a Herdr install links the command to the final checkout ---------
-test_herdr_install_links_command() {
-  local state status=0 bin
-  state="$(new_herdr_state link)"
-  bin="$state/home/.local/bin"
-  publish_release "$state" "corgi $version"
-
-  run_install "$state" || status=$?
-  check "link: exit status" "0" "$status"
-  check "link: links the final checkout's binary by its absolute path" \
-    "$(final_checkout "$state")/target/release/corgi" "$(link_of "$bin/corgi")"
-  check_stderr "link: says the folder is not on PATH" \
-    "linked $bin/corgi, but $bin is not on your PATH" "$state"
-  finish_herdr_install "$state"
-  check "link: corgi --version runs through the link" "corgi $version" "$(command_version "$bin")"
-}
-
-# --- test: a source build links the command too ----------------------------
-test_source_build_links_command() {
-  local state status=0 bin
-  state="$(new_herdr_state link-source)"
-  bin="$state/home/.local/bin"
-
-  CORGI_BUILD=source run_install "$state" || status=$?
-  finish_herdr_install "$state"
-  check "link after source build: exit status" "0" "$status"
-  check "link after source build: runs the built binary" \
-    "corgi built from source" "$(command_version "$bin")"
-}
-
-# --- test: no PATH hint when the folder is on PATH -------------------------
-test_link_on_path_has_no_hint() {
-  local state status=0
-  state="$(new_herdr_state link-on-path)"
-  publish_release "$state" "corgi $version"
-
-  PATH="$state/home/.local/bin:$PATH" run_install "$state" || status=$?
-  check "on PATH: exit status" "0" "$status"
-  check "on PATH: no hint" "0" "$(grep -c 'not on your PATH' "$state/stderr.log" || true)"
-  check_stderr "on PATH: says it linked" "linked $state/home/.local/bin/corgi" "$state"
-}
-
-# --- test: a link to an older install is replaced --------------------------
-test_link_to_older_install_replaced() {
-  local state status=0 bin
-  state="$(new_herdr_state link-older)"
-  bin="$state/home/.local/bin"
-  publish_release "$state" "corgi $version"
-  mkdir -p "$bin"
-  ln -s "$(cd "$state/plugins" && pwd -P)/github/old-checkout/target/release/corgi" "$bin/corgi"
-
-  run_install "$state" || status=$?
-  check "older link: exit status" "0" "$status"
-  check "older link: now links the new checkout" \
-    "$(final_checkout "$state")/target/release/corgi" "$(link_of "$bin/corgi")"
-}
-
-# --- test: a broken link elsewhere is replaced, a working one is kept ------
-test_links_elsewhere() {
-  local state status=0 bin
-  state="$(new_herdr_state link-broken)"
-  bin="$state/home/.local/bin"
-  publish_release "$state" "corgi $version"
-  mkdir -p "$bin"
-  ln -s "$state/gone/corgi" "$bin/corgi"
-
-  run_install "$state" || status=$?
-  check "broken link: exit status" "0" "$status"
-  check "broken link: replaced" \
-    "$(final_checkout "$state")/target/release/corgi" "$(link_of "$bin/corgi")"
-
-  status=0
-  state="$(new_herdr_state link-working)"
-  bin="$state/home/.local/bin"
-  publish_release "$state" "corgi $version"
-  mkdir -p "$bin"
-  printf '#!/bin/sh\necho "my own corgi"\n' >"$state/my-corgi"
-  chmod 755 "$state/my-corgi"
-  ln -s "$state/my-corgi" "$bin/corgi"
-
-  run_install "$state" || status=$?
-  check "working link: exit status" "0" "$status"
-  check "working link: kept" "$state/my-corgi" "$(link_of "$bin/corgi")"
-  check_stderr "working link: says so" "left $bin/corgi alone: it links $state/my-corgi" "$state"
-}
-
-# --- test: a file or a folder in the way is left alone ---------------------
-test_file_or_folder_left_alone() {
-  local state status=0 bin
-  state="$(new_herdr_state link-file)"
-  bin="$state/home/.local/bin"
-  publish_release "$state" "corgi $version"
-  mkdir -p "$bin"
-  echo "mine" >"$bin/corgi"
-
-  run_install "$state" || status=$?
-  check "file in the way: exit status" "0" "$status"
-  check "file in the way: installs anyway" "corgi $version" "$(installed "$state")"
-  check "file in the way: kept" "mine" "$(cat "$bin/corgi")"
-  check_stderr "file in the way: says so" "left $bin/corgi alone: it is not a link" "$state"
-
-  status=0
-  state="$(new_herdr_state link-folder)"
-  bin="$state/home/.local/bin"
-  publish_release "$state" "corgi $version"
-  mkdir -p "$bin/corgi"
-
-  run_install "$state" || status=$?
-  check "folder in the way: exit status" "0" "$status"
-  check "folder in the way: kept" "folder" "$([[ -d "$bin/corgi" && ! -L "$bin/corgi" ]] && echo folder)"
-  check "folder in the way: nothing linked inside it" "0" "$(find "$bin/corgi" -mindepth 1 | wc -l | tr -d ' ')"
-}
-
-# --- test: CORGI_LINK=0 and CORGI_BIN_DIR ----------------------------------
-test_link_opt_out_and_override() {
-  local state status=0
-  state="$(new_herdr_state link-opt-out)"
-  publish_release "$state" "corgi $version"
-
-  CORGI_LINK=0 run_install "$state" || status=$?
-  check "CORGI_LINK=0: exit status" "0" "$status"
-  check "CORGI_LINK=0: nothing linked" "no" "$([[ -e "$state/home/.local" ]] && echo yes || echo no)"
-
-  status=0
-  state="$(new_herdr_state link-override)"
-  publish_release "$state" "corgi $version"
-
-  CORGI_BIN_DIR="$state/my bin" run_install "$state" || status=$?
-  check "CORGI_BIN_DIR: exit status" "0" "$status"
-  check "CORGI_BIN_DIR: links there" \
-    "$(final_checkout "$state")/target/release/corgi" "$(link_of "$state/my bin/corgi")"
-  check "CORGI_BIN_DIR: not in ~/.local/bin" "no" "$([[ -e "$state/home/.local" ]] && echo yes || echo no)"
-}
-
-# --- test: a link that cannot be made only warns ---------------------------
-test_link_failure_only_warns() {
-  local state status=0
-  state="$(new_herdr_state link-fails)"
-  publish_release "$state" "corgi $version"
-  echo "not a folder" >"$state/home/.local"
-
-  run_install "$state" || status=$?
-  check "link fails: exit status" "0" "$status"
-  check "link fails: installs anyway" "corgi $version" "$(installed "$state")"
-  check_stderr "link fails: says so" "could not link $state/home/.local/bin/corgi" "$state"
-}
-
-# --- test: outside a Herdr install nothing is linked -----------------------
-test_no_link_outside_herdr() {
-  local state status=0
-  state="$(new_state link-outside)"
-  publish_release "$state" "corgi $version"
-
-  run_install "$state" || status=$?
-  check "outside Herdr: exit status" "0" "$status"
-  check "outside Herdr: nothing linked" "no" "$([[ -e "$state/home/.local" ]] && echo yes || echo no)"
 }
 
 # --- the Herdr app: herdr-app/install.sh -------------------------------------
@@ -932,14 +725,76 @@ test_app_install_options() {
   publish_release "$state" "corgi $version"
   bin="$state/home/.local/bin"
   mkdir -p "$bin"
-  printf '#!/bin/sh\necho "corgi from the plugin"\n' >"$state/plugin-corgi"
-  chmod 755 "$state/plugin-corgi"
-  ln -s "$state/plugin-corgi" "$bin/corgi"
+  printf '#!/bin/sh\necho "my own corgi"\n' >"$state/my-corgi"
+  chmod 755 "$state/my-corgi"
+  ln -s "$state/my-corgi" "$bin/corgi"
   run_app_install "$state" || status=$?
   check "link elsewhere: exit status" "0" "$status"
-  check "link elsewhere: kept" "$state/plugin-corgi" "$(link_of "$bin/corgi")"
+  check "link elsewhere: kept" "$state/my-corgi" "$(link_of "$bin/corgi")"
   check_stderr "link elsewhere: says the mod runs its own" \
-    "left $bin/corgi alone: it links $state/plugin-corgi; the mod runs $(real_checkout "$state")/target/release/corgi" "$state"
+    "left $bin/corgi alone: it links $state/my-corgi; the mod runs $(real_checkout "$state")/target/release/corgi" "$state"
+}
+
+# --- test: the link to the CLI: what is replaced, what is left, where it goes ---
+test_app_install_link() {
+  local state status=0 bin target
+  state="$(new_app_state app-link-broken)"
+  publish_release "$state" "corgi $version"
+  bin="$state/home/.local/bin"
+  target="$(real_checkout "$state")/target/release/corgi"
+  mkdir -p "$bin"
+  ln -s "$state/gone/corgi" "$bin/corgi"
+  run_app_install "$state" || status=$?
+  check "broken link: exit status" "0" "$status"
+  check "broken link: replaced" "$target" "$(link_of "$bin/corgi")"
+  check_stderr "broken link: says the folder is not on PATH" "linked $bin/corgi, but $bin is not on your PATH" "$state"
+
+  status=0
+  PATH="$bin:$PATH" run_app_install "$state" --uninstall --cli || status=$?
+  PATH="$bin:$PATH" run_app_install "$state" || status=$?
+  check "on PATH: exit status" "0" "$status"
+  check "on PATH: no hint" "0" "$(grep -c 'not on your PATH' "$state/stderr.log" || true)"
+  check_stderr "on PATH: says it linked" "linked $bin/corgi" "$state"
+
+  status=0
+  state="$(new_app_state app-link-file)"
+  publish_release "$state" "corgi $version"
+  bin="$state/home/.local/bin"
+  mkdir -p "$bin"
+  echo "mine" >"$bin/corgi"
+  run_app_install "$state" || status=$?
+  check "file in the way: exit status" "0" "$status"
+  check "file in the way: installs anyway" "corgi $version" "$(installed "$state")"
+  check "file in the way: kept" "mine" "$(cat "$bin/corgi")"
+  check_stderr "file in the way: says so" "left $bin/corgi alone: it is not a link" "$state"
+
+  status=0
+  state="$(new_app_state app-link-folder)"
+  publish_release "$state" "corgi $version"
+  bin="$state/home/.local/bin"
+  mkdir -p "$bin/corgi"
+  run_app_install "$state" || status=$?
+  check "folder in the way: exit status" "0" "$status"
+  check "folder in the way: kept" "folder" "$([[ -d "$bin/corgi" && ! -L "$bin/corgi" ]] && echo folder)"
+  check "folder in the way: nothing linked inside it" "0" "$(find "$bin/corgi" -mindepth 1 | wc -l | tr -d ' ')"
+
+  status=0
+  state="$(new_app_state app-link-override)"
+  publish_release "$state" "corgi $version"
+  CORGI_BIN_DIR="$state/my bin" run_app_install "$state" || status=$?
+  check "CORGI_BIN_DIR: exit status" "0" "$status"
+  check "CORGI_BIN_DIR: links there" "$(real_checkout "$state")/target/release/corgi" "$(link_of "$state/my bin/corgi")"
+  check "CORGI_BIN_DIR: not in ~/.local/bin" "no" "$([[ -e "$state/home/.local/bin" ]] && echo yes || echo no)"
+
+  # A link that cannot be made only warns.
+  status=0
+  state="$(new_app_state app-link-fails)"
+  publish_release "$state" "corgi $version"
+  echo "not a folder" >"$state/home/.local"
+  run_app_install "$state" --no-daemon || status=$?
+  check "link fails: exit status" "0" "$status"
+  check "link fails: installs anyway" "corgi $version" "$(installed "$state")"
+  check_stderr "link fails: says so" "could not link $state/home/.local/bin/corgi" "$state"
 }
 
 # --- test: --uninstall removes the mod, and the link only with --cli -----------
@@ -1083,38 +938,11 @@ test_app_opencode_plugin() {
   check "opencode uninstall: plugin and answer removed" "no no" \
     "$([[ -e "$plugin" ]] && echo yes || echo no) $([[ -e "$answer" ]] && echo yes || echo no)"
 
-  # A plugin install (--mod-only) never asks or installs it.
+  # --mod-only never asks or installs it.
   rm -rf "$state/home/.local/state/corgi"
   status=0
   CORGI_OPENCODE_PLUGIN=yes run_app_install "$state" --mod-only || status=$?
   check "opencode --mod-only: no plugin" "no" "$([[ -e "$plugin" ]] && echo yes || echo no)"
-}
-
-# --- test: a plugin install adds the mod when the Herdr app is installed -----
-test_plugin_install_adds_app_mod() {
-  local state status=0 mod
-  state="$(new_app_state plugin-app)"
-  publish_release "$state" "corgi $version"
-  mod="$(app_mod "$state")"
-
-  run_install "$state" || status=$?
-  check "plugin with app: exit status" "0" "$status"
-  check "plugin with app: installs the CLI" "corgi $version" "$(installed "$state")"
-  check "plugin with app: adds the mod, without config.json" "yes no" \
-    "$([[ -f "$mod/main.js" ]] && echo yes || echo no) $([[ -e "$mod/config.json" ]] && echo yes || echo no)"
-  check "plugin with app: adds the Projects mod and puts it into the layout" "yes 1" \
-    "$([[ -f "$(projects_mod "$state")/main.js" ]] && echo yes || echo no) $(layout_calls "$state" | wc -l | tr -d ' ')"
-  check "plugin with app: makes no Corgi space" "" "$(space_calls "$state")"
-  check_stderr "plugin with app: says so" "the Herdr app is installed: adding its Corgi mod" "$state"
-
-  status=0
-  state="$(new_app_state plugin-no-app)"
-  publish_release "$state" "corgi $version"
-  rm "$state/bin/herdr-app"
-  PATH="$state/bin:/usr/bin:/bin" run_install "$state" || status=$?
-  check "plugin without app: exit status" "0" "$status"
-  check "plugin without app: no mod" "no" "$([[ -e "$(app_mod "$state")" ]] && echo yes || echo no)"
-  check "plugin without app: says nothing of it" "0" "$(grep -c 'Herdr app' "$state/stderr.log" || true)"
 }
 
 # --- test: piped, it fetches the release tag and takes its pins from main ----
@@ -1158,7 +986,7 @@ test_app_install_piped() {
   # Without --version it installs the main branch, past the tag, and still
   # takes the pinned download.
   status=0
-  echo "# after the release" >>"$repo/herdr-plugin.toml"
+  echo "# after the release" >>"$repo/Cargo.toml"
   git -C "$repo" -c user.name=test -c user.email=test@example.com commit -q -am "past the release"
   : >"$state/calls.log"
   FAKE_STATE="$state" HOME="$state/home" CORGI_DOWNLOAD_URL="file://$state/release" \
@@ -1182,7 +1010,6 @@ test_downloads_release_binary
 test_checkout_past_tag_builds_from_source
 test_checkout_on_tag_downloads
 test_build_override
-test_herdr_checkout_past_tag_downloads
 test_dirty_checkout_builds_from_source
 test_forced_source_build
 test_checksum_mismatch_builds_from_source
@@ -1192,22 +1019,13 @@ test_wrong_version_builds_from_source
 test_version_with_commit
 test_cargo_failure_fails_install
 test_no_cargo_fails_clearly
-test_herdr_install_links_command
-test_source_build_links_command
-test_link_on_path_has_no_hint
-test_link_to_older_install_replaced
-test_links_elsewhere
-test_file_or_folder_left_alone
-test_link_opt_out_and_override
-test_link_failure_only_warns
-test_no_link_outside_herdr
 test_app_install
 test_app_install_refusals
 test_app_install_options
+test_app_install_link
 test_app_uninstall
 test_app_uninstall_home
 test_app_opencode_plugin
-test_plugin_install_adds_app_mod
 test_app_install_piped
 
 echo

@@ -9,7 +9,6 @@ Without a command, opens the dashboard; --compact opens its popup layout.
 It must run inside a Herdr pane.
 
 Commands:
-  setup       Bind a key that opens the dashboard
   supervisor  Start a project's supervisor
   spawn       Start an agent in its own worktree
   fleet       List a project's agents, their context and prompt cache
@@ -28,7 +27,6 @@ Commands:
   usage       Print each harness's plan usage (5-hour and weekly) as JSON
   role        Print a part of the supervisor's role it reads on demand
   edit        Open the focused or selected agent's checkout in your editor
-  hook        What Herdr runs on its start and on agents' events
   daemon      Wake supervisors on herdr-core (the Herdr app), as a service
   app-space   Make the Herdr app's Corgi space by hand, or remove it
   app-layout  Put Corgi's Projects list into the Herdr app's layout, or take it out
@@ -91,8 +89,6 @@ fn main() -> Result<()> {
         Some("role") => corgi::app::role_command(&args[2..]),
         Some("edit") if help() => usage(corgi::app::EDIT_USAGE),
         Some("edit") => corgi::app::edit_command(&args[2..]),
-        Some("hook") if help() => usage(corgi::app::HOOK_USAGE),
-        Some("hook") => corgi::app::hook_command(&args[2..]),
         Some("daemon") if help() => usage(corgi::app::DAEMON_USAGE),
         Some("daemon") => corgi::app::daemon_command(&args[2..]),
         Some("app-space") if help() => usage(corgi::app::APP_SPACE_USAGE),
@@ -103,8 +99,6 @@ fn main() -> Result<()> {
         Some("projects") => corgi::app::projects_command(&args[2..]),
         Some("open") if help() => usage(corgi::app::OPEN_USAGE),
         Some("open") => corgi::app::open_command(&args[2..]),
-        Some("setup") if help() => usage(corgi::app::SETUP_USAGE),
-        Some("setup") => corgi::app::setup(&args[2..]),
         _ if starts_dashboard(&args[1..]) => corgi::app::run(),
         // Not the dashboard, so that a mistyped command, or one this version
         // does not have yet, says so instead of opening it.
