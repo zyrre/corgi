@@ -735,6 +735,58 @@ core on this Mac, never the person's core or their machines list:
   scroll from a script: a preview copy of the mod that adds `null` to
   `this.folded` folds this computer's.
 
+### The Jenkins mod
+
+`herdr-app/mods/jenkins/` is a mod of its own, not part of Corgi's layout:
+it needs no `corgi`, `herdr-app/install.sh` does not install it (its own
+`install.sh` beside it does, into a named app home), and it may move to a
+repository of its own, so keep it free of anything of Corgi's. Its
+`README.md` is written for its users. It reaches Jenkins with the app's
+`fetch` and an API token alone (`api.js`); the token is kept in
+`jenkins/settings.json` of the app's home, mode 600, and must never reach
+the repository, a log, a screenshot or a report. Before handing off a
+change to it:
+
+```bash
+herdr-app check herdr-app/mods/jenkins
+node herdr-app/mods/jenkins/tests/test.mjs
+shellcheck herdr-app/mods/jenkins/install.sh
+```
+
+The test runs the mod under Node, with stand-ins of its own as
+`scripts/test-app-mods.mjs` has, against `tests/fake-jenkins.mjs`: a
+made-up Jenkins on a local port with canned jobs, logs that grow, a crumb
+issuer and two users (`jane:fake-token` may build and abort,
+`viewer:viewer-token` only reads). **Never trigger, abort or change
+anything on a real Jenkins**; a real one is only ever read. To look at the
+mod, use the preview window with the fake server, never a real token (a
+screenshot would show its settings):
+
+```bash
+node herdr-app/mods/jenkins/tests/fake-jenkins.mjs 48765 &   # stop it by its pid afterwards
+scripts/app-preview start
+home=$(ls -d /tmp/corgi-ap-*/home)
+HERDR_APP_BIN=target/app-preview/Herdr.app/Contents/MacOS/Herdr herdr-app/mods/jenkins/install.sh --home "$home"
+mkdir -p "$home/jenkins"
+printf '{"url":"http://127.0.0.1:48765","user":"jane","token":"fake-token","folders":"team-dev, team-prod"}\n' >"$home/jenkins/settings.json"
+sleep 1                                                      # the app sees a new mod folder a moment later
+scripts/app-preview do tab.new --name Jenkins --mod jenkins  # or: do mod.open --name jenkins
+```
+
+The window takes no clicks, so a view behind one (a job, a log, the build
+form, the abort question) is reached as for the Projects mod: in the
+preview home's copy of `main.js`, add commands to the `nextCommand` loop
+that call what the click calls (`this.show({ kind: "job", place })`,
+`this.askBuild(place, cx)`, `this.build(cx)`, `this.askAbort(place, n,
+cx)`, `this.abort(cx)`; a place is `{ path: "/job/team-dev/job/api_master",
+label: "team-dev/api_master" }`), then `do jenkins.<command>`. What the
+app's script engine has and lacks, found there: `fetch` gives a response's
+`status`, `ok`, `url`, `text()` and `json()` but no headers (so a console
+log is followed by counting the bytes read, not by `X-Text-Size`), follows
+a redirect after a POST, and rejects when the host does not answer; there
+is no `TextEncoder` (`util.js` encodes UTF-8 itself) and no `process.env`;
+`writeTextFile` replaces a file and keeps its mode.
+
 ### After a merge
 
 After changes are merged into the primary checkout, one command, run in that
