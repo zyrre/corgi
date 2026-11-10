@@ -114,9 +114,14 @@ XDG_STATE_HOME="$scratch" ./target/release/corgi digest <project dir> --search "
 ```
 
 The digest's summary, `corgi fleet`, `corgi tag` and `corgi report` of a
-running agent ask `hc` for the agents, and say so when no core runs; they
-only read, but an `hc` call from a shell that is not an hc terminal reaches
-the default core, the user's.
+running agent ask `hc` for the agents. `hc` finds its core from
+`XDG_STATE_HOME` (and `HC_SESSION`), so with a scratch `XDG_STATE_HOME`
+they do not list the user's agents: `hc` starts a core of its own on the
+scratch directory, with no terminals, and leaves it running. To see them
+work, give that core fake agents ("Testing `corgi daemon`" below has the
+environment; `hc run --bg --keep --name w-x --label corgi.role=worker
+--label corgi.project=<dir> --cwd <dir> -- /bin/sleep 900` is an agent
+whose state is unknown), and stop the core afterwards.
 
 `corgi usage` reads the plan usage through a cache shared by every Corgi
 process (`usage/<provider>.json` in the state directory), which the Herdr
@@ -402,7 +407,16 @@ an install without `--mod-only` still installs the user's daemon and
 OpenCode plugin). It checks the mods with the real `herdr-app check` and
 changes the layout with the worktree's `target/release/corgi`; with no
 window on that home the shipped `main` is cloned to `corgi` by hand
-(`layout.clone` needs the window). The preview window is the place to see
+(`layout.clone` needs the window). `herdr-app check` runs the Projects
+mod's first frame for real, `hc machine ls` included, and with a scratch
+`XDG_STATE_HOME` that starts a herdr-core of its own on it (a launchd job,
+`<scratch>/state/herdr-core/default/`), which outlives the install: stop it
+with `env -i HOME="$HOME" USER="$USER" PATH="$HOME/.local/bin:/usr/bin:/bin"
+XDG_STATE_HOME=<scratch>/state hc server stop`, after `hc server status`
+in the same environment named the scratch core's id (its `core.json`) and
+a pid that is not the user's core's, and check that pid is gone. Without
+`env -i` a worker's `HC_TERMINAL_SOCKET` names the user's core. The
+preview window is the place to see
 the real `layout.clone`: `do layout.switch --name main`, delete its home's
 `layouts/corgi.json`, and `start` again. Putting a mod or a
 layout into the user's real `~/.config/herdr-app` from a worktree, even to

@@ -35,18 +35,18 @@ JSON. The task is read from stdin, or from --task-file, never from arguments.
 Options:
   --project PATH     Project directory (default: the current directory)
   --harness KIND     Agent CLI: claude, codex, opencode, … (default: the
-                     calling supervisor's own, else the harness of the last
-                     spawn, else the first one installed)
+                     calling supervisor's own, else the last one recorded
+                     in last-harness.json, else CORGI_DEFAULT_AGENT, else
+                     the first one installed)
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max (Codex and Claude Code)
   --checkout MODE    worktree (default), directory, or root: the project's
-                     primary checkout. A
-                     worktree is refused, before anything starts, for a
-                     project outside a Git work tree (pass --project, or
-                     --checkout directory to run there without one), and
-                     every mode for a directory in Corgi's state directory,
-                     such as a supervisor's; the home directory still starts
-                     a scratch agent
+                     primary checkout. A worktree is refused, before
+                     anything starts, for a project outside a Git work tree
+                     (pass --project, or --checkout directory to run there
+                     without one), and every mode for a directory in Corgi's
+                     state directory, such as a supervisor's; the home
+                     directory still starts a scratch agent
   --name NAME        Agent name (default: taken from the project)
   --task-file PATH   Read the task from PATH instead of stdin
   --request-id ID    Make a retry safe: when a running agent of the project
