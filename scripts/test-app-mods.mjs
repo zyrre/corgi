@@ -1150,15 +1150,26 @@ function pictures(el) {
     assert.deepEqual(name.calls.text_color, ['#foreground']);
     assert.deepEqual(name.calls.min_w, [0]);
   }
-  const half = byId(root, 'brand-corgi-half');
-  assert.ok(half.calls.flex_shrink[0] >= 1000 * herdr.calls.flex_shrink[0], 'Corgi gives way before Herdr');
-  assert.ok(half.calls.overflow_hidden && byId(root, 'brand-names').calls.overflow_hidden, 'nothing spills under the buttons');
-  assert.deepEqual(texts(half), ['+', 'Corgi']);
+  assert.ok(corgi.calls.flex_shrink[0] >= 1000 * herdr.calls.flex_shrink[0], 'the word Corgi gives way before Herdr');
+  assert.ok(byId(root, 'brand-names').calls.overflow_hidden, 'nothing spills under the buttons');
+  // The logos and the "+" are never cut: only the words shrink.
+  walk(root, (node) => {
+    if (node.kind === 'image' || node.id === 'brand-plus') assert.ok(node.calls.flex_none, `${node.id ?? node.args[0]} keeps its width`);
+  });
   assert.deepEqual(byId(root, 'brand-plus').calls.text_color, ['#dim']);
   assert.ok(!byId(root, 'brand-plus').calls.font_semibold);
   walk(root, (node) => {
     if (node.kind === 'image') assert.deepEqual([node.calls.size, node.calls.rounded], [[20], [5]], node.args[0]);
   });
+  // Too narrow for both logos whole beside the traffic lights: Herdr's alone.
+  w.sidebar = 210;
+  const tight = mod.render();
+  assert.deepEqual(texts(tight), []);
+  assert.deepEqual(pictures(tight), ['frame/welcome/herdr.png', 'mods/corgi-brand/search.svg', 'mods/corgi-brand/sidebar.svg']);
+  w.sidebar = 220;
+  assert.deepEqual(texts(mod.render()), ['Herdr', '+', 'Corgi'], 'room for both logos: the words are cut by the window');
+  w.sidebar = 268;
+
   // The buttons do what the shipped row's do.
   click(root, 'search', mod.cx);
   assert.deepEqual(w.ran.at(-1), ['mod.open', { name: 'picker' }]);
@@ -1183,6 +1194,9 @@ function pictures(el) {
   click(other, 'sidebar-toggle', mod.cx);
   assert.deepEqual(w.ran.at(-1), ['layout.resize', { id: 'sidebar', px: 268 }]);
   assert.deepEqual(kept(mod.render()).calls.pl, [14], 'no traffic lights off macOS');
+  // Without them, the narrowest sidebar that is no rail has room for both logos.
+  w.sidebar = 160;
+  assert.deepEqual(texts(mod.render()), ['Herdr', '+', 'Corgi']);
 }
 
 // --- Corgi's layout: the installer changes it, never a mod ------------------------------

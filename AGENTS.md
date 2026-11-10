@@ -528,7 +528,11 @@ scripts/app-preview stop               # always, before the final report
 ```
 
 Read each picture yourself (the Read tool shows a PNG) and say what looks
-wrong in it, also when it is not your change's. A change that is visual
+wrong in it, also when it is not your change's. While the Mac's screen is
+locked, the window draws almost nothing and `shot` repeats an old frame
+(the same bytes across a `stop` and `start`, its images never drawn):
+check `ioreg -n Root -d1 | grep CGSSessionScreenIsLocked` before trusting
+a shot. A change that is visual
 (what a view draws: a row, a width, a color, an element, where text is cut,
 a state's mark) attaches screenshots to its report: each one's path under
 `target/app-preview/` with a line on what it shows, taken at the sidebar's

@@ -114,10 +114,14 @@ The `corgi-brand` mod fills the sidebar's `brand` block (46 px, on
   each, `muted`, `hover` behind.
 - On macOS, out of full screen, it starts 76 px in, past the traffic
   lights; elsewhere 14 px.
-- Too narrow for both names, the Corgi half (`+`, logo, "Corgi") gives way
-  first: "Corgi" is cut with `…`, then the half is out of sight, and only
-  then is "Herdr" cut with `…`. At Herdr's 268 px with the traffic lights
-  there is not room for all of it, so "Corgi" is cut there already.
+- Narrowed, only the words give way: "Corgi" is cut with `…` and then
+  gone before "Herdr" is cut at all, then "Herdr" is cut with `…`; the two
+  logos and the `+` are never cut. On macOS beside the traffic lights the
+  whole row needs a sidebar of about 280 px (Herdr's own 268
+  cuts "Corgi"); under about 220 px, where the logos and `+` would no
+  longer fit whole, Herdr's logo shows alone. Without the traffic lights
+  (full screen, other systems) every sidebar wider than the rail has room
+  for both logos.
 - The rail (a sidebar under 160 px) shows what Herdr's row shows: on macOS
   nothing (the traffic lights fill it; the Projects list's `»` unfolds
   it), elsewhere the sidebar toggle alone. The toggle folds the sidebar to
@@ -608,7 +612,8 @@ wants the overview on screen.
   second run changes no file.
 - The sidebar's top row reads Herdr's logo, "Herdr", a dim `+`, the pixel
   corgi and "Corgi", with Herdr's search and sidebar buttons at its right;
-  narrowed, "Corgi" is cut first; the rail shows what Herdr's row shows
+  narrowed, the word "Corgi" goes first, then "Herdr", and the logos and
+  `+` stay whole; the rail shows what Herdr's row shows
   there; the footer is Herdr's.
 - Projects shows each repository with its agents in one-line rows (task,
   icon, state, worktree), the supervisor first; in a sidebar too narrow for
