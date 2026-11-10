@@ -146,14 +146,15 @@ fn paint_corgi(pixels: &mut [[u8; 4]], canvas: u32, (left, top): (u32, u32), sca
 /// The sidebar brand row's Corgi logo (`herdr-app/mods/corgi-brand/corgi.png`),
 /// drawn to match Herdr's logo beside it (`frame/welcome/herdr.png` in the
 /// Herdr app's home), whose measures these are: a [`TILE`] px canvas,
-/// transparent round a plate [`TILE_MARGIN`] px in, of Herdr's cream with
-/// circular corners of [`TILE_RADIUS`] px. The app shows both at 20 px.
+/// transparent round a plate [`TILE_MARGIN`] px in, with circular corners
+/// of [`TILE_RADIUS`] px. The app shows both at 20 px. Herdr's ram is dark
+/// on cream; the corgi is mostly white and orange, so its plate is
+/// [`TILE_PLATE`], a warm grey both stand out on.
 ///
 /// The corgi is as wide on the plate as Herdr's ram (about nine tenths of
 /// it), at [`TILE_SCALE`] px a corgi pixel, which the 20 px logo shows as two
-/// device pixels at 2x, so it stays crisp. Its white is almost the cream's
-/// colour, so where the white meets the plate it is edged, inside its own
-/// pixels, with [`TILE_OUTLINE`]; the art is otherwise as drawn.
+/// device pixels at 2x, so it stays crisp. Its painted pixels are centred
+/// exactly on the plate, with no optical raise.
 fn brand_tile() -> Vec<[u8; 4]> {
     let canvas = TILE;
     let mut pixels = vec![[0; 4]; (canvas * canvas) as usize];
@@ -173,48 +174,7 @@ fn brand_tile() -> Vec<[u8; 4]> {
             pixels[(y * canvas + x) as usize] = [r, g, b, alpha];
         }
     }
-
-    // Centred as on the app icon, raised by half a corgi pixel, both whole
-    // multiples of four so the 20 px logo keeps each edge on a pixel.
-    let (left, top) = tile_corgi_origin();
-    paint_corgi(&mut pixels, canvas, (left, top), TILE_SCALE);
-
-    let blank = |row: i64, column: i64| {
-        usize::try_from(row)
-            .ok()
-            .and_then(|row| CORGI_PIXELS.get(row))
-            .and_then(|line| {
-                usize::try_from(column)
-                    .ok()
-                    .and_then(|c| line.chars().nth(c))
-            })
-            .is_none_or(|pixel| corgi_color(pixel).is_none())
-    };
-    let (or, og, ob) = TILE_OUTLINE;
-    for (row, line) in (0..).zip(CORGI_PIXELS) {
-        for (column, pixel) in (0..).zip(line.chars()) {
-            if pixel != 'w' {
-                continue;
-            }
-            let (r, c) = (i64::from(row), i64::from(column));
-            let (x0, y0) = (left + column * TILE_SCALE, top + row * TILE_SCALE);
-            let (x1, y1) = (x0 + TILE_SCALE, y0 + TILE_SCALE);
-            let w = TILE_OUTLINE_WIDTH;
-            let bands = [
-                (blank(r - 1, c), (x0, y0, x1, y0 + w)),
-                (blank(r + 1, c), (x0, y1 - w, x1, y1)),
-                (blank(r, c - 1), (x0, y0, x0 + w, y1)),
-                (blank(r, c + 1), (x1 - w, y0, x1, y1)),
-            ];
-            for (_, (bx0, by0, bx1, by1)) in bands.into_iter().filter(|(edge, _)| *edge) {
-                for y in by0..by1 {
-                    for x in bx0..bx1 {
-                        pixels[(y * canvas + x) as usize] = [or, og, ob, 255];
-                    }
-                }
-            }
-        }
-    }
+    paint_corgi(&mut pixels, canvas, tile_corgi_origin(), TILE_SCALE);
     pixels
 }
 
@@ -224,22 +184,47 @@ const TILE: u32 = 160;
 const TILE_MARGIN: u32 = 16;
 /// The radius of the plate's corners, fitted to Herdr's logo's alpha.
 const TILE_RADIUS: u32 = 26;
-/// Herdr's logo's cream, sampled from its plate.
-const TILE_PLATE: (u8, u8, u8) = (244, 241, 233);
+/// The corgi's plate, `#57534e`: a warm grey dark enough for the white
+/// (6.6:1) and the orange coat (3.2:1), light enough not to read as a hole
+/// beside Herdr's cream tile on a dark sidebar.
+const TILE_PLATE: (u8, u8, u8) = (0x57, 0x53, 0x4e);
 /// Device pixels to a corgi pixel on the brand tile.
 const TILE_SCALE: u32 = 8;
-/// The edge of the corgi's white where it meets the cream: a warm grey,
-/// light enough to read as the white's shadow rather than a drawn line.
-const TILE_OUTLINE: (u8, u8, u8) = (176, 170, 158);
-/// How wide that edge is: one device pixel of the 20 px logo at 2x.
-const TILE_OUTLINE_WIDTH: u32 = 4;
 
-/// Where the corgi's grid starts on the brand tile.
+/// The rows and columns of [`CORGI_PIXELS`] that are painted: the first and
+/// one past the last of each.
+fn corgi_bounds() -> ((u32, u32), (u32, u32)) {
+    let painted = |pixel: char| corgi_color(pixel).is_some();
+    let rows: Vec<u32> = (0..)
+        .zip(CORGI_PIXELS)
+        .filter(|(_, line)| line.chars().any(painted))
+        .map(|(row, _)| row)
+        .collect();
+    let columns: Vec<u32> = (0..CORGI_PIXELS[0].len() as u32)
+        .filter(|&c| {
+            CORGI_PIXELS
+                .iter()
+                .any(|line| line.chars().nth(c as usize).is_some_and(painted))
+        })
+        .collect();
+    (
+        (columns[0], columns[columns.len() - 1] + 1),
+        (rows[0], rows[rows.len() - 1] + 1),
+    )
+}
+
+/// Where the corgi's grid starts on the brand tile, so that its painted
+/// pixels are centred on the canvas, and so on the plate.
 fn tile_corgi_origin() -> (u32, u32) {
-    let columns = CORGI_PIXELS[0].len() as u32;
-    let rows = CORGI_PIXELS.len() as u32;
-    let left = (TILE - columns * TILE_SCALE) / 2;
-    let top = (TILE - rows * TILE_SCALE) / 2 - TILE_SCALE / 2;
+    let ((c0, c1), (r0, r1)) = corgi_bounds();
+    let width = (c1 - c0) * TILE_SCALE;
+    let height = (r1 - r0) * TILE_SCALE;
+    assert!(
+        (TILE - width).is_multiple_of(2) && (TILE - height).is_multiple_of(2),
+        "the corgi centres on the tile with equal margins"
+    );
+    let left = (TILE - width) / 2 - c0 * TILE_SCALE;
+    let top = (TILE - height) / 2 - r0 * TILE_SCALE;
     (left, top)
 }
 
@@ -327,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn the_brand_tile_is_herdrs_plate_with_the_corgi_whole_and_its_white_edged() {
+    fn the_brand_tile_is_herdrs_plate_with_the_corgi_whole_and_centred() {
         let pixels = brand_tile();
         let at = |x: u32, y: u32| pixels[(y * TILE + x) as usize];
         assert_eq!(at(0, 0)[3], 0, "the margin is clear");
@@ -337,48 +322,65 @@ mod tests {
             "the corner is rounded"
         );
         let (r, g, b) = TILE_PLATE;
-        assert_eq!(
-            at(TILE_MARGIN + 2, TILE / 2),
-            [r, g, b, 255],
-            "the plate is cream"
-        );
+        let plate = [r, g, b, 255];
+        assert_eq!(at(TILE_MARGIN + 2, TILE / 2), plate);
         let (left, top) = tile_corgi_origin();
-        assert_eq!(
-            (left % 4, top % 4),
-            (0, 0),
-            "each corgi pixel sits on a 20 px logo's pixel"
-        );
-        let (or, og, ob) = TILE_OUTLINE;
         for (row, line) in (0..).zip(CORGI_PIXELS) {
             for (column, pixel) in (0..).zip(line.chars()) {
                 let Some((r, g, b)) = corgi_rgb(pixel) else {
                     continue;
                 };
                 let (x, y) = (left + column * TILE_SCALE, top + row * TILE_SCALE);
-                let square: Vec<_> = (0..TILE_SCALE * TILE_SCALE)
-                    .map(|d| at(x + d % TILE_SCALE, y + d / TILE_SCALE))
-                    .collect();
-                if pixel == 'w' {
-                    // Edged only on its rim: some of the white is left.
-                    assert!(
-                        square
-                            .iter()
-                            .all(|&p| p == [r, g, b, 255] || p == [or, og, ob, 255])
-                            && square.contains(&[r, g, b, 255]),
-                        "white at {row}, {column}"
-                    );
-                } else {
-                    assert!(
-                        square.iter().all(|&p| p == [r, g, b, 255]),
-                        "only the white is edged: {pixel:?} at {row}, {column}"
-                    );
-                }
+                assert!(
+                    (0..TILE_SCALE * TILE_SCALE)
+                        .all(|d| at(x + d % TILE_SCALE, y + d / TILE_SCALE) == [r, g, b, 255]),
+                    "{pixel:?} at {row}, {column} is whole"
+                );
             }
         }
-        // The muzzle's lowest white pixel meets the cream below it.
-        let (x, y) = (left + 5 * TILE_SCALE, top + 13 * TILE_SCALE);
-        assert_eq!(at(x, y - 1), [or, og, ob, 255]);
-        assert_eq!(at(x, y), [r, g, b, 255]);
+        // Measured in the drawing: the plate shows as far on each side of
+        // the corgi as on the other, and each edge is on a 20 px logo's pixel.
+        // The corgi: opaque pixels that are not the plate.
+        let corgi = |x: u32, y: u32| at(x, y)[3] == 255 && at(x, y) != plate;
+        let columns: Vec<u32> = (0..TILE)
+            .filter(|&x| (0..TILE).any(|y| corgi(x, y)))
+            .collect();
+        let rows: Vec<u32> = (0..TILE)
+            .filter(|&y| (0..TILE).any(|x| corgi(x, y)))
+            .collect();
+        let (x0, x1) = (columns[0], columns[columns.len() - 1] + 1);
+        let (y0, y1) = (rows[0], rows[rows.len() - 1] + 1);
+        assert_eq!(
+            x0 - TILE_MARGIN,
+            TILE - TILE_MARGIN - x1,
+            "left and right margins"
+        );
+        assert_eq!(
+            y0 - TILE_MARGIN,
+            TILE - TILE_MARGIN - y1,
+            "top and bottom margins"
+        );
+        assert!([x0, x1, y0, y1].iter().all(|edge| edge.is_multiple_of(4)));
+    }
+
+    /// The white and the orange coat read on the plate (WCAG contrast).
+    #[test]
+    fn the_corgis_light_colours_stand_out_on_its_plate() {
+        fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+            let channel = |c: u8| {
+                let c = f64::from(c) / 255.0;
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+        }
+        let plate = luminance(TILE_PLATE);
+        let contrast = |pixel| (luminance(corgi_rgb(pixel).unwrap()) + 0.05) / (plate + 0.05);
+        assert!(contrast('w') >= 4.5, "white: {}", contrast('w'));
+        assert!(contrast('o') >= 3.0, "coat: {}", contrast('o'));
     }
 
     /// Fails when the corgi or the tile changed and the committed logo was
