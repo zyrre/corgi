@@ -1,9 +1,12 @@
 //! Corgi's sidebar in the Herdr app's (herdr-app's) layout: Corgi's
 //! `projects` mod where Herdr's `spaces` mod was, and no `agents` mod, since
-//! the Projects list shows each project's agents. That is the one change
-//! Corgi makes to a layout; everything else in it stays as it was found, so
-//! other mods (herdr-gitlab's panel in `panel-body`, a cloned tab bar) can
-//! change the same layout, before or after Corgi.
+//! the Projects list shows each project's agents; and the sidebar's `brand`
+//! block, the row at its top, showing Corgi's `corgi-brand` ("Herdr +
+//! Corgi") where Herdr's `workspace-chrome` showed "Herdr". That is the one
+//! change Corgi makes to a layout, all of it in the left sidebar (its
+//! footer stays `workspace-chrome`'s); everything else stays as it was
+//! found, so other mods (herdr-gitlab's panel in `panel-body`, a cloned tab
+//! bar) can change the same layout, before or after Corgi.
 //!
 //! A layout is a person's own (personal) or one Herdr ships
 //! (`installed.json` lists them as `layout:<name>`). Herdr replaces a
@@ -23,8 +26,9 @@
 //! Spaces or Projects list to put it in is left alone, with why.
 //!
 //! [`restore`] (`corgi app-layout remove`, which the uninstall runs) puts
-//! Herdr's Spaces and Agents lists back where Corgi's Projects list is, so a
-//! layout does not go on naming a mod that is gone. It deletes no layout.
+//! Herdr's Spaces and Agents lists back where Corgi's Projects list is, and
+//! Herdr's brand row where Corgi's is, so a layout does not go on naming a
+//! mod that is gone. It deletes no layout.
 
 use std::{
     fs,
@@ -46,6 +50,13 @@ pub const DEFAULT: &str = "main";
 /// Corgi's mod that takes the place of Herdr's `spaces`:
 /// `herdr-app/mods/projects`.
 pub const PROJECTS_MOD: &str = "projects";
+/// Corgi's mod for the sidebar's brand row ("Herdr + Corgi"):
+/// `herdr-app/mods/corgi-brand`.
+pub const BRAND_MOD: &str = "corgi-brand";
+/// The block of Herdr's layouts that holds the brand row, and the mod that
+/// draws it there (and the sidebar's footer, which Corgi leaves).
+const BRAND: &str = "brand";
+const CHROME_MOD: &str = "workspace-chrome";
 /// The node of Herdr's layouts that holds the lists.
 const SIDEBAR: &str = "sidebar";
 const SPACES_MOD: &str = "spaces";
@@ -221,11 +232,26 @@ fn retarget(node: &mut Value, from: &str, to: &str) {
     }
 }
 
-/// Puts the Projects list into `layout`: the one `spaces` block of its
+/// Makes the `brand` block under `node` show Corgi's brand row when it
+/// shows `workspace-chrome`'s: whether it changed. No `brand` block, or one
+/// showing another mod (Corgi's already, or someone's own), is left alone.
+fn put_brand(node: &mut Value) -> bool {
+    match find_mut(node, BRAND) {
+        Some(brand) if shown_mod(brand) == Some(CHROME_MOD) => {
+            brand["content"]["mod"] = Value::String(BRAND_MOD.to_string());
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Puts Corgi's sidebar into `layout`: the one `spaces` block of its
 /// sidebar (the node `sidebar`, or the whole layout when it has none) shows
-/// `projects` instead, and the sidebar's `agents` blocks go. A sidebar
-/// that shows `projects` already is left as it is, whatever else it holds.
-/// `Err` says why there is nowhere to put it; the layout is then unchanged.
+/// `projects` instead, the sidebar's `agents` blocks go, and its `brand`
+/// block shows `corgi-brand` (see [`put_brand`]). A sidebar that shows
+/// `projects` already keeps its lists as they are, whatever else it holds.
+/// `Err` says why there is nowhere to put the Projects list; the layout is
+/// then unchanged.
 pub fn put_projects(layout: &mut Value) -> Result<Change, String> {
     let has_sidebar = has_id(layout, SIDEBAR);
     let sidebar = match find_mut(layout, SIDEBAR) {
@@ -233,7 +259,12 @@ pub fn put_projects(layout: &mut Value) -> Result<Change, String> {
         None => layout,
     };
     if count(sidebar, PROJECTS_MOD) > 0 {
-        return Ok(Change::Unchanged);
+        // A layout from before Corgi had a brand row gets it now.
+        return Ok(if put_brand(sidebar) {
+            Change::Edited
+        } else {
+            Change::Unchanged
+        });
     }
     let place = if has_sidebar {
         "its sidebar"
@@ -256,6 +287,7 @@ pub fn put_projects(layout: &mut Value) -> Result<Change, String> {
     }
     retarget(sidebar, SPACES_MOD, PROJECTS_MOD);
     remove(sidebar, AGENTS_MOD);
+    put_brand(sidebar);
     Ok(Change::Edited)
 }
 
@@ -299,13 +331,17 @@ fn insert_after(node: &mut Value, after: &str, block: Value) -> Option<Value> {
         .try_fold(block, |block, child| insert_after(child, after, block))
 }
 
-/// Takes Corgi's Projects list out of `layout` again: its block shows
-/// `spaces` again (or goes, when the layout has a Spaces list besides it),
-/// and an `agents` block (`agents`) follows the Spaces list when the layout
-/// has none. Whether there was a Projects list to take out.
+/// Takes Corgi's sidebar out of `layout` again: the Projects list's block
+/// shows `spaces` again (or goes, when the layout has a Spaces list besides
+/// it), an `agents` block (`agents`) follows the Spaces list when the layout
+/// has none, and every block showing Corgi's brand row shows
+/// `workspace-chrome` again. Whether there was anything of Corgi's to take
+/// out.
 fn take_projects(layout: &mut Value, agents: impl FnOnce(&Value) -> Value) -> bool {
+    let brand = count(layout, BRAND_MOD) > 0;
+    retarget(layout, BRAND_MOD, CHROME_MOD);
     if count(layout, PROJECTS_MOD) == 0 {
-        return false;
+        return brand;
     }
     if count(layout, SPACES_MOD) == 0 {
         // The first goes back to Spaces; any other was a second list.
@@ -507,7 +543,8 @@ pub fn install(app: &HerdrApp, name: Option<&str>) -> Result<Installed> {
     Ok(Installed::Done(done))
 }
 
-/// The personal layouts in `home` that show Corgi's Projects list.
+/// The personal layouts in `home` that show Corgi's Projects list or its
+/// brand row.
 fn layouts_with_projects(home: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(home.join("layouts"))
         .into_iter()
@@ -517,15 +554,17 @@ fn layouts_with_projects(home: &Path) -> Vec<String> {
             let name = entry.file_name().to_string_lossy().into_owned();
             let name = name.strip_suffix(".json")?.to_string();
             let layout = read_json(&entry.path())?;
-            (count(&layout, PROJECTS_MOD) > 0 && !is_shipped(home, &name)).then_some(name)
+            let corgis = count(&layout, PROJECTS_MOD) + count(&layout, BRAND_MOD);
+            (corgis > 0 && !is_shipped(home, &name)).then_some(name)
         })
         .collect();
     names.sort();
     names
 }
 
-/// Puts Herdr's Spaces and Agents lists back in the layout `name`, or in
-/// every personal layout that shows Corgi's Projects list: the names of
+/// Puts Herdr's Spaces and Agents lists and its brand row back in the
+/// layout `name`, or in every personal layout that shows Corgi's Projects
+/// list or brand row: the names of
 /// those it changed. No layout is deleted and the window is not switched.
 pub fn restore(home: &Path, name: Option<&str>) -> Result<Vec<String>> {
     let names = match name {

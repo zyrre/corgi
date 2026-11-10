@@ -1,6 +1,6 @@
 # Corgi
 
-Two mods and a change to your layout. The **Corgi** mod is an overview: how
+Three mods and a change to your layout. The **Corgi** mod is an overview: how
 each of your Corgi projects on herdr-core (`hc`), the Herdr app's backend,
 is doing: one block per project with its supervisor's state, its workers by
 state, the open questions waiting for you, the work ready to merge and the
@@ -23,9 +23,13 @@ branch, as `x` does there. The
 last line says which Corgi runs (`Corgi 0.2.3 · 5b50895`) and whether a
 newer one has been merged since.
 
+The **brand row** mod draws the row at the top of the sidebar: Herdr's logo
+and "Herdr", a dim `+`, then Corgi's pixel corgi and "Corgi", so the window
+says it is Herdr with Corgi. Its search and sidebar buttons are Herdr's.
+
 They need the `corgi` command-line tool; `herdr-app/install.sh` in the
-Corgi repository installs the tool and both mods, and puts the Projects
-list into the layout the window shows. A layout of your own gets it in
+Corgi repository installs the tool and the mods, and puts the Projects
+list and the brand row into the layout the window shows. A layout of your own gets it in
 place; Herdr's own `main` is cloned to `corgi` first, which the window
 switches to (`"main"` shows Herdr's own again). Nothing else in the layout
 changes, so another mod's changes to it (a panel, a tab bar) stay. The
@@ -93,8 +97,36 @@ In the layout (yours, or `layouts/corgi.json`, listed as "Corgi", cloned
 from Herdr's `main`), the sidebar's block that showed Herdr's `spaces` mod
 shows the `projects` mod, and the block that showed its `agents` mod is
 gone, so in `main`'s sidebar the one list takes the whole height between
-the brand row and the footer. Everything else is as it was (see "The
-layout").
+the brand row and the footer. The brand row's block shows the
+`corgi-brand` mod; the footer stays Herdr's. Everything else is as it was
+(see "The layout").
+
+### The brand row
+
+The `corgi-brand` mod fills the sidebar's `brand` block (46 px, on
+`chrome`, text 13.5 px), as Herdr's `workspace-chrome` did:
+
+- From the left: Herdr's logo (`frame/welcome/herdr.png`, 20 px, radius
+  5), "Herdr", a `+` in `dim`, Corgi's logo (`corgi.png`, the pixel corgi
+  of `assets/icon/AppIcon.png`, 40 px for 20 px at 2x, radius 5) and
+  "Corgi", the two names semibold in `foreground`, 5 px apart; then the
+  search button (opens the `picker` mod) and the sidebar toggle, 26 px
+  each, `muted`, `hover` behind.
+- On macOS, out of full screen, it starts 76 px in, past the traffic
+  lights; elsewhere 14 px.
+- Narrowed, only the words give way: "Corgi" is cut with `…` and then
+  gone before "Herdr" is cut at all, then "Herdr" is cut with `…`; the two
+  logos and the `+` are never cut. On macOS beside the traffic lights the
+  whole row needs a sidebar of about 280 px (Herdr's own 268
+  cuts "Corgi"); under about 220 px, where the logos and `+` would no
+  longer fit whole, Herdr's logo shows alone. Without the traffic lights
+  (full screen, other systems) every sidebar wider than the rail has room
+  for both logos.
+- The rail (a sidebar under 160 px) shows what Herdr's row shows: on macOS
+  nothing (the traffic lights fill it; the Projects list's `»` unfolds
+  it), elsewhere the sidebar toggle alone. The toggle folds the sidebar to
+  the rail (76 px on macOS, 44 elsewhere) and unfolds it to the width it
+  had (`sidebar.width`, else 268), and sets `sidebar.collapsed`.
 
 The Projects mod fills its block on `chrome`, text 13 px:
 
@@ -366,6 +398,14 @@ The Projects list:
   `corgi merge … --json` (with `--pull`, `--skip-upstream`, or
   `--ask-supervisor <error> [--commit <commit>]`). Files: `mods/projects/
   config.json` or `mods/corgi/config.json` (`{ "corgi": "<path>" }`).
+- The brand row mod, `mods/corgi-brand/` (`main.js`, `mod.json`:
+  `"place": "none"`, `corgi.png`, and `search.svg` and `sidebar.svg`,
+  copies of Herdr's). It began as a copy of the brand row of Herdr's
+  `workspace-chrome` mod (herdr-app 0.1.14) and is Corgi's own since: it
+  follows no later version of it. Imports: `View`, `div`, `image`, `svg`
+  from `gpui-kit`; `h_flex` from `gpui-base`; `theme`, `run`, `window`,
+  `shared`, `setShared`, `layout` from `herdr`. App commands: `mod.open`
+  (`picker`), `layout.resize`. No programs or files.
 - The layout: no file of this folder, but the one change `corgi
   app-layout` makes to the app's own (see "The layout").
 - `corgi projects --json` prints `{query, parent, projects: [{dir, name,
@@ -403,8 +443,11 @@ The Projects list:
   with `--layout NAME`.
 - The change: in the node `sidebar` (or the whole layout, when it has no
   such node), the one block whose `content.mod` is `spaces` shows
-  `projects` (it keeps its id `spaces`, its size and everything else), and
-  the blocks whose `content.mod` is `agents` go. Nothing else is touched:
+  `projects` (it keeps its id `spaces`, its size and everything else),
+  the blocks whose `content.mod` is `agents` go, and the block `brand`
+  shows `corgi-brand` when it shows `workspace-chrome` (a layout with no
+  `brand` block, or one showing another mod, keeps it as it is; the
+  footer, `sidebar-footer`, stays `workspace-chrome`). Nothing else is touched:
   herdr-gitlab's `gitlab` block in `panel-body` and its `tabs-gitlab` tab
   bar, say, stay as they are, whichever was installed first. The file is
   written in one rename, and only when it changes.
@@ -417,8 +460,9 @@ The Projects list:
   clone does, and the command says how to switch
   (`herdr-app do layout.switch '{"name":"corgi"}'`). A `corgi` layout that
   is there already is used, and switched to, instead.
-- Run again, it changes nothing: a sidebar that shows `projects` is left
-  as it is, even with an Agents list put back by hand. Corgi never builds
+- Run again, it changes nothing: a sidebar that shows `projects` keeps its
+  lists as they are, even with an Agents list put back by hand; a layout
+  Corgi changed before it had a brand row gets the brand row then. Corgi never builds
   a layout from `main` again and does not follow Herdr's later changes to
   it.
 - A sidebar with no `spaces` and no `projects` block, or with more than
@@ -426,9 +470,10 @@ The Projects list:
   the command says why (`--json`: `refused`, exit 0).
 - `corgi app-layout remove` (run by `herdr-app/install.sh --uninstall`,
   before the Projects mod goes) puts Spaces and Agents back in each of the
-  person's layouts that shows `projects`: the `projects` block shows
-  `spaces` again, and an `agents` block (the one in Herdr's `main`) follows
-  it when the layout has none. No layout is deleted (`corgi` stays, as the
+  person's layouts that shows `projects` or `corgi-brand`: the `projects`
+  block shows `spaces` again, an `agents` block (the one in Herdr's `main`)
+  follows it when the layout has none, and the `corgi-brand` block shows
+  `workspace-chrome` again. No layout is deleted (`corgi` stays, as the
   person's own) and the window is not switched.
 
 ## The Corgi space
@@ -557,13 +602,19 @@ wants the overview on screen.
 
 ## Done when
 
-- `herdr-app check mods/corgi` and `herdr-app check mods/projects` pass.
+- `herdr-app check mods/corgi`, `herdr-app check mods/projects` and
+  `herdr-app check mods/corgi-brand` pass.
 - After `herdr-app/install.sh` on Herdr's `main`, `layouts/corgi.json` is
   there, records `cloned_from` and differs from `layouts/main.json` only in
-  the sidebar's two blocks, and the window shows it: the sidebar is one
+  the sidebar's three blocks (`brand`, `spaces`, `agents`), and the window shows it: the sidebar is one
   list titled Projects, with no Agents list under it. On a layout of your
   own, that layout has the same change and no `corgi.json` is made. A
   second run changes no file.
+- The sidebar's top row reads Herdr's logo, "Herdr", a dim `+`, the pixel
+  corgi and "Corgi", with Herdr's search and sidebar buttons at its right;
+  narrowed, the word "Corgi" goes first, then "Herdr", and the logos and
+  `+` stay whole; the rail shows what Herdr's row shows
+  there; the footer is Herdr's.
 - Projects shows each repository with its agents in one-line rows (task,
   icon, state, worktree), the supervisor first; in a sidebar too narrow for
   a row, its worktree's name is cut with `…` and then gone before its task
