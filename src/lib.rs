@@ -8,7 +8,7 @@ pub use corgi_core::{
 
 pub mod app;
 #[cfg(test)]
-mod app_icon;
+mod brand_tile;
 pub(crate) mod motion;
 #[cfg(test)]
 mod readme_shots;
