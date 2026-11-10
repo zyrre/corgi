@@ -484,6 +484,39 @@ async function projects(w) {
   assert.deepEqual(texts(kept(byId(mod.render(), 'agent-t3').children[1])), ['33%']);
 }
 
+// What is lit: only the agent with the focus, never a project's row with
+// it; a project's row is not lit at all; a space outside any project is
+// while none of its agents has the focus.
+{
+  const lit = (root) => [...ids(root, 'space-'), ...ids(root, 'agent-')].filter((id) => 'bg' in byId(root, id).calls);
+  const w = window();
+  const mod = await projects(w);
+  // A shell in ~, a space outside any project: its row.
+  assert.deepEqual(lit(mod.render()), ['space-sp-home']);
+  // An agent in ~: the agent alone.
+  w.agents[3].focused = true;
+  assert.deepEqual(lit(mod.render()), ['agent-t7']);
+  w.agents[3].focused = false;
+  // The supervisor, in the project's own space: its row, not the project's.
+  w.spaces.at(-1).active = false;
+  w.spaces[1].active = true;
+  w.agents[0].focused = true;
+  assert.deepEqual(lit(mod.render()), ['agent-t2']);
+  // A plain shell in the project's space: nothing.
+  w.agents[0].focused = false;
+  assert.deepEqual(lit(mod.render()), []);
+  // A worker, in its worktree's space: its row.
+  w.spaces[1].active = false;
+  w.spaces[2].active = true;
+  w.agents[1].focused = true;
+  assert.deepEqual(lit(mod.render()), ['agent-t3']);
+  // A worktree's space with no agent keeps its own row, lit while shown.
+  w.agents[1].focused = false;
+  w.spaces[2].active = false;
+  w.spaces[4].active = true;
+  assert.deepEqual(lit(mod.render()), ['space-sp-quiet']);
+}
+
 // The space that is shown is lit: its own row, or the agent standing for it.
 {
   const w = window();

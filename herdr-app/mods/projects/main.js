@@ -1125,7 +1125,10 @@ export default class Projects extends View {
       const head = rows[n];
       const kids = [];
       while (rows[n + 1]?.tree) kids.push(rows[++n]);
-      out.push(this.row(head, t));
+      // Only the agent with the focus is lit, never a project's row with it:
+      // a project's row (a repository's space) is not lit at all, for now; a
+      // space outside any repository is, while none of its agents has the focus.
+      out.push(this.row(head, t, !head.g && head.w.active && !(by[head.w.id] ?? []).some((a) => a.focused)));
       const members = [head, ...kids].flatMap((r) => (by[r.w.id] ?? []).map((a) => ({ a, r })));
       // The supervisor first; the rest stay in the app's order.
       members.sort((x, y) => Number(y.a.supervisor) - Number(x.a.supervisor));
@@ -1247,9 +1250,8 @@ export default class Projects extends View {
   }
 
   // A space: a project's own, one outside any repository, or a worktree's
-  // with no agent in it.
-  row({ w, i, g, tree }, t) {
-    const on = w.active;
+  // with no agent in it. `on`: lit (by default while it is shown).
+  row({ w, i, g, tree }, t, on = w.active) {
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex((s) => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";

@@ -207,8 +207,13 @@ The Projects mod fills its block on `chrome`, text 13 px:
     under its project: a branch glyph and the space's name.
   - A space outside a repository with agents in it has their rows under it
     the same way.
-  - The shown space's row is on `selected`; so is the agent with the focus,
-    and, for a shown worktree space that has no row, its first agent.
+  - One row at most is on `selected`: the agent with the focus, alone. A
+    project's own row (a repository's space) is never lit, not even with
+    the focus on its supervisor or on a shell in its space (then nothing
+    is). A space outside any repository is lit while it is shown and none
+    of its agents has the focus; a worktree's space with no agent row is
+    lit while shown; for a shown worktree space whose focus is on no agent,
+    its first agent is.
 - **Which Corgi runs** (under the list, 16 px from the left, `dim`
   10.5 px): `Corgi 0.2.3 · 5b50895`, the release and the commit the `corgi`
   that answers was built from, with `· modified` for a build with
@@ -625,7 +630,8 @@ wants the overview on screen.
   fill, dim), the supervisor first; in a narrow sidebar the task is cut
   with `…` and the state keeps its place, and an agent without a model or
   fill shows neither, with no placeholder; a click on a row shows that
-  agent's terminal; `~`, other folders and a worktree with no agent still
+  agent's terminal and lights that row alone, never the project's row with
+  it; `~`, other folders and a worktree with no agent still
   have their rows; the narrow rail shows a cell per space and `»` unfolds
   it.
 - A worker tagged MERGE has the mark in its row and no other row has one;
