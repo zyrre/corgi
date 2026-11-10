@@ -23,6 +23,7 @@ Commands:
   merge       Merge an agent's worktree branch, as the dashboard's m does
   close       Close a worker on herdr-core and remove its worktree
   status      Print every project's supervisor, agents and questions as JSON
+  usage       Print each harness's plan usage (5-hour and weekly) as JSON
   role        Print a part of the supervisor's role it reads on demand
   edit        Open the focused or selected agent's checkout in your editor
   hook        What Herdr runs on its start and on agents' events
@@ -73,6 +74,8 @@ fn main() -> Result<()> {
         Some("recovery") => corgi::app::recovery_command(&args[2..]),
         Some("status") if help() => usage(corgi::app::STATUS_USAGE),
         Some("status") => corgi::app::status_command(&args[2..]),
+        Some("usage") if help() => usage(corgi::app::USAGE_USAGE),
+        Some("usage") => corgi::app::usage_command(&args[2..]),
         Some("merge") if help() => usage(corgi::app::MERGE_USAGE),
         Some("merge") => corgi::app::merge_command(&args[2..]),
         Some("close") if help() => usage(corgi::app::CLOSE_USAGE),

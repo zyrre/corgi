@@ -20,7 +20,10 @@ its supervisor or starts it. A worker Corgi tagged ready to merge has a
 the project's base branch and pushed, as `m` does in Corgi's dashboard;
 then it offers to close the worker and remove its worktree, keeping the
 branch, as `x` does there. A red `↓3` after a space's name says its
-checkout is 3 commits behind its upstream: click it to pull them. The
+checkout is 3 commits behind its upstream: click it to pull them. At the
+top, above the list's header, a card counts your agents by state (HERD) and shows how much of
+each Claude and Codex plan's 5-hour and weekly windows is used, as the
+dashboard's header does. The
 last line says which Corgi runs (`Corgi 0.2.3 · 5b50895`) and whether a
 newer one has been merged since.
 
@@ -135,6 +138,27 @@ The `corgi-brand` mod fills the sidebar's `brand` block (46 px, on
 
 The Projects mod fills its block on `chrome`, text 13 px:
 
+- **Herd card** (the first thing in the mod, right under the brand row and
+  above the header, 4 px above it and 2 px below; not in the rail, and not
+  at all while there are neither agents nor plans): a card (`surface`, a
+  `border` outline, radius 7, text 11 px), its outline and titles in the
+  theme's `border` and `dim` whatever the agents' states, a 20 px line
+  each, every title (`HERD`, `CODEX`, `CLAUDE`) 10 px semibold in a 50 px
+  column:
+  - `HERD`: per state with agents, its mark as in the agent rows (spinner,
+    `!`, a filled dot for done, a ring for idle, a small `accent` square
+    for MERGE) and its count, semibold in the state's color; a state with
+    none left out, `no agents` in `dim` when none has any. Counted over the
+    list's agents as the dashboard's HERD box counts: a worker tagged ready
+    to merge counts as MERGE alone, an agent in no state as idle. Each
+    count's tooltip says it (`1 blocked`).
+  - A line per harness with a plan (`corgi usage --json`): `5h` and `7d`,
+    each in `dim`, a 34 px bar 4 px high on `border` filled to the use, the
+    percentage semibold, both in `ansi2` under 60 %, `ansi3` under 85 %,
+    `ansi1` above, and the time to the reset in `dim` 10 px (`2h 14m`, `3d
+    14h`), left out whole in a sidebar under 330 px (Herdr's own 268), where
+    the tooltip says them instead. The line's tooltip: the plan and how old
+    the reading is (`Max · read 2m ago`), and why the last reading failed. With no reading, `loading…`, or `unavailable` once one failed.
 - **Header** (31 px): `Projects` in `dim` 11.5 px and a 26 px `+` button
   (tooltip `Open project`), lit while its field is open.
 - **Open project** (only while open, under the header): a card (`surface`,
@@ -374,6 +398,13 @@ The Projects list:
   a line in the supervisor's inbox, as `s` sends from the dashboard's merge
   dialog, which `corgi daemon` types in. The card then says who was asked;
   if nobody could be, why, with the button still there.
+- The herd card's counts come from the list's own agents; its plan lines
+  from `corgi usage --json`, read once the first status answers and then
+  every minute. That command reads the plan-usage cache every Corgi process
+  shares (`usage/<provider>.json` in Corgi's state directory), so the
+  providers are asked at most once a minute on the machine however many
+  dashboards, windows and lists read it; a corgi too old to know `usage`
+  leaves the plan lines out.
 - The last line is read from the same status: `corgi` (`version`, `commit`,
   `dirty`, `source`, `newer`) and `daemon.build`. `newer` is Corgi's own
   finding: the checkout the binary was built in (`source`) has commits its

@@ -311,12 +311,26 @@ AGENT
     printf ']}\n'
   } >"$fake/status.json"
 
+  # Plan usage with a window in each of the cards' colors: green under 60%,
+  # yellow under 85%, red above. Times are filled in when it is read.
+  cat >"$fake/usage.json" <<'USAGE'
+{"version":1,"now":__NOW__,"providers":[
+{"provider":"codex","title":"CODEX","usage":{"provider":"codex","plan_type":"Pro","five_hour":{"used_percent":64,"resets_at":__R5H__},"week":{"used_percent":12,"resets_at":__RWK__},"banked_resets":null},"fetched_at":__AGO__,"error":null},
+{"provider":"claude","title":"CLAUDE","usage":{"provider":"claude","plan_type":"Max","five_hour":{"used_percent":31,"resets_at":__R5H__},"week":{"used_percent":86,"resets_at":__RWK__},"banked_resets":null},"fetched_at":__AGO__,"error":null}]}
+USAGE
+
   cat >"$fake/corgi" <<CORGI
 #!/bin/sh
 # scripts/app-preview's canned corgi: the made-up projects' status, a canned
 # answer to a merge, and target/release/corgi for everything else.
 if [ "\${1:-}" = status ]; then
   exec sed "s/__NOW__/\$(date -u +%Y-%m-%dT%H:%M:%SZ)/" "$fake/status.json"
+fi
+# \`corgi usage\` answers what usage.json holds, read two minutes ago.
+if [ "\${1:-}" = usage ] && [ -e "$fake/usage.json" ]; then
+  now=\$(date +%s)
+  exec sed -e "s/__NOW__/\$now/" -e "s/__AGO__/\$((now - 120))/g" \\
+    -e "s/__R5H__/\$((now + 8040))/g" -e "s/__RWK__/\$((now + 310000))/g" "$fake/usage.json"
 fi
 # \`corgi merge\` answers what merge.json holds (ask.json with
 # --ask-supervisor), after merge.delay seconds, and merges nothing. Without

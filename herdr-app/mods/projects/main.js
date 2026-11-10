@@ -23,7 +23,9 @@
 // branch stays). A space's red ↓N (its checkout is N commits behind its
 // upstream, as last fetched) pulls them with a click: `git pull --ff-only`
 // in that checkout, nothing else; only a pull that fails leaves a card,
-// under the row, saying why. Under the list, which Corgi
+// under the row, saying why. At the top, above the header, a card counts the agents by
+// state (HERD) and shows each plan's 5-hour and weekly use (`corgi usage
+// --json`), as the dashboard's header does. Under the list, which Corgi
 // answers (`Corgi 0.2.3 · 5b50895`), whether the checkout it was built in
 // has moved on since, and whether the daemon is down or runs another build.
 //
@@ -164,6 +166,32 @@ function stateMark(t, status) {
   return div().size(7).mx(3).flex_none();
 }
 
+// How often plan usage is read: `corgi usage --json` reads the cache every
+// Corgi process shares, which asks the provider at most once a minute.
+const USAGE_POLL_MS = 60000;
+// The narrowest sidebar whose herd card shows the plans' reset times.
+const RESETS_FIT = 330;
+
+// A plan window's use in the dashboard's colors: green, then yellow from
+// 60%, red from 85%.
+const usageColor = (t, pct) => (pct >= 85 ? t.ansi1 : pct >= 60 ? t.ansi3 : t.ansi2);
+// How long until a window resets, as the dashboard's cards say it.
+function countdown(resetsAt, now) {
+  if (!resetsAt) return "—";
+  const left = Math.max(0, resetsAt - now);
+  if (!left) return "now";
+  const m = Math.floor(left / 60);
+  if (m < 60) return m ? `${m}m` : "<1m";
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  return `${Math.floor(h / 24)}d ${String(h % 24).padStart(2, "0")}h`;
+}
+// How old a reading is, in its largest whole unit.
+function readingAge(elapsed) {
+  const m = Math.floor(Math.max(0, elapsed) / 60);
+  return m < 1 ? "<1m" : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
+}
+
 // What the field says with no corgi to ask, and with one too old to answer.
 const NO_CORGI = "The corgi command was not found. Install Corgi: run herdr-app/install.sh from its repository.";
 const OLD_CORGI = "This corgi is older than the Projects list. Update Corgi: run herdr-app/install.sh from its repository again.";
@@ -240,6 +268,9 @@ export default class Projects extends View {
     this.corgiProjects = new Map(); // dir -> { base, supervisor, ... }
     this.build = null; // the corgi that answers: { version, commit, dirty, source, newer }
     this.daemon = null; // { running, pid, build, installed }
+    // Plan usage, as `corgi usage --json` gives it: { now, providers }.
+    this.usage = null;
+    this.usageLoading = false;
     // The one merge under way, shown under its worker's row: { terminal,
     // name, dir, branch, base, phase, outcome, problem, closed }. Its phases:
     // confirm, running, result, asking (the supervisor), asked; once merged
@@ -281,6 +312,7 @@ export default class Projects extends View {
     cx.timer.every(250, (cx) => this.checkNew(cx));
     this.refreshCorgi(cx);
     cx.timer.every(POLL_MS, (cx) => this.refreshCorgi(cx));
+    cx.timer.every(USAGE_POLL_MS, (cx) => this.refreshUsage(cx));
     // Live agents changing is a sign Corgi's status did too; comparing is cheap.
     cx.timer.every(1000, (cx) => {
       const key = agents().map((a) => `${a.address}:${a.status}`).join(",");
@@ -348,11 +380,31 @@ export default class Projects extends View {
         if (!worker || (m.phase === "confirm" && worker.tag !== "merge")) this.merge = null;
       }
       this.loading = false;
+      // The first answer names the corgi to ask for usage too.
+      if (status && !this.usage) this.refreshUsage(cx);
       cx.notify();
       if (this.again) {
         this.again = false;
         this.refreshCorgi(cx);
       }
+    });
+  }
+
+  // Plan usage from the corgi that answers status; a corgi too old to know
+  // `usage` leaves the boxes out.
+  refreshUsage(cx) {
+    if (!this.corgi || this.usageLoading) return;
+    this.usageLoading = true;
+    const path = this.corgi;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(path, ["usage", "--json"], { timeout: 30000 });
+        if (r.code === 0) this.usage = JSON.parse(r.stdout);
+      } catch (_) {
+        // Kept as it was: the next minute asks again.
+      }
+      this.usageLoading = false;
+      cx.notify();
     });
   }
 
@@ -624,6 +676,75 @@ export default class Projects extends View {
           dismiss,
         )),
       );
+  }
+
+  // --- The herd and plan usage ---------------------------------------------------
+
+  // The agents by state, as the dashboard's HERD box counts them: a worker
+  // tagged ready to merge counts as MERGE, not as done or idle; an agent
+  // in no state counts as idle.
+  herdCounts(by) {
+    const n = { working: 0, blocked: 0, merge: 0, done: 0, idle: 0 };
+    for (const a of Object.values(by).flat()) {
+      if (a.corgi?.tag === "merge") n.merge++;
+      else if (a.status === "working" || a.status === "blocked" || a.status === "done") n[a.status]++;
+      else n.idle++;
+    }
+    return n;
+  }
+
+  // At the top of the list, above its header, one card of a line each, in the theme's
+  // border and dim alone, whatever the agents' states: HERD, the agents by
+  // state with the list's own marks (a state with none left out), then a
+  // line per harness with a plan: its 5-hour and 7-day windows, each a thin
+  // bar, the use in the dashboard's colors and the time to its reset. The
+  // plan and how old the reading is are the line's tooltip. Nothing while
+  // there are neither agents nor plans.
+  herdCard(by, t) {
+    const n = this.herdCounts(by);
+    const providers = this.usage?.providers ?? [];
+    const now = Date.now() / 1000;
+    const mergeDot = div().size(8).mx(3).flex_none().rounded(2).bg(t.accent);
+    const states = [
+      ["working", "working", stateMark(t, "working"), t.working],
+      ["blocked", "blocked", stateMark(t, "blocked"), t.blocked],
+      ["merge", "to merge", mergeDot, t.accent],
+      ["done", "done", stateMark(t, "done"), t.done ?? t.dim],
+      ["idle", "idle", stateMark(t, "idle"), t.muted],
+    ].filter(([k]) => n[k] > 0);
+    if (!states.length && !providers.length) return null;
+    const label = (text) => div().w(50).flex_none().text_size(10).font_semibold().text_color(t.dim).child(text);
+    const herd = h_flex().id("herd").h(20).gap(8).items_center()
+      .child(label("HERD"))
+      .when(!states.length, (el) => el.child(div().text_color(t.dim).child("no agents")))
+      .children(states.map(([k, word, mark, c]) =>
+        h_flex().id(`herd-${k}`).flex_none().gap(3).items_center().tooltip(`${n[k]} ${word}`)
+          .child(mark).child(div().font_semibold().text_color(c).child(String(n[k])))));
+    const BAR = 34;
+    // The reset times need a sidebar of about 330 px; narrower they go whole,
+    // rather than leave a lone `…`, and stay in the line's tooltip.
+    const roomy = (find(layout(), "sidebar")?.size?.px ?? Infinity) >= RESETS_FIT;
+    const win = (name, w) =>
+      h_flex().flex_1().min_w(0).gap(4).items_center()
+        .child(div().flex_none().text_color(t.dim).child(name))
+        .child(div().w(BAR).h(4).flex_none().rounded(2).bg(t.border)
+          .child(div().h(4).rounded(2).w(w ? Math.max(2, Math.round((BAR * Math.min(100, w.used_percent)) / 100)) : 0).bg(w ? usageColor(t, w.used_percent) : t.dim)))
+        .child(div().flex_none().font_semibold().text_color(w ? usageColor(t, w.used_percent) : t.dim).child(w ? `${w.used_percent}%` : "—"))
+        .when(roomy, (el) => el.child(div().min_w(0).truncate().text_size(10).text_color(t.dim).child(w ? countdown(w.resets_at, now) : "")));
+    const plan = (p) => {
+      const u = p.usage;
+      const read = u && p.fetched_at ? `read ${readingAge(now - p.fetched_at)} ago` : null;
+      const resets = u && !roomy ? [["5h", u.five_hour], ["7d", u.week]].filter(([, w]) => w).map(([name, w]) => `${name} resets in ${countdown(w.resets_at, now)}`) : [];
+      const tip = [u ? [u.plan_type || null, read].filter(Boolean).join(" · ") : null, ...resets, p.error ? oneLine(p.error) : null].filter(Boolean).join(" · ");
+      return h_flex().id(`usage-${p.provider}`).h(20).gap(8).items_center()
+        .when(Boolean(tip), (el) => el.tooltip(tip))
+        .child(label(p.title))
+        .when(!u, (el) => el.child(div().text_color(t.dim).child(p.error ? "unavailable" : "loading…")))
+        .when(Boolean(u), (el) => el.child(win("5h", u.five_hour)).child(win("7d", u.week)));
+    };
+    return div().flex_none().px(8).pt(4).pb(2).child(
+      v_flex().id("herd-card").px(8).py(4).rounded(7).border_1().border_color(t.border).bg(t.surface).text_size(11)
+        .child(herd).children(providers.map(plan)));
   }
 
   // --- Which Corgi runs --------------------------------------------------------
@@ -1546,7 +1667,11 @@ export default class Projects extends View {
       changed = true;
     }
     if (changed) setShared("space.colors", kept);
+    // The rail has no room for the herd and usage card.
+    const by = collapsed ? null : this.agentsBySpace(sp, ps);
+    const herd = by && this.herdCard(by, t);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
+      .when(Boolean(herd), (el) => el.child(herd))
       .child(h_flex().h(31).flex_none().pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, (el) => el.pl(0).pr(0).justify_center())
         .when(!collapsed, (el) => el.child("Projects"))
