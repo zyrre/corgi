@@ -10,8 +10,8 @@
 //! largest, so none of them is smoothed.
 //!
 //! It also draws the Corgi logo of the Herdr app's sidebar brand row,
-//! `herdr-app/mods/corgi-brand/corgi.png`, on Herdr's cream plate beside
-//! Herdr's own logo (see `brand_tile`): `cargo brand-tile` draws it again.
+//! `herdr-app/mods/corgi-brand/corgi.png`, a finer pixel corgi beside
+//! Herdr's own logo (see `brand_logo_svg`): `cargo brand-tile` draws it again.
 
 use corgi_core::{
     art::{CORGI_PIXELS, corgi_color},
@@ -143,110 +143,120 @@ fn paint_corgi(pixels: &mut [[u8; 4]], canvas: u32, (left, top): (u32, u32), sca
     }
 }
 
-/// The sidebar brand row's Corgi logo (`herdr-app/mods/corgi-brand/corgi.png`):
-/// the corgi alone on a transparent [`TILE`] px canvas, the size of
-/// Herdr's logo beside it (`frame/welcome/herdr.png` in the Herdr app's
-/// home), which the app shows at 20 px too.
-///
-/// The corgi is as wide as Herdr's ram (about nine tenths of Herdr's plate,
-/// whose 16 px margin it keeps on each side and more above and below), at
-/// [`TILE_SCALE`] px a corgi pixel, which the 20 px logo shows as two device
-/// pixels at 2x, so it stays crisp. Its painted pixels are centred exactly,
-/// with no optical raise. Its white would vanish on a light sidebar, so
-/// where the white meets the background it is edged, inside its own pixels,
-/// with [`TILE_EDGE`]; the art is otherwise as drawn.
-fn brand_tile() -> Vec<[u8; 4]> {
-    let canvas = TILE;
-    let mut pixels = vec![[0; 4]; (canvas * canvas) as usize];
-    let (left, top) = tile_corgi_origin();
-    paint_corgi(&mut pixels, canvas, (left, top), TILE_SCALE);
+/// The sidebar brand row's Corgi logo (`herdr-app/mods/corgi-brand/corgi.png`)
+/// as pixel art finer than [`CORGI_PIXELS`]: the same face on a 32 by 32
+/// grid, the left half drawn here and mirrored. `.` is clear; the others are
+/// [`BRAND_COLOURS`]'. The face's painted cells run from row and column 5 to
+/// 26, so it is centred on the canvas.
+const BRAND_LEFT: [&str; 32] = [
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+    "......oo........",
+    "......ooo.......",
+    ".....oodoo......",
+    ".....odddoo.....",
+    ".....oddddoo....",
+    ".....oddddoooooo",
+    ".....odddooooooo",
+    ".....oddoooooooo",
+    ".....ooooooooooo",
+    ".....ooookkkooow",
+    ".....ooookkhooww",
+    ".....ooookkkooww",
+    ".....oooooooowww",
+    ".....wwwooowwwww",
+    ".....wwwwwwwwkkk",
+    ".....wwwwwwwwwkk",
+    "......wwwwwwwwwk",
+    "......wwwwwkwwwk",
+    ".......wwwwwkkpp",
+    ".......wwwwwwwpp",
+    "........wwwwwwwp",
+    "...........wwwww",
+    "................",
+    "................",
+    "................",
+    "................",
+    "................",
+];
 
-    let blank = |row: i64, column: i64| {
-        usize::try_from(row)
-            .ok()
-            .and_then(|row| CORGI_PIXELS.get(row))
-            .and_then(|line| {
-                usize::try_from(column)
-                    .ok()
-                    .and_then(|c| line.chars().nth(c))
-            })
-            .is_none_or(|pixel| corgi_color(pixel).is_none())
+/// The colours of [`BRAND_LEFT`]'s cells: coat, inner ear, white, glint,
+/// dark (eyes, nose, mouth) and tongue.
+const BRAND_COLOURS: [(char, &str); 6] = [
+    ('o', "#ff8700"),
+    ('d', "#d75f00"),
+    ('w', "#f4f4f4"),
+    ('h', "#ffffff"),
+    ('k', "#1c1c1c"),
+    ('p', "#ff8787"),
+];
+
+/// The jaw, from one cheek to the other: the curve the stepped cells make
+/// once the 20 px logo smooths them, which the logo is cut to so that its
+/// outline is that curve on any background.
+const BRAND_JAW: &str = "M25 90 V104 C27 118 40 132 62 135 H98 C120 132 133 118 135 104 V90";
+
+/// The edge drawn along [`BRAND_JAW`], inside the white, so that the white
+/// face keeps its outline on a light sidebar, where it would vanish: a warm
+/// grey that hardly shows on a dark one.
+const BRAND_EDGE: &str = "#b0aa9e";
+
+/// The brand logo as SVG on a [`TILE`] px canvas, the size of Herdr's logo
+/// beside it (`frame/welcome/herdr.png` in the Herdr app's home), which the
+/// app shows at 20 px too: the cells of [`BRAND_LEFT`] (each 5 px, crisp),
+/// cut to [`BRAND_JAW`] below the eyes with white behind them up to it, and
+/// the jaw edged in [`BRAND_EDGE`] 5 px wide, one cell. A cell edge would
+/// step along the jaw and, where the white vanishes on a light sidebar, show
+/// as a broken stair rather than the curve a dark one shows.
+fn brand_logo_svg() -> String {
+    let colour = |cell: char| {
+        BRAND_COLOURS
+            .iter()
+            .find(|(key, _)| *key == cell)
+            .map(|(_, hex)| *hex)
     };
-    let (er, eg, eb) = TILE_EDGE;
-    for (row, line) in (0..).zip(CORGI_PIXELS) {
-        for (column, pixel) in (0..).zip(line.chars()) {
-            if pixel != 'w' {
-                continue;
-            }
-            let (r, c) = (i64::from(row), i64::from(column));
-            let (x0, y0) = (left + column * TILE_SCALE, top + row * TILE_SCALE);
-            let (x1, y1) = (x0 + TILE_SCALE, y0 + TILE_SCALE);
-            let w = TILE_EDGE_WIDTH;
-            let bands = [
-                (blank(r - 1, c), (x0, y0, x1, y0 + w)),
-                (blank(r + 1, c), (x0, y1 - w, x1, y1)),
-                (blank(r, c - 1), (x0, y0, x0 + w, y1)),
-                (blank(r, c + 1), (x1 - w, y0, x1, y1)),
-            ];
-            for (_, (bx0, by0, bx1, by1)) in bands.into_iter().filter(|(edge, _)| *edge) {
-                for y in by0..by1 {
-                    for x in bx0..bx1 {
-                        pixels[(y * canvas + x) as usize] = [er, eg, eb, 255];
-                    }
-                }
+    let white = colour('w').expect("white");
+    let mut cells = String::new();
+    for (y, left) in BRAND_LEFT.iter().enumerate() {
+        let row: String = left.chars().chain(left.chars().rev()).collect();
+        for (x, cell) in row.chars().enumerate() {
+            if let Some(hex) = colour(cell) {
+                let (x, y) = (x * 5, y * 5);
+                cells.push_str(&format!(
+                    r#"<rect x="{x}" y="{y}" width="5" height="5" fill="{hex}"/>"#
+                ));
             }
         }
     }
-    pixels
+    // Everything above the jaw's ends, and inside the jaw below them.
+    let face = "M0 0 H160 V90 H135 V104 C133 118 120 132 98 135 H62 C40 132 27 118 25 104 V90 H0 Z";
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {TILE} {TILE}" width="{TILE}" height="{TILE}"><defs><clipPath id="face"><path d="{face}"/></clipPath></defs><g clip-path="url(#face)"><path d="{BRAND_JAW} Z" fill="{white}"/><g shape-rendering="crispEdges">{cells}</g><path d="{BRAND_JAW}" fill="none" stroke="{BRAND_EDGE}" stroke-width="10"/></g></svg>"##
+    )
+}
+
+/// [`brand_logo_svg`] drawn as straight (not premultiplied) RGBA.
+fn brand_tile() -> Vec<[u8; 4]> {
+    use resvg::{tiny_skia, usvg};
+    let tree = usvg::Tree::from_str(&brand_logo_svg(), &usvg::Options::default())
+        .expect("the brand logo's SVG");
+    let mut pixmap = tiny_skia::Pixmap::new(TILE, TILE).expect("pixmap");
+    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    pixmap
+        .pixels()
+        .iter()
+        .map(|pixel| {
+            let color = pixel.demultiply();
+            [color.red(), color.green(), color.blue(), color.alpha()]
+        })
+        .collect()
 }
 
 /// The brand logo's canvas, as Herdr's logo's.
 const TILE: u32 = 160;
-/// Device pixels to a corgi pixel on the brand logo.
-const TILE_SCALE: u32 = 8;
-/// The edge of the corgi's white where it meets the background, `#b0aa9e`:
-/// a warm grey that outlines the white on a light sidebar and hardly shows
-/// on a dark one.
-const TILE_EDGE: (u8, u8, u8) = (0xb0, 0xaa, 0x9e);
-/// How wide that edge is: one device pixel of the 20 px logo at 2x.
-const TILE_EDGE_WIDTH: u32 = 4;
-
-/// The rows and columns of [`CORGI_PIXELS`] that are painted: the first and
-/// one past the last of each.
-fn corgi_bounds() -> ((u32, u32), (u32, u32)) {
-    let painted = |pixel: char| corgi_color(pixel).is_some();
-    let rows: Vec<u32> = (0..)
-        .zip(CORGI_PIXELS)
-        .filter(|(_, line)| line.chars().any(painted))
-        .map(|(row, _)| row)
-        .collect();
-    let columns: Vec<u32> = (0..CORGI_PIXELS[0].len() as u32)
-        .filter(|&c| {
-            CORGI_PIXELS
-                .iter()
-                .any(|line| line.chars().nth(c as usize).is_some_and(painted))
-        })
-        .collect();
-    (
-        (columns[0], columns[columns.len() - 1] + 1),
-        (rows[0], rows[rows.len() - 1] + 1),
-    )
-}
-
-/// Where the corgi's grid starts on the brand tile, so that its painted
-/// pixels are centred on the canvas, and so on the plate.
-fn tile_corgi_origin() -> (u32, u32) {
-    let ((c0, c1), (r0, r1)) = corgi_bounds();
-    let width = (c1 - c0) * TILE_SCALE;
-    let height = (r1 - r0) * TILE_SCALE;
-    assert!(
-        (TILE - width).is_multiple_of(2) && (TILE - height).is_multiple_of(2),
-        "the corgi centres on the tile with equal margins"
-    );
-    let left = (TILE - width) / 2 - c0 * TILE_SCALE;
-    let top = (TILE - height) / 2 - r0 * TILE_SCALE;
-    (left, top)
-}
 
 /// `pixels`, a `canvas` px square of straight RGBA, as a PNG.
 fn png_bytes(canvas: u32, pixels: &[[u8; 4]]) -> Vec<u8> {
@@ -332,46 +342,30 @@ mod tests {
     }
 
     #[test]
-    fn the_brand_logo_is_the_corgi_alone_centred_with_its_white_edged() {
+    fn the_brand_logo_is_the_finer_corgi_centred_with_its_jaw_edged() {
+        assert!(BRAND_LEFT.iter().all(|row| row.len() == 16));
         let pixels = brand_tile();
         let at = |x: u32, y: u32| pixels[(y * TILE + x) as usize];
+        let hex = |cell: char| {
+            let (_, hex) = BRAND_COLOURS.iter().find(|(key, _)| *key == cell).unwrap();
+            let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap();
+            [channel(1), channel(3), channel(5), 255]
+        };
         assert_eq!(at(0, 0)[3], 0, "no plate: the corner is clear");
-        assert_eq!(at(TILE / 2, 20)[3], 0, "no plate above the corgi");
-        let (left, top) = tile_corgi_origin();
-        let (er, eg, eb) = TILE_EDGE;
-        let edge = [er, eg, eb, 255];
-        for (row, line) in (0..).zip(CORGI_PIXELS) {
-            for (column, pixel) in (0..).zip(line.chars()) {
-                let (x, y) = (left + column * TILE_SCALE, top + row * TILE_SCALE);
-                let square: Vec<_> = (0..TILE_SCALE * TILE_SCALE)
-                    .map(|d| at(x + d % TILE_SCALE, y + d / TILE_SCALE))
-                    .collect();
-                let Some((r, g, b)) = corgi_rgb(pixel) else {
-                    assert!(square.iter().all(|p| p[3] == 0), "blank at {row}, {column}");
-                    continue;
-                };
-                let color = [r, g, b, 255];
-                if pixel == 'w' {
-                    // Edged only on its rim: some of the white is left.
-                    assert!(
-                        square.iter().all(|&p| p == color || p == edge) && square.contains(&color),
-                        "white at {row}, {column}"
-                    );
-                } else {
-                    assert!(
-                        square.iter().all(|&p| p == color),
-                        "only the white is edged: {pixel:?} at {row}, {column}"
-                    );
-                }
-            }
-        }
-        // The muzzle's lowest white pixel is edged where it meets the background.
-        let (x, y) = (left + 5 * TILE_SCALE, top + 13 * TILE_SCALE);
-        assert_eq!(at(x, y - 1), edge);
-        assert_eq!(at(x, y)[3], 0);
-        // Measured in the drawing: as much room on each side of the corgi
-        // as on the other, each edge on a pixel of the 20 px logo.
-        let painted = |x: u32, y: u32| at(x, y)[3] != 0;
+        // A cell in the middle of each feature keeps its colour.
+        assert_eq!(at(8 * 5 + 2, 10 * 5 + 2), hex('d'), "the inner ear");
+        assert_eq!(at(10 * 5 + 2, 14 * 5 + 2), hex('k'), "the left eye");
+        assert_eq!(at(11 * 5 + 2, 15 * 5 + 2), hex('h'), "its glint");
+        assert_eq!(at(80, 24 * 5 + 2), hex('p'), "the tongue");
+        // The jaw is edged inside the white, and clear outside it.
+        let edge = [0xb0, 0xaa, 0x9e, 255];
+        assert_eq!(at(80, 133), edge, "the chin's edge");
+        assert_eq!(at(27, 98), edge, "a cheek's edge");
+        assert_eq!(at(80, 136)[3], 0, "below the chin");
+        assert_eq!(at(22, 98)[3], 0, "beside a cheek");
+        // Measured in the drawing: the face is centred, left to right and
+        // top to bottom, and mirrored.
+        let painted = |x: u32, y: u32| at(x, y)[3] > 0;
         let columns: Vec<u32> = (0..TILE)
             .filter(|&x| (0..TILE).any(|y| painted(x, y)))
             .collect();
@@ -380,19 +374,50 @@ mod tests {
             .collect();
         let (x0, x1) = (columns[0], columns[columns.len() - 1] + 1);
         let (y0, y1) = (rows[0], rows[rows.len() - 1] + 1);
-        assert_eq!(x0, TILE - x1, "left and right");
-        assert_eq!(y0, TILE - y1, "top and bottom");
-        assert!([x0, x1, y0, y1].iter().all(|edge| edge.is_multiple_of(4)));
+        assert_eq!((x0, TILE - x1), (25, 25), "left and right");
+        assert_eq!((y0, TILE - y1), (25, 25), "top and bottom");
+        for y in 0..TILE {
+            for x in 0..TILE / 2 {
+                // The jaw's antialiasing may round a little differently on
+                // each side; compared as they show, premultiplied.
+                let shown = |[r, g, b, a]: [u8; 4]| {
+                    [r, g, b]
+                        .map(|c| u16::from(c) * u16::from(a) / 255)
+                        .into_iter()
+                        .chain([u16::from(a)])
+                };
+                let (left, right) = (at(x, y), at(TILE - 1 - x, y));
+                assert!(
+                    shown(left)
+                        .zip(shown(right))
+                        .all(|(a, b)| a.abs_diff(b) <= 16),
+                    "mirrored at {x}, {y}: {left:?} {right:?}"
+                );
+            }
+        }
     }
 
-    /// Fails when the corgi or the tile changed and the committed logo was
-    /// not drawn again with `cargo brand-tile`.
+    /// Fails when the logo changed and the committed one was not drawn
+    /// again with `cargo brand-tile`. It allows a step of antialiasing,
+    /// which may round differently on another processor.
     #[test]
     fn the_committed_brand_tile_is_the_one_drawn_here() {
-        let committed =
-            fs::read(brand_dir().join("corgi.png")).expect("herdr-app/mods/corgi-brand/corgi.png");
+        let file = fs::File::open(brand_dir().join("corgi.png"))
+            .expect("herdr-app/mods/corgi-brand/corgi.png");
+        let mut reader = png::Decoder::new(std::io::BufReader::new(file))
+            .read_info()
+            .expect("a PNG");
+        let mut committed = vec![0; reader.output_buffer_size().expect("a size")];
+        let info = reader.next_frame(&mut committed).expect("its pixels");
+        assert_eq!((info.width, info.height), (TILE, TILE));
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        let drawn = brand_tile();
+        let close = committed
+            .chunks(4)
+            .zip(&drawn)
+            .all(|(old, new)| old.iter().zip(new).all(|(a, b)| a.abs_diff(*b) <= 2));
         assert!(
-            committed == brand_tile_png(),
+            close,
             "run `cargo brand-tile` to draw the brand row's logo again"
         );
     }
