@@ -383,13 +383,18 @@ async function projects(w) {
   const mod = await projects(w);
   const root = mod.render();
   const drawn = texts(root);
-  assert.equal(drawn[0], 'Projects');
+  // The herd card first, above the header.
+  assert.equal(drawn[6], 'Projects');
   // Spaces outside a repository as Spaces shows them; a project with its
   // agents under it, the supervisor first, in place of its worktrees' rows;
   // a worktree with no agent keeps its row.
   assert.deepEqual(ids(root, 'space-').concat(), ['space-sp-corgi', 'space-sp-weather', 'space-sp-quiet', 'space-sp-home']);
+  // Above the header, the herd card: the agents by state, a state with
+  // none left out (no usage: this corgi does not answer `usage`).
+  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', '1', '!', '1', '1', '2']);
+  assert.deepEqual(ids(root, 'herd-'), ['herd-card', 'herd-working', 'herd-blocked', 'herd-done', 'herd-idle']);
   assert.deepEqual(
-    drawn.slice(1),
+    drawn.slice(7),
     [
       'C', 'Corgi',
       'W', 'weather',
@@ -461,8 +466,9 @@ async function projects(w) {
   click(root, 'agent-t3', mod.cx, 'on_mouse_down:right');
   assert.deepEqual(w.ran.at(-1)[1].props, { tab: 'space', target: { id: 'sp-calm' } });
 
-  // Corgi is read as often as the Corgi mod reads it, and no more.
-  assert.deepEqual(mod.cx.timers.map((timer) => timer.ms).sort((a, b) => a - b), [250, 1000, 5000, 15000]);
+  // Corgi is read as often as the Corgi mod reads it, and no more; plan
+  // usage each minute, as often as its cache is renewed.
+  assert.deepEqual(mod.cx.timers.map((timer) => timer.ms).sort((a, b) => a - b), [250, 1000, 5000, 15000, 60000]);
   const reads = () => w.execs.filter((call) => call[1] === 'status').length;
   const before = reads();
   await mod.tick(5000);
@@ -537,9 +543,12 @@ async function projects(w) {
   const w = window();
   w.programs = [git];
   const mod = await projects(w);
-  const drawn = texts(mod.render());
+  const root = mod.render();
+  const drawn = texts(root);
+  // The herd card counts the app's agents alone: with no usage, no plan lines.
+  assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', '1', '!', '1', '1', '1']);
   assert.deepEqual(
-    drawn.slice(3),
+    drawn.slice(9),
     ['W', 'weather', 'Weather supervisor', 'Fixing the cache', 'Review the cache fix', '!', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code'],
     drawn.join(' | '),
   );
@@ -563,11 +572,258 @@ async function projects(w) {
   assert.equal(w.sidebar, 268);
   root = mod.render();
   assert.ok(byId(root, 'open-project'), 'the field is open');
-  assert.equal(texts(root)[0], 'Projects');
+  // Unfolded, the herd card is back above the header.
+  assert.deepEqual(texts(root).slice(0, 7), ['HERD', '1', '!', '1', '1', '2', 'Projects']);
   // And » alone unfolds it.
   w.sidebar = 76;
   click(mod.render(), 'rail-unfold', mod.cx);
   assert.equal(w.sidebar, 268);
+}
+
+// --- The herd and plan usage card ---------------------------------------------------
+
+{
+  const now = Math.floor(Date.now() / 1000);
+  const usage = {
+    version: 1,
+    now,
+    providers: [
+      { provider: 'codex', title: 'CODEX', usage: null, fetched_at: null, error: 'codex app-server timed out' },
+      {
+        provider: 'claude', title: 'CLAUDE', fetched_at: now - 150, error: null,
+        usage: { provider: 'claude', plan_type: 'Max', banked_resets: null, five_hour: { used_percent: 31, resets_at: now + 8070 }, week: { used_percent: 86, resets_at: now + 310_000 } },
+      },
+    ],
+  };
+  const w = window({ usage: () => usage });
+  w.sidebar = 357;
+  const mod = await projects(w);
+  const usageRuns = () => w.execs.filter((call) => call[1] === 'usage');
+  // Read once Corgi answers status, then each minute, never with status.
+  assert.deepEqual(usageRuns().map((call) => call.slice(1)), [['usage', '--json']]);
+  await mod.tick(5000);
+  assert.equal(usageRuns().length, 1);
+  await mod.tick(60000);
+  assert.equal(usageRuns().length, 2);
+
+  const root = mod.render();
+  const card = byId(root, 'herd-card');
+  // The first thing in the mod, above the header and the rows.
+  const drawn = texts(root);
+  assert.equal(drawn[0], 'HERD');
+  assert.equal(drawn[texts(card).length], 'Projects');
+  assert.ok(drawn.indexOf('weather') > drawn.indexOf('CLAUDE'), 'the card stands above the rows');
+  assert.deepEqual(texts(card), [
+    'HERD', '1', '!', '1', '1', '2',
+    'CODEX', 'unavailable',
+    'CLAUDE', '5h', '31%', '2h 14m', '7d', '86%', '3d 14h',
+  ]);
+  // The card's own colors are the theme's, whatever the agents' states (one
+  // is blocked here): its border and every title dim.
+  assert.equal(card.calls.border_color[0], '#border');
+  const colorOf = (root, text) => {
+    let found = null;
+    walk(root, (node) => {
+      if (found === null && node.children?.length === 1 && kept(node.children[0]) === text) found = node.calls.text_color?.[0] ?? null;
+    });
+    return found;
+  };
+  for (const title of ['HERD', 'CODEX', 'CLAUDE']) assert.equal(colorOf(card, title), '#dim', title);
+  // The windows in the dashboard's colors.
+  assert.equal(colorOf(card, '31%'), '#ansi2');
+  assert.equal(colorOf(card, '86%'), '#ansi1');
+  // The plan and the reading's age are the line's tooltip; a failed reading's
+  // line says why.
+  assert.equal(byId(root, 'usage-claude').calls.tooltip[0], 'Max · read 2m ago');
+  assert.equal(byId(root, 'usage-codex').calls.tooltip[0], 'codex app-server timed out');
+  // A state's count says what it counts.
+  assert.equal(byId(root, 'herd-blocked').calls.tooltip[0], '1 blocked');
+  // At Herdr's own 268 px the reset times go whole, into the tooltip.
+  w.sidebar = 268;
+  const narrow = mod.render();
+  assert.deepEqual(texts(byId(narrow, 'usage-claude')), ['CLAUDE', '5h', '31%', '7d', '86%']);
+  assert.equal(byId(narrow, 'usage-claude').calls.tooltip[0], 'Max · read 2m ago · 5h resets in 2h 14m · 7d resets in 3d 14h');
+
+  // A worker tagged ready to merge counts as MERGE, not as its state; the
+  // middle window's yellow.
+  usage.providers[1].usage.five_hour.used_percent = 64;
+  const status = structuredClone(STATUS);
+  status.projects[0].agents[0].tag = 'merge';
+  const tagged = window({ status, usage: () => usage });
+  const again = await projects(tagged);
+  const card2 = byId(again.render(), 'herd-card');
+  assert.deepEqual(ids(card2, 'herd-'), ['herd-card', 'herd-blocked', 'herd-merge', 'herd-done', 'herd-idle']);
+  assert.equal(colorOf(card2, '64%'), '#ansi3');
+
+  // The rail has no room for it.
+  tagged.sidebar = 76;
+  assert.equal(byId(again.render(), 'herd-card'), null);
+}
+
+{
+  // Neither agents nor plans: no card.
+  const w = window({ usage: { version: 1, now: 0, providers: [] } });
+  w.agents = [];
+  w.panes = [];
+  const status = structuredClone(STATUS);
+  status.projects[0].agents = [];
+  w.programs = [git, corgi({ status, usage: { version: 1, now: 0, providers: [] } })];
+  const mod = await projects(w);
+  assert.equal(byId(mod.render(), 'herd-card'), null);
+}
+
+// --- Pull, from a checkout's ↓N ----------------------------------------------------------
+
+// A window whose primary checkout is 3 behind origin/main and whose
+// worktree with no agent (quiet-lake) 2 behind origin/spike; `pull(cwd)`
+// answers each pull, and is called only for one. `pulls` keeps each pull's
+// folder and what ran. A pull is a shell that runs `git pull --ff-only`
+// alone, with no prompt for a login.
+const PULL_SH = /^ssh="\$\{GIT_SSH_COMMAND:-\$\(git config --get core\.sshCommand\)\}"; export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="\$\{ssh:-ssh\} -o BatchMode=yes"; exec git pull --ff-only$/;
+function behindWindow(pull) {
+  const w = window();
+  const behind = { [REPO]: 3, [`${TREES}/worktree-quiet-lake-0a1b`]: 2 };
+  const upstream = { [REPO]: 'origin/main', [`${TREES}/worktree-quiet-lake-0a1b`]: 'origin/spike' };
+  w.pulls = [];
+  w.programs = [
+    (command, args, options) => {
+      if (command === 'sh') {
+        assert.equal(args[0], '-c');
+        assert.match(args[1], PULL_SH);
+        w.pulls.push({ cwd: options.cwd, args: ['pull', '--ff-only'] });
+        return pull(options.cwd);
+      }
+      if (command !== 'git') return undefined;
+      if (args.includes('status') && behind[options.cwd] !== undefined) {
+        return { stdout: `# branch.head ${options.cwd === REPO ? 'main' : 'spike'}\n# branch.upstream ${upstream[options.cwd]}\n# branch.ab +1 -${behind[options.cwd]}\n` };
+      }
+      return git(command, args, options);
+    },
+    corgi({ status: STATUS }),
+  ];
+  w.behind = behind;
+  return w;
+}
+const REPO_KEY = JSON.stringify([null, REPO]);
+const QUIET_KEY = JSON.stringify([null, `${TREES}/worktree-quiet-lake-0a1b`]);
+// A click on a ↓N: the press and the release, both its own.
+function pressPull(root, key, cx) {
+  const before = cx.stopped;
+  click(root, `pull-${key}`, cx, 'on_mouse_down:left');
+  click(root, `pull-${key}`, cx, 'on_mouse_up:left');
+  assert.equal(cx.stopped, before + 2, 'the row under the mark neither shows its space nor drags');
+}
+
+// Only a checkout that is behind has a ↓N to click, with its count and upstream.
+{
+  const w = behindWindow(() => ({}));
+  const mod = await projects(w);
+  const root = mod.render();
+  assert.deepEqual(ids(root, 'pull-'), [`pull-${REPO_KEY}`, `pull-${QUIET_KEY}`]);
+  const mark = byId(root, `pull-${REPO_KEY}`);
+  assert.deepEqual(texts(mark), ['↓3']);
+  assert.ok('cursor_pointer' in mark.calls);
+  assert.deepEqual(mark.calls.tooltip, ['Pull 3 commits from origin/main']);
+  assert.deepEqual(texts(byId(root, `space-sp-weather`)).slice(-2), ['↑1', '↓3'], 'the ahead mark stays as it is');
+  // Up to date: no mark at all.
+  const plain = await projects(window());
+  assert.deepEqual(ids(plain.render(), 'pull-'), []);
+}
+
+// A click runs exactly `git pull --ff-only` in that row's checkout; done,
+// git is read again, the ↓N goes and nothing else is shown.
+{
+  let finish;
+  const w = behindWindow(() => new Promise((resolve) => { finish = resolve; }));
+  const mod = await projects(w);
+  pressPull(mod.render(), QUIET_KEY, mod.cx);
+  assert.deepEqual(w.pulls, [{ cwd: `${TREES}/worktree-quiet-lake-0a1b`, args: ['pull', '--ff-only'] }]);
+  // Pulling: dimmed, with a spinner, and no other click starts one.
+  let root = mod.render();
+  const mark = byId(root, `pull-${QUIET_KEY}`);
+  assert.ok('opacity' in mark.calls);
+  assert.ok(!('cursor_pointer' in mark.calls));
+  assert.equal(kept(mark.children[0]).kind, 'svg');
+  pressPull(root, QUIET_KEY, mod.cx);
+  pressPull(root, REPO_KEY, mod.cx);
+  assert.equal(w.pulls.length, 1, 'nothing runs while a pull is in flight');
+  assert.deepEqual(byId(root, `pull-${REPO_KEY}`).calls.tooltip, ['Another pull is running']);
+  w.behind[`${TREES}/worktree-quiet-lake-0a1b`] = 0;
+  finish({ stdout: 'Fast-forward\n' });
+  await mod.settle();
+  root = mod.render();
+  assert.deepEqual(ids(root, 'pull-'), [`pull-${REPO_KEY}`]);
+  assert.deepEqual(ids(root, 'pull-card-'), []);
+  // Only the pull was run: no merge, stash or reset, and nothing of the app.
+  assert.deepEqual(w.execs.filter(([command, ...args]) => !(command === 'git' && (args.includes('status') || args.includes('rev-parse'))) && command !== CORGI).map(([command, flag]) => [command, flag]), [['sh', '-c']]);
+  // The next pull may run.
+  pressPull(root, REPO_KEY, mod.cx);
+  assert.deepEqual(w.pulls.at(-1), { cwd: REPO, args: ['pull', '--ff-only'] });
+}
+
+// Each way a pull fails, said plainly in a card under the row, with Dismiss.
+{
+  const failures = [
+    [
+      { code: 128, stderr: 'hint: Diverging branches can\'t be fast-forwarded, you need to either:\nhint:\nhint: \tgit merge --no-ff\nfatal: Not possible to fast-forward, aborting.\n' },
+      'Can\'t fast-forward: main and origin/main have diverged',
+    ],
+    [
+      { code: 1, stdout: 'Updating 1234567..89abcde\n', stderr: 'error: Your local changes to the following files would be overwritten by merge:\n\tsrc/a.rs\n\tREADME.md\nPlease commit your changes or stash them before you merge.\nAborting\n' },
+      'Local changes would be overwritten: src/a.rs, README.md',
+    ],
+    [
+      { code: 1, stderr: 'error: The following untracked working tree files would be overwritten by merge:\n\tnotes.txt\nPlease move or remove them before you merge.\nAborting\n' },
+      'Untracked files would be overwritten: notes.txt',
+    ],
+    [
+      { code: 128, stderr: 'ssh: Could not resolve hostname gitlab.example.com: nodename nor servname provided\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\n' },
+      'Couldn\'t reach origin: Could not resolve hostname gitlab.example.com: nodename nor servname provided',
+    ],
+    [Promise.reject(new Error('timed out after 120000 ms')), 'git pull did not finish: timed out after 120000 ms'],
+    // A login it may not ask for: at once, not after the timeout.
+    [{ code: 128, stderr: 'fatal: could not read Username for \'https://gitlab.example.com\': terminal prompts disabled\n' }, 'Needs a login: run git pull in a terminal once'],
+    [{ code: 128, stderr: 'git@gitlab.example.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n' }, 'Needs a login: run git pull in a terminal once'],
+    [{ code: 128, stderr: 'Host key verification failed.\nfatal: Could not read from remote repository.\n' }, 'Needs a login: run git pull in a terminal once'],
+  ];
+  for (const [answer, said] of failures) {
+    const w = behindWindow(() => answer);
+    const mod = await projects(w);
+    pressPull(mod.render(), REPO_KEY, mod.cx);
+    await mod.settle();
+    let root = mod.render();
+    assert.deepEqual(ids(root, 'pull-card-'), [`pull-card-${REPO_KEY}`]);
+    assert.deepEqual(texts(byId(root, `pull-card-${REPO_KEY}`)), [said, 'Dismiss']);
+    // Under the project's row, before its agents.
+    const list = ids(root, '');
+    assert.equal(list.indexOf(`pull-card-${REPO_KEY}`), list.indexOf(`pull-${REPO_KEY}`) + 1, list.join(' '));
+    assert.ok(list.indexOf(`pull-card-${REPO_KEY}`) < list.indexOf('agent-t2'), list.join(' '));
+    assert.ok(byId(root, `pull-${REPO_KEY}`), 'still behind: the mark stays, to try again');
+    assert.equal(w.pulls.length, 1);
+    const before = mod.cx.stopped;
+    click(root, `pull-dismiss-${REPO_KEY}`, mod.cx);
+    assert.equal(mod.cx.stopped, before + 1);
+    root = mod.render();
+    assert.deepEqual(ids(root, 'pull-card-'), []);
+  }
+}
+
+// A worktree's row shows its card under itself; brought up to date some
+// other way, the card goes by itself.
+{
+  const w = behindWindow(() => ({ code: 128, stderr: 'fatal: Not possible to fast-forward, aborting.\n' }));
+  const mod = await projects(w);
+  pressPull(mod.render(), QUIET_KEY, mod.cx);
+  await mod.settle();
+  let root = mod.render();
+  assert.deepEqual(texts(byId(root, `pull-card-${QUIET_KEY}`)), ['Can\'t fast-forward: spike and origin/spike have diverged', 'Dismiss']);
+  const list = ids(root, '');
+  assert.ok(list.indexOf(`pull-card-${QUIET_KEY}`) > list.indexOf('space-sp-quiet'));
+  w.behind[`${TREES}/worktree-quiet-lake-0a1b`] = 0;
+  mod.view.refreshGit([QUIET_KEY], mod.cx);
+  await mod.settle();
+  root = mod.render();
+  assert.deepEqual(ids(root, 'pull-'), [`pull-${REPO_KEY}`]);
 }
 
 // --- Open project ----------------------------------------------------------------------
@@ -1299,7 +1555,6 @@ const markOf = (root, id) => {
   const mod = await projects(w);
   let root = mod.render();
   assert.deepEqual(header(root), ['⏸ Agents']);
-  assert.equal(texts(root)[0], 'Projects');
   const button = byId(root, 'agents-pause');
   assert.match(button.calls.tooltip[0], /^Pause the agents that are working, before you go offline/);
   // Left of the +.
@@ -1368,6 +1623,8 @@ const markOf = (root, id) => {
   assert.equal(markOf(root, 'agent-t20'), '⏸');
   assert.deepEqual(texts(kept(byId(root, 'agent-t20').children[1])), ['Paused'], 'its terminal ended: no program or model to show');
   assert.equal(markOf(root, 'agent-t3'), 'mods/workspace-chrome/spinner.svg', 'a working row keeps its spinner');
+  // HERD counts them as paused, not idle.
+  assert.equal(byId(root, 'herd-paused').calls.tooltip[0], '2 paused');
 
   click(root, 'agents-pause', mod.cx);
   assert.deepEqual(texts(byId(mod.render(), 'agents-pause-panel')), ['Resuming 2 agents…']);

@@ -19,7 +19,11 @@ its supervisor or starts it. A worker Corgi tagged ready to merge has a
 `MERGE` mark in its row: click it, confirm, and its branch is merged into
 the project's base branch and pushed, as `m` does in Corgi's dashboard;
 then it offers to close the worker and remove its worktree, keeping the
-branch, as `x` does there. `⏸ Agents`, left of the `+`, is for leaving the
+branch, as `x` does there. A red `↓3` after a space's name says its
+checkout is 3 commits behind its upstream: click it to pull them. At the
+top, above the list's header, a card counts your agents by state (HERD) and shows how much of
+each Claude and Codex plan's 5-hour and weekly windows is used, as the
+dashboard's header does. `⏸ Agents`, left of the `+`, is for leaving the
 Wi-Fi or VPN: it stops the agents that are working at that moment, each
 ending its turn and exiting with its conversation saved, and while any is
 paused Corgi types nothing into a supervisor and hands none over; it then
@@ -138,6 +142,28 @@ The `corgi-brand` mod fills the sidebar's `brand` block (46 px, on
 
 The Projects mod fills its block on `chrome`, text 13 px:
 
+- **Herd card** (the first thing in the mod, right under the brand row and
+  above the header, 4 px above it and 2 px below; not in the rail, and not
+  at all while there are neither agents nor plans): a card (`surface`, a
+  `border` outline, radius 7, text 11 px), its outline and titles in the
+  theme's `border` and `dim` whatever the agents' states, a 20 px line
+  each, every title (`HERD`, `CODEX`, `CLAUDE`) 10 px semibold in a 50 px
+  column:
+  - `HERD`: per state with agents, its mark as in the agent rows (spinner,
+    `!`, a filled dot for done, a ring for idle, a small `accent` square
+    for MERGE) and its count, semibold in the state's color; a state with
+    none left out, `no agents` in `dim` when none has any. Counted over the
+    list's agents as the dashboard's HERD box counts: a worker tagged ready
+    to merge counts as MERGE alone, an agent in no state as idle, and one
+    paused by `⏸ Agents` as paused (its pause icon, in `muted`). Each
+    count's tooltip says it (`1 blocked`).
+  - A line per harness with a plan (`corgi usage --json`): `5h` and `7d`,
+    each in `dim`, a 34 px bar 4 px high on `border` filled to the use, the
+    percentage semibold, both in `ansi2` under 60 %, `ansi3` under 85 %,
+    `ansi1` above, and the time to the reset in `dim` 10 px (`2h 14m`, `3d
+    14h`), left out whole in a sidebar under 330 px (Herdr's own 268), where
+    the tooltip says them instead. The line's tooltip: the plan and how old
+    the reading is (`Max · read 2m ago`), and why the last reading failed. With no reading, `loading…`, or `unavailable` once one failed.
 - **Header** (31 px): `Projects` in `dim` 11.5 px and, 4 px apart on the
   right, the pause button and a 26 px `+` button (tooltip `Open project`),
   lit while its field is open. The pause button (22 px high, radius 6,
@@ -174,7 +200,12 @@ The Projects mod fills its block on `chrome`, text 13 px:
     30 px, a colored 18 px avatar with its initial, its name.
   - A project, a repository: the space on its primary checkout, drawn the
     same way, with its branch and ahead/behind after the name only when
-    unusual. Under it, indented 22 px, one 38 px row per agent in it and in
+    unusual: `↑N` in `ansi2`, `↓N` in `ansi1`. The `↓N` is a button
+    (pointer, a faint `ansi1` tint on hover, radius 4, tooltip `Pull 3
+    commits from origin/main`); while it pulls it is dimmed with a 10 px
+    spinner before it, and so is every other `↓N`. A pull that failed
+    puts a card under the row, indented 22 px (`surface`, a `blocked`
+    border, radius 7): git's reason in plain words and `Dismiss`. Under it, indented 22 px, one 38 px row per agent in it and in
     the spaces on its worktrees, on two lines. The first (18 px): the task
     in 12.5 px (medium weight for `Supervisor`), cut with `…` before it
     reaches the state, which keeps its place at the row's right edge: a
@@ -414,6 +445,13 @@ The Projects list:
   a line in the supervisor's inbox, as `s` sends from the dashboard's merge
   dialog, which `corgi daemon` types in. The card then says who was asked;
   if nobody could be, why, with the button still there.
+- The herd card's counts come from the list's own agents; its plan lines
+  from `corgi usage --json`, read once the first status answers and then
+  every minute. That command reads the plan-usage cache every Corgi process
+  shares (`usage/<provider>.json` in Corgi's state directory), so the
+  providers are asked at most once a minute on the machine however many
+  dashboards, windows and lists read it; a corgi too old to know `usage`
+  leaves the plan lines out.
 - The last line is read from the same status: `corgi` (`version`, `commit`,
   `dirty`, `source`, `newer`) and `daemon.build`. `newer` is Corgi's own
   finding: the checkout the binary was built in (`source`) has commits its
@@ -426,6 +464,29 @@ The Projects list:
   said first; `daemon.installed` only changes the words. `corgi daemon
   install` is the answer to both: it installs the service again, which
   starts the daemon on the `corgi` that answers.
+- `↓N` comes from `git status --porcelain=v2 --branch` (`# branch.ab`,
+  `# branch.upstream`), against the upstream as last fetched: the list
+  never fetches by itself. A click on it runs `git pull --ff-only` in that
+  row's checkout (the space's folder: a project's primary checkout, or a
+  worktree's own for a worktree's row), with no question first, and
+  nothing else: no merge, rebase, stash or reset. It never asks for a
+  login, which it has no terminal to ask in: it runs from `sh -c` with
+  `GIT_TERMINAL_PROMPT=0` and `GIT_SSH_COMMAND` set to the person's own
+  (`GIT_SSH_COMMAND`, else `core.sshCommand`, else `ssh`) plus `-o
+  BatchMode=yes` (`exec` takes no environment), so a pull that needs one
+  fails at once. One pull at a time,
+  since worktrees of a repository share its remote branches; a click while
+  one runs does nothing. Then the checkout's git is read again. Pulled: the
+  `↓N` goes and nothing more is shown. Failed: the card says why, from
+  git's own words: `Can't fast-forward: main and origin/main have
+  diverged`, `Local changes would be overwritten: <files>`, `Untracked
+  files would be overwritten: <files>`, `Couldn't reach origin: <git's
+  line>`, `Needs a login: run git pull in a terminal once` (prompts
+  disabled, `Permission denied (publickey)`, an unknown host key), else
+  git's first `fatal:`/`error:` line. It stays until
+  `Dismiss`, or until the checkout is no longer behind. `↑N` is only shown:
+  nothing pushes. A worktree's space with agents in it has no row, so no
+  `↓N`.
 - `»` on the rail unfolds the sidebar (Herdr's own layout has it in its
   Agents list).
 
@@ -619,6 +680,11 @@ wants the overview on screen.
   row: each calls `cx.stop_propagation()` in its `on_click`, or the row's
   click shows the agent's terminal too. The card is an element of the list
   after its row, not a child of the row, which stays 38 px high.
+- The `↓N` sits in a row that selects its space on mouse up and drags on
+  mouse down, not on click: so the mark takes both itself
+  (`on_mouse_down` and `on_mouse_up`, each with `cx.stop_propagation()`),
+  and pulls on a release that follows its own press. A drag let go over it
+  is still the row's.
 - Never run `corgi merge` from a test or a look at the mod: it merges and
   pushes for real. `node scripts/test-app-mods.mjs` gives the mod canned
   answers for it; Corgi's own tests merge in scratch repositories.
@@ -703,6 +769,11 @@ wants the overview on screen.
   under it, and `corgi fleet` lists both), else in a new space; a new name
   creates the directory beside the other projects and starts its supervisor
   with no folder-trust question left open.
+- A project behind its upstream shows `↓N`; a click shows it dimmed
+  with a spinner, then, fast-forwarded, the mark is gone and nothing else
+  shows; a checkout that has diverged, or whose changes the pull would
+  overwrite, shows a card saying so under its row, with `Dismiss`, and is
+  left as it was.
 - With herdr-gitlab installed before or after Corgi (in a scratch app
   home), the layout shows both the Projects list and the GitLab panel;
   `--uninstall` brings back Spaces and Agents and leaves the panel.

@@ -48,6 +48,17 @@ impl CachedUsage {
     }
 }
 
+/// How old a cached reading may be before a process fetches a new one: the
+/// dashboard's, the desktop window's and `corgi usage`'s interval alike, so
+/// the provider is asked at most once a minute on the machine.
+pub const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The provider's cached usage, however old, without fetching or taking the
+/// lock: `None` when no process has read it yet.
+pub fn cached_plan_usage(provider: Provider) -> Option<CachedUsage> {
+    read_cache(&cache_path(&corgi_state_dir()?.join("usage"), provider))
+}
+
 /// The provider's usage as every Corgi process shares it: the cached reading
 /// while it is fresh, else a new one if this process gets to fetch it. `None`
 /// when there is nothing yet, because another process is fetching the first

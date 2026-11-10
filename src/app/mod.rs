@@ -29,7 +29,7 @@ use crate::{
     session::SessionReader,
     ui,
     usage::{PlanUsage, Provider, installed_providers, read_codex_thread_titles},
-    usage_cache::{CachedUsage, shared_plan_usage},
+    usage_cache::{CachedUsage, USAGE_REFRESH_INTERVAL, shared_plan_usage},
 };
 
 // The overlays: the new-agent form and its model catalogs, prompting,
@@ -67,9 +67,11 @@ mod hc_pause;
 pub use hc_pause::{PAUSE_USAGE, RESUME_USAGE, pause_command, resume_command};
 mod navigate;
 mod status;
+mod usage;
 pub use status::{
     CLOSE_USAGE, MERGE_USAGE, STATUS_USAGE, close_command, merge_command, status_command,
 };
+pub use usage::{USAGE_USAGE, usage_command};
 pub(crate) mod orphans;
 pub use app_layout::{APP_LAYOUT_USAGE, app_layout_command};
 pub use app_space::{APP_SPACE_USAGE, app_space_command};
@@ -108,9 +110,6 @@ use progress::JobReport;
 use refresh::{QUIT_WAIT, RefreshLog, RefreshState, Refreshed, is_due};
 use waker::{Inboxes, SupervisorWaker};
 
-/// How old a plan-usage reading may be before one Corgi process on the
-/// machine fetches a new one for all of them; see [`crate::usage_cache`].
-const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 /// How often a process looks at the shared usage cache. Reading it is only a
 /// file read, so a reading another process fetched shows up within seconds,
 /// including the first one after a start that found no cache.

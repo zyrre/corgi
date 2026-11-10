@@ -20,7 +20,12 @@
 // runs with m, and shows how it went, with "Ask supervisor to fix" when it
 // failed and the project's supervisor runs. Once merged and pushed, it asks
 // whether to close the worker and remove its worktree (`corgi close`, the
-// branch stays). Under the list, which Corgi
+// branch stays). A space's red ↓N (its checkout is N commits behind its
+// upstream, as last fetched) pulls them with a click: `git pull --ff-only`
+// in that checkout, nothing else; only a pull that fails leaves a card,
+// under the row, saying why. At the top, above the header, a card counts the agents by
+// state (HERD) and shows each plan's 5-hour and weekly use (`corgi usage
+// --json`), as the dashboard's header does. Under the list, which Corgi
 // answers (`Corgi 0.2.3 · 5b50895`), whether the checkout it was built in
 // has moved on since, and whether the daemon is down or runs another build.
 //
@@ -102,6 +107,15 @@ const PAUSE_ICON = "mods/projects/pause.svg";
 const PLAY_ICON = "mods/projects/play.svg";
 // How long the toast of a pause that found no agent working stays.
 const NOTE_MS = 3000;
+// A pull fetches first: a slow remote, a big fetch.
+const PULL_TIMEOUT_MS = 120000;
+// The pull, never asking for a password or a passphrase: there is no
+// terminal to ask in, so it would wait out PULL_TIMEOUT_MS. The ssh command
+// the person uses (GIT_SSH_COMMAND, else core.sshCommand) is kept, in batch
+// mode. `exec` takes no environment, hence the shell; it runs git alone.
+const PULL_SCRIPT = 'ssh="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand)}"; '
+  + 'export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${ssh:-ssh} -o BatchMode=yes"; '
+  + "exec git pull --ff-only";
 
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
@@ -114,6 +128,41 @@ const tildePaths = (text) => {
   const h = home();
   return h ? text.split(`${h}/`).join("~/") : text;
 };
+// The where() of a listed row: the checkout its git was read in.
+const rowKey = (r) => JSON.stringify([r.w.machine ?? null, r.at]);
+
+// Why `git pull --ff-only` (result `r`) pulled nothing, in a line, for the
+// checkout whose git was `g`.
+function pullProblem(r, g) {
+  const lines = `${r.stderr ?? ""}\n${r.stdout ?? ""}`.split("\n").map((l) => l.trim()).filter(Boolean);
+  const said = (l) => l.replace(/^(fatal|error|ssh|hint): */i, "");
+  const branch = g.branch ?? "this branch";
+  const upstream = g.upstream ?? "its upstream";
+  const remote = g.upstream ? g.upstream.split("/")[0] : "the remote";
+  // The files git lists after its line, one per line, up to its advice.
+  const files = (at) => {
+    const out = [];
+    for (const l of lines.slice(at + 1)) {
+      if (/^(Please|Aborting|Merge with strategy|error:|fatal:|hint:)/.test(l)) break;
+      out.push(l);
+    }
+    return out.length > 3 ? `${out.slice(0, 3).join(", ")} and ${out.length - 3} more` : out.join(", ");
+  };
+  const local = lines.findIndex((l) => /local changes to the following files would be overwritten/i.test(l));
+  if (local !== -1) return `Local changes would be overwritten: ${files(local)}`;
+  const untracked = lines.findIndex((l) => /untracked working tree files would be (overwritten|removed)/i.test(l));
+  if (untracked !== -1) return `Untracked files would be overwritten: ${files(untracked)}`;
+  // A pull that would have asked for a login, refused in batch mode.
+  if (lines.some((l) => /terminal prompts disabled|could not read (username|password)|authentication failed|permission denied \(|host key verification failed/i.test(l))) {
+    return "Needs a login: run git pull in a terminal once";
+  }
+  const away = lines.find((l) => /could not read from remote repository|unable to access|could not resolve|connection (refused|timed out|closed)|operation timed out/i.test(l));
+  if (away) return `Couldn't reach ${remote}: ${oneLine(said(away))}`;
+  if (lines.some((l) => /not possible to fast-forward|diverging branches|have diverged/i.test(l))) {
+    return `Can't fast-forward: ${branch} and ${upstream} have diverged`;
+  }
+  return oneLine(said(lines.find((l) => /^(fatal|error):/i.test(l)) ?? lines[0] ?? "")) || `git pull exited with ${r.code}`;
+}
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
@@ -133,6 +182,32 @@ function stateMark(t, status) {
   if (status === "done") return div().size(7).mx(3).flex_none().rounded(4).bg(t.done ?? t.dim);
   // Not an agent that reports: a supervisor's shell after its agent exited.
   return div().size(7).mx(3).flex_none();
+}
+
+// How often plan usage is read: `corgi usage --json` reads the cache every
+// Corgi process shares, which asks the provider at most once a minute.
+const USAGE_POLL_MS = 60000;
+// The narrowest sidebar whose herd card shows the plans' reset times.
+const RESETS_FIT = 330;
+
+// A plan window's use in the dashboard's colors: green, then yellow from
+// 60%, red from 85%.
+const usageColor = (t, pct) => (pct >= 85 ? t.ansi1 : pct >= 60 ? t.ansi3 : t.ansi2);
+// How long until a window resets, as the dashboard's cards say it.
+function countdown(resetsAt, now) {
+  if (!resetsAt) return "—";
+  const left = Math.max(0, resetsAt - now);
+  if (!left) return "now";
+  const m = Math.floor(left / 60);
+  if (m < 60) return m ? `${m}m` : "<1m";
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${String(m % 60).padStart(2, "0")}m`;
+  return `${Math.floor(h / 24)}d ${String(h % 24).padStart(2, "0")}h`;
+}
+// How old a reading is, in its largest whole unit.
+function readingAge(elapsed) {
+  const m = Math.floor(Math.max(0, elapsed) / 60);
+  return m < 1 ? "<1m" : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
 }
 
 // What the field says with no corgi to ask, and with one too old to answer.
@@ -181,7 +256,12 @@ function ownTitle(row, tab) {
 
 export default class Projects extends View {
   init(_props, cx) {
-    this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
+    this.git = {}; // where() -> { name, branch, upstream, ahead, behind, repo, linked }, null: not a repo
+    // Pulls from a ↓N, by where(): { phase: "running" }, or "failed" with
+    // the `message` its card shows. One runs at a time: worktrees of a repo
+    // share its remote branches, which two fetches at once would both lock.
+    this.pulls = {};
+    this.pressedPull = null; // the where() whose ↓N the pointer went down on
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
     this.pending = new Set(); // where()s to look at next
@@ -206,6 +286,9 @@ export default class Projects extends View {
     this.corgiProjects = new Map(); // dir -> { base, supervisor, ... }
     this.build = null; // the corgi that answers: { version, commit, dirty, source, newer }
     this.daemon = null; // { running, pid, build, installed }
+    // Plan usage, as `corgi usage --json` gives it: { now, providers }.
+    this.usage = null;
+    this.usageLoading = false;
     // The one merge under way, shown under its worker's row: { terminal,
     // name, dir, branch, base, phase, outcome, problem, closed }. Its phases:
     // confirm, running, result, asking (the supervisor), asked; once merged
@@ -253,6 +336,7 @@ export default class Projects extends View {
     cx.timer.every(250, (cx) => this.checkNew(cx));
     this.refreshCorgi(cx);
     cx.timer.every(POLL_MS, (cx) => this.refreshCorgi(cx));
+    cx.timer.every(USAGE_POLL_MS, (cx) => this.refreshUsage(cx));
     // Live agents changing is a sign Corgi's status did too; comparing is cheap.
     cx.timer.every(1000, (cx) => {
       const key = agents().map((a) => `${a.address}:${a.status}`).join(",");
@@ -321,11 +405,31 @@ export default class Projects extends View {
         if (!worker || (m.phase === "confirm" && worker.tag !== "merge")) this.merge = null;
       }
       this.loading = false;
+      // The first answer names the corgi to ask for usage too.
+      if (status && !this.usage) this.refreshUsage(cx);
       cx.notify();
       if (this.again) {
         this.again = false;
         this.refreshCorgi(cx);
       }
+    });
+  }
+
+  // Plan usage from the corgi that answers status; a corgi too old to know
+  // `usage` leaves the boxes out.
+  refreshUsage(cx) {
+    if (!this.corgi || this.usageLoading) return;
+    this.usageLoading = true;
+    const path = this.corgi;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec(path, ["usage", "--json"], { timeout: 30000 });
+        if (r.code === 0) this.usage = JSON.parse(r.stdout);
+      } catch (_) {
+        // Kept as it was: the next minute asks again.
+      }
+      this.usageLoading = false;
+      cx.notify();
     });
   }
 
@@ -711,6 +815,76 @@ export default class Projects extends View {
           })
           .child("Dismiss"),
       ));
+  }
+
+  // --- The herd and plan usage ---------------------------------------------------
+
+  // The agents by state, as the dashboard's HERD box counts them: a worker
+  // tagged ready to merge counts as MERGE, not as done or idle; one paused
+  // by "⏸ Agents" as paused; an agent in no state counts as idle.
+  herdCounts(by) {
+    const n = { working: 0, blocked: 0, merge: 0, done: 0, idle: 0, paused: 0 };
+    for (const a of Object.values(by).flat()) {
+      if (a.corgi?.tag === "merge") n.merge++;
+      else if (a.status === "working" || a.status === "blocked" || a.status === "done" || a.status === "paused") n[a.status]++;
+      else n.idle++;
+    }
+    return n;
+  }
+
+  // At the top of the list, above its header, one card of a line each, in the theme's
+  // border and dim alone, whatever the agents' states: HERD, the agents by
+  // state with the list's own marks (a state with none left out), then a
+  // line per harness with a plan: its 5-hour and 7-day windows, each a thin
+  // bar, the use in the dashboard's colors and the time to its reset. The
+  // plan and how old the reading is are the line's tooltip. Nothing while
+  // there are neither agents nor plans.
+  herdCard(by, t) {
+    const n = this.herdCounts(by);
+    const providers = this.usage?.providers ?? [];
+    const now = Date.now() / 1000;
+    const mergeDot = div().size(8).mx(3).flex_none().rounded(2).bg(t.accent);
+    const states = [
+      ["working", "working", stateMark(t, "working"), t.working],
+      ["blocked", "blocked", stateMark(t, "blocked"), t.blocked],
+      ["merge", "to merge", mergeDot, t.accent],
+      ["done", "done", stateMark(t, "done"), t.done ?? t.dim],
+      ["idle", "idle", stateMark(t, "idle"), t.muted],
+      ["paused", "paused", stateMark(t, "paused"), t.muted],
+    ].filter(([k]) => n[k] > 0);
+    if (!states.length && !providers.length) return null;
+    const label = (text) => div().w(50).flex_none().text_size(10).font_semibold().text_color(t.dim).child(text);
+    const herd = h_flex().id("herd").h(20).gap(8).items_center()
+      .child(label("HERD"))
+      .when(!states.length, (el) => el.child(div().text_color(t.dim).child("no agents")))
+      .children(states.map(([k, word, mark, c]) =>
+        h_flex().id(`herd-${k}`).flex_none().gap(3).items_center().tooltip(`${n[k]} ${word}`)
+          .child(mark).child(div().font_semibold().text_color(c).child(String(n[k])))));
+    const BAR = 34;
+    // The reset times need a sidebar of about 330 px; narrower they go whole,
+    // rather than leave a lone `…`, and stay in the line's tooltip.
+    const roomy = (find(layout(), "sidebar")?.size?.px ?? Infinity) >= RESETS_FIT;
+    const win = (name, w) =>
+      h_flex().flex_1().min_w(0).gap(4).items_center()
+        .child(div().flex_none().text_color(t.dim).child(name))
+        .child(div().w(BAR).h(4).flex_none().rounded(2).bg(t.border)
+          .child(div().h(4).rounded(2).w(w ? Math.max(2, Math.round((BAR * Math.min(100, w.used_percent)) / 100)) : 0).bg(w ? usageColor(t, w.used_percent) : t.dim)))
+        .child(div().flex_none().font_semibold().text_color(w ? usageColor(t, w.used_percent) : t.dim).child(w ? `${w.used_percent}%` : "—"))
+        .when(roomy, (el) => el.child(div().min_w(0).truncate().text_size(10).text_color(t.dim).child(w ? countdown(w.resets_at, now) : "")));
+    const plan = (p) => {
+      const u = p.usage;
+      const read = u && p.fetched_at ? `read ${readingAge(now - p.fetched_at)} ago` : null;
+      const resets = u && !roomy ? [["5h", u.five_hour], ["7d", u.week]].filter(([, w]) => w).map(([name, w]) => `${name} resets in ${countdown(w.resets_at, now)}`) : [];
+      const tip = [u ? [u.plan_type || null, read].filter(Boolean).join(" · ") : null, ...resets, p.error ? oneLine(p.error) : null].filter(Boolean).join(" · ");
+      return h_flex().id(`usage-${p.provider}`).h(20).gap(8).items_center()
+        .when(Boolean(tip), (el) => el.tooltip(tip))
+        .child(label(p.title))
+        .when(!u, (el) => el.child(div().text_color(t.dim).child(p.error ? "unavailable" : "loading…")))
+        .when(Boolean(u), (el) => el.child(win("5h", u.five_hour)).child(win("7d", u.week)));
+    };
+    return div().flex_none().px(8).pt(4).pb(2).child(
+      v_flex().id("herd-card").px(8).py(4).rounded(7).border_1().border_color(t.border).bg(t.surface).text_size(11)
+        .child(herd).children(providers.map(plan)));
   }
 
   // --- Which Corgi runs --------------------------------------------------------
@@ -1142,9 +1316,10 @@ export default class Projects extends View {
       const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
       const repo = common.stdout.trim();
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
+      const info = { name, branch: null, upstream: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
+        else if (line.startsWith("# branch.upstream ")) info.upstream = line.slice(18);
         else if (line.startsWith("# branch.ab ")) {
           const [a, b] = line.slice(12).split(" ");
           info.ahead = Math.abs(parseInt(a, 10)) || 0;
@@ -1152,6 +1327,8 @@ export default class Projects extends View {
         }
       }
       this.git[key] = info;
+      // Brought up to date some other way: a failed pull's card has nothing left to say.
+      if (!info.behind && this.pulls[key]?.phase === "failed") delete this.pulls[key];
       if (!on) this.watch(repo, cx);
     } catch {
       // Couldn't ask (the machine is away): keep what it showed, look again later.
@@ -1275,6 +1452,8 @@ export default class Projects extends View {
       // a project's row (a repository's space) is not lit at all, for now; a
       // space outside any repository is, while none of its agents has the focus.
       out.push(this.row(head, t, !head.g && head.w.active && !(by[head.w.id] ?? []).some((a) => a.focused)));
+      const card = this.pullCard(rowKey(head), t);
+      if (card) out.push(card);
       const members = [head, ...kids].flatMap((r) => (by[r.w.id] ?? []).map((a) => ({ a, r })));
       // The supervisor first; the rest stay in the app's order.
       members.sort((x, y) => Number(y.a.supervisor) - Number(x.a.supervisor));
@@ -1297,7 +1476,12 @@ export default class Projects extends View {
       const m = this.merge;
       const closing = m?.phase === "closing" || m?.phase === "closed";
       if (!panel && closing && (head.at === m.dir || members.some(({ a }) => a.corgi?.project === m.dir))) out.push(this.mergePanel(m, t));
-      for (const k of kids) if (!(by[k.w.id] ?? []).length) out.push(this.row(k, t));
+      for (const k of kids) {
+        if ((by[k.w.id] ?? []).length) continue;
+        out.push(this.row(k, t));
+        const card = this.pullCard(rowKey(k), t);
+        if (card) out.push(card);
+      }
     }
     return { out, order };
   }
@@ -1376,7 +1560,7 @@ export default class Projects extends View {
   // Only what's unusual, after the name: "herdr · spike ↑2 ↓1". The repo or
   // branch goes when the name already says it (a worktree is named after its branch),
   // and master/main go: nearly every space is on one.
-  gitTail(g, tree, name, t) {
+  gitTail(g, tree, name, t, key) {
     const raw = g.branch ?? "detached";
     const same = (a) => a.toLowerCase() === name.toLowerCase();
     const branch = same(raw) || raw === "master" || raw === "main" ? "" : raw;
@@ -1392,12 +1576,113 @@ export default class Projects extends View {
       .text_color(t.dim)
       .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().child(where)))
       .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`↑${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`↓${g.behind}`)));
+      .when(g.behind > 0, (el) => el.child(this.pullMark(g, key, t)));
+  }
+
+  // --- Pull -------------------------------------------------------------------------
+
+  // The red ↓N of a checkout behind its upstream: a click pulls. It takes
+  // the press and the release itself, so the row under it neither shows its
+  // space nor starts a drag. While it pulls: dimmed, with a spinner.
+  pullMark(g, key, t) {
+    const running = this.pulls[key]?.phase === "running";
+    const other = !running && this.pulling();
+    const n = g.behind;
+    return h_flex()
+      .id(`pull-${key}`)
+      .flex_none()
+      .gap(3)
+      .px(3)
+      .rounded(4)
+      .items_center()
+      .text_color(t.ansi1)
+      .when(running || other, (el) => el.opacity(0.5))
+      .when(!running && !other, (el) => el.cursor_pointer().hover((s) => s.bg(t.ansi1 + "26")))
+      .tooltip(running ? "Pulling…" : other ? "Another pull is running" : `Pull ${n} commit${n === 1 ? "" : "s"} from ${g.upstream ?? "its upstream"}`)
+      .on_mouse_down("left", (_e, cx) => {
+        cx.stop_propagation();
+        this.pressedPull = key;
+      })
+      .on_mouse_up("left", (_e, cx) => {
+        // A drag let go here is the row's.
+        if (this.pressedPull !== key) return;
+        cx.stop_propagation();
+        this.pressedPull = null;
+        this.pull(key, cx);
+      })
+      .when(running, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(10).flex_none().text_color(t.working).spin(900)))
+      .child(`↓${n}`);
+  }
+
+  pulling() {
+    return Object.values(this.pulls).some((p) => p.phase === "running");
+  }
+
+  // `git pull --ff-only` in the checkout `key` names (PULL_SCRIPT), and
+  // nothing else: no merge, rebase, stash or reset. Done, its git is read again and the ↓N
+  // goes with nothing more; failed, a card says why.
+  pull(key, cx) {
+    const g = this.git[key];
+    if (!g?.behind || this.pulling()) return;
+    const [on, cwd] = JSON.parse(key);
+    this.pulls[key] = { phase: "running" };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let r;
+      try {
+        r = await exec("sh", ["-c", PULL_SCRIPT], { cwd, on, timeout: PULL_TIMEOUT_MS });
+      } catch (e) {
+        r = { code: -1, stdout: "", stderr: `git pull did not finish: ${e?.message ?? e}` };
+      }
+      const failed = r.code === 0 ? null : { phase: "failed", message: pullProblem(r, g) };
+      // The mark stays dimmed until the new count is read.
+      await this.check(key, cx);
+      if (failed) this.pulls[key] = failed;
+      else delete this.pulls[key];
+      cx.notify();
+    });
+  }
+
+  // Under a row whose pull failed: why, and Dismiss.
+  pullCard(key, t) {
+    const p = this.pulls[key];
+    if (p?.phase !== "failed") return null;
+    return v_flex()
+      .id(`pull-card-${key}`)
+      .flex_none()
+      .ml(22)
+      .mb(4)
+      .p(7)
+      .gap(5)
+      .rounded(7)
+      .border_1()
+      .border_color(t.blocked)
+      .bg(t.surface)
+      .text_size(11.5)
+      .text_color(t.foreground)
+      .child(div().whitespace_normal().child(tildePaths(p.message)))
+      .child(h_flex().child(div()
+        .id(`pull-dismiss-${key}`)
+        .px(8)
+        .h(22)
+        .flex()
+        .flex_none()
+        .items_center()
+        .rounded(5)
+        .bg(t.raised)
+        .cursor_pointer()
+        .hover((s) => s.opacity(0.88))
+        .on_click((_e, cx) => {
+          cx.stop_propagation();
+          delete this.pulls[key];
+          cx.notify();
+        })
+        .child("Dismiss")));
   }
 
   // A space: a project's own, one outside any repository, or a worktree's
   // with no agent in it. `on`: lit (by default while it is shown).
-  row({ w, i, g, tree }, t, on = w.active) {
+  row({ w, i, g, tree, at }, t, on = w.active) {
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex((s) => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
@@ -1449,7 +1734,7 @@ export default class Projects extends View {
           .when(tree, (el) => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, (el) => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
+          .child(g ? this.gitTail(g, tree, w.name, t, rowKey({ w, at })) : div().flex_1()),
       );
   }
 
@@ -1530,7 +1815,11 @@ export default class Projects extends View {
       changed = true;
     }
     if (changed) setShared("space.colors", kept);
+    // The rail has no room for the herd and usage card.
+    const by = collapsed ? null : this.agentsBySpace(sp, ps);
+    const herd = by && this.herdCard(by, t);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
+      .when(Boolean(herd), (el) => el.child(herd))
       .child(h_flex().h(31).flex_none().pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .when(collapsed, (el) => el.pl(0).pr(0).justify_center())
         .when(!collapsed, (el) => el.child("Projects"))
@@ -1546,7 +1835,7 @@ export default class Projects extends View {
       .when(Boolean(this.pausing) && !collapsed, (el) => el.child(this.pausePanel(t)))
       .when(this.open && !collapsed, (el) => el.child(this.openPanel(t)))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
-        .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
+        .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.pressedPull = null; cx.notify(); })
         .children(this.grouped(t, collapsed, sp, ps)))
       .when(Boolean(version), (el) => el.child(version))
       // Herdr's own layout unfolds the rail from its agents list, which Corgi's has not.

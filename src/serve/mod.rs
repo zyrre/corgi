@@ -50,7 +50,7 @@ use corgi_core::{
     session::SessionReader,
     time::unix_now,
     usage::{Provider, installed_providers, read_codex_thread_titles},
-    usage_cache::{CachedUsage, shared_plan_usage},
+    usage_cache::{CachedUsage, USAGE_REFRESH_INTERVAL, shared_plan_usage},
     waker::{Inboxes, SupervisorWaker},
 };
 use forge::ForgeCli;
@@ -73,7 +73,6 @@ else the default session's (~/.config/herdr/herdr.sock).";
 /// How often the shared plan-usage cache is checked; it fetches a new
 /// reading only when the cached one is older than [`USAGE_REFRESH_INTERVAL`].
 const USAGE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
-const USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const CODEX_TITLE_INTERVAL: Duration = Duration::from_secs(3);
 /// The longest the loop sleeps without looking at its timers.
 const TICK: Duration = Duration::from_millis(250);
