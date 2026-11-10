@@ -532,7 +532,12 @@ wrong in it, also when it is not your change's. While the Mac's screen is
 locked, the window draws almost nothing and `shot` repeats an old frame
 (the same bytes across a `stop` and `start`, its images never drawn):
 check `ioreg -n Root -d1 | grep CGSSessionScreenIsLocked` before trusting
-a shot. A change that is visual
+a shot. To see a light theme while the Mac is dark, set the dark one in
+the preview's copy of the layout state (`"theme": {"light", "dark"}` in
+its home's `layouts/.state/corgi.json`), then
+`do layout.switch --name corgi`: the layout follows the system, so
+`do app.theme` and a `theme` in `settings.json` leave the window dark.
+A change that is visual
 (what a view draws: a row, a width, a color, an element, where text is cut,
 a state's mark) attaches screenshots to its report: each one's path under
 `target/app-preview/` with a line on what it shows, taken at the sidebar's
