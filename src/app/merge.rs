@@ -1240,7 +1240,7 @@ mod tests {
                  branch worktree/reviewed-agent in worktree {}, into main conflicted in: status.txt. \
                  Corgi aborted it, so the primary checkout is clean. Have w-reviewed-agent merge main \
                  into its own branch, resolve the conflicts there, rerun its checks and report; the \
-                 user then merges again with m. ",
+                 user then merges again. The user asked for this, ",
                 worktree.display()
             )),
             "{pending:?}"

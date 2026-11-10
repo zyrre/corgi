@@ -529,7 +529,7 @@ clears its tag. The dashboard then shows the agent, while it rests, with a
 MERGE badge instead of DONE. A tag is refused for an agent that is not done
 or idle, or whose checkout has no commits ahead of the branch checked out in
 the project's primary checkout. The tag goes away by itself when the user
-merges the branch with m, or once the agent works again.
+merges the branch in Corgi, or once the agent works again.
 
 Options:
   --project PATH  Project directory (default: the current directory)
