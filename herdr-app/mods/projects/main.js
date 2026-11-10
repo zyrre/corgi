@@ -7,15 +7,17 @@
 // spaces on its worktrees grouped under it by git. Under a project, one row
 // per agent in it, its supervisor first: Corgi's agents with their task and
 // role from `corgi status --json`, and agents started by hand with their own
-// title. A row is two lines: the task with its state at the right, then
-// the harness, model and context fill. A worktree's space with no agent keeps its plain row. Spaces outside
+// title. A row is two lines: the task, then the harness, model and context
+// fill with the state's badge at the right. A worktree's space with no agent keeps its plain row. Spaces outside
 // any repository (~, other folders) show as spaces, with
 // their agents under them. Click a space to show it and an agent to show its
 // terminal; right-click for the space's menu; drag a space to reorder. The
 // command `projects.open` does what the + does, for a key of the person's
 // (keys.json: "cmd-o": "projects.open").
 //
-// A worker Corgi tagged ready to merge has a MERGE mark in its row: a click
+// Each agent's row ends with its state's badge (WORKING, BLOCKED, DONE,
+// IDLE, PAUSED, EXITED), the words Corgi's dashboard and desktop window use.
+// A worker Corgi tagged ready to merge has a MERGE badge in its place: a click
 // asks under the row, then runs `corgi merge`, the merge Corgi's dashboard
 // runs with m, and shows how it went, with "Ask supervisor to fix" when it
 // failed and the project's supervisor runs. Once merged and pushed, it asks
@@ -126,8 +128,55 @@ const DAEMON_COMMAND = "corgi daemon install";
 // A pause interrupts each working agent and waits for it to exit; a resume
 // waits for each to come back: some seconds an agent, a few minutes at most.
 const PAUSE_TIMEOUT_MS = 300000;
-// The button's icons and a paused row's mark: ⏸ and ▶, the mod's own.
+// The pause button's icons: ⏸ and ▶, the mod's own.
 const PAUSE_ICON = "mods/projects/pause.svg";
+
+// Something running (a pull, a merge, a close, a pause, a working space in
+// the rail): braille frames, stepped natively while shown, as Herdr's peek
+// mod draws its spinner. Not a turning svg: the app turns one at about 10 fps
+// while the window is quiet and smoothly only while something else redraws
+// it, so it reads as lagging; frames are meant to step. In a fixed box `size`
+// square, so nothing beside it moves whatever width the font gives a glyph;
+// the glyph is drawn larger than the box, since braille is small in the UI
+// font.
+const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+function spinner(t, size = 12) {
+  return div().w(size).h(size).flex_none().flex().items_center().justify_center().overflow_hidden()
+    .text_size(size + 6).line_height(`${size}px`).text_color(t.working).frames(SPIN, 90).child(SPIN[0]);
+}
+
+// An agent's state as a badge, the words Corgi's dashboard and desktop
+// window use. A worker tagged ready to merge shows MERGE in place of its
+// state (the mark that opens the merge question, `mergeMark`); a paused
+// one PAUSED; one whose agent exited EXITED. An agent in no state shows none.
+const BADGES = { working: "WORKING", blocked: "BLOCKED", merge: "MERGE", done: "DONE", idle: "IDLE", paused: "PAUSED", exited: "EXITED" };
+function badgeKey(a) {
+  if (a.status === "paused") return "paused";
+  if (a.corgi?.tag === "merge") return "merge";
+  if (BADGES[a.status]) return a.status;
+  return a.corgi?.state === "exited" ? "exited" : null;
+}
+// Text on a solid fill: near-black on a light one, white on a dark one.
+function onFill(c) {
+  const m = /^#([0-9a-f]{6})/i.exec(c ?? "");
+  if (!m) return "#ffffff";
+  const n = parseInt(m[1], 16);
+  const [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map((v) => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.3 ? "#16161a" : "#ffffff";
+}
+// The badge of state `key`, drawn as the MERGE mark is: a small pill, solid
+// in the state's color (`text`, default its word). IDLE, the state at rest, is
+// a quiet tint; EXITED an outline, so that neither shouts. No animation.
+function badge(t, key, text = BADGES[key]) {
+  const pill = div().flex_none().px(5).rounded(4).text_size(10).font_semibold().child(text);
+  if (key === "idle") return pill.bg(t.muted + "33").text_color(t.muted);
+  if (key === "exited") return pill.border_1().border_color(t.blocked).text_color(t.blocked);
+  const fill = { working: t.working, blocked: t.blocked, merge: t.accent, done: t.done ?? t.dim, paused: t.muted }[key] ?? t.dim;
+  return pill.bg(fill).text_color(key === "merge" ? t.accent_foreground : onFill(fill));
+}
 const PLAY_ICON = "mods/projects/play.svg";
 // How long the toast of a pause that found no agent working stays.
 const NOTE_MS = 3000;
@@ -200,17 +249,11 @@ function icon(p, size, color) {
   return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
 }
 
-// An agent's state, as Herdr's own agents list draws it: a spinner while it
-// works, a ! when it needs you, a dot when it finished unseen, a ring at rest.
+// A space's state in the rail, where a badge has no room: a spinner while an
+// agent in it works, a ! when one needs you.
 function stateMark(t, status) {
-  // Paused by "⏸ Agents": its conversation waits for "▶ Agents".
-  if (status === "paused") return svg(PAUSE_ICON).size(10).mx(2).flex_none().text_color(t.muted);
-  if (status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
-  if (status === "blocked") return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
-  if (status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
-  if (status === "done") return div().size(7).mx(3).flex_none().rounded(4).bg(t.done ?? t.dim);
-  // Not an agent that reports: a supervisor's shell after its agent exited.
-  return div().size(7).mx(3).flex_none();
+  if (status === "working") return spinner(t).mx(1);
+  return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
 }
 
 // How often plan usage is read: `corgi usage --json` reads the cache every
@@ -705,7 +748,8 @@ export default class Projects extends View {
   }
 
   // The MERGE mark of a worker tagged ready to merge: its row's way to the
-  // merge, at the right of the row's second line. It keeps its width.
+  // merge, and its badge (`badge`'s look), in place of its state's at the
+  // right of the row's second line. It keeps its width.
   mergeMark(a, t) {
     const busy = ["running", "asking", "closing"].includes(this.merge?.phase);
     const base = this.projectOf(a.corgi.machine ?? null, a.corgi.project)?.base ?? "the base branch";
@@ -757,7 +801,7 @@ export default class Projects extends View {
     });
     const waiting = (text) =>
       h_flex().gap(7).items_center().text_color(t.muted)
-        .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
+        .child(spinner(t))
         .child(div().flex_1().min_w(0).truncate().child(text));
     // Green for what went well, yellow for a merge that landed but was not
     // pushed, blue for a conflict Corgi handed to the supervisor (not
@@ -976,7 +1020,7 @@ export default class Projects extends View {
       const what = `${p.verb === "pause" ? "Pausing" : "Resuming"} ${p.count === 1 ? "1 agent" : `${p.count} agents`}…`;
       return box.border_color(t.border).child(
         h_flex().gap(7).items_center().text_color(t.muted)
-          .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
+          .child(spinner(t))
           .child(div().flex_1().min_w(0).truncate().child(what)),
       );
     }
@@ -998,22 +1042,19 @@ export default class Projects extends View {
 
   // --- The herd and plan usage ---------------------------------------------------
 
-  // The agents by state, as the dashboard's HERD box counts them: a worker
-  // tagged ready to merge counts as MERGE, not as done or idle; one paused
-  // by "⏸ Agents" as paused; an agent in no state counts as idle.
+  // The agents by the badge their rows show, as the dashboard's HERD box
+  // counts them: a worker tagged ready to merge counts as MERGE, not as done
+  // or idle, unless it is paused; an agent in no state counts as idle.
   herdCounts(by) {
-    const n = { working: 0, blocked: 0, merge: 0, done: 0, idle: 0, paused: 0 };
-    for (const a of Object.values(by).flat()) {
-      if (a.corgi?.tag === "merge") n.merge++;
-      else if (a.status === "working" || a.status === "blocked" || a.status === "done" || a.status === "paused") n[a.status]++;
-      else n.idle++;
-    }
+    const n = { working: 0, blocked: 0, merge: 0, done: 0, idle: 0, paused: 0, exited: 0 };
+    for (const a of Object.values(by).flat()) n[badgeKey(a) ?? "idle"]++;
     return n;
   }
 
   // At the top of the list, above its header, one card of a line each, in the theme's
   // border and dim alone, whatever the agents' states: HERD, the agents by
-  // state with the list's own marks (a state with none left out), then a
+  // state as the rows' badges with a count (a state with none left out,
+  // wrapping whole badges onto more lines beside the label), then a
   // line per harness with a plan: its 5-hour and 7-day windows, each a thin
   // bar, the use in the dashboard's colors and the time to its reset. The
   // plan and how old the reading is are the line's tooltip. Nothing while
@@ -1022,23 +1063,25 @@ export default class Projects extends View {
     const n = this.herdCounts(by);
     const providers = this.usage?.providers ?? [];
     const now = Date.now() / 1000;
-    const mergeDot = div().size(8).mx(3).flex_none().rounded(2).bg(t.accent);
     const states = [
-      ["working", "working", stateMark(t, "working"), t.working],
-      ["blocked", "blocked", stateMark(t, "blocked"), t.blocked],
-      ["merge", "to merge", mergeDot, t.accent],
-      ["done", "done", stateMark(t, "done"), t.done ?? t.dim],
-      ["idle", "idle", stateMark(t, "idle"), t.muted],
-      ["paused", "paused", stateMark(t, "paused"), t.muted],
+      ["working", "working"],
+      ["blocked", "blocked"],
+      ["merge", "to merge"],
+      ["done", "done"],
+      ["idle", "idle"],
+      ["paused", "paused"],
+      ["exited", "exited"],
     ].filter(([k]) => n[k] > 0);
     if (!states.length && !providers.length) return null;
     const label = (text) => div().w(50).flex_none().text_size(10).font_semibold().text_color(t.dim).child(text);
-    const herd = h_flex().id("herd").h(20).gap(8).items_center()
+    // At least a line high, and taller as the badges wrap.
+    const herd = h_flex().id("herd").min_h(20).py(2).gap(8).items_center()
       .child(label("HERD"))
       .when(!states.length, (el) => el.child(div().text_color(t.dim).child("no agents")))
-      .children(states.map(([k, word, mark, c]) =>
-        h_flex().id(`herd-${k}`).flex_none().gap(3).items_center().tooltip(`${n[k]} ${word}`)
-          .child(mark).child(div().font_semibold().text_color(c).child(String(n[k])))));
+      .when(states.length > 0, (el) => el.child(
+        h_flex().id("herd-badges").flex_1().min_w(0).flex_wrap().gap_x(4).gap_y(3).items_center()
+          .children(states.map(([k, word]) => badge(t, k, `${BADGES[k]} ${n[k]}`).id(`herd-${k}`).tooltip(`${n[k]} ${word}`))),
+      ));
     const BAR = 34;
     // The reset times need a sidebar of about 330 px; narrower they go whole,
     // rather than leave a lone `…`, and stay in the line's tooltip.
@@ -1321,7 +1364,7 @@ export default class Projects extends View {
       .when(Boolean(this.starting), (el) =>
         el.child(
           h_flex().px(8).py(3).gap(7).items_center().text_size(11.5).text_color(t.muted)
-            .child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900))
+            .child(spinner(t))
             .child(div().flex_1().min_w(0).truncate().child(`Starting ${this.starting}'s supervisor…`)),
         ),
       )
@@ -1796,7 +1839,7 @@ export default class Projects extends View {
         this.pressedPull = null;
         this.pull(key, cx);
       })
-      .when(running, (el) => el.child(svg("mods/workspace-chrome/spinner.svg").size(10).flex_none().text_color(t.working).spin(900)))
+      .when(running, (el) => el.child(spinner(t, 10)))
       .child(`↓${n}`);
   }
 
@@ -1924,18 +1967,19 @@ export default class Projects extends View {
       );
   }
 
-  // One agent, on two lines. The first: its task, cut with `…` before it
-  // reaches the state, which keeps its place at the right edge. The second,
-  // dim and smaller: its harness's icon, its model and how full its context
-  // is, each only when known, and on the right the MERGE mark of a worker
-  // tagged ready to merge. The worktree it works in is the row's tooltip.
+  // One agent, on two lines. The first: its task, the whole width, cut with
+  // `…`. The second, dim and smaller: its harness's icon, its model and how
+  // full its context is, each only when known, and at the right edge its
+  // state's badge (`badge`; for a worker tagged ready to merge, the MERGE
+  // mark that opens the merge question). The worktree it works in is the
+  // row's tooltip.
   // `on`: lit, as the agent with the focus or for its space, which is shown.
   agent(a, { w, g, at, tree }, on, t) {
     const worktree = a.corgi?.worktree ? base(a.corgi.worktree) : tree && g?.linked && at ? base(at) : "";
     const pic = icon(a.program, 12, a.supervisor ? t.foreground : t.muted);
     const model = oneLine(a.corgi?.model);
     const ctx = Number.isFinite(a.corgi?.ctx_pct) ? `${Math.round(a.corgi.ctx_pct)}%` : "";
-    const tagged = a.corgi?.tag === "merge";
+    const key = badgeKey(a);
     return v_flex()
       .id(`agent-${a.address}`)
       .pl(22)
@@ -1951,17 +1995,14 @@ export default class Projects extends View {
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click(() => run("agent.focus", { terminal: a.address }))
       .on_mouse_down("right", () => this.menu(w))
-      .child(h_flex().h(18).gap(7).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
-        .child(h_flex().w(14).flex_none().items_center().justify_center().child(stateMark(t, a.status))))
+      .child(h_flex().h(18).items_center()
+        .child(div().flex_1().min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task)))
       .child(h_flex().h(16).gap(5).items_center().text_size(11).text_color(t.dim)
         .when(Boolean(pic), (el) => el.child(pic))
         .when(Boolean(model), (el) => el.child(div().flex_shrink(1).min_w(0).truncate().child(model)))
         .when(Boolean(model && ctx), (el) => el.child(div().flex_none().child("·")))
         .when(Boolean(ctx), (el) => el.child(div().flex_none().child(ctx)))
-        // A paused worker whose terminal ended has no program or model to show.
-        .when(a.status === "paused" && !pic && !model && !ctx, (el) => el.child(div().child("Paused")))
-        .when(tagged, (el) => el.child(div().flex_1()).child(this.mergeMark(a, t))));
+        .when(Boolean(key), (el) => el.child(div().flex_1()).child(key === "merge" ? this.mergeMark(a, t) : badge(t, key).id(`badge-${a.address}`))));
   }
 
   // A space in the rail: its number, and the most urgent state in it.
