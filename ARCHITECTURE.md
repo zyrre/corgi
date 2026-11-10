@@ -265,12 +265,13 @@ All of this is in the core, `crates/corgi-core/src/`.
   it, for a person who wants that space. The space is retired: neither the
   install nor the daemon makes it, and the note an earlier version left for
   the daemon to make it from is deleted, never read (`forget_pending`).
-- `app_layout.rs` builds the Herdr app's Corgi layout (`layouts/corgi.json`
-  in the app's home) from Herdr's shipped `main`: the sidebar's `spaces`
-  block shows Corgi's `projects` mod and its `agents` block is gone. The
-  build is a function of `main` alone, written only when it differs from
-  the file in place, and a `main` of another shape keeps the last build;
-  `corgi app-layout` (`src/app/app_layout.rs`) runs it.
+- `app_layout.rs` puts Corgi's sidebar into the Herdr app's layout: the
+  sidebar's `spaces` block shows Corgi's `projects` mod and its `agents`
+  block goes, and nothing else changes. A personal layout is edited in
+  place; a shipped one is cloned to `corgi` first (`layout.clone` with the
+  window open) and switched to. Run again it changes nothing, and
+  `restore` puts Spaces and Agents back; `corgi app-layout`
+  (`src/app/app_layout.rs`) runs both.
 - `session/` reads each agent's session file, which its CLI already
   writes: Claude Code's transcript under `projects/` in its configuration
   directory, and Codex's rollout under `~/.codex/sessions`. From it come the
@@ -2545,14 +2546,16 @@ socket's.
   `corgi app-space`, which makes the space only for a person who runs it,
   needs the window open and leaves none.
 
-The app's sidebar is Corgi's in a layout of its own: `corgi app-layout`
-(`crates/corgi-core/src/app_layout.rs`) builds `layouts/corgi.json` from
-Herdr's shipped `main` with the Projects mod (`herdr-app/mods/projects`) in
-place of the sidebar's `spaces` block and without its `agents` block.
-Herdr's shipped layouts and mods are read-only (replaced whole on every
-start, an edited one moved aside), so `main` is never edited; the layout is
-rebuilt when `main` changed, by `herdr-app/install.sh` and by each of
-Corgi's mods when it starts, and nothing ever switches the window to it.
+The app's sidebar is Corgi's: `corgi app-layout`
+(`crates/corgi-core/src/app_layout.rs`), run by `herdr-app/install.sh`,
+puts the Projects mod (`herdr-app/mods/projects`) in place of the sidebar's
+`spaces` block and takes out its `agents` block, in the layout the window
+shows, and changes nothing else in it, so other mods (herdr-gitlab's panel)
+can change the same layout. Herdr's shipped layouts and mods are read-only
+(replaced whole on every start, an edited one moved aside), so a shipped
+`main` is first cloned to `corgi`, as `layout.clone` does, and the window
+switched to it; a personal layout is edited in place. Corgi never builds a
+layout from `main` again, and no mod touches the layout.
 The install puts the Corgi mod in the app's home too, and shows it nowhere.
 `herdr-app/RECIPE.md` describes the mods and the layout.
 

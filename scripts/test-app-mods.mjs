@@ -364,7 +364,7 @@ function window(answers = {}) {
     focused: { space: 'sp-home', tab: 'tab-sp-home', pane: 'pane-t8', terminal: 't8' },
     files: { [`${APP}/mods/corgi/config.json`]: JSON.stringify({ corgi: CORGI }) },
   });
-  w.programs = [git, corgi({ status: STATUS, 'app-layout': { result: 'unchanged', message: 'up to date' }, ...answers })];
+  w.programs = [git, corgi({ status: STATUS, ...answers })];
   return w;
 }
 
@@ -1019,7 +1019,7 @@ for (const outcome of [
   assert.deepEqual(texts(panel(mod)), ['w-cache: refused', 'corgi: unknown command or option: merge', 'Dismiss']);
   const w = window({ status: tagged() });
   w.programs.push((command, args) => (args[0] === 'merge' ? Promise.reject(new Error('timed out')) : undefined));
-  w.programs.splice(1, 1, (command, args) => (args[0] === 'merge' ? undefined : corgi({ status: tagged(), 'app-layout': { result: 'unchanged' } })(command, args)));
+  w.programs.splice(1, 1, (command, args) => (args[0] === 'merge' ? undefined : corgi({ status: tagged() })(command, args)));
   const late = await projects(w);
   click(late.render(), 'merge-t3', late.cx);
   click(late.render(), 'merge-confirm-t3', late.cx);
@@ -1111,51 +1111,29 @@ for (const outcome of [
   assert.equal(byId(rail.render(), 'corgi-version'), null);
 }
 
-// --- Corgi's layout, rebuilt when Herdr's changed ----------------------------------------
+// --- Corgi's layout: the installer changes it, never a mod ------------------------------
 
-{
-  const w = window({ 'app-layout': { result: 'rebuilt', message: 'rebuilt the Corgi layout' } });
-  await projects(w);
-  assert.deepEqual(w.execs.find((call) => call[1] === 'app-layout'), [CORGI, 'app-layout', '--home', APP, '--json']);
-  assert.deepEqual(w.toasts.map((toast) => toast.title), ['Corgi layout rebuilt']);
-  // It never switches the window's layout.
-  assert.ok(!w.ran.some(([name]) => name.startsWith('layout.switch')));
-}
-{
-  const w = window({ 'app-layout': { result: 'kept', message: "kept the Corgi layout as it was built last:\nthe sidebar of Herdr's main layout has 0 spaces" } });
-  await projects(w);
-  assert.equal(w.toasts.length, 1);
-  assert.equal(w.toasts[0].level, 'warning');
-  assert.equal(w.toasts[0].body, "kept the Corgi layout as it was built last: the sidebar of Herdr's main layout has 0 spaces");
-}
+// Neither mod runs `corgi app-layout` (it would clone and switch layouts),
+// switches the window's layout or says anything of the layout.
 {
   const w = window();
-  await projects(w);
-  assert.deepEqual(w.toasts, [], 'an unchanged layout says nothing');
+  const mod = await projects(w);
+  await mod.tick(5000);
+  assert.ok(!w.execs.some((call) => call[1] === 'app-layout'), JSON.stringify(w.execs));
+  assert.ok(!w.ran.some(([name]) => name.startsWith('layout.')));
+  assert.deepEqual(w.toasts, []);
 }
-
-// The Corgi mod builds it too, and its overview says why when it could not.
 {
   const versions = { '--version': { stdout: 'corgi 9.9.9\n' }, status: (args) => (args[1] === '--help' ? { stdout: 'Usage: corgi status --json' } : STATUS) };
-  let w = window({ ...versions, 'app-layout': { result: 'kept', message: 'kept the Corgi layout as it was built last: no node called sidebar' } });
-  let mod = await start('corgi', w);
-  assert.deepEqual(w.execs.find((call) => call[1] === 'app-layout'), [CORGI, 'app-layout', '--home', APP, '--json']);
-  assert.ok(texts(mod.render()).includes('Corgi layout: kept the Corgi layout as it was built last: no node called sidebar'));
-  assert.deepEqual(w.toasts, []);
-  // Once per start, however often the status is read.
+  const w = window(versions);
+  const mod = await start('corgi', w);
   await mod.tick(5000);
-  assert.equal(w.execs.filter((call) => call[1] === 'app-layout').length, 1);
-
-  w = window({ ...versions, 'app-layout': { result: 'rebuilt', message: 'rebuilt' } });
-  mod = await start('corgi', w);
-  assert.deepEqual(w.toasts.map((toast) => toast.title), ['Corgi layout rebuilt']);
-  assert.ok(!texts(mod.render()).some((text) => text.startsWith('Corgi layout:')));
-
-  w = window(versions);
-  mod = await start('corgi', w);
+  assert.ok(!w.execs.some((call) => call[1] === 'app-layout'), JSON.stringify(w.execs));
+  assert.ok(!w.ran.some(([name]) => name.startsWith('layout.')));
+  assert.deepEqual(w.toasts, []);
   const drawn = texts(mod.render());
   assert.ok(drawn.includes('weather'), drawn.join(' | '));
-  assert.ok(!drawn.some((text) => text.startsWith('Corgi layout:')));
+  assert.ok(!drawn.some((text) => text.startsWith('Corgi layout')));
 }
 
 console.log('app mods: ok');

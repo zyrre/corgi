@@ -133,7 +133,7 @@ FAKE_AEROSPACE
 cat >"$checkout/target/release/corgi" <<FAKE_CORGI
 #!/bin/sh
 echo "corgi \$*" >>"$log"
-[ "\$1" != app-layout ] || echo "built the Corgi layout"
+[ "\$1" != app-layout ] || echo "Herdr replaces its own main layout on its updates, so Corgi cloned it to corgi and put its Projects list in the sidebar; the window shows it"
 [ "\$*" != "--version --json" ] || echo '{"commit":"9505b68c","dirty":false,"source":"/checkout","version":"9.9.9"}'
 FAKE_CORGI
 chmod 755 "$work/Herdr.app/Contents/MacOS/Herdr" "$work/bin/hc" "$work/bin/aerospace" "$checkout/target/release/corgi"
@@ -164,7 +164,7 @@ check "each in a space" test "$(count "--label herdr.space=preview-")" = 8
 check "the app is a copy" test -x "$preview/Herdr.app/Contents/MacOS/Herdr"
 check "the Projects mod is the checkout's" cmp "$checkout/herdr-app/mods/projects/main.js" "$preview/home/mods/projects/main.js"
 check "the mods run the canned corgi" grep -qF "\"$preview/fake/corgi\"" "$preview/home/mods/projects/config.json" "$preview/home/mods/corgi/config.json"
-check "the layout is built with the checkout's corgi" logged "corgi app-layout --home $link/home"
+check "the layout gets the Projects list from the checkout's corgi, asking the preview's window" logged "corgi app-layout --app $preview/Herdr.app/Contents/MacOS/Herdr --home $link/home"
 check "the window is switched to the corgi layout" logged "do layout.switch --name corgi"
 check "the canned status is JSON" python3 -m json.tool "$preview/fake/status.json"
 check "it names the terminals started" grep -q '"terminal":"t2"' "$preview/fake/status.json"

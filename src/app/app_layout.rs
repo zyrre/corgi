@@ -1,6 +1,6 @@
-//! `corgi app-layout`: builds the Herdr app's Corgi layout from Herdr's
-//! shipped `main`, or removes it ([`corgi_core::app_layout`]).
-//! `herdr-app/install.sh` runs it, and the Corgi mod each time it starts.
+//! `corgi app-layout`: puts Corgi's Projects list into the Herdr app's
+//! layout, or takes it out again ([`corgi_core::app_layout`]).
+//! `herdr-app/install.sh` runs it, and `--uninstall` runs `remove`.
 
 use std::path::PathBuf;
 
@@ -8,36 +8,41 @@ use anyhow::{Context, Result, bail};
 use serde_json::json;
 
 use corgi_core::{
-    app_layout::{self, LAYOUT, Refreshed},
+    app_layout::{self, Change, Done, Installed, LAYOUT},
     app_space::HerdrApp,
 };
 
 pub const APP_LAYOUT_USAGE: &str = "\
-Usage: corgi app-layout [--home DIR] [--json]
-       corgi app-layout remove [--app PATH] [--home DIR]
+Usage: corgi app-layout [--layout NAME] [--app PATH] [--home DIR] [--json]
+       corgi app-layout remove [--layout NAME] [--home DIR]
 
-Builds the Corgi layout of the Herdr app, layouts/corgi.json in the app's
-home, which the app lists as Corgi: Herdr's shipped main layout with Corgi's
-Projects mod in place of the sidebar's Spaces, and without its Agents list.
-Run again, it writes the layout only when Herdr's main has changed since the
-last build. A main whose sidebar is not the shape Corgi knows, or a home
-without the Projects mod, builds nothing: the last build is kept, and why is
-printed. It never switches the window to the layout; to do that, run
+Puts Corgi's Projects list into the Herdr app's sidebar, in place of Spaces,
+and takes out the Agents list, which Projects shows too. Nothing else in the
+layout changes, so other mods' changes to it stay. The layout is the one the
+window shows (or showed last), or NAME:
 
-  herdr-app do layout.switch '{\"name\":\"corgi\"}'
+  - one of your own is edited in place;
+  - one Herdr ships (main) is cloned to corgi first, as herdr-app do
+    layout.clone does, and an open window is switched to the clone; with
+    the window closed it says how to switch. A corgi layout that is there
+    already is used instead.
 
-and with \"main\" for Herdr's own again.
+Run again, it changes nothing: it only makes sure the Projects list is
+there, and does not follow Herdr's later changes to main. A layout with no
+Spaces or Projects list in its sidebar is left as it is, and why is printed.
 
-  remove      deletes the layout Corgi built; a window that shows it is
-              switched to main first
+  remove        puts Herdr's Spaces and Agents lists back in each of your
+                layouts that shows the Projects list (or in NAME); no layout
+                is deleted and the window is not switched
 
-  --home DIR  the app's home (default: $HERDR_APP_HOME, else
-              ~/.config/herdr-app)
-  --app PATH  the herdr-app to ask which layout shows (default: herdr-app on
-              PATH)
-  --json      print {\"result\", \"message\", \"layout\"}: result is made,
-              rebuilt, unchanged, kept (not built, the last build stays) or
-              missing (not built, and there is none); it exits 0 either way";
+  --layout NAME the layout to change, instead of the one the window shows
+  --home DIR    the app's home (default: $HERDR_APP_HOME, else
+                ~/.config/herdr-app)
+  --app PATH    the herdr-app that answers for the window (default:
+                herdr-app on PATH)
+  --json        print {\"result\", \"layout\", \"path\", \"message\"}: result is
+                edited, cloned, unchanged or refused (nothing changed); it
+                exits 0 either way";
 
 pub fn app_layout_command(args: &[String]) -> Result<()> {
     let (remove, rest) = match args.first().map(String::as_str) {
@@ -46,19 +51,21 @@ pub fn app_layout_command(args: &[String]) -> Result<()> {
     };
     let mut bin = None;
     let mut home = None;
+    let mut layout = None;
     let mut json_output = false;
     let mut options = rest.iter();
     while let Some(option) = options.next() {
         let mut value = || {
             options
                 .next()
-                .map(PathBuf::from)
+                .cloned()
                 .with_context(|| format!("{option} needs a value\n\n{APP_LAYOUT_USAGE}"))
         };
         match option.as_str() {
-            "--app" => bin = Some(value()?),
-            "--home" => home = Some(value()?),
-            "--json" => json_output = true,
+            "--app" if !remove => bin = Some(PathBuf::from(value()?)),
+            "--home" => home = Some(PathBuf::from(value()?)),
+            "--layout" => layout = Some(value()?),
+            "--json" if !remove => json_output = true,
             other => bail!("unknown argument {other:?}\n\n{APP_LAYOUT_USAGE}"),
         }
     }
@@ -67,21 +74,19 @@ pub fn app_layout_command(args: &[String]) -> Result<()> {
         None => HerdrApp::default_home().context("no home folder to find the Herdr app's in")?,
     };
     if remove {
-        let app = HerdrApp::new(bin.unwrap_or_else(|| PathBuf::from("herdr-app")), home);
-        if app_layout::remove_layout(&app)? {
-            println!("removed the Corgi layout");
-        } else {
-            println!("no Corgi layout to remove");
-        }
+        let restored = app_layout::restore(&home, layout.as_deref())?;
+        println!("{}", removed_message(&restored));
         return Ok(());
     }
-    let refreshed = app_layout::refresh(&home);
-    let message = message(&refreshed);
+    let app = HerdrApp::new(bin.unwrap_or_else(|| PathBuf::from("herdr-app")), &home);
+    let installed = app_layout::install(&app, layout.as_deref())?;
+    let message = message(&installed);
     if json_output {
         let value = json!({
-            "result": refreshed.word(),
+            "result": installed.word(),
+            "layout": installed.layout(),
+            "path": app_layout::layout_path(&home, installed.layout()),
             "message": message,
-            "layout": app_layout::layout_path(&home),
         });
         println!("{}", serde_json::to_string(&value)?);
     } else {
@@ -90,43 +95,151 @@ pub fn app_layout_command(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// What a refresh did, for a person to read.
-fn message(refreshed: &Refreshed) -> String {
-    let switch = format!("herdr-app do layout.switch '{{\"name\":\"{LAYOUT}\"}}'");
-    match refreshed {
-        Refreshed::Made => {
-            format!("built the Corgi layout from Herdr's main; to show it, run: {switch}")
+fn switch_command(name: &str) -> String {
+    format!("herdr-app do layout.switch '{{\"name\":\"{name}\"}}'")
+}
+
+/// What an install did, for a person to read.
+fn message(installed: &Installed) -> String {
+    let done = match installed {
+        Installed::Refused { layout, why } => {
+            return format!("left the layout {layout} as it was: {why}");
         }
-        Refreshed::Rebuilt => {
-            "rebuilt the Corgi layout: Herdr's main layout has changed".to_string()
+        Installed::Done(done) => done,
+    };
+    let Done {
+        layout,
+        change,
+        instead_of,
+        cloned,
+        shown,
+        window,
+    } = done;
+    let what = match (instead_of, cloned, change) {
+        (Some(from), true, _) => format!(
+            "Herdr replaces its own {from} layout on its updates, so Corgi cloned it to \
+             {layout} and put its Projects list in the sidebar"
+        ),
+        (Some(from), false, Change::Edited) => format!(
+            "{from} is Herdr's own layout, so Corgi put its Projects list in the sidebar of \
+             your layout {layout}"
+        ),
+        (Some(from), false, Change::Unchanged) => {
+            format!("{from} is Herdr's own layout; your layout {layout} has Corgi's Projects list")
         }
-        Refreshed::Unchanged => {
-            format!("the Corgi layout is up to date; to show it, run: {switch}")
+        (None, _, Change::Edited) => format!(
+            "put Corgi's Projects list in the sidebar of your layout {layout}, in place of \
+             Spaces and Agents"
+        ),
+        (None, _, Change::Unchanged) => {
+            format!("your layout {layout} has Corgi's Projects list already")
         }
-        Refreshed::Kept(why) => {
-            format!("kept the Corgi layout as it was built last: {why}")
+    };
+    let switch = switch_command(layout);
+    match (shown, window, instead_of.is_some()) {
+        (true, true, true) => format!("{what}; the window shows it"),
+        (true, _, _) => what,
+        (false, true, _) => format!("{what}; to show it, run: {switch}"),
+        (false, false, _) => {
+            format!("{what}; the Herdr app is closed: once it is open, show it with: {switch}")
         }
-        Refreshed::Missing(why) => format!("built no Corgi layout: {why}"),
     }
+}
+
+/// What a remove did, for a person to read.
+fn removed_message(restored: &[String]) -> String {
+    if restored.is_empty() {
+        return "no layout shows Corgi's Projects list".to_string();
+    }
+    let names = restored.join(", ");
+    let kept = if restored.iter().any(|name| name == LAYOUT) {
+        format!(
+            "; the {LAYOUT} layout stays, as your own: delete layouts/{LAYOUT}.json if you \
+             want it gone"
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "put Herdr's Spaces and Agents lists back in place of Corgi's Projects list in: {names}{kept}"
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn done(layout: &str, change: Change, instead_of: Option<&str>, cloned: bool) -> Done {
+        Done {
+            layout: layout.into(),
+            change,
+            instead_of: instead_of.map(str::to_string),
+            cloned,
+            shown: true,
+            window: true,
+        }
+    }
+
     #[test]
     fn each_outcome_says_what_happened_and_how_to_show_the_layout() {
         let switch = r#"herdr-app do layout.switch '{"name":"corgi"}'"#;
-        assert!(message(&Refreshed::Made).ends_with(switch));
-        assert!(message(&Refreshed::Unchanged).ends_with(switch));
-        assert!(message(&Refreshed::Rebuilt).contains("main layout has changed"));
+        let cloned = done("corgi", Change::Edited, Some("main"), true);
         assert_eq!(
-            message(&Refreshed::Kept("no sidebar".into())),
-            "kept the Corgi layout as it was built last: no sidebar"
+            message(&Installed::Done(cloned.clone())),
+            "Herdr replaces its own main layout on its updates, so Corgi cloned it to corgi \
+             and put its Projects list in the sidebar; the window shows it"
+        );
+        let closed = Done {
+            shown: false,
+            window: false,
+            ..cloned
+        };
+        assert!(message(&Installed::Done(closed)).ends_with(&format!(
+            "the Herdr app is closed: once it is open, show it with: {switch}"
+        )));
+        let mine = done("mine", Change::Edited, None, false);
+        assert_eq!(
+            message(&Installed::Done(mine.clone())),
+            "put Corgi's Projects list in the sidebar of your layout mine, in place of Spaces \
+             and Agents"
+        );
+        let other = Done {
+            shown: false,
+            ..mine
+        };
+        assert!(
+            message(&Installed::Done(other))
+                .ends_with(r#"; to show it, run: herdr-app do layout.switch '{"name":"mine"}'"#)
         );
         assert_eq!(
-            message(&Refreshed::Missing("no main".into())),
-            "built no Corgi layout: no main"
+            message(&Installed::Done(done(
+                "mine",
+                Change::Unchanged,
+                None,
+                false
+            ))),
+            "your layout mine has Corgi's Projects list already"
         );
+        assert_eq!(
+            message(&Installed::Refused {
+                layout: "main".into(),
+                why: "no sidebar".into()
+            }),
+            "left the layout main as it was: no sidebar"
+        );
+    }
+
+    #[test]
+    fn a_remove_names_the_layouts_and_says_corgi_stays() {
+        assert_eq!(
+            removed_message(&[]),
+            "no layout shows Corgi's Projects list"
+        );
+        let said = removed_message(&["corgi".into(), "mine".into()]);
+        assert!(
+            said.contains("in: corgi, mine; the corgi layout stays"),
+            "{said}"
+        );
+        assert!(!removed_message(&["mine".into()]).contains("stays"));
     }
 }

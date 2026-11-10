@@ -1,7 +1,7 @@
 // Corgi's Projects list for the Herdr app (io.github.zyrre.corgi): the
 // sidebar's spaces, each repository with its agents under it, and "Open
 // project" on its +. It stands where Herdr's Spaces and Agents lists stand in
-// Herdr's own layout; Corgi's layout (`corgi app-layout`) puts it there.
+// Herdr's own layout; `corgi app-layout` puts it there, in the layout itself.
 //
 // A project is a repository: the space on its primary checkout, with the
 // spaces on its worktrees grouped under it by git. Under a project, one row
@@ -30,7 +30,7 @@ import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import {
   spaces, machines, panes, agents, focused, run, openOverlay, exec, hc, theme, shared, setShared, setAgentOrder,
-  watchFolder, window, layout, notify, home, appHome, readTextFile, nextCommand,
+  watchFolder, window, layout, home, appHome, readTextFile, nextCommand,
 } from "herdr";
 
 function find(node, id) {
@@ -240,7 +240,6 @@ export default class Projects extends View {
         this.refreshCorgi(cx);
       }
     });
-    this.refreshLayout(cx);
     // `projects.open`, from a key or `herdr-app do`.
     cx.spawn(async (cx) => {
       for (;;) {
@@ -304,23 +303,6 @@ export default class Projects extends View {
       if (this.again) {
         this.again = false;
         this.refreshCorgi(cx);
-      }
-    });
-  }
-
-  // Corgi's layout is built from Herdr's `main`, which Herdr replaces on its
-  // updates: built again when that changed, once per start.
-  refreshLayout(cx) {
-    cx.spawn(async (cx) => {
-      await this.status();
-      if (!this.corgi) return;
-      try {
-        const r = await exec(this.corgi, ["app-layout", "--home", appHome(), "--json"], { timeout: 20000 });
-        const built = JSON.parse(r.stdout);
-        if (built.result === "rebuilt") notify({ title: "Corgi layout rebuilt", body: "Herdr's main layout changed, and Corgi's follows it.", level: "info" });
-        else if (built.result === "kept") notify({ title: "Corgi layout not rebuilt", body: oneLine(built.message), level: "warning", timeout: 20000 });
-      } catch (_) {
-        // A corgi from before it built layouts: nothing to rebuild with.
       }
     });
   }

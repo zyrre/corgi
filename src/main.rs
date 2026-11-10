@@ -28,7 +28,7 @@ Commands:
   hook        What Herdr runs on its start and on agents' events
   daemon      Wake supervisors on herdr-core (the Herdr app), as a service
   app-space   Make the Herdr app's Corgi space by hand, or remove it
-  app-layout  Build the Herdr app's Corgi layout from Herdr's own, or remove it
+  app-layout  Put Corgi's Projects list into the Herdr app's layout, or take it out
   projects    List the projects to offer for Open project, as JSON
   open        Open a project: name its supervisor's terminal, or start it
   serve       Speak the frontend protocol on stdio, for a desktop GUI
