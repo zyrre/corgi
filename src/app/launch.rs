@@ -1,11 +1,11 @@
 //! The dashboard's side of a launch: the background job that runs the
-//! launch sequence of [`corgi_core::launch`], and the panel that follows it.
+//! launch sequence of [`crate::launch`], and the panel that follows it.
 
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-pub(crate) use corgi_core::launch::*;
+pub(crate) use crate::launch::*;
 
 use crate::{
     job::{Job, Update},

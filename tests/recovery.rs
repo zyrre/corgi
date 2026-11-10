@@ -7,7 +7,7 @@ use std::{
     process::{Command, Output, Stdio},
 };
 
-use corgi_core::{
+use corgi::{
     recovery::{Store, fixture::hold_fixture},
     supervisor::SUPERVISOR_TOKEN,
     test_support::{FakeHerdr, git_repo},

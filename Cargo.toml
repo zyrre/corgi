@@ -1,54 +1,33 @@
-[workspace]
-members = [".", "crates/corgi-core"]
-# Plain `cargo build`, `cargo test` and `cargo clippy` at the root cover the
-# binary and the core, as the handoff commands in AGENTS.md expect.
-default-members = [".", "crates/corgi-core"]
-resolver = "3"
-
-# What every crate shares. `version` is the release's: the release workflow
-# checks this line against the tag.
-[workspace.package]
+[package]
+name = "corgi"
 version = "0.2.3"
 edition = "2024"
 rust-version = "1.89"
+description = "A small, quick Herdr dashboard for coding agents"
 license = "MIT"
 repository = "https://github.com/zyrre/corgi"
 homepage = "https://github.com/zyrre/corgi"
-
-[workspace.dependencies]
-anyhow = "1.0"
-corgi-core = { path = "crates/corgi-core" }
-libc = "0.2"
-regex = "1.13"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
-
-[package]
-name = "corgi"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-description = "A small, quick Herdr dashboard for coding agents"
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
 readme = "README.md"
 keywords = ["herdr", "tui", "agents", "claude", "codex"]
 categories = ["command-line-utilities"]
 
+[features]
+# Test helpers (scratch directories, a fake Herdr socket) for the
+# integration tests in tests/.
+test-support = []
+
 [dependencies]
-anyhow.workspace = true
-corgi-core.workspace = true
+anyhow = "1.0"
 crossterm = "0.29"
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
-serde.workspace = true
-serde_json.workspace = true
-toml.workspace = true
+regex = "1.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]
-libc.workspace = true
+libc = "0.2"
 
 [profile.release]
 lto = "thin"
@@ -56,7 +35,7 @@ strip = true
 
 [dev-dependencies]
 color_quant = "1.1"
-corgi-core = { workspace = true, features = ["test-support"] }
+corgi = { path = ".", features = ["test-support"] }
 gif = "0.14.2"
 png = "0.18.1"
 resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }

@@ -1,14 +1,14 @@
 //! `corgi usage --json`: the plan usage of each installed harness, as the
 //! dashboard's CLAUDE and CODEX cards show it, for the Herdr app's Projects
 //! list. It reads through the cache every Corgi process shares
-//! (`corgi_core::usage_cache`), so however often it runs, the provider is
+//! (`crate::usage_cache`), so however often it runs, the provider is
 //! asked at most once per [`USAGE_REFRESH_INTERVAL`] on the machine, and
 //! only by whichever process finds the cache stale first.
 
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use corgi_core::{
+use crate::{
     usage::{PlanUsage, Provider, installed_providers},
     usage_cache::{CachedUsage, USAGE_REFRESH_INTERVAL, cached_plan_usage, shared_plan_usage},
 };
@@ -104,7 +104,7 @@ fn usage_value(readings: Vec<(Provider, Option<CachedUsage>)>, now: u64) -> Valu
 
 #[cfg(test)]
 mod tests {
-    use corgi_core::usage::UsageWindow;
+    use crate::usage::UsageWindow;
 
     use super::*;
 

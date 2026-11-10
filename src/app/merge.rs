@@ -1,11 +1,11 @@
 //! The dashboard's merge dialog: its keys, and the background job that runs
-//! the merge of [`corgi_core::merge`] once the user confirms.
+//! the merge of [`crate::merge`] once the user confirms.
 
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-pub(crate) use corgi_core::merge::*;
+pub(crate) use crate::merge::*;
 
 use crate::job::{Job, Update};
 

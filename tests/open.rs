@@ -13,7 +13,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use corgi_core::test_support::{ScratchDir, git_repo, git_worktree};
+use corgi::test_support::{ScratchDir, git_repo, git_worktree};
 use serde_json::{Value, json};
 
 /// A fake `hc`, a private home and state, and a folder for projects. `hc CMD

@@ -1,4 +1,4 @@
-//! The dashboard's colors: the theme of [`corgi_core::palette`] as ratatui
+//! The dashboard's colors: the theme of [`crate::palette`] as ratatui
 //! draws it, and the one theme the process draws with.
 //!
 //! A core role is the terminal's default, one of its sixteen ANSI colors, one
@@ -10,8 +10,8 @@
 
 use std::{cell::RefCell, sync::OnceLock};
 
-use corgi_core::palette;
-pub use corgi_core::palette::{
+use crate::palette;
+pub use crate::palette::{
     CONTEXT_STEPS, Palette, Rgb, Source, blend, indexed_rgb, is_light, nearest,
 };
 use ratatui::style::Color;
@@ -163,7 +163,7 @@ pub fn resolve() -> Theme {
 /// identity rather than a state of the session, read by hue across a
 /// dashboard mixing agents.
 pub mod brand {
-    use corgi_core::palette::brand;
+    use crate::palette::brand;
     use ratatui::style::Color;
 
     use super::color;

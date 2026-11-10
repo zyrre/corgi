@@ -2,7 +2,7 @@
 //! `corgi supervisor` and `corgi spawn` starting agents there, and the
 //! agents the commands that only read (`fleet`, `report`, `digest`) and
 //! `tag` see, from either backend. Which backend a command uses is
-//! [`corgi_core::backend`]'s rule.
+//! [`crate::backend`]'s rule.
 
 use std::{
     fs,
@@ -12,14 +12,6 @@ use std::{
 use anyhow::{Context, Result};
 
 use crate::{
-    harness::Harness,
-    herdr::HerdrClient,
-    model::DashboardAgent,
-    paths::{corgi_state_dir, dir_name, is_home},
-    supervisor,
-    tag::{TagOptions, tag_agent},
-};
-use corgi_core::{
     backend::{Backend, Caller, reachable_herdr},
     git::trust_root,
     hc::{self, HcClient, launch::Launched},
@@ -31,6 +23,14 @@ use corgi_core::{
     project_main::{project_root_digest, project_root_of},
     projects::ProjectMemory,
     time::unix_now,
+};
+use crate::{
+    harness::Harness,
+    herdr::HerdrClient,
+    model::DashboardAgent,
+    paths::{corgi_state_dir, dir_name, is_home},
+    supervisor,
+    tag::{TagOptions, tag_agent},
 };
 
 use super::{

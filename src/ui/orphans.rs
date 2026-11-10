@@ -17,7 +17,7 @@ use crate::{
     app::orphans::{OrphansDialog, Stage},
     theme::roles,
 };
-use corgi_core::{orphans::Confidence, paths::tilde};
+use crate::{orphans::Confidence, paths::tilde};
 
 /// The widest the dialog grows.
 const WIDTH: u16 = 100;
@@ -224,7 +224,7 @@ fn body(dialog: &OrphansDialog, width: usize, spinner: &str) -> (Vec<Line<'stati
 
 #[cfg(test)]
 mod tests {
-    use corgi_core::orphans::{Action, Candidate, Cause};
+    use crate::orphans::{Action, Candidate, Cause};
 
     use super::*;
     use crate::{app::Overlay, test_support::test_app};

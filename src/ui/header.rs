@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Padding, Paragraph},
 };
 
-use corgi_core::art::{CORGI_PIXELS, WORDMARK, corgi_color};
+use crate::art::{CORGI_PIXELS, WORDMARK, corgi_color};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
@@ -286,7 +286,7 @@ fn draw_usage_notes(frame: &mut Frame<'_>, band: Rect, x: u16, app: &App) {
     );
 }
 
-// The supervisor and the wordmark are `corgi_core::art`'s, which the desktop
+// The supervisor and the wordmark are `crate::art`'s, which the desktop
 // window draws too.
 const CORGI_ROWS: u16 = CORGI_PIXELS.len() as u16 / 2;
 const CORGI_WIDTH: u16 = CORGI_PIXELS[0].len() as u16;

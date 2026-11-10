@@ -1,11 +1,11 @@
 //! The dashboard's close dialog: its keys, and the close of
-//! [`corgi_core::close`] once the user confirms.
+//! [`crate::close`] once the user confirms.
 
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-pub(crate) use corgi_core::close::*;
+pub(crate) use crate::close::*;
 
 use super::{App, overlay::Overlay};
 

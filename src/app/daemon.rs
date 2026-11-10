@@ -1,4 +1,4 @@
-//! `corgi daemon`: runs [`corgi_core::hc::daemon`] in the foreground, or
+//! `corgi daemon`: runs [`crate::hc::daemon`] in the foreground, or
 //! installs it as a service of the user's session: a LaunchAgent on macOS,
 //! a systemd user unit on Linux, restarted whenever it ends and started at
 //! login, with the user's login-shell `PATH`, logging to a file in Corgi's
@@ -17,7 +17,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use corgi_core::{
+use crate::{
     hc::{
         self, HcClient,
         daemon::{self, Options},

@@ -1,4 +1,4 @@
-//! The tests of the supervisor waker (`corgi_core::waker`) that run through
+//! The tests of the supervisor waker (`crate::waker`) that run through
 //! the dashboard's refresh.
 
 use std::path::Path;

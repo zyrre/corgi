@@ -1,4 +1,4 @@
-//! The tests of Corgi's marks in Herdr (`corgi_core::markers`) that run
+//! The tests of Corgi's marks in Herdr (`crate::markers`) that run
 //! through the dashboard: its refresh putting them back after a Herdr
 //! restart, and the merge tag set and cleared with `corgi tag` and the
 //! merge dialog.

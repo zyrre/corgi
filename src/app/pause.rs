@@ -1,11 +1,11 @@
 //! The dashboard's `P`: Pause all, after a confirmation that names what
 //! stops, or Resume all while agents are paused
-//! ([`corgi_core::pause`]). The pause is kept in Corgi's state, so it
+//! ([`crate::pause`]). The pause is kept in Corgi's state, so it
 //! outlasts the dashboard, and the same key brings the agents back.
 
 use std::time::Duration;
 
-use corgi_core::{job::Job, pause, progress::Silent};
+use crate::{job::Job, pause, progress::Silent};
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, Overlay};
@@ -95,7 +95,7 @@ mod tests {
                 name: Some(format!("agent-{pane}")),
                 agent: Some("claude".into()),
                 state,
-                agent_session: Some(corgi_core::model::AgentSession {
+                agent_session: Some(crate::model::AgentSession {
                     value: "11111111-2222-4333-8444-555555555555".into(),
                     ..Default::default()
                 }),

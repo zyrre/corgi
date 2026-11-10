@@ -1,5 +1,5 @@
 //! `corgi app-layout`: puts Corgi's Projects list into the Herdr app's
-//! layout, or takes it out again ([`corgi_core::app_layout`]).
+//! layout, or takes it out again ([`crate::app_layout`]).
 //! `herdr-app/install.sh` runs it, and `--uninstall` runs `remove`.
 
 use std::path::PathBuf;
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 
-use corgi_core::{
+use crate::{
     app_layout::{self, Change, Done, Installed, LAYOUT},
     app_space::HerdrApp,
 };

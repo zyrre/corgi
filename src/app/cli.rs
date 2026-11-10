@@ -26,7 +26,7 @@ use crate::{
     time::unix_now,
 };
 
-use corgi_core::backend::Backend;
+use crate::backend::Backend;
 
 use super::{
     App,
@@ -1090,9 +1090,9 @@ fn inbox_entry(item: &Item, corgi_bin: &str, budget: Option<&mut usize>) -> Stri
 fn print_inbox_footer(root: &str) {
     let client = HerdrClient::from_env().ok();
     let delivering = client.as_ref().is_some_and(super::waker::inboxes_delivered)
-        || (corgi_core::backend::Caller::from_env() == corgi_core::backend::Caller::Hc
-            && corgi_core::hc::expected_socket()
-                .is_some_and(|socket| corgi_core::hc::daemon::running(&socket).running));
+        || (crate::backend::Caller::from_env() == crate::backend::Caller::Hc
+            && crate::hc::expected_socket()
+                .is_some_and(|socket| crate::hc::daemon::running(&socket).running));
     for note in client
         .iter()
         .flat_map(|client| [held_note(client, root), refused_note(client, root)])

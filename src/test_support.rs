@@ -1,61 +1,409 @@
-//! Helpers the dashboard's test suites share: those of the core (scratch
-//! directories, a fake Herdr socket), a dashboard that never touches the
-//! developer's own state, and the ways a rendered screen is read back as
-//! text.
+//! Helpers the test suites share: scratch directories that clean up after
+//! themselves and a fake Herdr socket. The integration tests in `tests/` use
+//! them too, through the `test-support` feature.
 
-use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, text::Line};
+#[cfg(test)]
+mod dashboard;
+#[cfg(test)]
+pub(crate) use dashboard::*;
 
-pub(crate) use corgi_core::test_support::*;
-
-use crate::{
-    app::{App, AppInputs},
-    herdr::HerdrClient,
+use std::{
+    fs::{self, File},
+    io::{BufRead, BufReader, Write},
+    ops::Deref,
+    os::unix::net::UnixListener,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-/// A dashboard for tests: its Herdr client points at a socket nobody listens
-/// on, its project memory starts empty and is never saved, and it shows no
-/// usage cards, so neither the developer's remembered projects nor the
-/// provider CLIs on their PATH change what a test sees.
-pub(crate) fn test_app() -> App {
-    App::with_inputs(
-        HerdrClient::from_socket_path(UNUSED_SOCKET),
-        false,
-        AppInputs::default(),
-    )
+use serde_json::Value;
+
+use crate::progress::Progress;
+
+/// A socket no Herdr listens on, for a client the test never lets connect.
+pub const UNUSED_SOCKET: &str = "/tmp/corgi-unused-test.sock";
+
+/// A directory of its own for one test, removed with everything in it when
+/// the value is dropped. The process id, the clock and a counter go into its
+/// name, so parallel tests and parallel test runs never share one.
+pub struct ScratchDir {
+    path: PathBuf,
 }
 
-/// The text of one line, its spans joined.
-pub(crate) fn line_text(line: &Line<'_>) -> String {
-    line.spans
-        .iter()
-        .map(|span| span.content.as_ref())
-        .collect()
+impl ScratchDir {
+    pub fn new(label: &str) -> Self {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "corgi-{label}-{}-{nanos}-{count}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("create scratch dir");
+        Self { path }
+    }
 }
 
-/// The text of each line.
-pub(crate) fn lines_text(lines: &[Line<'_>]) -> Vec<String> {
-    lines.iter().map(line_text).collect()
+/// A scratch directory is used as the path it is.
+impl Deref for ScratchDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
 }
 
-/// Every row of a rendered buffer as text.
-pub(crate) fn buffer_rows(buffer: &Buffer) -> Vec<String> {
-    let area = buffer.area;
-    (area.top()..area.bottom())
-        .map(|y| {
-            (area.left()..area.right())
-                .map(|x| buffer[(x, y)].symbol())
-                .collect()
-        })
-        .collect()
+impl AsRef<Path> for ScratchDir {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
 }
 
-/// A rendered buffer as one string, row after row with nothing between them,
-/// for tests that only ask whether some text is on screen.
-pub(crate) fn buffer_text(buffer: &Buffer) -> String {
-    buffer.content().iter().map(|cell| cell.symbol()).collect()
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.path).ok();
+    }
 }
 
-/// A terminal of `width` by `height` cells for rendering into.
-pub(crate) fn test_terminal(width: u16, height: u16) -> Terminal<TestBackend> {
-    Terminal::new(TestBackend::new(width, height)).expect("build test terminal")
+/// A fake Herdr on a socket of its own under the temporary directory. `serve`
+/// runs on a thread with the listener and answers Corgi's connections, each
+/// with [`answer`]; what it returns comes back through the join handle.
+pub fn fake_herdr<T: Send + 'static>(
+    label: &str,
+    serve: impl FnOnce(UnixListener) -> T + Send + 'static,
+) -> (PathBuf, thread::JoinHandle<T>) {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time after epoch")
+        .as_nanos();
+    let socket_path =
+        std::env::temp_dir().join(format!("corgi-{label}-{}-{nanos}.sock", std::process::id()));
+    let listener = UnixListener::bind(&socket_path).expect("bind fake Herdr socket");
+    (socket_path, thread::spawn(move || serve(listener)))
+}
+
+/// Answers the next connection to a fake Herdr: reads its one request and
+/// sends back `reply(&request)`, a `{"result": …}` or `{"error": …}` body, as
+/// the newline-terminated response to that request's `id`.
+pub fn answer(listener: &UnixListener, reply: impl FnOnce(&Value) -> Value) {
+    let (stream, _) = listener.accept().expect("accept Corgi connection");
+    let mut reader = BufReader::new(stream);
+    let mut request = String::new();
+    reader.read_line(&mut request).expect("read request");
+    let request: Value = serde_json::from_str(&request).expect("parse request");
+    let mut response = reply(&request);
+    response["id"] = request["id"].clone();
+    serde_json::to_writer(reader.get_mut(), &response).expect("write response");
+    reader.get_mut().write_all(b"\n").expect("finish response");
+}
+
+/// A fake Herdr that answers any number of connections at once, as many
+/// short-lived processes make them, from one session snapshot the test can
+/// change. It records every request, answers `agent.prompt` as delivered,
+/// reads with an empty screen, and the methods it does not know with an
+/// empty result. It stops, and removes its socket, when dropped.
+pub struct FakeHerdr {
+    pub socket: PathBuf,
+    snapshot: Arc<Mutex<Value>>,
+    /// Each pane's foreground processes, as `pane.process_info` gives them;
+    /// a pane not named has none.
+    processes: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+    prompts: Arc<Mutex<Prompts>>,
+    /// The repository root `worktree.list` resolves every directory to; none
+    /// answers as a Herdr that lists nothing.
+    repo_root: Arc<Mutex<Option<String>>>,
+    requests: Arc<Mutex<Vec<Value>>>,
+    stop: Arc<AtomicBool>,
+    server: Option<thread::JoinHandle<()>>,
+}
+
+/// How a [`FakeHerdr`] answers `agent.prompt`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Prompts {
+    /// As typed in.
+    #[default]
+    Accept,
+    /// With a Herdr error of this code, as Herdr refuses.
+    Refuse(String),
+    /// By closing the connection without a reply, so whether it was typed
+    /// cannot be told.
+    HangUp,
+}
+
+impl FakeHerdr {
+    pub fn start(label: &str, snapshot: Value) -> Self {
+        let snapshot = Arc::new(Mutex::new(snapshot));
+        let processes = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let prompts = Arc::new(Mutex::new(Prompts::Accept));
+        let repo_root = Arc::new(Mutex::new(None));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (socket, server) = {
+            let (snapshot, processes, prompts, repo_root, requests, stop) = (
+                snapshot.clone(),
+                processes.clone(),
+                prompts.clone(),
+                repo_root.clone(),
+                requests.clone(),
+                stop.clone(),
+            );
+            fake_herdr(label, move |listener| {
+                listener
+                    .set_nonblocking(true)
+                    .expect("non-blocking listener");
+                while !stop.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            let (snapshot, processes, prompts, repo_root, requests) = (
+                                snapshot.clone(),
+                                processes.clone(),
+                                prompts.clone(),
+                                repo_root.clone(),
+                                requests.clone(),
+                            );
+                            thread::spawn(move || {
+                                serve_one(
+                                    stream, &snapshot, &processes, &prompts, &repo_root, &requests,
+                                )
+                            });
+                        }
+                        Err(_) => thread::sleep(std::time::Duration::from_millis(2)),
+                    }
+                }
+            })
+        };
+        Self {
+            socket,
+            snapshot,
+            processes,
+            prompts,
+            repo_root,
+            requests,
+            stop,
+            server: Some(server),
+        }
+    }
+
+    /// Makes `worktree.list` resolve every directory to the repository `root`.
+    pub fn set_repo_root(&self, root: &str) {
+        *self.repo_root.lock().expect("repo root") = Some(root.to_string());
+    }
+
+    /// Replaces the session snapshot Herdr gives from now on.
+    pub fn set_snapshot(&self, snapshot: Value) {
+        *self.snapshot.lock().expect("snapshot") = snapshot;
+    }
+
+    /// The foreground processes of `pane_id` from now on, each a JSON
+    /// object as Herdr gives it (`name`, `cwd`, `argv`, `pid`).
+    pub fn set_processes(&self, pane_id: &str, processes: Value) {
+        self.processes
+            .lock()
+            .expect("processes")
+            .insert(pane_id.to_string(), processes);
+    }
+
+    /// How `agent.prompt` is answered from now on.
+    pub fn set_prompts(&self, prompts: Prompts) {
+        *self.prompts.lock().expect("prompts") = prompts;
+    }
+
+    /// The requests of `method` made so far.
+    pub fn requests(&self, method: &str) -> Vec<Value> {
+        self.requests
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|request| request["method"] == method)
+            .cloned()
+            .collect()
+    }
+
+    /// The texts typed into agents so far, as `target: text`.
+    pub fn prompts(&self) -> Vec<String> {
+        self.requests("agent.prompt")
+            .iter()
+            .map(|request| {
+                let params = &request["params"];
+                format!(
+                    "{}: {}",
+                    params["target"].as_str().unwrap_or_default(),
+                    params["text"].as_str().unwrap_or_default()
+                )
+            })
+            .collect()
+    }
+}
+
+impl Drop for FakeHerdr {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(server) = self.server.take() {
+            let _ = server.join();
+        }
+        let _ = fs::remove_file(&self.socket);
+    }
+}
+
+/// Answers one connection to a [`FakeHerdr`].
+fn serve_one(
+    stream: std::os::unix::net::UnixStream,
+    snapshot: &Mutex<Value>,
+    processes: &Mutex<std::collections::HashMap<String, Value>>,
+    prompts: &Mutex<Prompts>,
+    repo_root: &Mutex<Option<String>>,
+    requests: &Mutex<Vec<Value>>,
+) {
+    // A stream accepted from a non-blocking listener is non-blocking on
+    // macOS, though not on Linux.
+    let _ = stream.set_nonblocking(false);
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return;
+    }
+    let Ok(request) = serde_json::from_str::<Value>(&line) else {
+        return;
+    };
+    requests.lock().expect("requests").push(request.clone());
+    let params = &request["params"];
+    let method = request["method"].as_str().unwrap_or_default();
+    if method == "agent.prompt" {
+        match prompts.lock().expect("prompts").clone() {
+            Prompts::Accept => {}
+            Prompts::HangUp => return,
+            Prompts::Refuse(code) => {
+                let response = serde_json::json!({
+                    "id": request["id"],
+                    "error": {"code": code, "message": "refused by the fake Herdr"},
+                });
+                let stream = reader.get_mut();
+                let _ = serde_json::to_writer(&mut *stream, &response);
+                let _ = stream.write_all(b"\n");
+                return;
+            }
+        }
+    }
+    let result = match method {
+        "session.snapshot" => serde_json::json!({
+            "type": "session_snapshot",
+            "snapshot": snapshot.lock().expect("snapshot").clone(),
+        }),
+        "agent.prompt" => serde_json::json!({
+            "type": "agent_prompted",
+            "agent": {
+                "pane_id": params["target"], "workspace_id": "w1", "tab_id": "w1:t1",
+                "agent": "claude", "agent_status": "working",
+            },
+        }),
+        "agent.read" | "pane.read" => serde_json::json!({
+            "type": "pane_read",
+            "read": {"pane_id": params["target"], "text": ""},
+        }),
+        "plugin.list" => serde_json::json!({"type": "plugin_list", "plugins": []}),
+        "pane.process_info" => {
+            let pane = params["pane_id"].as_str().unwrap_or_default();
+            let foreground = processes
+                .lock()
+                .expect("processes")
+                .get(pane)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            serde_json::json!({
+                "type": "pane_process_info",
+                "process_info": {"pane_id": pane, "foreground_processes": foreground},
+            })
+        }
+        "worktree.list" if repo_root.lock().expect("repo root").is_some() => {
+            let root = repo_root.lock().expect("repo root").clone();
+            serde_json::json!({
+                "type": "worktree_list",
+                "source": {"repo_name": "repo", "repo_root": root, "source_checkout_path": root},
+                "worktrees": [],
+            })
+        }
+        _ => serde_json::json!({"type": "ok"}),
+    };
+    let mut response = serde_json::json!({"id": request["id"], "result": result});
+    response["id"] = request["id"].clone();
+    let stream = reader.get_mut();
+    let _ = serde_json::to_writer(&mut *stream, &response);
+    let _ = stream.write_all(b"\n");
+}
+
+/// Writes `lines` to `path` as a JSON Lines file, one record per line.
+pub fn write_jsonl(path: &Path, lines: &[&str]) {
+    let mut file = File::create(path).expect("create JSONL file");
+    for line in lines {
+        writeln!(file, "{line}").expect("write JSONL record");
+    }
+}
+
+/// Keeps the status lines a launch step reports.
+#[derive(Default)]
+pub struct Recorded(pub Vec<String>);
+
+impl Progress for Recorded {
+    fn report(&mut self, message: String) {
+        self.0.push(message);
+    }
+}
+
+/// Runs `git args` in `dir` with a test identity and no signing, whatever
+/// the developer's own Git configuration says, and fails the test if Git
+/// does.
+pub fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Corgi Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "Corgi Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?} in {}", dir.display());
+}
+
+/// A repository at `dir` on branch `main` with one empty commit, created
+/// with its parents; returns its canonical path, as Git reports paths.
+pub fn git_repo(dir: &Path) -> PathBuf {
+    fs::create_dir_all(dir).expect("create repository directory");
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", "first"]);
+    dir.canonicalize().expect("canonical repository path")
+}
+
+/// A plain linked worktree of `repo` at `dir` on a new `branch`, as
+/// `git worktree add` (and Claude Code's `--worktree`) makes one; returns
+/// its canonical path.
+pub fn git_worktree(repo: &Path, dir: &Path, branch: &str) -> PathBuf {
+    git(
+        repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            branch,
+            &dir.to_string_lossy(),
+        ],
+    );
+    dir.canonicalize().expect("canonical worktree path")
 }

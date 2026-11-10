@@ -324,7 +324,7 @@ fn a_refresh_asked_for_while_one_runs_waits_for_it_and_wakes_nobody_twice() {
 
     // The supervisor's marker the pass confirmed went into the test's own
     // record, not the user's state directory.
-    let record = corgi_core::markers::read(&herdr.marker_record());
+    let record = crate::markers::read(&herdr.marker_record());
     assert_eq!(
         record.panes["w1:p1"].session.as_deref(),
         Some("supervisor-weather-session")

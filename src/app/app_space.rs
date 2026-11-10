@@ -1,5 +1,5 @@
 //! `corgi app-space`: makes or removes the Corgi space of the Herdr app
-//! ([`corgi_core::app_space`]), for a person who wants the Corgi mod's
+//! ([`crate::app_space`]), for a person who wants the Corgi mod's
 //! overview in a space of its own. Nothing else makes that space;
 //! `herdr-app/install.sh --uninstall` runs `remove`.
 
@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-use corgi_core::app_space::{self, Ensured, HerdrApp, Removed};
+use crate::app_space::{self, Ensured, HerdrApp, Removed};
 
 pub const APP_SPACE_USAGE: &str = "\
 Usage: corgi app-space [--app PATH] [--home DIR]

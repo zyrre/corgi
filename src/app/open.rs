@@ -2,7 +2,7 @@
 //! for its "Open project" field. `projects` lists the projects Corgi knows,
 //! filtered by what is typed, with the directories that complete a typed
 //! path and where a new name would be created, exactly as the new-agent
-//! forms list them ([`corgi_core::choices::ChoiceList`]). `open` opens one:
+//! forms list them ([`crate::choices::ChoiceList`]). `open` opens one:
 //! it says which terminal its supervisor runs in, or starts it on herdr-core
 //! (`hc`), in a shell the mod offers when that shell waits in the project's
 //! primary checkout, else in a new terminal.
@@ -15,7 +15,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use corgi_core::{
+use crate::{
     choices::{Choice, ChoiceList, FreeText},
     hc::{self, HcClient},
     launch::{SUPERVISOR_HOME_REFUSAL, create_project, dashboard_supervisor_plan, supervisor_plan},
@@ -376,7 +376,7 @@ fn open_project(client: &HcClient, options: &OpenOptions) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use corgi_core::test_support::ScratchDir;
+    use crate::test_support::ScratchDir;
 
     use super::*;
 
@@ -572,7 +572,7 @@ mod tests {
         let project = |root: &Path| Project {
             root: root.to_string_lossy().into_owned(),
             name: "weather".into(),
-            source: corgi_core::projects::ProjectSource::Remembered,
+            source: crate::projects::ProjectSource::Remembered,
         };
         let listed = without_duplicates(vec![project(&real), project(&link.join("weather"))]);
         assert_eq!(listed, [project(&real)]);

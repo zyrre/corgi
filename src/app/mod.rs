@@ -95,7 +95,7 @@ mod pause;
 pub(crate) mod recovery;
 mod refresh;
 mod resume;
-use corgi_core::{markers, notice, progress, project_main, rows, sweep, waker};
+use crate::{markers, notice, progress, project_main, rows, sweep, waker};
 pub(crate) use launch::{LaunchState, NewAgentLaunch};
 use progress::JobReport;
 use refresh::{QUIT_WAIT, RefreshLog, RefreshState, Refreshed, is_due};

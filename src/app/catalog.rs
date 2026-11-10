@@ -1,10 +1,10 @@
 //! The new-agent form's side of the model catalogs of
-//! [`corgi_core::catalog`]: fetching them as the form asks, and handing one
+//! [`crate::catalog`]: fetching them as the form asks, and handing one
 //! that arrives to an open model list.
 
 use std::time::Duration;
 
-pub(crate) use corgi_core::catalog::*;
+pub(crate) use crate::catalog::*;
 
 use crate::harness::Harness;
 

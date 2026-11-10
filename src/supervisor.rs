@@ -34,12 +34,12 @@ use crate::{
 /// The role, with `{{corgi}}` and `{{state}}` standing for the Corgi binary
 /// and the project's state directory, and the placeholders of [`STEERING`]
 /// for the commands that steer workers on the backend they run on.
-const ROLE: &str = include_str!("../../../supervisor/ROLE.md");
+const ROLE: &str = include_str!("../supervisor/ROLE.md");
 
 /// How to hand over to a fresh session, which `corgi role handover` prints
 /// when the dashboard asks for it rather than the role holding it all the
 /// time. The same placeholders as [`ROLE`].
-const HANDOVER: &str = include_str!("../../../supervisor/HANDOVER.md");
+const HANDOVER: &str = include_str!("../supervisor/HANDOVER.md");
 
 /// Where one project's supervisor keeps its decisions, briefs, and ledger:
 /// `supervisors/<project>` in Corgi's state directory. Until [`prepare`] moves

@@ -97,9 +97,9 @@ pub(crate) fn close_dialog_lines(form: &CloseWorkspaceForm) -> DialogContent<'_>
 pub(super) fn draw_pause(
     frame: &mut Frame<'_>,
     area: Rect,
-    form: &corgi_core::pause::PauseForm,
+    form: &crate::pause::PauseForm,
 ) -> Drawn {
-    let words = corgi_core::pause::confirmation(form);
+    let words = crate::pause::confirmation(form);
     let mut lines = vec![
         Line::styled(words[0].clone(), bold(roles().text)),
         Line::raw(""),
@@ -440,7 +440,7 @@ pub(crate) fn merge_dialog_lines<'a>(
 }
 
 /// The key that asks the supervisor to fix a failed merge, as the legend
-/// shows it: `corgi_core::merge::ASK_SUPERVISOR_KEY`, which the window's dialog takes too.
+/// shows it: `crate::merge::ASK_SUPERVISOR_KEY`, which the window's dialog takes too.
 const ASK_KEY: &str = "s";
 /// The legend's words for it.
 const ASK_TO_FIX: &str = "ask supervisor to fix";
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn every_failed_or_refused_merge_offers_to_ask_the_supervisor_to_fix_it() {
-        assert_eq!(ASK_KEY, corgi_core::merge::ASK_SUPERVISOR_KEY.to_string());
+        assert_eq!(ASK_KEY, crate::merge::ASK_SUPERVISOR_KEY.to_string());
         let mut app = test_app();
         app.overlay = Overlay::merge(MergeWorktreeForm {
             label: "corgi/reviewed-agent".into(),

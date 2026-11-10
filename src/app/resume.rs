@@ -1,11 +1,11 @@
 //! The dashboard's `R`: starts an agent that dropped to its shell again in
 //! its pane, with its session and the options Corgi launched it with
-//! ([`corgi_core::restart::resume`]). Only a row for such an agent offers
+//! ([`crate::restart::resume`]). Only a row for such an agent offers
 //! it; Corgi never resumes one by itself.
 
 use std::time::Duration;
 
-use corgi_core::{job::Job, restart};
+use crate::{job::Job, restart};
 
 use super::App;
 
@@ -105,11 +105,10 @@ mod tests {
         assert!(!app.resume_job.is_running() && !app.resume_job.is_finished());
 
         // A scratch record keeps the real state directory out of it.
-        let scratch = corgi_core::test_support::ScratchDir::new("tui-resume");
-        app.client = corgi_core::herdr::HerdrClient::from_socket_path(
-            corgi_core::test_support::UNUSED_SOCKET,
-        )
-        .with_marker_record(scratch.join("markers.json"));
+        let scratch = crate::test_support::ScratchDir::new("tui-resume");
+        app.client =
+            crate::herdr::HerdrClient::from_socket_path(crate::test_support::UNUSED_SOCKET)
+                .with_marker_record(scratch.join("markers.json"));
         app.agents = vec![row(true, &[])];
         super::super::test_helpers::press(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT);
         assert_eq!(app.status, "Resuming fix-cache…");

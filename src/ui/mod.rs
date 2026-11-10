@@ -111,7 +111,7 @@ fn draw_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         _ => (app.status.clone(), roles().accent),
     };
     // One key for both: Resume all while any agent is paused.
-    let pause = if corgi_core::pause::paused_rows(&app.agents) > 0 {
+    let pause = if crate::pause::paused_rows(&app.agents) > 0 {
         "P resume all"
     } else {
         "P pause all"

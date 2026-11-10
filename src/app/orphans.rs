@@ -1,17 +1,17 @@
 //! Find orphaned sessions in the dashboard and on the command line: the
 //! read-only `corgi orphans`, and the `o` key's dialog, which lists
-//! [`corgi_core::orphans::detect`]'s candidates and applies the choice made
-//! for each with [`corgi_core::orphans::apply`]. Both run as a background
+//! [`crate::orphans::detect`]'s candidates and applies the choice made
+//! for each with [`crate::orphans::apply`]. Both run as a background
 //! job, so keys and frames never wait on Herdr's process lookups.
 
 use std::time::Duration;
 
-use anyhow::Result;
-use corgi_core::{
+use crate::{
     herdr::HerdrClient,
     job::{Job, Update},
     orphans::{Candidate, Choices, Options, apply, detect, report},
 };
+use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, overlay::Overlay};
@@ -184,7 +184,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use corgi_core::orphans::{Action, Cause, Confidence};
+    use crate::orphans::{Action, Cause, Confidence};
     use crossterm::event::KeyModifiers;
 
     use super::*;

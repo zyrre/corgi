@@ -1,5 +1,5 @@
 //! `corgi pause --json` and `corgi resume --json`: the Herdr app's
-//! "⏸ Agents" and "▶ Agents" (`corgi_core::hc::pause`), and what
+//! "⏸ Agents" and "▶ Agents" (`crate::hc::pause`), and what
 //! `corgi status --json` says of a pause.
 
 use std::path::{Path, PathBuf};
@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use corgi_core::{
+use crate::{
     hc::{
         self, TASK_LABEL,
         pause::{self, NOTHING_PAUSED, NOTHING_WORKING, Outcome, Record},
@@ -207,7 +207,7 @@ pub(crate) fn add_to_status(value: &mut Value, record: &Record) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use corgi_core::hc::pause::{PausedAgent, Phase};
+    use crate::hc::pause::{PausedAgent, Phase};
 
     fn paused(name: &str, address: &str, supervisor: bool, phase: Phase) -> PausedAgent {
         PausedAgent {

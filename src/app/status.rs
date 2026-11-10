@@ -13,7 +13,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use corgi_core::{
+use crate::{
     backlog,
     hc::{
         self, HcClient,
@@ -815,14 +815,14 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::hc::{
+        PROJECT_LABEL, REQUEST_LABEL, ROLE_LABEL, TAG_AT_LABEL, TAG_LABEL, TASK_LABEL, Terminal,
+        agents::dashboard_agents,
+    };
     use crate::{
         model::{AgentInfo, AgentState, PromptCache},
         supervisor::{MERGE_TOKEN, ROLE_FILE, merge_tag_value},
         test_support::{ScratchDir, git, git_repo, git_worktree},
-    };
-    use corgi_core::hc::{
-        PROJECT_LABEL, REQUEST_LABEL, ROLE_LABEL, TAG_AT_LABEL, TAG_LABEL, TASK_LABEL, Terminal,
-        agents::dashboard_agents,
     };
 
     /// A fake `hc` in `dir` that records each call's arguments, one call a
@@ -882,7 +882,7 @@ mod tests {
         let busy = git_worktree(&app, &scratch.join("busy"), "worktree/busy");
         let root = app.to_string_lossy().into_owned();
         supervisor_state(&base, &app);
-        let inboxes = corgi_core::waker::SupervisorWaker::in_dir(&base).inboxes();
+        let inboxes = crate::waker::SupervisorWaker::in_dir(&base).inboxes();
         let project = |role| [(PROJECT_LABEL, root.as_str()), (ROLE_LABEL, role)];
         let terminals = [
             // A worker tagged where it rests now: ready to merge.
@@ -960,7 +960,7 @@ mod tests {
         let base = scratch.join("state");
         let app = git_repo(&scratch.join("app"));
         supervisor_state(&base, &app);
-        let inboxes = corgi_core::waker::SupervisorWaker::in_dir(&base).inboxes();
+        let inboxes = crate::waker::SupervisorWaker::in_dir(&base).inboxes();
         let remembered = [app.to_string_lossy().into_owned()];
         let value = status_value(&[], &remembered, &inboxes, (false, None), None, NOW);
         assert_eq!(value["hc"], json!({"running": false, "error": null}));
@@ -1022,7 +1022,7 @@ mod tests {
             "# Backlog\n\n## One\nfirst\n## Two\n",
         )
         .unwrap();
-        let inboxes = corgi_core::waker::SupervisorWaker::in_dir(&base).inboxes();
+        let inboxes = crate::waker::SupervisorWaker::in_dir(&base).inboxes();
         inboxes
             .notify(crate::inbox::Item {
                 project: app.to_string_lossy().into_owned(),
@@ -1210,7 +1210,7 @@ mod tests {
             merge_agent(
                 &client,
                 agents,
-                &corgi_core::waker::SupervisorWaker::in_dir(&self.state).inboxes(),
+                &crate::waker::SupervisorWaker::in_dir(&self.state).inboxes(),
                 "w-fix",
                 &self.root(),
                 upstream,
@@ -1219,7 +1219,7 @@ mod tests {
 
         /// The lines waiting for the project's supervisor.
         fn pending(&self) -> Vec<String> {
-            corgi_core::waker::SupervisorWaker::in_dir(&self.state)
+            crate::waker::SupervisorWaker::in_dir(&self.state)
                 .inboxes()
                 .pending_for(&self.root())
         }
@@ -1332,7 +1332,7 @@ mod tests {
         let outcome = merge_agent(
             &client,
             &mut agents,
-            &corgi_core::waker::SupervisorWaker::in_dir(&project.state).inboxes(),
+            &crate::waker::SupervisorWaker::in_dir(&project.state).inboxes(),
             "w-fix",
             &project.root(),
             Upstream::checked,
@@ -1379,7 +1379,7 @@ mod tests {
     fn the_supervisor_is_asked_to_fix_a_failed_merge_only_while_one_runs() {
         let project = Mergeable::new("status-merge-ask");
         supervisor_state(&project.state, &project.repo);
-        let inboxes = corgi_core::waker::SupervisorWaker::in_dir(&project.state).inboxes();
+        let inboxes = crate::waker::SupervisorWaker::in_dir(&project.state).inboxes();
         let error = "the primary checkout has uncommitted changes: M status.txt";
         let ask = |agents: &[DashboardAgent], name: &str, landed: Option<&str>| {
             ask_supervisor(agents, &inboxes, name, &project.root(), error, landed)

@@ -1,5 +1,5 @@
 //! The dashboard's side of the periodic refresh of
-//! [`corgi_core::refresh`]: when one is due, running it as a background
+//! [`crate::refresh`]: when one is due, running it as a background
 //! [`Job`], and putting its rows in place.
 //!
 //! What a refresh carries from one to the next, [`RefreshState`], goes with
@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) use corgi_core::refresh::*;
+pub(crate) use crate::refresh::*;
 
 #[cfg(test)]
 use crate::herdr::SessionSnapshot;
