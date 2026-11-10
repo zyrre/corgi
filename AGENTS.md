@@ -80,7 +80,15 @@ The supervisor's role and the `[Corgi]` lines Corgi types into its box
 `crates/corgi-core/src/supervisor.rs`, and the merge lines also by the
 exact-inbox-text tests in `src/app/merge.rs`: change the wording, update
 both. `Inboxes::pending_for` lists every line that waits; a newer line of
-the same key replaces an older one only when they go out. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
+the same key replaces an older one only when they go out.
+
+An error of `corgi merge` (`crates/corgi-core/src/merge.rs`, and what
+`src/app/status.rs` makes of it) reaches three readers: the merge dialogs of
+the dashboard and the desktop window, the card under a worker's row in the
+Herdr app's Projects list, and the supervisor, whose line quotes it when the
+user asks it to fix the merge (`--ask-supervisor`). Word it for all three:
+what went wrong and what to do about it, without a key (`m`, `s`), which
+only the dashboard has. Line breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md`
 matter, since those tests match their text with `contains`. Another test
 there (`the_role_is_a_third_shorter_than_before_the_on_demand_parts_left_it`)
 caps `ROLE.md` at three quarters of 34,516 bytes, 25,887, and only 39 bytes
@@ -521,7 +529,21 @@ no repository. The agents are a script that reports a state to herdr-core
 (OSC 7501) and sleeps; their tasks and roles come from a canned `corgi
 status --json` (`target/app-preview/fake/corgi`), which passes every other
 command to the worktree's `target/release/corgi` with the preview's state
-directory. Change the made-up projects in `start_fakes` when a view needs
+directory. Its `corgi` and `daemon.build` are the worktree's own build
+(`corgi --version --json`), so the list's last line shows; edit
+`fake/status.json` for another (`"newer"`, a daemon that is down). A merge
+is canned too: with `fake/merge.json` holding what `corgi merge --json`
+would print (`fake/ask.json` for `--ask-supervisor`, `fake/merge.delay` the
+seconds it takes), nothing is merged; without it the worktree's `corgi`
+answers, on the preview's core. The window takes no clicks from a script,
+so a state behind one (the question under a MERGE mark, a card's button)
+is reached by saving a copy of the mod into the preview's home
+(`/tmp/corgi-ap-…/home/mods/projects/main.js`; the app reloads it) whose
+command loop calls the handler the click calls (`this.askMerge`,
+`this.runMerge`), then `do projects.<command>`; `start` again puts the
+worktree's own mod back. Take a shot a second after a reload: until each
+space's git is read, the worktrees' spaces show as rows of their own.
+Change the made-up projects in `start_fakes` when a view needs
 a state they lack. `scripts/test-app-preview` runs the script against a
 fake app, hc, AeroSpace and corgi, opening nothing: run it, and
 `shellcheck scripts/app-preview scripts/test-app-preview`, after changing
@@ -631,7 +653,8 @@ again when Herdr's `main` changed. Nothing else needs reloading: the app
 reloads a mod the moment its files change (each shown copy starts over, so
 an open "Open project" field or a merge's result is gone) and a layout the
 moment its file changes, so a window already on the Corgi layout needs no
-`layout.switch` again; a mod that failed to load keeps its old build
+`layout.switch` again (seen in the preview window: an install's swap of
+the mod's folder reloads it); a mod that failed to load keeps its old build
 running and shows in `herdr-app status`. The mods and the daemon run that
 checkout's `target/release/corgi`; `corgi` on `PATH`, which supervisors and
 workers run, is the same binary only while `~/.local/bin/corgi` links it,
