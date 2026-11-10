@@ -104,8 +104,10 @@ The Projects mod fills its block on `chrome`, text 13 px:
   `working` when its supervisor runs, or `new project` in `accent`; the
   highlighted one on `selected`; `N more: keep typing` when more match; then
   `Starting <name>'s supervisor…` with a spinner while it starts, or why it
-  did not in `blocked`; and a `dim` 10.5 px line `Enter opens · Tab completes
-  · Esc` with `New space` on its right.
+  did not in `blocked`; and the keys in `dim` 10.5 px, `Enter opens`, `Tab
+  completes`, `Esc closes`, each kept whole and wrapping to a second line
+  when the sidebar is narrow (at its own 268 px `Esc closes` goes there),
+  with `New space` on their right.
 - **The list** (scrolls): the spaces in order, under a header per machine
   once one is not this computer, as Herdr's Spaces list has them.
   - A space outside any repository (`~`, another folder, a Corgi space):
@@ -131,11 +133,14 @@ The Projects mod fills its block on `chrome`, text 13 px:
     ended: a card indented like the row (22 px; `surface`, radius 7,
     padding 7, text 11.5 px, its text wrapping) with a `border` outline
     while it asks or runs, `ansi2` (green) for merged and for a supervisor
-    that was asked, `ansi3` (yellow) for a failed push, `blocked` otherwise.
+    that was asked, `ansi4` (blue) for a conflict handed to the supervisor
+    (nothing left for the person), `ansi3` (yellow) for a failed push,
+    `blocked` otherwise.
     It holds
     `Merge worktree/x into main and push?` with `Cancel` (`raised`) and
     `Merge + push` (`solid`); then a spinner and `Merging…`; then
-    `<worker>: merged` (or `conflicts`, `push-failed`, `refused`) in the
+    `<worker>: merged` (or `conflicts`, `conflicts, handed to
+    <supervisor>`, `push-failed`, `refused`) in the
     outline's color, semibold, Corgi's message, and its buttons, 22 px
     high: `Pull, merge + push` or `Merge + push without fetching` when
     Corgi offers it, `Ask supervisor to fix` when it failed and the
@@ -237,8 +242,9 @@ The Projects list:
   and again puts it away; on the rail it unfolds the sidebar first. Opened,
   and after every key, it runs `corgi projects --json --query <text> --open
   <folder>…` with the folders its spaces on this computer are in: Corgi's
-  known projects (those with agents, those open, the directories beside
-  them, those it remembers) narrowed by every word typed; for an absolute
+  known projects (those with agents, those open, the Git repositories
+  beside them, those it remembers; a plain folder beside them is offered
+  only when typed) narrowed by every word typed; for an absolute
   path or one from `~`, the directories that complete it; and a name alone,
   or a path that does not exist, as a new project (a name goes beside most
   known projects). The first suggestion is preset. ↑/↓ move, Tab puts the
@@ -274,8 +280,8 @@ The Projects list:
   again.
 - The result stays under the row until `Dismiss`: `merged`; `conflicts`,
   which Corgi has aborted and handed to the project's supervisor when one
-  runs (its message says so), and left in the primary checkout to resolve
-  when none does; `push-failed`, the branch merged but not pushed;
+  runs (`supervisor` in its answer names it, and the card says it was
+  handed over), and left in the primary checkout to resolve when none does; `push-failed`, the branch merged but not pushed;
   `refused`, with why. Refused because the base branch's upstream has new
   commits, it offers `Pull, merge + push` (`--pull`); after a failed fetch,
   `Merge + push without fetching` (`--skip-upstream`).

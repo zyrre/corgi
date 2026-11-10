@@ -87,10 +87,13 @@ landed at COMMIT and it was the push that failed with ERROR. It is refused
 (no-supervisor) when no supervisor of the project runs.
 
 With --json it prints {\"result\", \"message\", \"commit\", \"reason\",
-\"error\"}: result is merged, conflicts, push-failed, refused, or asked for
---ask-supervisor; reason says why a refusal was (unavailable, behind,
-fetch-failed, failed, no-agent, no-supervisor); error is the failure alone,
-when there is one a supervisor could fix, as --ask-supervisor takes it. It
+\"error\", \"supervisor\"}: result is merged, conflicts, push-failed, refused,
+or asked for --ask-supervisor; reason says why a refusal was (unavailable,
+behind, fetch-failed, failed, no-agent, no-supervisor); error is the failure
+alone, when there is one a supervisor could fix, as --ask-supervisor takes it;
+supervisor names the supervisor that has it now, asked or handed a conflict,
+or is null. A refusal as behind is merged with --pull, one as fetch-failed
+with --skip-upstream. It
 exits 0 only when the branch was merged and pushed, or the supervisor asked.
 A core that is not running is not started: the merge is refused as
 unavailable.";
@@ -360,6 +363,9 @@ pub(crate) struct MergeOutcome {
     /// The failure alone, when it is one the project's supervisor could be
     /// asked to fix: what `--ask-supervisor` takes.
     pub(crate) error: Option<String>,
+    /// The supervisor that has the merge now: the one asked to fix it, or
+    /// the one a conflict was handed to. Nothing is left for the user then.
+    pub(crate) supervisor: Option<String>,
 }
 
 impl MergeOutcome {
@@ -370,6 +376,7 @@ impl MergeOutcome {
             commit: None,
             reason: Some(reason),
             error: None,
+            supervisor: None,
         }
     }
 
@@ -388,6 +395,7 @@ impl MergeOutcome {
             "commit": self.commit,
             "reason": self.reason,
             "error": self.error,
+            "supervisor": self.supervisor,
         })
     }
 }
@@ -537,6 +545,7 @@ pub(crate) fn ask_supervisor(
             commit: landed.map(str::to_string),
             reason: None,
             error: None,
+            supervisor: Some(supervisor),
         },
         Err(error) => MergeOutcome::refused(
             "failed",
@@ -591,6 +600,7 @@ pub(crate) fn merge_agent(
                 commit: (!commit.is_empty()).then_some(commit),
                 reason: None,
                 error: None,
+                supervisor: None,
             }
         }
         Err(MergeError::PushFailed { commit, error }) => {
@@ -607,6 +617,7 @@ pub(crate) fn merge_agent(
                 commit: (!commit.is_empty()).then_some(commit),
                 reason: None,
                 error: Some(error),
+                supervisor: None,
             }
         }
         Err(MergeError::Conflicts(files)) => {
@@ -614,13 +625,17 @@ pub(crate) fn merge_agent(
                 "Merging {what} stopped on conflicts in {}",
                 files.join(", ")
             );
+            let mut handed = None;
             match project_supervisor(agents, &form.project_root) {
                 Some(supervisor) => match abort_merge(&form.project_root) {
                     Ok(()) => match inboxes.notify(conflict_item(&form, &files)) {
-                        Ok(()) => message.push_str(&format!(
-                            "; aborted it and asked {supervisor} to have {} merge {} into its branch",
-                            form.agent, form.target_branch
-                        )),
+                        Ok(()) => {
+                            message.push_str(&format!(
+                                "; aborted it and asked {supervisor} to have {} merge {} into its branch",
+                                form.agent, form.target_branch
+                            ));
+                            handed = Some(supervisor);
+                        }
                         Err(error) => message.push_str(&format!(
                             "; aborted it, but {supervisor} could not be asked: {error:#}"
                         )),
@@ -638,12 +653,13 @@ pub(crate) fn merge_agent(
                 commit: None,
                 reason: None,
                 error: None,
+                supervisor: handed,
             }
         }
         Err(MergeError::Behind(commits)) => MergeOutcome::refused(
             "behind",
             format!(
-                "{} has {} commit(s) {} lacks; merge again with --pull to pull them in first",
+                "{} has {} commit(s) {} lacks: pull them in first, then merge",
                 form.upstream.name().unwrap_or("The upstream"),
                 commits.len(),
                 form.target_branch
@@ -654,7 +670,7 @@ pub(crate) fn merge_agent(
             MergeOutcome::fixable(
                 "fetch-failed",
                 format!(
-                    "Could not fetch {upstream}: {error}; merge again with --skip-upstream to merge without it"
+                    "Could not fetch {upstream}: {error}. Fix the fetch and merge again, or merge without fetching"
                 ),
                 format!("could not fetch {upstream}: {error}"),
             )
@@ -1133,13 +1149,14 @@ mod tests {
                 commit: Some(commit.clone()),
                 reason: None,
                 error: None,
+                supervisor: None,
             }
         );
         assert_eq!(project.head("origin/main"), commit);
         assert_eq!(
             outcome.json(),
             json!({"result": "merged", "message": "Merged and pushed worktree/fix into main",
-                   "commit": commit, "reason": null, "error": null})
+                   "commit": commit, "reason": null, "error": null, "supervisor": null})
         );
         let pending = project.pending();
         assert_eq!(pending.len(), 1, "{pending:?}");
@@ -1286,6 +1303,7 @@ mod tests {
                 commit: None,
                 reason: None,
                 error: None,
+                supervisor: Some("app-supervisor".into()),
             }
         );
         let pending = project.pending();
@@ -1336,12 +1354,46 @@ mod tests {
             (outcome.result, outcome.reason),
             ("refused", Some("behind"))
         );
-        assert!(outcome.message.contains("--pull"), "{}", outcome.message);
+        // Read by the card and dialogs, which have their own button for it,
+        // and by the supervisor: no flag in it.
+        assert_eq!(
+            outcome.message,
+            "origin/main has 1 commit(s) main lacks: pull them in first, then merge"
+        );
 
         let outcome = project.merge(&mut agents, Upstream::pulled);
         assert_eq!(outcome.result, "merged", "{}", outcome.message);
         assert!(project.repo.join("other.txt").exists());
         assert_eq!(project.head("origin/main"), project.head("main"));
+    }
+
+    #[test]
+    fn a_failed_fetch_says_what_to_do_without_naming_a_flag() {
+        let project = Mergeable::new("status-merge-fetch");
+        git(
+            &project.repo,
+            &["remote", "set-url", "origin", "/nonexistent/remote.git"],
+        );
+        let mut agents = vec![project.worker()];
+        let outcome = project.merge(&mut agents, Upstream::checked);
+        assert_eq!(
+            (outcome.result, outcome.reason),
+            ("refused", Some("fetch-failed"))
+        );
+        assert!(
+            outcome.message.starts_with("Could not fetch origin/main: ")
+                && outcome
+                    .message
+                    .ends_with(". Fix the fetch and merge again, or merge without fetching"),
+            "{}",
+            outcome.message
+        );
+        assert!(!outcome.message.contains("--"), "{}", outcome.message);
+        let error = outcome.error.expect("the fetch's error");
+        assert!(
+            error.starts_with("could not fetch origin/main: "),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1384,6 +1436,12 @@ mod tests {
             }
             let outcome = project.merge(&mut agents, Upstream::checked);
             assert_eq!(outcome.result, "conflicts", "{}", outcome.message);
+            // Handed over, the supervisor has it; left, the user does.
+            assert_eq!(
+                outcome.supervisor.as_deref(),
+                supervised.then_some("app-supervisor")
+            );
+            assert_eq!(outcome.json()["supervisor"], json!(outcome.supervisor));
             assert!(
                 outcome.message.contains("status.txt"),
                 "{}",

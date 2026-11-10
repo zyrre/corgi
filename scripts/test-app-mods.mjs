@@ -564,6 +564,11 @@ const opens = (w) => w.execs.filter((call) => call[1] === 'open').map((call) => 
   let root = mod.render();
   assert.deepEqual(texts(byId(root, 'open-project')).slice(0, 9), ['weather', '~/repos/weather', 'running', 'zebra', '~/repos/zebra', 'nearby', 'api', '~/repos/api', 'recent']);
   assert.ok('bg' in byId(root, 'open-0').calls, 'the first is preset');
+  // The keys wrap whole rather than be cut.
+  const keys = byId(root, 'open-keys');
+  assert.deepEqual(texts(keys), ['Enter opens', 'Tab completes', 'Esc closes']);
+  assert.ok('flex_wrap' in keys.calls && !('truncate' in keys.calls));
+  assert.ok(keys.children.map(kept).every((k) => 'whitespace_nowrap' in k.calls && 'flex_none' in k.calls));
 
   // Enter on a project whose supervisor runs shows it, and starts nothing.
   await enter(mod);
@@ -788,10 +793,20 @@ async function merged(outcome, state) {
 }
 
 // A conflict: `corgi merge` aborted it and handed it to the supervisor
-// itself, so there is nothing left to ask.
+// itself, so there is nothing left to ask, nor for the person to do: handed
+// over, in blue, not an error.
 {
   const message = `Merging ${BRANCH} into main stopped on conflicts in a.txt; aborted it and asked weather-supervisor to have w-cache merge main into its branch`;
-  const { mod } = await merged({ result: 'conflicts', message, commit: null, reason: null, error: null });
+  const { mod } = await merged({ result: 'conflicts', message, commit: null, reason: null, error: null, supervisor: 'weather-supervisor' });
+  assert.deepEqual(texts(panel(mod)), ['w-cache: conflicts, handed to weather-supervisor', message, 'Dismiss']);
+  assert.deepEqual(panel(mod).calls.border_color, ['#ansi4']);
+}
+
+// A conflict with no supervisor to hand it to stays in the checkout for the
+// person to resolve: red.
+{
+  const message = `Merging ${BRANCH} into main stopped on conflicts in a.txt; resolve them in ${REPO} and run git merge --continue, or git merge --abort`;
+  const { mod } = await merged({ result: 'conflicts', message, commit: null, reason: null, error: null, supervisor: null }, null);
   assert.deepEqual(texts(panel(mod)), ['w-cache: conflicts', message, 'Dismiss']);
   assert.deepEqual(panel(mod).calls.border_color, ['#blocked']);
 }
@@ -814,7 +829,7 @@ async function merged(outcome, state) {
 
 // Refused because the upstream moved on: pulled first, at a click.
 {
-  const outcome = { result: 'refused', message: 'origin/main has 2 commit(s) main lacks; merge again with --pull to pull them in first', commit: null, reason: 'behind', error: null };
+  const outcome = { result: 'refused', message: 'origin/main has 2 commit(s) main lacks: pull them in first, then merge', commit: null, reason: 'behind', error: null };
   const { w, mod } = await merged(outcome);
   assert.deepEqual(texts(panel(mod)), ['w-cache: refused', outcome.message, 'Pull, merge + push', 'Dismiss']);
   click(mod.render(), 'merge-retry-t3', mod.cx);
@@ -824,7 +839,7 @@ async function merged(outcome, state) {
 
 // A failed fetch: merged without it at a click, or handed to the supervisor.
 {
-  const outcome = { result: 'refused', message: 'Could not fetch origin/main: no route; merge again with --skip-upstream to merge without it', commit: null, reason: 'fetch-failed', error: 'could not fetch origin/main: no route' };
+  const outcome = { result: 'refused', message: 'Could not fetch origin/main: no route. Fix the fetch and merge again, or merge without fetching', commit: null, reason: 'fetch-failed', error: 'could not fetch origin/main: no route' };
   const { w, mod } = await merged(outcome);
   assert.deepEqual(texts(panel(mod)), ['w-cache: refused', outcome.message, 'Merge + push without fetching', 'Ask supervisor to fix', 'Dismiss']);
   click(mod.render(), 'merge-retry-t3', mod.cx);

@@ -353,7 +353,7 @@ All of this is in the core, `crates/corgi-core/src/`.
   nothing. Each harness is read once per dashboard run.
 - `projects.rs` is where a new agent can be started: the projects with
   agents, the repositories with any primary workspace open in Herdr, the
-  directories beside those, and the ones Corgi remembers in a plain text file
+  Git repositories beside those (a plain folder there is not offered), and the ones Corgi remembers in a plain text file
   under `$XDG_STATE_HOME/corgi` (`CORGI_PROJECTS_FILE` overrides it), turned
   into rows for the form's Project list along with directory-path completion.
   A name or path that does not exist yet becomes a new-project row. A bare
