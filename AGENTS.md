@@ -481,6 +481,9 @@ It runs both mods under Node with stand-ins for `gpui-kit`, `gpui-base` and
 `herdr` (chainable records whose `child`, `when` and `on_*` calls are kept,
 so a test reads each view's texts and calls its click and key handlers) and
 canned answers for `git` and `corgi`; add a case there for what you change.
+`mod.tick()` and `mod.settle()` wait for every task still running, so a
+test that checks a state while one is pending (a canned `corgi` whose
+promise it resolves later) fires `mod.cx.timers` by hand instead.
 It proves the logic, not that the app has a builder. For that, the second:
 `herdr-app check` a scratch copy of the mod (outside the repository) whose
 `init` puts it in the state to check (the field open, with suggestions, a
@@ -630,8 +633,10 @@ A terminal started with `hc run --bg --keep --label herdr.space=<new id>
 --cwd <dir>` shows in the app as a new space without the window switching
 to it, which `herdr-app do space.new` would do: use it for a scratch shell
 that `corgi open --terminal` or `corgi supervisor --terminal` should start
-in. Killing its terminals closes the space; the app keeps it in its
-`recent` list, which is the app's own.
+in. Killing its terminals closes the space, at once when the last one is
+killed (a space with another terminal in it stays); the app keeps it in its
+`recent` list, which is the app's own. `hc rm` right after `hc kill`
+worked when tried (`corgi close` still waits for the terminal to finish).
 
 `corgi status --json` only reads, and asks `hc` nothing unless its core's
 socket accepts a connection, so it may be run on the user's real core and
@@ -757,8 +762,11 @@ build; delete the session afterwards and check `herdr session list`. Then:
 `crates/corgi-core/src/hc/tests.rs` drives the hc client against a fake
 `hc` script (canned output per command, or per call with `CMD.N.out`), and
 `tests/open.rs` the real binary's `corgi open`, `projects`, `supervisor
---terminal` and `app-layout` against another (`CORGI_HC_BIN`), with a
-private home and state. A supervisor start prepares its state directory,
+--terminal`, `app-layout` and `close` against another (`CORGI_HC_BIN`), with a
+private home and state. A command that asks `hc` only while its core runs
+(`HcSeen::look` in `src/app/status.rs`: `corgi merge`, `corgi close`) sees
+a running core in a test when `HC_SOCKET` names a `UnixListener` the test
+holds, at a short `/tmp` path (the socket path limit). A supervisor start prepares its state directory,
 so a core test that starts one goes through `start_supervisor_with` and
 `supervisor::prepare_at` with a scratch base, never the real one. A test
 project inside this checkout (under `target/`) is Corgi's own repository to
