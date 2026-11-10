@@ -292,6 +292,34 @@ mod tests {
     }
 
     #[test]
+    fn a_cached_failure_is_replaced_by_the_next_good_reading() {
+        let scratch = ScratchDir::new("usage-cache-recover");
+        let dir = scratch.join("usage");
+        seed(
+            &dir,
+            &CachedUsage {
+                checked_at: 1_000,
+                usage: None,
+                fetched_at: None,
+                error: Some("Claude login has expired; run Claude Code once to refresh it".into()),
+            },
+        );
+
+        let entry = shared_reading(
+            &dir,
+            Provider::Claude,
+            INTERVAL,
+            || 1_060,
+            || Ok(reading(7)),
+        );
+        assert_eq!(entry, Some(cached_at(1_060, 7)));
+        assert_eq!(
+            read_cache(&cache_path(&dir, Provider::Claude)),
+            Some(cached_at(1_060, 7))
+        );
+    }
+
+    #[test]
     fn a_reader_that_finds_the_lock_taken_keeps_the_stale_reading_and_does_not_fetch() {
         let scratch = ScratchDir::new("usage-cache-locked");
         let dir = scratch.join("usage");
