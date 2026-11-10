@@ -125,6 +125,13 @@ Do not run a real `corgi serve` on the user's Herdr for this, since it wakes
 supervisors. `glab` prints some notices (such as a deprecated setting) on
 stdout ahead of its JSON.
 
+`corgi usage` reads the plan usage through a cache shared by every Corgi
+process (`usage/<provider>.json` in the state directory), which the running
+dashboards and the Herdr app, on the old binary, refresh every minute. A
+build of yours run against it takes their fresh entry and fetches nothing.
+To check a usage change live, give it an empty scratch `XDG_STATE_HOME`:
+`XDG_STATE_HOME="$scratch" ./target/release/corgi usage --json`.
+
 `rust-version` in the root `Cargo.toml`'s `[workspace.package]`, which both
 crates take, is the oldest Rust that builds Corgi: 1.89, set by std's
 `File::lock` (ratatui 0.30 alone needs 1.88). With it set, clippy's

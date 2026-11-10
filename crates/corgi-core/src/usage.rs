@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -404,46 +404,95 @@ fn parse_codex_window(value: Option<&Value>) -> Option<UsageWindow> {
 // Claude Code
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct ClaudeCredentials {
     access_token: String,
     subscription_type: Option<String>,
     expires_at_ms: Option<u64>,
 }
 
+const CLAUDE_EXPIRED: &str = "Claude login has expired; run Claude Code once to refresh it";
+const CLAUDE_REJECTED: &str = "Claude login was rejected; run Claude Code once to refresh it";
+
 fn read_claude_usage() -> Result<PlanUsage> {
-    let credentials = load_claude_credentials()?;
-    if let Some(expires_at_ms) = credentials.expires_at_ms {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        if expires_at_ms <= now_ms {
-            bail!("Claude login has expired; run Claude Code once to refresh it");
-        }
-    }
-    let body = fetch_claude_usage(&credentials.access_token)?;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let candidates = rank_claude_credentials(read_claude_credential_sources(), now_ms)?;
+    let (credentials, body) = first_accepted(candidates, fetch_claude_usage)?;
     let response: Value = serde_json::from_str(&body).context("decode Claude usage response")?;
     parse_claude_usage(&response, credentials.subscription_type.as_deref())
 }
 
-fn load_claude_credentials() -> Result<ClaudeCredentials> {
-    let mut attempts: Vec<String> = Vec::new();
-    for path in claude_credential_paths() {
-        match fs::read_to_string(&path) {
-            Ok(raw) => return parse_claude_credentials(&raw),
-            Err(error) => attempts.push(format!("{}: {error}", path.display())),
-        }
-    }
+/// Every place Claude Code may keep its login, each with what reading it
+/// gave: the `.credentials.json` of every config directory, then the macOS
+/// Keychain item, which is the one Claude Code itself keeps current there.
+fn read_claude_credential_sources() -> Vec<(String, Result<String>)> {
+    let mut sources: Vec<(String, Result<String>)> = claude_credential_paths()
+        .into_iter()
+        .map(|path| {
+            let read = fs::read_to_string(&path).map_err(anyhow::Error::from);
+            (path.display().to_string(), read)
+        })
+        .collect();
     if cfg!(target_os = "macos") {
-        match read_claude_keychain() {
-            Ok(raw) => return parse_claude_credentials(&raw),
-            Err(error) => attempts.push(format!("Keychain: {error}")),
+        sources.push(("Keychain".into(), read_claude_keychain()));
+    }
+    sources
+}
+
+/// The usable logins among the sources, best first: those still valid at
+/// `now_ms`, the latest `expiresAt` first, then those without one. Two
+/// sources holding the same token count once. A source that cannot be read
+/// or parsed is skipped; with no login left the error says why, and with
+/// only expired ones that they have expired.
+fn rank_claude_credentials(
+    sources: Vec<(String, Result<String>)>,
+    now_ms: u64,
+) -> Result<Vec<ClaudeCredentials>> {
+    let mut attempts: Vec<String> = Vec::new();
+    let mut found: Vec<ClaudeCredentials> = Vec::new();
+    for (label, read) in sources {
+        match read.and_then(|raw| parse_claude_credentials(&raw)) {
+            Ok(credentials) => found.push(credentials),
+            Err(error) => attempts.push(format!("{label}: {error}")),
         }
     }
-    Err(anyhow!(
-        "no Claude Code login found ({}); run `claude` and sign in",
-        attempts.join("; ")
-    ))
+    if found.is_empty() {
+        bail!(
+            "no Claude Code login found ({}); run `claude` and sign in",
+            attempts.join("; ")
+        );
+    }
+    let mut valid: Vec<ClaudeCredentials> = found
+        .into_iter()
+        .filter(|credentials| credentials.expires_at_ms.is_none_or(|at| at > now_ms))
+        .collect();
+    if valid.is_empty() {
+        bail!(CLAUDE_EXPIRED);
+    }
+    // Dated logins first, latest expiry first; the sort is stable, so
+    // undated ones keep their source order after them.
+    valid.sort_by_key(|credentials| std::cmp::Reverse(credentials.expires_at_ms));
+    let mut seen = HashSet::new();
+    valid.retain(|credentials| seen.insert(credentials.access_token.clone()));
+    Ok(valid)
+}
+
+/// Asks with each login in turn until one is accepted: `fetch` gives
+/// `Ok(None)` when the server rejects the token (HTTP 401/403), and any
+/// other failure ends the search.
+fn first_accepted(
+    candidates: Vec<ClaudeCredentials>,
+    mut fetch: impl FnMut(&str) -> Result<Option<String>>,
+) -> Result<(ClaudeCredentials, String)> {
+    for credentials in candidates {
+        if let Some(body) = fetch(&credentials.access_token)? {
+            return Ok((credentials, body));
+        }
+    }
+    bail!(CLAUDE_REJECTED)
 }
 
 fn claude_credential_paths() -> Vec<PathBuf> {
@@ -498,8 +547,9 @@ fn parse_claude_credentials(raw: &str) -> Result<ClaudeCredentials> {
 }
 
 /// Fetches the usage document with `curl`, passing the bearer token through a
-/// stdin config file so it is never visible in the process table.
-fn fetch_claude_usage(access_token: &str) -> Result<String> {
+/// stdin config file so it is never visible in the process table. `None`
+/// when the server rejects the token (HTTP 401/403).
+fn fetch_claude_usage(access_token: &str) -> Result<Option<String>> {
     let mut child = Command::new("curl")
         .args(["--silent", "--show-error", "--config", "-"])
         .stdin(Stdio::piped())
@@ -540,8 +590,8 @@ fn fetch_claude_usage(access_token: &str) -> Result<String> {
     let stdout = String::from_utf8(output.stdout).context("Claude usage response is not UTF-8")?;
     let (body, status) = split_curl_status(&stdout)?;
     match status {
-        200..=299 => Ok(body.to_string()),
-        401 | 403 => bail!("Claude login was rejected; run Claude Code once to refresh it"),
+        200..=299 => Ok(Some(body.to_string())),
+        401 | 403 => Ok(None),
         _ => bail!(
             "Claude usage endpoint answered HTTP {status}: {}",
             summarize_body(body)
@@ -649,8 +699,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        AppServer, PlanUsage, Provider, UsageWindow, curl_quote, parse_claude_credentials,
-        parse_claude_usage, parse_codex_models, parse_codex_thread_title, parse_codex_usage,
+        AppServer, CLAUDE_EXPIRED, CLAUDE_REJECTED, PlanUsage, Provider, UsageWindow, curl_quote,
+        first_accepted, parse_claude_credentials, parse_claude_usage, parse_codex_models,
+        parse_codex_thread_title, parse_codex_usage, rank_claude_credentials,
         read_codex_thread_titles, split_curl_status, summarize_body, wait_for_response,
     };
     use crate::test_support::ScratchDir;
@@ -819,6 +870,110 @@ mod tests {
         assert_eq!(credentials.subscription_type.as_deref(), Some("pro"));
         assert_eq!(credentials.expires_at_ms, Some(1_900_000_000_000));
         assert!(parse_claude_credentials(r#"{"other":{}}"#).is_err());
+    }
+
+    const NOW_MS: u64 = 1_800_000_000_000;
+
+    /// A stored login as Claude Code writes it, under a made-up token.
+    fn login(token: &str, expires_at_ms: Option<u64>) -> anyhow::Result<String> {
+        let mut oauth = json!({ "accessToken": token, "subscriptionType": "max" });
+        if let Some(at) = expires_at_ms {
+            oauth["expiresAt"] = json!(at);
+        }
+        Ok(json!({ "claudeAiOauth": oauth }).to_string())
+    }
+
+    fn missing() -> anyhow::Result<String> {
+        Err(anyhow::anyhow!("No such file or directory"))
+    }
+
+    fn tokens(sources: Vec<(String, anyhow::Result<String>)>) -> Vec<String> {
+        rank_claude_credentials(sources, NOW_MS)
+            .expect("a usable login")
+            .into_iter()
+            .map(|credentials| credentials.access_token)
+            .collect()
+    }
+
+    #[test]
+    fn an_expired_file_gives_way_to_a_valid_keychain_login() {
+        let sources = vec![
+            ("file".into(), login("file-token", Some(NOW_MS - 1))),
+            ("Keychain".into(), login("keychain-token", Some(NOW_MS + 1))),
+        ];
+        assert_eq!(tokens(sources), ["keychain-token"]);
+    }
+
+    #[test]
+    fn the_login_that_expires_last_comes_first_and_undated_ones_after() {
+        let sources = vec![
+            ("undated".into(), login("undated", None)),
+            ("a".into(), login("sooner", Some(NOW_MS + 1_000))),
+            ("unreadable".into(), missing()),
+            ("b".into(), login("later", Some(NOW_MS + 9_000))),
+        ];
+        assert_eq!(tokens(sources), ["later", "sooner", "undated"]);
+    }
+
+    #[test]
+    fn the_same_token_in_two_sources_is_tried_once() {
+        let sources = vec![
+            ("file".into(), login("same", Some(NOW_MS + 1_000))),
+            ("Keychain".into(), login("same", Some(NOW_MS + 1_000))),
+        ];
+        assert_eq!(tokens(sources), ["same"]);
+    }
+
+    #[test]
+    fn only_expired_logins_say_the_login_has_expired() {
+        let sources = vec![
+            ("file".into(), login("old", Some(NOW_MS - 1))),
+            ("Keychain".into(), login("older", Some(NOW_MS - 9_000))),
+            ("other".into(), missing()),
+        ];
+        let error = rank_claude_credentials(sources, NOW_MS).expect_err("all expired");
+        assert_eq!(error.to_string(), CLAUDE_EXPIRED);
+    }
+
+    #[test]
+    fn no_readable_login_says_none_was_found_without_a_token() {
+        let sources = vec![
+            ("file".into(), missing()),
+            ("Keychain".into(), Ok("not json".into())),
+            ("other".into(), Ok(r#"{"claudeAiOauth":{}}"#.into())),
+        ];
+        let error = rank_claude_credentials(sources, NOW_MS).expect_err("no login");
+        let text = format!("{error:#}");
+        assert!(text.starts_with("no Claude Code login found ("), "{text}");
+        assert!(text.contains("file: No such file"), "{text}");
+        assert!(
+            text.contains("Keychain: decode Claude Code credentials"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_rejected_token_falls_through_to_the_next_login() {
+        let sources = vec![
+            ("a".into(), login("rejected", Some(NOW_MS + 9_000))),
+            ("b".into(), login("accepted", Some(NOW_MS + 1_000))),
+        ];
+        let candidates = rank_claude_credentials(sources, NOW_MS).expect("logins");
+        let mut asked = Vec::new();
+        let (credentials, body) = first_accepted(candidates, |token| {
+            asked.push(token.to_string());
+            Ok((token == "accepted").then(|| "{}".to_string()))
+        })
+        .expect("one accepted");
+        assert_eq!(credentials.access_token, "accepted");
+        assert_eq!(body, "{}");
+        assert_eq!(asked, ["rejected", "accepted"]);
+
+        let candidates =
+            rank_claude_credentials(vec![("a".into(), login("rejected", None))], NOW_MS)
+                .expect("login");
+        let error = first_accepted(candidates, |_| Ok(None)).expect_err("all rejected");
+        assert_eq!(error.to_string(), CLAUDE_REJECTED);
     }
 
     #[test]
