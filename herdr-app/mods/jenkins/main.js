@@ -2,12 +2,13 @@
 // last build's state under a heading that folds, a job's Pipeline stages
 // (of its newest build, or of one picked from its recent builds) and each
 // stage's part of the console, a build's whole console log (followed while it
-// runs), and two actions, build (with a form for its parameters) and
-// abort, each asked about first. It reaches Jenkins with an API token alone
+// runs), and three actions: build (with a form for its parameters), abort,
+// each asked about first, and answering a Pipeline input step a build waits
+// at (proceed, with a form when it asks for values, or abort, asked first). It reaches Jenkins with an API token alone
 // (api.js), so the token's Jenkins user decides what it may do: what Jenkins
 // refuses shows as "This token may not …", and nothing works around it.
 // One view at a time, in a stack: the list, a folder, a job, a stage, a
-// build, the build form, the settings. Given `{ panel: true }` as its props
+// build, the build form, an input step's form, the settings. Given `{ panel: true }` as its props
 // (a child of the layout's right-hand panel stack, beside Files, Changes and
 // GitLab, where install.sh --panel puts it), it draws itself as they do: a
 // card with rounded corners and a border. The app gives a block's props
@@ -24,6 +25,7 @@ import {
   parsePlaces, childOf, leaf, hostOf, normalizeBase, isFolder, jobState, buildState, progress, ago, lastRead, took, span,
   causeOf, buildParams, paramFields, formBody, logLines, explain, oneLine, LABEL,
   envOf, isPipeline, stagesOf, stageState, stageTook, stageProgress, stageRange, STAGE_LABEL,
+  isPaused, inputFields, inputParams,
 } from "./util.js";
 import { icon, spinner, look as stateLook, mark, bar, iconButton, pill } from "./ui.js";
 import { store } from "./data.js";
@@ -34,6 +36,8 @@ const ROW = 18; // a console line's height
 
 const FRESH = 5000; // opening a view reads what it shows unless it was read this lately
 const RUNS_EVERY = 60000; // a job's last runs, for what each stage took last time
+const INPUT_EVERY = 10000; // the input steps a shown build waits at, while its stages say it waits
+const WAITING_EVERY = 30000; // the stages of a list's running Pipeline builds: whether one waits for input
 const FOLDED = "jenkins.collapsed"; // the headings folded, kept by the app across restarts
 
 const active = (items) => (items ?? []).some((j) => ["running", "queued"].includes(jobState(j)));
@@ -56,15 +60,17 @@ export default class Jenkins extends View {
     this.places = [];
     this.folded = new Set(); // the paths of the headings folded
     try { this.folded = new Set((shared(FOLDED) ?? []).filter((p) => typeof p === "string")); } catch { /* none kept */ }
-    // The views over the list: { kind: "folder" | "job" | "stage" | "build" | "trigger" | "settings", place, number, stage }.
-    // A job's `number` is the build picked (none: its newest); a stage's `stage` is { id, name, nth }.
+    // The views over the list: { kind: "folder" | "job" | "stage" | "build" | "trigger" | "input" | "settings", place, number, stage, id }.
+    // A job's `number` is the build picked (none: its newest); a stage's `stage` is { id, name, nth };
+    // an input's `id` is the input step's, of build `number`.
     this.stack = [];
     this.log = null; // the console of the stage or build view, shared by the copies showing it (data.js `Log`)
     this.follow = true; // this copy keeps to the log's end
-    this.form = null; // the build form: { place, fields, values, inputs }
-    this.confirm = null; // an abort being asked about: { place, number }
+    this.form = null; // the build form, or an input step's: { place, fields, values, inputs } (an input's also number, input)
+    this.confirm = null; // an abort being asked about: { place, number }, and `input` for an input step's Abort
     this.notice = null; // what an action came to: { tone: "ok" | "error", text }
-    this.busy = null; // "save" | "check" | "trigger" | "abort"
+    this.busy = null; // "save" | "check" | "trigger" | "abort" | "proceed"
+    this.answering = null; // the id of the input step being answered
     this.check = null; // the settings' check: { ok, text }
     this.inputs = {
       url: InputState.new({ placeholder: "https://jenkins.example.com" }),
@@ -204,7 +210,17 @@ export default class Jenkins extends View {
   }
 
   readList(place, cx, opts = {}) {
-    this.src?.read("list", place.path, (c) => c.list(place), cx, opts);
+    this.src?.read("list", place.path, (c) => c.list(place), cx, { ...opts, then: (_e, cx) => this.readWaiting(place, cx) });
+  }
+
+  // Whether the running Pipeline builds of a list wait for input, which the
+  // list does not say: their stages, read every half minute while they run
+  // (a wait lasts minutes; the job view reads the same entry more often).
+  readWaiting(place, cx) {
+    for (const item of this.listOf(place)?.data ?? []) {
+      if (isFolder(item) || !isPipeline(item) || !item.lastBuild?.building) continue;
+      this.readStages(childOf(place, item.name), item.lastBuild.number, cx, { every: WAITING_EVERY, runs: false });
+    }
   }
 
   readJob(place, cx, opts = {}) {
@@ -220,10 +236,38 @@ export default class Jenkins extends View {
 
   // A build's stages; a freestyle build, or a Jenkins without Pipeline Stage
   // View, has none (`missing`), which is kept and not asked again.
-  readStages(place, number, cx, opts = {}) {
+  // `runs: false` (the list's reads) leaves the job's last runs unread.
+  // A build seen to wait has its input steps read, when a view shows it.
+  readStages(place, number, cx, { runs = true, ...opts } = {}) {
     this.src?.read("stages", this.stagesKey(place, number), async (c) => {
       try { return await c.stages(place, number); } catch (e) { if (e.kind === "missing") return { missing: true }; throw e; }
-    }, cx, { ...opts, then: (e, cx) => { if (!e.data.missing) this.readRuns(place, cx); } });
+    }, cx, {
+      ...opts,
+      then: (e, cx) => {
+        if (!e.data.missing && runs) this.readRuns(place, cx);
+        if (isPaused(e.data) && this.shows(place, number)) this.readInputs(place, number, cx, { every: INPUT_EVERY });
+      },
+    });
+  }
+
+  // The input steps a build waits at; asked only of a build whose stages say
+  // it waits, while a view shows it.
+  readInputs(place, number, cx, opts = {}) {
+    this.src?.read("inputs", this.stagesKey(place, number), (c) => c.pendingInputs(place, number), cx, opts);
+  }
+
+  // Whether the view shows this build: a job view's build, its stage, its log or an input's form.
+  shows(place, number) {
+    const view = this.view();
+    if (view.place?.path !== place.path) return false;
+    if (view.kind === "job") return this.picked(view)?.number === number;
+    return ["stage", "build", "input"].includes(view.kind) && view.number === number;
+  }
+
+  // Whether a build waits at an input step, by its stages as last read. Only
+  // for a build that runs: the caller says whether it does.
+  waiting(place, number, building = true) {
+    return Boolean(building && number !== undefined) && isPaused(this.entry("stages", this.stagesKey(place, number))?.data);
   }
 
   // The job's last runs, for what each stage took last time: read now and
@@ -254,6 +298,9 @@ export default class Jenkins extends View {
     if (!build || !isPipeline(job)) return;
     const entry = this.entry("stages", this.stagesKey(view.place, build.number));
     this.readStages(view.place, build.number, cx, { force, every: this.stagesEvery(entry, build.building) });
+    // Read by the list, they came without the job's last runs.
+    if (entry?.data && !entry.data.missing) this.readRuns(view.place, cx);
+    if (this.waiting(view.place, build.number, build.building)) this.readInputs(view.place, build.number, cx, { force, every: INPUT_EVERY });
   }
 
   // The log shown, read on from where it was (data.js has how); a copy that
@@ -279,6 +326,7 @@ export default class Jenkins extends View {
     for (const place of this.listed()) this.readList(place, cx, { force: true });
     if (view.kind === "job" || view.kind === "trigger") this.readJob(view.place, cx, { force: true });
     if (view.kind === "stage") this.readStages(view.place, view.number, cx, { force: true });
+    if (["stage", "build", "input"].includes(view.kind) && this.waiting(view.place, view.number)) this.readInputs(view.place, view.number, cx, { force: true });
     if ((view.kind === "build" || view.kind === "stage") && this.log) { this.log.done = false; this.pollLog(cx, true); }
   }
 
@@ -290,16 +338,18 @@ export default class Jenkins extends View {
     this.readWho(cx);
     for (const place of this.listed()) {
       this.readList(place, cx, { every: active(this.listOf(place)?.data) ? LIST_BUSY : LIST_EVERY });
+      this.readWaiting(place, cx);
     }
     if (view.kind === "job") {
       const job = this.jobOf(view.place)?.data;
       this.readJob(view.place, cx, { every: job?.inQueue || (job?.builds ?? []).some((b) => b.building) ? JOB_BUSY : JOB_EVERY });
       this.loadPicked(view, cx);
     }
-    if (view.kind === "stage") {
+    if (view.kind === "stage" || view.kind === "input") {
       const entry = this.entry("stages", this.stagesKey(view.place, view.number));
-      this.readStages(view.place, view.number, cx, { every: this.stagesEvery(entry, Boolean(this.log?.build?.building)) });
+      this.readStages(view.place, view.number, cx, { every: this.stagesEvery(entry, view.kind === "input" || Boolean(this.log?.build?.building)) });
     }
+    if (["stage", "build", "input"].includes(view.kind) && this.waiting(view.place, view.number)) this.readInputs(view.place, view.number, cx, { every: INPUT_EVERY });
     if (view.kind === "build" || view.kind === "stage") {
       if (this.log) this.log.shown = Date.now();
       this.pollLog(cx);
@@ -354,7 +404,7 @@ export default class Jenkins extends View {
     const left = this.stack.pop();
     if (!left) return false;
     if (left.kind === "build" || left.kind === "stage") this.log = null;
-    if (left.kind === "trigger") this.form = null;
+    if (left.kind === "trigger" || left.kind === "input") this.form = null;
     this.confirm = null;
     const now = this.view();
     if (now.kind === "job") this.readJob(now.place, cx, { every: FRESH });
@@ -424,6 +474,28 @@ export default class Jenkins extends View {
     cx.notify();
   }
 
+  // Abort at an input step, once asked: Jenkins ends the build as aborted.
+  abortInput(cx) {
+    const { place, number, input } = this.confirm, client = this.client, name = leaf(place.label);
+    this.busy = "abort";
+    this.answering = input.id;
+    cx.spawn(async (cx) => {
+      try {
+        await client.abortInput(place, number, input);
+        this.notice = { tone: "ok", text: `Aborted #${number} of ${name} at its input.` };
+        if (this.form?.input === input) { this.stack.pop(); this.form = null; }
+      } catch (e) {
+        this.notice = { tone: "error", text: this.explainAnswer(e, `abort #${number} of ${name}`, number, name) };
+      }
+      this.answered(place, number, cx);
+      this.confirm = null;
+      this.busy = null;
+      this.answering = null;
+      cx.notify();
+    });
+    cx.notify();
+  }
+
   askAbort(place, number, cx) {
     this.confirm = { place, number };
     cx.notify();
@@ -432,6 +504,7 @@ export default class Jenkins extends View {
   abort(cx) {
     const asked = this.confirm;
     if (!asked || this.busy || !this.client) return;
+    if (asked.input) { this.abortInput(cx); return; }
     const client = this.client, what = `#${asked.number} of ${leaf(asked.place.label)}`;
     this.busy = "abort";
     cx.spawn(async (cx) => {
@@ -448,6 +521,88 @@ export default class Jenkins extends View {
       cx.notify();
     });
     cx.notify();
+  }
+
+  // --- input steps ---
+
+  // The input steps a build waits at, as last read: [] while it does not wait
+  // (or has not been read yet: null).
+  pendingOf(place, number, building = true) {
+    if (!this.waiting(place, number, building)) return [];
+    return this.entry("inputs", this.stagesKey(place, number))?.data ?? null;
+  }
+
+  // An input step's proceed button: answered at once when it asks for
+  // nothing (the step is the question already), else its form first.
+  proceed(place, number, input, cx) {
+    const fields = inputFields(input);
+    if (fields.length) this.askInput(place, number, input, cx);
+    else this.answer(place, number, input, [], cx);
+  }
+
+  // The form of an input step that asks for values, each preset to its default.
+  askInput(place, number, input, cx) {
+    const fields = inputFields(input), values = {}, inputs = {};
+    for (const f of fields) {
+      values[f.name] = f.value;
+      if (f.kind === "text" || f.kind === "password") {
+        inputs[f.name] = InputState.new({ value: f.value, placeholder: "" });
+        if (f.kind === "password") inputs[f.name].set_masked(true);
+        this.wire(inputs[f.name], (cx) => this.submitInput(cx));
+      }
+    }
+    this.form = { place, number, input, fields, values, inputs };
+    this.order = Object.values(inputs);
+    this.show({ kind: "input", place, number, id: input.id }, cx);
+  }
+
+  submitInput(cx) {
+    const form = this.form;
+    if (!form?.input) return;
+    for (const [key, input] of Object.entries(form.inputs)) form.values[key] = input.value();
+    this.answer(form.place, form.number, form.input, inputParams(form.fields, form.values), cx);
+  }
+
+  // What went wrong with an answer: an input no longer there was answered already.
+  explainAnswer(e, doing, number, name) {
+    return e?.kind === "missing" ? `Jenkins has no such input waiting on #${number} of ${name} (404): it was answered, or the build ended.`
+      : explain(e, doing, this.user());
+  }
+
+  // Proceeds past an input step, with these parameters ([] for none).
+  answer(place, number, input, parameters, cx) {
+    if (this.busy || !this.client) return;
+    const client = this.client, name = leaf(place.label), button = input.proceedText || "Proceed";
+    this.busy = "proceed";
+    this.answering = input.id;
+    cx.spawn(async (cx) => {
+      try {
+        await client.proceed(place, number, input, parameters);
+        this.notice = { tone: "ok", text: `${button}: #${number} of ${name} goes on.` };
+        if (this.form?.input === input) { this.stack.pop(); this.form = null; }
+      } catch (e) {
+        this.notice = { tone: "error", text: this.explainAnswer(e, `${button.toLowerCase()} at the input of #${number} of ${name}`, number, name) };
+      }
+      this.answered(place, number, cx);
+      this.busy = null;
+      this.answering = null;
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  askAbortInput(place, number, input, cx) {
+    this.confirm = { place, number, input };
+    cx.notify();
+  }
+
+  // After an answer, good or not: what it changed is read at once.
+  answered(place, number, cx) {
+    this.readStages(place, number, cx, { force: true });
+    this.readInputs(place, number, cx, { force: true });
+    this.readJob(place, cx, { force: true });
+    for (const p of this.listed()) this.readList(p, cx, { force: true });
+    if (this.log) { this.log.done = false; this.pollLog(cx, true); }
   }
 
   open(url, cx) {
@@ -499,11 +654,12 @@ export default class Jenkins extends View {
         .child(iconButton("jk-dismiss", "x", "Dismiss", (cx) => { this.notice = null; cx.notify(); }, t, { size: 20 })));
     }
     if (this.confirm) {
-      const { place, number } = this.confirm;
+      const { place, number, input } = this.confirm;
       out.push(v_flex().id("jk-confirm").flex_none().mx(10).mt(8).p(8).gap(8).rounded(7).border_1().border_color(t.border).bg(t.surface).text_size(12)
-        .child(div().child(`Abort #${number} of ${leaf(place.label)}? Jenkins stops the build where it is.`))
+        .child(div().child(input ? `Abort #${number} of ${leaf(place.label)} at its input? Jenkins ends the build as aborted.`
+          : `Abort #${number} of ${leaf(place.label)}? Jenkins stops the build where it is.`))
         .child(h_flex().gap(6).justify_end()
-          .child(pill("jk-abort-no", "Keep running", t, { onClick: (cx) => { this.confirm = null; cx.notify(); } }))
+          .child(pill("jk-abort-no", input ? "Keep waiting" : "Keep running", t, { onClick: (cx) => { this.confirm = null; cx.notify(); } }))
           .child(pill("jk-abort-yes", "Abort", t, { tone: "danger", icon: "stop", busy: this.busy === "abort", onClick: (cx) => this.abort(cx) }))));
     }
     return out;
@@ -526,8 +682,11 @@ export default class Jenkins extends View {
         .child(div().flex_1().min_w(0).truncate().child(item.name))
         .child(svg(icon("chevron-right")).size(12).flex_none().text_color(t.dim));
     }
-    const state = jobState(item), last = item.lastBuild, quiet = state === "disabled" || state === "notbuilt";
-    const right = state === "running" && last?.building ? h_flex().flex_none().gap(6).items_center().child(div().flex_none().text_size(11).text_color(t.dim).child(`#${last.number}`)).child(this.meter(last, t, now))
+    const running = jobState(item), last = item.lastBuild, quiet = running === "disabled" || running === "notbuilt";
+    // A running build that waits at an input step says so, instead of how far it is.
+    const state = running === "running" && last?.building && this.waiting(at, last.number) ? "paused" : running;
+    const right = state === "paused" ? div().flex_none().text_size(11).text_color(t.ansi3).child(`#${last.number} · waiting for input`)
+      : state === "running" && last?.building ? h_flex().flex_none().gap(6).items_center().child(div().flex_none().text_size(11).text_color(t.dim).child(`#${last.number}`)).child(this.meter(last, t, now))
       : div().flex_none().text_size(11).text_color(state === "queued" ? t.ansi3 : t.dim)
         .child(state === "queued" ? "queued" : state === "disabled" ? "disabled" : last ? `#${last.number} · ${ago(last.timestamp, now)}` : "never built");
     return h_flex().id(id).h(30).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -558,7 +717,8 @@ export default class Jenkins extends View {
   heading(place, items, t, title) {
     const folded = this.folded.has(place.path), env = envOf(place.label);
     const count = (state) => (items ?? []).filter((j) => jobState(j) === state).length;
-    const running = count("running"), failed = count("failed");
+    const paused = (items ?? []).filter((j) => jobState(j) === "running" && j.lastBuild?.building && this.waiting(childOf(place, j.name), j.lastBuild.number)).length;
+    const running = count("running") - paused, failed = count("failed");
     // The name and its tag keep their width; in a narrow panel the counts give way first.
     return h_flex().id(`jk-head-${place.path}`).h(46).flex_none().mt(4).pl(4).pr(4).gap(8).items_center().rounded(7).overflow_hidden()
       .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(folded ? "Show its jobs" : "Fold it away")
@@ -569,6 +729,8 @@ export default class Jenkins extends View {
       .child(h_flex().flex_1().min_w(0).overflow_hidden().gap(8).items_center().justify_end()
         .when(running > 0, (el) => el.child(h_flex().id(`jk-head-running-${place.path}`).flex_none().gap(3).items_center().text_size(12).text_color(t.working)
           .tooltip(`${running} running`).child(spinner(t, 12)).child(String(running))))
+        .when(paused > 0, (el) => el.child(h_flex().id(`jk-head-paused-${place.path}`).flex_none().gap(3).items_center().text_size(12).text_color(t.ansi3)
+          .tooltip(`${paused} waiting for input`).child(svg(icon("paused")).size(12)).child(String(paused))))
         .when(failed > 0, (el) => el.child(h_flex().id(`jk-head-failed-${place.path}`).flex_none().gap(3).items_center().text_size(12).text_color(t.ansi1)
           .tooltip(`${failed} failed last time`).child(svg(icon("failed")).size(12)).child(String(failed))))
         .when(Boolean(items), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child(String(items.length))))
@@ -636,7 +798,8 @@ export default class Jenkins extends View {
   // A build of the job view's list. A Pipeline job's build shows its stages
   // above the list when clicked (`picked`); a freestyle one's opens its log.
   buildRow(place, build, t, now, pipeline, picked) {
-    const state = buildState(build), params = buildParams(build).map((p) => `${p.name}=${p.value}`).join(" · ");
+    const paused = this.waiting(place, build.number, build.building);
+    const state = paused ? "paused" : buildState(build), params = buildParams(build).map((p) => `${p.name}=${p.value}`).join(" · ");
     const id = `jk-build-${build.number}`;
     return h_flex().id(id).h(30).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
       .when(picked, (el) => el.bg(t.selected))
@@ -645,7 +808,9 @@ export default class Jenkins extends View {
       .child(mark(state, t))
       .child(div().flex_none().font_medium().child(`#${build.number}`))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(oneLine(params || causeOf(build))))
-      .when(build.building, (el) => el.child(this.meter(build, t, now))
+      .when(paused, (el) => el.child(div().flex_none().text_size(11).text_color(t.ansi3).child("waiting for input")))
+      .when(build.building && !paused, (el) => el.child(this.meter(build, t, now)))
+      .when(build.building, (el) => el
         .child(iconButton(`${id}-abort`, "stop", "Abort this build…", (cx) => this.askAbort(place, build.number, cx), t, { size: 22, danger: true })))
       .when(!build.building, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${took(build, now)} · ${ago(build.timestamp, now)}`)));
   }
@@ -688,8 +853,40 @@ export default class Jenkins extends View {
     if (!entry?.data) { if (!state.length) rows.push(this.line("Reading the stages…", t)); return rows; }
     const stages = stagesOf(entry.data, this.entry("runs", place.path)?.data, build.building);
     if (!stages.length) rows.push(this.line(build.building ? "No stage has started yet." : "This build ran no stages.", t));
-    rows.push(...stages.map((s) => this.stageRow(place, build.number, s, t, now)));
+    const first = stages.findIndex((s) => s.state === "paused");
+    stages.forEach((s, i) => {
+      rows.push(this.stageRow(place, build.number, s, t, now));
+      if (i === first) rows.push(...this.inputCards(place, build.number, build.building, t, now));
+    });
     return rows;
+  }
+
+  // The input steps a build waits at, each with its message and its two
+  // buttons: its proceed button (named as the step names it; "…" when it
+  // asks for values, which its form takes) and Abort…, asked first.
+  inputCards(place, number, building, t, now) {
+    const pending = this.pendingOf(place, number, building);
+    if (!pending) {
+      const state = this.status(this.entry("inputs", this.stagesKey(place, number)), `read the input #${number} waits at`, t, now, `inputs-${number}`);
+      return state.length ? state : [this.line("Reading what it waits for…", t)];
+    }
+    return pending.map((input) => {
+      const fields = inputFields(input), button = input.proceedText || "Proceed", id = `jk-input-${input.id}`;
+      const busy = this.answering === input.id ? this.busy : null;
+      const message = String(input.message ?? "").split(/\s*\n\s*/).filter(Boolean);
+      return v_flex().id(id).flex_none().mx(8).mt(2).mb(6).p(8).gap(8).rounded(7).border_1().border_color(t.ansi3).bg(t.surface).text_size(12)
+        .child(h_flex().gap(6).items_start()
+          .child(svg(icon("paused")).size(13).mt(1).flex_none().text_color(t.ansi3))
+          .child(v_flex().flex_1().min_w(0).gap(2).children((message.length ? message : ["This build waits for input."]).map((line) => div().child(line)))))
+        .when(fields.length > 0, (el) => el.child(div().pl(19).truncate().text_size(11).text_color(t.dim).child(`Asks for ${fields.map((f) => f.name).join(", ")}`)))
+        .child(h_flex().gap(6).justify_end()
+          .child(pill(`${id}-abort`, "Abort…", t, { tone: "danger", icon: "stop", busy: busy === "abort", disabled: Boolean(this.busy) && busy !== "abort", tip: "Abort the build at this input: asks first", onClick: (cx) => this.askAbortInput(place, number, input, cx) }))
+          .child(pill(`${id}-proceed`, fields.length ? `${button}…` : button, t, {
+            tone: "solid", icon: "play", busy: busy === "proceed", disabled: Boolean(this.busy) && busy !== "proceed",
+            tip: fields.length ? "Fill in what it asks for first" : `${button}: the build goes on`,
+            onClick: (cx) => this.proceed(place, number, input, cx),
+          })));
+    });
   }
 
   renderJob(view, t, now) {
@@ -714,7 +911,7 @@ export default class Jenkins extends View {
     return [
       this.header(t, [
         this.backButton(t),
-        job ? mark(jobState({ ...job, lastBuild: job.builds?.[0] }), t) : null,
+        job ? mark(this.waiting(view.place, job.builds?.[0]?.number, job.builds?.[0]?.building) ? "paused" : jobState({ ...job, lastBuild: job.builds?.[0] }), t) : null,
         div().flex_1().min_w(0).truncate().font_semibold().child(name),
         job ? pill("jk-build", "Build…", t, { icon: "play", disabled: job.buildable === false, tip: job.buildable === false ? "This job is disabled in Jenkins" : `Build ${name}: asks first`, onClick: (cx) => this.askBuild(view.place, cx) }) : null,
         this.refreshButton(t),
@@ -779,6 +976,8 @@ export default class Jenkins extends View {
           .when(part !== null, (el) => el.child(bar(part, t, 60)).child(div().flex_none().text_color(t.working).child(`${Math.round(part * 100)}%`))))
         .when(Boolean(params), (el) => el.child(div().truncate().child(params))));
     }
+    // What it waits for: in the waiting stage's view, and in the whole log's.
+    if (build?.building && (!isStage || stage?.state === "paused")) parts.push(...this.inputCards(view.place, view.number, true, t, now).map((card) => div().flex_none().pt(6).child(card)));
     if (log) parts.push(...this.status(log, "read this build's log", t, now, "log"));
     const empty = log?.loud(now) ? ""
       : !log?.done && !all.length ? "Reading the log…"
@@ -827,9 +1026,9 @@ export default class Jenkins extends View {
       .child(control);
   }
 
-  renderTrigger(view, t) {
-    const form = this.form, name = leaf(view.place.label), host = hostOf(this.settings.url);
-    const controls = (form?.fields ?? []).map((f) => {
+  // A form's fields (the build form's, an input step's), each preset.
+  paramControls(form, t) {
+    return (form?.fields ?? []).map((f) => {
       if (f.kind === "text" || f.kind === "password") return this.labeled(f.name, f.description, this.field(`jk-param-${f.name}`, form.inputs[f.name], t), t);
       if (f.kind === "boolean") {
         const on = Boolean(form.values[f.name]);
@@ -850,6 +1049,11 @@ export default class Jenkins extends View {
       }
       return this.labeled(f.name, f.description, div().text_size(12).text_color(t.dim).child("Cannot be given from here: Jenkins uses its default."), t);
     });
+  }
+
+  renderTrigger(view, t) {
+    const form = this.form, name = leaf(view.place.label), host = hostOf(this.settings.url);
+    const controls = this.paramControls(form, t);
     const rows = [
       ...this.cards(t),
       v_flex().px(10).pt(12).gap(12)
@@ -862,6 +1066,31 @@ export default class Jenkins extends View {
     return [
       this.header(t, [this.backButton(t), div().flex_1().min_w(0).truncate().font_semibold().child(`Build ${name}`), div().flex_none().pr(6).text_size(11).text_color(t.dim).child("Enter builds · Esc cancels")]),
       this.body("jk-trigger", rows),
+    ];
+  }
+
+  // An input step's form: its message, the values it asks for, and its
+  // buttons. Gone from Jenkins (answered elsewhere, the build ended), it says so.
+  renderInput(view, t) {
+    const form = this.form, input = form?.input, name = leaf(view.place.label), button = input?.proceedText || "Proceed";
+    const pending = this.pendingOf(view.place, view.number);
+    const gone = Array.isArray(pending) && !pending.some((i) => i.id === view.id);
+    const message = String(input?.message ?? "").split(/\s*\n\s*/).filter(Boolean);
+    const rows = [
+      ...this.cards(t),
+      v_flex().px(10).pt(12).gap(12)
+        .child(v_flex().gap(2).text_size(12.5).children(message.map((line) => div().child(line))))
+        .child(div().text_size(12).text_color(t.muted).child(`#${view.number} of ${view.place.label} waits for this. ${button} answers it as ${this.user()}.`))
+        .when(gone, (el) => el.child(div().id("jk-input-gone").text_size(12).text_color(t.ansi3).child("This input no longer waits: it was answered, or the build ended.")))
+        .children(this.paramControls(form, t))
+        .child(h_flex().pt(4).gap(8).justify_end()
+          .child(pill("jk-input-no", "Cancel", t, { onClick: (cx) => this.back(cx) }))
+          .child(pill("jk-input-abort", "Abort…", t, { tone: "danger", icon: "stop", disabled: gone || this.busy === "proceed", busy: this.busy === "abort", tip: "Abort the build at this input: asks first", onClick: (cx) => this.askAbortInput(view.place, view.number, input, cx) }))
+          .child(pill("jk-input-yes", button, t, { tone: "solid", icon: "play", disabled: gone || this.busy === "abort", busy: this.busy === "proceed", onClick: (cx) => this.submitInput(cx) }))),
+    ];
+    return [
+      this.header(t, [this.backButton(t), mark("paused", t), div().flex_1().min_w(0).truncate().font_semibold().child(`${name} #${view.number}`), div().flex_none().pr(6).text_size(11).text_color(t.dim).child(`Enter: ${button} · Esc cancels`)]),
+      this.body("jk-input", rows),
     ];
   }
 
@@ -903,12 +1132,13 @@ export default class Jenkins extends View {
     const view = this.view();
     if (e.key === "escape") {
       if (this.confirm) this.confirm = null;
-      else if (this.typing && view.kind !== "trigger" && view.kind !== "settings") this.handle.focus();
+      else if (this.typing && !["trigger", "input", "settings"].includes(view.kind)) this.handle.focus();
       else if (!this.back(cx)) return;
-    } else if (e.key === "tab" && this.order.length && (view.kind === "trigger" || view.kind === "settings")) {
+    } else if (e.key === "tab" && this.order.length && ["trigger", "input", "settings"].includes(view.kind)) {
       const at = this.order.indexOf(this.typing), step = e.modifiers?.shift ? -1 : 1;
       this.order[(at + step + this.order.length) % this.order.length].focus();
     } else if (e.key === "enter" && view.kind === "trigger" && !this.typing) this.build(cx);
+    else if (e.key === "enter" && view.kind === "input" && !this.typing && !this.confirm) this.submitInput(cx);
     else return;
     cx.stop_propagation();
     cx.notify();
@@ -923,6 +1153,7 @@ export default class Jenkins extends View {
           : view.kind === "job" ? this.renderJob(view, t, now)
             : view.kind === "build" || view.kind === "stage" ? this.renderBuild(view, t, now)
               : view.kind === "trigger" ? this.renderTrigger(view, t)
+                : view.kind === "input" ? this.renderInput(view, t)
                 : this.renderList(t, now);
     return v_flex().id("jenkins").track_focus(this.handle).size_full().min_h(0).overflow_hidden().bg(t.background)
       .when(this.panel, (el) => el.rounded(10).border_1().border_color(t.border)).text_color(t.foreground).text_size(13)

@@ -2,15 +2,18 @@
 // a window: canned folders, jobs, builds and console logs behind the same
 // JSON API paths the mod asks a real Jenkins for (`api/json?tree=…`,
 // `consoleText`, `logText/progressiveText`, `build`, `buildWithParameters`,
-// `stop`, `crumbIssuer`, `whoAmI`, `me`), and Pipeline Stage View's
+// `stop`, `crumbIssuer`, `whoAmI`, `me`), Pipeline Stage View's
 // `wfapi/describe` and `wfapi/runs` in the shapes a real Jenkins
-// (2.479, read only) gave. Nothing here reaches a real Jenkins.
+// (2.479, read only) gave, and its `wfapi/pendingInputActions` with the
+// input step's answers (`input/<id>/proceedEmpty`, `submit`, `abort`) for a
+// build that waits at an input (`fixtures/real-input.json` has what the real
+// one served for an answered one). Nothing here reaches a real Jenkins.
 //
 //   node fake-jenkins.mjs [port]     serves until stopped; prints its address
 //
 // Two users, by HTTP Basic auth as a real API token is used:
-//   jane:fake-token      may read, build and abort
-//   viewer:viewer-token  may only read: build and abort answer 403
+//   jane:fake-token      may read, build, abort and answer an input
+//   viewer:viewer-token  may only read: build, abort and an answer get 403
 // Anything else is 401. A POST without the crumb the issuer hands out is 403,
 // as on a Jenkins with CSRF protection.
 //
@@ -22,6 +25,7 @@
 // ends it. Run as a program, `POST /__fake/fail?mode=…&status=…&count=…&path=…`
 // and `POST /__fake/recover` do the same (no auth; never counted as requests).
 
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 
@@ -48,6 +52,11 @@ const PARAMS = [
 // builds and rolls out to dev; prod waits for a person's approval first.
 const DEV = [['Checkout', 0.05], ['Build', 0.25], ['Test', 0.45], ['Deploy to dev', 0.25]];
 const PROD = [['Build', 0.3], ['Deploy to staging', 0.2], ['Approve', 0.15], ['Deploy to prod', 0.35]];
+// As the real prod jobs: a dummy roll-out, then release notes, asked for at an input.
+const RELEASE = [['Build', 0.3], ['Deploy to dummy', 0.2], ['Release Notes', 0.15], ['Deploy to PROD', 0.35]];
+const NOTES = 'Proceeding will generate release notes and auto deploy to production.';
+// The stages that wait for a person at an input step.
+const ASKS = new Set(['Approve', 'Release Notes']);
 
 // What a stage writes first, by its name.
 const OPENING = {
@@ -55,6 +64,8 @@ const OPENING = {
   Build: ['+ docker build -t registry.example.invalid/team/service:4f1c2aa .', 'Step 1/9 : FROM golang:1.25 AS build'],
   Test: ['+ go test ./...'],
   Approve: ['[Pipeline] input', 'Deploy to production?', 'Proceed or Abort'],
+  // An input with parameters links to its form instead of offering Proceed.
+  'Release Notes': ['[Pipeline] input', NOTES, 'Input requested'],
 };
 const deployOpening = (name) => [`+ kubectl apply -f deploy/${name.replace('Deploy to ', '')}/`, 'deployment.apps/service configured'];
 // What a stage that ends a build early writes last, by the build's result.
@@ -67,6 +78,8 @@ const STATUS = { SUCCESS: 'SUCCESS', FAILURE: 'FAILED', UNSTABLE: 'UNSTABLE', AB
 const ERROR = {
   FAILURE: { message: 'script returned exit code 1', type: 'hudson.AbortException' },
   ABORTED: { message: 'Aborted by Jane Doe', type: 'org.jenkinsci.plugins.workflow.steps.FlowInterruptedException' },
+  // Abort at an input step, as the real one says it.
+  REJECTED: { message: 'Rejected by Jane Doe', type: 'org.jenkinsci.plugins.workflow.steps.FlowInterruptedException' },
 };
 
 // A build's stages as Pipeline has run them `now`: { name, node, start, end
@@ -100,9 +113,9 @@ function timeline(job, build, now) {
       if (build.paused === name) Object.assign(stage, { end: null, status: 'PAUSED_PENDING_INPUT', ticks: 0 });
       else if (stage.end > now) Object.assign(stage, { end: null, status: 'IN_PROGRESS', ticks: now - stage.start });
     } else if (i === endAt && result !== 'SUCCESS') {
-      Object.assign(stage, { status: STATUS[result], error: ERROR[result] ?? null });
+      Object.assign(stage, { status: STATUS[result], error: (build.rejected && ERROR.REJECTED) || (ERROR[result] ?? null) });
     }
-    if (name === 'Approve') stage.ticks = 0;
+    if (ASKS.has(name)) stage.ticks = 0;
     out.push(stage);
     if (stage.end === null) break;
     at = stage.end;
@@ -136,8 +149,9 @@ function logLines(job, build, now) {
       ticks(stage.ticks, stage.name === 'Test'
         ? (i) => `ok  \tteam/service/pkg${String(i).padStart(4, '0')}\t0.${String((i * 37) % 1000).padStart(3, '0')}s`
         : (i) => `${stage.name}: step ${i} done`);
-      if (stage.name === 'Approve' && stage.end !== null) lines.push('Approved by Jane Doe');
-      if (ENDING[build.result] && STATUS[build.result] === stage.status) lines.push(...ENDING[build.result]);
+      if (ASKS.has(stage.name) && stage.end !== null && !build.rejected) lines.push(`Approved by ${USERS[build.answer?.by ?? 'jane'].fullName}`);
+      if (build.rejected && stage.status === 'ABORTED') lines.push(`Rejected by ${USERS[build.answer?.by ?? 'jane'].fullName}`);
+      else if (ENDING[build.result] && STATUS[build.result] === stage.status) lines.push(...ENDING[build.result]);
       else if (stage.name.startsWith('Deploy') && stage.end !== null) lines.push('deployment "service" successfully rolled out');
     }
     if (stage.end === null) return lines; // still at it
@@ -215,6 +229,23 @@ function prune(value, fields) {
   return out;
 }
 
+// The input steps the waiting builds ask, as Pipeline's `input` step holds
+// them: its id, message, proceed button and parameters. A step that names no
+// id gets the MD5 of its message, its first letter a capital (the real one:
+// `Faf07b7bb8539aeb2d643328e8f89389`).
+const inputId = (message) => {
+  const hex = createHash('md5').update(message).digest('hex');
+  return hex[0].toUpperCase() + hex.slice(1);
+};
+const APPROVE = { id: inputId('Deploy to production?'), message: 'Deploy to production?', proceedText: 'Proceed', parameters: [] };
+const RELEASE_NOTES = {
+  id: inputId(NOTES), message: NOTES, proceedText: 'Release', parameters: [
+    { _class: 'hudson.model.ChoiceParameterDefinition', name: 'jiraEnv', type: 'ChoiceParameterDefinition', description: 'Where the release request goes', defaultParameterValue: { _class: 'hudson.model.StringParameterValue', name: 'jiraEnv', value: 'prod' }, choices: ['prod', 'test'] },
+    { _class: 'hudson.model.StringParameterDefinition', name: 'summary', type: 'StringParameterDefinition', description: 'One line for the release notes', defaultParameterValue: { _class: 'hudson.model.StringParameterValue', name: 'summary', value: '' } },
+    { _class: 'hudson.model.BooleanParameterDefinition', name: 'notify', type: 'BooleanParameterDefinition', description: 'Tell the channel', defaultParameterValue: { _class: 'hudson.model.BooleanParameterValue', name: 'notify', value: true } },
+  ],
+};
+
 const finished = (number, result, agoMin, tookMin, extra = {}) => ({ number, result, ago: agoMin * MIN, duration: tookMin * MIN, ...extra });
 
 // The made-up server's jobs. A build's `ago` is when it started, before the
@@ -239,7 +270,9 @@ function seed() {
       prod('api_master', [finished(64, 'SUCCESS', 60 * 26, 14)]),
       prod('poller_master', [finished(31, 'SUCCESS', 60 * 50, 13)]),
       // Waits for a person to approve the roll-out: it never ends by itself.
-      prod('alarm-notify_master', [{ number: 12, result: null, ago: 9 * MIN, paused: 'Approve', parameters: { gitBranch: 'master' } }, finished(11, 'SUCCESS', 60 * 30, 12)], { typical: 12 * MIN }),
+      prod('alarm-notify_master', [{ number: 12, result: null, ago: 9 * MIN, paused: 'Approve', input: APPROVE, parameters: { gitBranch: 'master' } }, finished(11, 'SUCCESS', 60 * 30, 12)], { typical: 12 * MIN }),
+      // Waits at its release notes, which ask for values first.
+      job('exporter_master', [{ number: 41, result: null, ago: 25 * MIN, paused: 'Release Notes', input: RELEASE_NOTES, parameters: { gitBranch: 'master' } }, finished(40, 'SUCCESS', 60 * 48, 11)], { stages: RELEASE, typical: 11 * MIN }),
     ]),
     job('nightly-cleanup', [finished(2210, 'SUCCESS', 400, 2)], { parameters: [], kindClass: 'hudson.model.FreeStyleProject', stages: null }),
   ]);
@@ -325,6 +358,19 @@ export async function startFakeJenkins(options = {}) {
       {},
     ],
   });
+  // An input step as Pipeline Stage View's `pendingInputActions` lists it.
+  const inputJson = (names, build, input) => {
+    const at = `/${jobPath(names)}${build.number}/`;
+    return {
+      id: input.id,
+      proceedText: input.proceedText,
+      message: input.message,
+      inputs: input.parameters.map((d) => ({ type: d.type, name: d.name, description: d.description, definition: d })),
+      proceedUrl: `${at}wfapi/inputSubmit?inputId=${input.id}`,
+      abortUrl: `${at}input/${input.id}/abort`,
+      redirectApprovalUrl: `${at}input/`,
+    };
+  };
   const itemJson = (names, node) => {
     const url = `${base}/${jobPath(names)}`;
     if (node.kind === 'folder') {
@@ -445,6 +491,37 @@ export async function startFakeJenkins(options = {}) {
         node.queued = { at: clock(), parameters: action === 'build' ? null : parameters, by: name };
         return done(201, '', { Location: `${base}/queue/item/${requests.length}/` });
       }
+      // An input step's answers: Proceed with nothing (`proceedEmpty`), the
+      // form (`submit`: `json` with the values, and `proceed`, the button,
+      // without which Jenkins takes the form as an abort), or `abort`. An
+      // input no longer waiting (answered, the build ended) is 404.
+      if (tail.length === 4 && tail[1] === 'input') {
+        const build = node.builds.find((b) => String(b.number) === tail[0]);
+        const input = build && build.result === null && build.paused && build.input?.id === tail[2] ? build.input : null;
+        if (!input || !['proceedEmpty', 'submit', 'abort'].includes(tail[3])) return done(404, 'Not found');
+        const form = new URLSearchParams(body);
+        let parameters = null;
+        if (tail[3] === 'submit') {
+          try {
+            parameters = JSON.parse(form.get('json') ?? '{}').parameter ?? [];
+          } catch {
+            return done(400, 'The form is not JSON');
+          }
+          const unknown = parameters.find((p) => !input.parameters.some((d) => d.name === p?.name));
+          if (unknown) return done(400, `No such parameter definition: ${unknown?.name}`);
+        }
+        const proceed = tail[3] === 'proceedEmpty' || (tail[3] === 'submit' && form.has('proceed'));
+        const stage = build.paused;
+        build.answer = { action: proceed ? 'proceed' : 'abort', how: tail[3], parameters, button: form.get('proceed'), by: name };
+        build.paused = null;
+        if (proceed) {
+          // It goes on: the rest of its stages take another minute.
+          build.estimated = clock() - build.timestamp + 60_000;
+        } else {
+          Object.assign(build, { at: stage, rejected: true, result: 'ABORTED', duration: clock() - build.timestamp });
+        }
+        return done(302, '', { Location: `${base}/${jobPath(names)}${build.number}/` });
+      }
       if (tail.length === 2 && tail[1] === 'stop') {
         const build = node.builds.find((b) => String(b.number) === tail[0]);
         if (!build) return done(404, 'Not found');
@@ -471,6 +548,11 @@ export async function startFakeJenkins(options = {}) {
     const rest2 = tail.slice(1).join('/');
     if (rest2 === '') return done(200, `The page of ${names.join('/')} #${build.number}`);
     if (rest2 === 'api/json') return json(buildJson(names, node, build));
+    if (rest2 === 'wfapi/pendingInputActions') {
+      if (!node.stages || !stageView) return done(404, 'Not found');
+      const input = build.result === null && build.paused ? build.input : null;
+      return done(200, input ? [inputJson(names, build, input)] : []);
+    }
     if (rest2 === 'wfapi/describe') return node.stages && stageView ? done(200, describe(node, build, clock(), `/${jobPath(names)}${build.number}/`)) : done(404, 'Not found');
     const bytes = Buffer.from(`${logLines(node, build, clock()).join('\n')}\n`, 'utf8');
     if (rest2 === 'consoleText') return done(200, bytes.toString('utf8'));

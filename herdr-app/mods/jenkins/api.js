@@ -206,6 +206,34 @@ export class Client {
     return this.post(`${place.path}/${number}/stop`);
   }
 
+  // The input steps a Pipeline build waits at, from Pipeline Stage View:
+  // [{ id, message, proceedText, inputs: [{ type, name, description,
+  // definition }], proceedUrl, abortUrl }]; none once answered.
+  async pendingInputs(place, number) {
+    const list = this.parse(await this.getText(`${place.path}/${number}/wfapi/pendingInputActions`));
+    return Array.isArray(list) ? list.filter((i) => i?.id) : [];
+  }
+
+  inputPath(place, number, input) {
+    return `${place.path}/${number}/input/${encodeURIComponent(input.id)}`;
+  }
+
+  // Answers an input step with its proceed button: with no parameters
+  // (`proceedEmpty`, as the console's Proceed link does), or with
+  // `parameters` ([{ name, value }]) as its form does, `json` and the button
+  // pressed (`proceed`, by which Jenkins tells proceed from abort).
+  proceed(place, number, input, parameters = []) {
+    const at = this.inputPath(place, number, input);
+    if (!parameters.length) return this.post(`${at}/proceedEmpty`);
+    const json = JSON.stringify({ parameter: parameters });
+    return this.post(`${at}/submit`, `json=${encodeURIComponent(json)}&proceed=${encodeURIComponent(input.proceedText || "Proceed")}`);
+  }
+
+  // Answers an input step with Abort: Jenkins ends the build as aborted.
+  abortInput(place, number, input) {
+    return this.post(`${this.inputPath(place, number, input)}/abort`);
+  }
+
   // The page of a job, a build or a place, for the browser.
   page(place, number) {
     return `${this.base}${place.path}/${number === undefined ? "" : `${number}/`}`;

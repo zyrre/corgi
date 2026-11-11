@@ -9,6 +9,7 @@
 //   node herdr-app/mods/jenkins/tests/test.mjs
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { registerHooks } from 'node:module';
@@ -359,8 +360,8 @@ test('the helpers: addresses, bytes, states, parameters, console text', () => {
   assert.equal(util.hostOf(base), 'jenkins.example.com');
   assert.deepEqual(util.parsePlaces('', base), [{ path: '', label: '' }]);
   assert.deepEqual(util.parsePlaces('team-dev, team/tools', base), [{ path: '/job/team-dev', label: 'team-dev' }, { path: '/job/team/job/tools', label: 'team/tools' }]);
-  assert.deepEqual(util.parsePlaces(`job/team/job/tools/\n${base}/job/instat-develop/, view/Deploys, team-dev,team-dev`, base), [
-    { path: '/job/team/job/tools', label: 'team/tools' }, { path: '/job/instat-develop', label: 'instat-develop' },
+  assert.deepEqual(util.parsePlaces(`job/team/job/tools/\n${base}/job/acme-develop/, view/Deploys, team-dev,team-dev`, base), [
+    { path: '/job/team/job/tools', label: 'team/tools' }, { path: '/job/acme-develop', label: 'acme-develop' },
     { path: '/view/Deploys', label: 'Deploys' }, { path: '/job/team-dev', label: 'team-dev' },
   ]);
   assert.deepEqual(util.childOf({ path: '/job/a', label: 'a' }, 'b c'), { path: '/job/a/job/b%20c', label: 'a/b c' });
@@ -410,7 +411,7 @@ test('the helpers: addresses, bytes, states, parameters, console text', () => {
   assert.match(util.explain({ kind: 'forbidden', detail: 'viewer is missing the Job/Build permission' }, 'build api', 'viewer'), /^This token may not build api: Jenkins user viewer lacks the permission \(viewer is missing/);
   assert.match(util.explain({ kind: 'auth' }, 'x', 'jane'), /did not accept this user and token \(401\)/);
 
-  assert.deepEqual(['instat-develop', 'instat-master', 'team-dev', 'team/team-prod', 'live', 'devops', 'tools', 'masterclass'].map(util.envOf),
+  assert.deepEqual(['acme-develop', 'acme-master', 'team-dev', 'team/team-prod', 'live', 'devops', 'tools', 'masterclass'].map(util.envOf),
     ['dev', 'prod', 'dev', 'prod', 'prod', '', '', '']);
 });
 
@@ -574,7 +575,7 @@ test('the list: each folder\'s jobs with their last build, and a folder that is 
   // its name says so, with how many jobs run, failed and are there.
   const head = (place) => `jk-head-/job/${place}`;
   assert.equal(row(mod, head('team-dev')), 'team-dev DEV 1 1 9');
-  assert.equal(row(mod, head('team-prod')), 'team-prod PROD 1 3');
+  assert.equal(row(mod, head('team-prod')), 'team-prod PROD 2 4', 'its two builds that wait for input are not counted as running');
   let big = 0;
   walk(byId(mod.render(), head('team-dev')), (n) => { if (n.calls.text_size?.[0] === 18 && n.children.includes('team-dev')) big += 1; });
   assert.equal(big, 1, 'its name is large');
@@ -632,7 +633,7 @@ test('a job: its newest build\'s stages, another build\'s, a stage\'s part of th
   assert.deepEqual(stageRows(mod), ['Checkout 18s', 'Build 1m 30s', 'Test 2m 42s', 'Deploy to dev 1m 30s']);
   assert.deepEqual(iconsOf(mod, 'jk-stage-54'), ['success']);
   assert.equal(byId(mod.render(), 'jk-build-128').calls.bg?.[0], '#selected', 'the build shown is marked in the list');
-  const describes = () => fake.requests.filter((r) => r.path.endsWith('/wfapi/describe')).map((r) => r.path);
+  const describes = () => fake.requests.filter((r) => r.path.startsWith('/job/team-dev/job/api_master/') && r.path.endsWith('/wfapi/describe')).map((r) => r.path);
   assert.deepEqual(describes(), ['/job/team-dev/job/api_master/128/wfapi/describe']);
 
   // Another build's, picked from the list: the failed one says why.
@@ -905,6 +906,223 @@ test('Abort asks first, then stops the build', async () => {
   assert.equal(byId(mod.render(), 'jk-abort'), null);
   await mod.key('escape');
   assert.match(row(mod, 'jk-build-57'), /^#57 gitBranch=worktree\/lucky-pine \dm \d\ds · \dm$/);
+  await fake.close();
+});
+
+// The input steps of the made-up Jenkins' waiting builds.
+const inputId = (message) => {
+  const hex = createHash('md5').update(message).digest('hex');
+  return hex[0].toUpperCase() + hex.slice(1);
+};
+const APPROVE = inputId('Deploy to production?'); // team-prod/alarm-notify_master #12, at Approve: asks nothing
+const NOTES = inputId('Proceeding will generate release notes and auto deploy to production.'); // team-prod/exporter_master #41, at Release Notes: asks three values
+const inputReads = (fake) => fake.requests.filter((r) => r.path.endsWith('/wfapi/pendingInputActions')).map((r) => r.path);
+const enabled = (mod, id) => Boolean(byId(mod.render(), id)?.handlers.on_click);
+
+test('the input helpers, and the real Jenkins\' shapes the fake follows', async () => {
+  assert.ok(util.isPaused({ status: 'PAUSED_PENDING_INPUT', stages: [] }));
+  assert.ok(util.isPaused({ status: 'IN_PROGRESS', stages: [{ status: 'SUCCESS' }, { status: 'PAUSED_PENDING_INPUT' }] }), 'a parallel branch that waits');
+  assert.ok(!util.isPaused({ status: 'IN_PROGRESS', stages: [{ status: 'IN_PROGRESS' }] }) && !util.isPaused(null) && !util.isPaused({ missing: true }));
+
+  // As Pipeline Stage View lists them: each input's definition is the parameter's own.
+  const fields = util.inputFields({ id: 'x', inputs: [
+    { type: 'ChoiceParameterDefinition', name: 'env', description: 'where', definition: { choices: ['prod', 'test'], defaultParameterValue: { value: 'test' } } },
+    { type: 'StringParameterDefinition', name: 'note', definition: { defaultValue: 'hi' } },
+    { type: 'BooleanParameterDefinition', name: 'tell', definition: { defaultVal: true } },
+    { type: 'PasswordParameterDefinition', name: 'pw', definition: {} },
+    { type: 'FileParameterDefinition', name: 'file' },
+  ] });
+  assert.deepEqual(fields.map((f) => [f.name, f.kind, f.value]), [['env', 'choice', 'test'], ['note', 'text', 'hi'], ['tell', 'boolean', true], ['pw', 'password', ''], ['file', 'other', '']]);
+  assert.deepEqual(util.inputParams(fields, { env: 'prod', note: 'a "b"', tell: false, pw: 's' }),
+    [{ name: 'env', value: 'prod' }, { name: 'note', value: 'a "b"' }, { name: 'tell', value: false }, { name: 'pw', value: 's' }], 'a file cannot be given from here');
+  assert.deepEqual(util.inputFields({ id: 'x', inputs: [] }), []);
+  assert.deepEqual(util.inputFields({ id: 'x' }), []);
+
+  // What the real Jenkins served for its Release Notes input, once answered (read only).
+  const real = JSON.parse(fs.readFileSync(path.join(MOD, 'tests', 'fixtures', 'real-input.json'), 'utf8'));
+  assert.ok(!util.isPaused(real.answered.describe));
+  assert.deepEqual(real.answered.pendingInputActions, [], 'an answered build waits for nothing');
+  assert.equal(real.abortedAtInput.describe.stages.at(-1).error.message, 'Rejected by Jane Doe');
+  assert.match(real.answered.consoleLinks.proceed, /\/30\/input\/F[0-9a-f]{31}\/proceedEmpty$/, 'an id as the fake makes them');
+  assert.match(APPROVE, /^[0-9A-F][0-9a-f]{31}$/);
+
+  // The fake's describe of a waiting build has the real fields, and its stages theirs.
+  const fake = await startFakeJenkins();
+  const res = await fetch(`${fake.url}/job/team-prod/job/exporter_master/41/wfapi/describe`, { headers: { Authorization: util.basicAuth('jane', TOKEN) } });
+  const made = await res.json();
+  for (const key of Object.keys(real.answered.describe).filter((k) => k !== '_links')) assert.ok(key in made, `describe.${key}`);
+  for (const key of Object.keys(real.answered.describe.stages[0])) assert.ok(key in made.stages[0], `stage.${key}`);
+  assert.deepEqual([made.status, made.stages.at(-1).name, made.stages.at(-1).status], ['PAUSED_PENDING_INPUT', 'Release Notes', 'PAUSED_PENDING_INPUT']);
+  await fake.close();
+});
+
+test('a build that waits at an input: its row and heading say so, its stages show the step, and Proceed answers at once', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake));
+  assert.equal(row(mod, item(['team-prod', 'alarm-notify_master'])), 'alarm-notify_master #12 · waiting for input');
+  assert.equal(row(mod, item(['team-prod', 'exporter_master'])), 'exporter_master #41 · waiting for input');
+  assert.deepEqual(iconsOf(mod, item(['team-prod', 'alarm-notify_master'])), ['paused']);
+  assert.equal(byId(mod.render(), item(['team-prod', 'alarm-notify_master'])).calls.tooltip[0], 'team-prod/alarm-notify_master: waiting for input');
+  assert.match(row(mod, item(['team-dev', 'poller_master'])), /^poller_master #57 \d+%$/, 'one that runs still says how far');
+  assert.equal(byId(mod.render(), 'jk-head-paused-/job/team-prod').calls.tooltip[0], '2 waiting for input');
+  assert.deepEqual(inputReads(fake), [], 'the list asks no build what it waits for');
+  assert.ok(!fake.requests.some((r) => r.path.includes('/api_master/') && r.path.endsWith('wfapi/describe')), 'and reads the stages of running builds alone');
+
+  await mod.click(item(['team-prod', 'alarm-notify_master']));
+  assert.deepEqual(stageRows(mod).slice(0, 3), ['Build 3m 36s', 'Deploy to staging 2m 24s', 'Approve waiting for input']);
+  const card = `jk-input-${APPROVE}`;
+  assert.equal(row(mod, card), 'Deploy to production? Abort… Proceed');
+  assert.deepEqual(ids(mod.render(), 'jk-').filter((id) => id.startsWith('jk-stage-') || id.startsWith('jk-input-')),
+    ['jk-stage-4', 'jk-stage-29', 'jk-stage-54', card, `${card}-abort`, `${card}-proceed`, 'jk-stage-next-Deploy to prod'], 'under the stage that waits');
+  assert.match(row(mod, 'jk-build-12'), /^#12 gitBranch=master waiting for input$/);
+  assert.deepEqual(inputReads(fake), ['/job/team-prod/job/alarm-notify_master/12/wfapi/pendingInputActions']);
+  await mod.tick();
+  assert.equal(inputReads(fake).length, 1, 'not again at once');
+  skew += 11_000;
+  await mod.tick();
+  assert.equal(inputReads(fake).length, 2, 'every ten seconds while it waits');
+
+  await mod.click(`${card}-proceed`);
+  assert.deepEqual(posts(fake).map((r) => [r.path, r.status, r.crumb, r.body]), [[`/job/team-prod/job/alarm-notify_master/12/input/${APPROVE}/proceedEmpty`, 302, CRUMB.crumb, '']]);
+  assert.equal(fake.find(['team-prod', 'alarm-notify_master']).builds[0].answer.by, 'jane');
+  assert.ok(mod.says('Proceed: #12 of alarm-notify_master goes on.'), mod.texts().join('|'));
+  assert.equal(byId(mod.render(), card), null, 'the step is answered');
+  assert.match(stageRows(mod)[2], /^Approve \d/);
+  assert.deepEqual(iconsOf(mod, 'jk-stage-54'), ['success']);
+  assert.match(row(mod, 'jk-build-12'), /^#12 gitBranch=master \d+%$/, 'it runs on');
+  await mod.key('escape');
+  assert.match(row(mod, item(['team-prod', 'alarm-notify_master'])), /^alarm-notify_master #12 \d+%$/);
+  const reads = inputReads(fake).length;
+  skew += 11_000;
+  await mod.tick();
+  assert.equal(inputReads(fake).length, reads, 'nothing waits: nothing is asked');
+  await fake.close();
+});
+
+test('an input that asks for values: its form, preset to the defaults, sends them with its proceed button', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake));
+  await mod.click(item(['team-prod', 'exporter_master']));
+  const card = `jk-input-${NOTES}`;
+  assert.equal(row(mod, card), 'Proceeding will generate release notes and auto deploy to production. Asks for jiraEnv, summary, notify Abort… Release…');
+  await mod.click(`${card}-proceed`);
+  assert.equal(posts(fake).length, 0, 'the form first');
+  assert.ok(mod.says('Enter: Release · Esc cancels') && mod.says('#41 of team-prod/exporter_master waits for this. Release answers it as jane.'));
+  assert.ok(mod.says('Proceeding will generate release notes and auto deploy to production.'));
+  assert.deepEqual(mod.view.form.fields.map((f) => [f.name, f.kind, f.value]), [['jiraEnv', 'choice', 'prod'], ['summary', 'text', ''], ['notify', 'boolean', true]]);
+  assert.deepEqual(kept(byId(mod.render(), 'jk-param-jiraEnv-0')).calls.border_color, ['#accent']);
+  assert.ok(mod.says('Where the release request goes'));
+  assert.equal(row(mod, 'jk-param-notify'), 'Yes');
+
+  // Cancel sends nothing.
+  await mod.click('jk-input-no');
+  assert.equal(posts(fake).length, 0);
+  assert.ok(byId(mod.render(), card), 'back at the job, still waiting');
+
+  await mod.click(`${card}-proceed`);
+  mod.type(mod.view.form.inputs.summary, 'Faster exports & "quotes"');
+  await mod.click('jk-param-jiraEnv-1');
+  await mod.click('jk-param-notify');
+  assert.equal(row(mod, 'jk-param-notify'), 'No');
+  await mod.key('tab');
+  assert.equal(mod.view.form.inputs.summary.focused, 1);
+  await mod.key('enter');
+  const [post] = posts(fake);
+  assert.deepEqual([post.path, post.status, post.crumb], [`/job/team-prod/job/exporter_master/41/input/${NOTES}/submit`, 302, CRUMB.crumb]);
+  const form = new URLSearchParams(post.body);
+  assert.deepEqual(JSON.parse(form.get('json')), { parameter: [{ name: 'jiraEnv', value: 'test' }, { name: 'summary', value: 'Faster exports & "quotes"' }, { name: 'notify', value: false }] });
+  assert.equal(form.get('proceed'), 'Release', 'the button, by which Jenkins tells proceed from abort');
+  assert.equal(fake.find(['team-prod', 'exporter_master']).builds[0].answer.action, 'proceed');
+  assert.ok(mod.says('Release: #41 of exporter_master goes on.'));
+  assert.equal(mod.view.form, null);
+  assert.ok(mod.says('Builds') && !byId(mod.render(), card), 'back at the job, answered');
+  await fake.close();
+});
+
+test('Abort at an input asks first, from the stages, the stage\'s view or the form, and the build ends aborted', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake));
+  await mod.click(item(['team-prod', 'alarm-notify_master']));
+  const card = `jk-input-${APPROVE}`;
+  await mod.click(`${card}-abort`);
+  assert.ok(mod.says('Abort #12 of alarm-notify_master at its input? Jenkins ends the build as aborted.'));
+  assert.equal(posts(fake).length, 0, 'asking aborts nothing');
+  await mod.click('jk-abort-no');
+  assert.ok(!mod.says('at its input?'));
+  await mod.click(`${card}-abort`);
+  await mod.key('escape');
+  assert.ok(!mod.says('at its input?') && mod.says('Builds'), 'Esc takes the question away, not the view');
+  assert.equal(posts(fake).length, 0);
+
+  // The stage's own view shows the step too.
+  await mod.click('jk-stage-54');
+  assert.deepEqual(texts(byId(mod.render(), 'jk-log-area')), ['[Pipeline] input', 'Deploy to production?', 'Proceed or Abort']);
+  assert.ok(byId(mod.render(), `${card}-proceed`));
+  await mod.click(`${card}-abort`);
+  await mod.click('jk-abort-yes');
+  assert.deepEqual(posts(fake).map((r) => [r.path, r.status, r.crumb]), [[`/job/team-prod/job/alarm-notify_master/12/input/${APPROVE}/abort`, 302, CRUMB.crumb]]);
+  assert.ok(mod.says('Aborted #12 of alarm-notify_master at its input.'));
+  assert.equal(byId(mod.render(), card), null);
+  assert.ok(mod.says('Rejected by Jane Doe'), 'why, as Jenkins says it');
+  assert.equal(texts(byId(mod.render(), 'jk-log-area')).at(-1), 'Rejected by Jane Doe');
+  await mod.key('escape');
+  assert.match(row(mod, 'jk-build-12'), /^#12 gitBranch=master \dm \d\ds · \dm$/, 'it has ended');
+  await mod.key('escape');
+  assert.match(row(mod, item(['team-prod', 'alarm-notify_master'])), /^alarm-notify_master #12 · /);
+  assert.deepEqual(iconsOf(mod, item(['team-prod', 'alarm-notify_master'])), ['aborted']);
+
+  // From the form of one that asks for values.
+  await mod.click(item(['team-prod', 'exporter_master']));
+  await mod.click(`jk-input-${NOTES}-proceed`);
+  await mod.click('jk-input-abort');
+  assert.ok(mod.says('Abort #41 of exporter_master at its input?'));
+  await mod.key('enter');
+  assert.equal(posts(fake).length, 1, 'Enter does not answer while the question is open');
+  await mod.click('jk-abort-yes');
+  assert.equal(posts(fake).at(-1).path, `/job/team-prod/job/exporter_master/41/input/${NOTES}/abort`);
+  assert.equal(mod.view.form, null);
+  assert.ok(mod.says('Aborted #41 of exporter_master at its input.') && mod.says('Builds'));
+  await fake.close();
+});
+
+test('a failed answer says why and leaves the view as it was: a token that may only read, an input answered elsewhere', async () => {
+  const fake = await startFakeJenkins();
+  let mod = await start(configured(fake, { user: 'viewer', token: 'viewer-token' }));
+  await mod.click(item(['team-prod', 'alarm-notify_master']));
+  const card = `jk-input-${APPROVE}`;
+  await mod.click(`${card}-proceed`);
+  assert.ok(mod.says('This token may not proceed at the input of #12 of alarm-notify_master: Jenkins user viewer lacks the permission (viewer is missing the Job/Build permission).'), mod.texts().join('|'));
+  assert.ok(enabled(mod, `${card}-proceed`) && enabled(mod, `${card}-abort`), 'the step still shows, its buttons work');
+  await mod.click(`${card}-abort`);
+  await mod.click('jk-abort-yes');
+  assert.ok(mod.says('This token may not abort #12 of alarm-notify_master'));
+  assert.deepEqual(posts(fake).map((r) => r.status), [403, 403]);
+  assert.equal(fake.find(['team-prod', 'alarm-notify_master']).builds[0].paused, 'Approve', 'still waiting');
+  assert.ok(byId(mod.render(), card) && !mod.says('at its input?'));
+
+  // Answered in the browser meanwhile: Jenkins has no such input any more (404).
+  mod = await start(configured(fake));
+  await mod.click(item(['team-prod', 'alarm-notify_master']));
+  const build = fake.find(['team-prod', 'alarm-notify_master']).builds[0];
+  Object.assign(build, { paused: null, estimated: Date.now() - build.timestamp + 60_000 });
+  assert.ok(byId(mod.render(), card), 'not read again yet');
+  await mod.click(`${card}-proceed`);
+  assert.ok(mod.says('Jenkins has no such input waiting on #12 of alarm-notify_master (404): it was answered, or the build ended.'), mod.texts().join('|'));
+  assert.equal(byId(mod.render(), card), null, 'read again at once: it waits no more');
+  assert.match(stageRows(mod)[2], /^Approve \d/);
+
+  // The same with the form open: it says so, and only Cancel is left.
+  await mod.key('escape');
+  await mod.click(item(['team-prod', 'exporter_master']));
+  await mod.click(`jk-input-${NOTES}-proceed`);
+  const notes = fake.find(['team-prod', 'exporter_master']).builds[0];
+  Object.assign(notes, { paused: null, result: 'ABORTED', at: 'Release Notes', rejected: true, duration: Date.now() - notes.timestamp });
+  await mod.click('jk-input-yes');
+  assert.ok(mod.says('Jenkins has no such input waiting on #41 of exporter_master (404)'));
+  assert.ok(mod.says('This input no longer waits: it was answered, or the build ended.'));
+  assert.ok(!enabled(mod, 'jk-input-yes') && !enabled(mod, 'jk-input-abort') && enabled(mod, 'jk-input-no'));
+  await mod.key('escape');
+  assert.ok(mod.says('Builds') && mod.view.form === null);
   await fake.close();
 });
 
