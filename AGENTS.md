@@ -353,6 +353,9 @@ command loop calls the handler the click calls (`this.askMerge`,
 `this.runMerge`, `this.closeWorker`), then `do corgi.<command>`; `start` again puts the
 worktree's own mod back. Take a shot a second after a reload: until each
 space's git is read, the worktrees' spaces show as rows of their own.
+On a fresh home's first start the Projects list can stay empty of
+Corgi's tasks and marks for 10 seconds and more, although the mod reads
+`corgi status` every 5: take a shot that looks empty again.
 Change the made-up projects in `start_fakes` when a view needs
 a state they lack. `scripts/test-app-preview` runs the script against a
 fake app, hc, AeroSpace and corgi, opening nothing: run it, and
@@ -370,7 +373,10 @@ the script. What its choices rest on:
   second copy of the user's app would do under their running one. The home
   is seeded with `update-notes.json` naming the app's version, since a
   first start after an update also updates herdr-core, and with
-  `"frame.welcomed": "skipped"` in `shared.json`.
+  `"frame.welcomed": "skipped"` in `shared.json`. An update swaps only
+  the executable, so the installed app's `Info.plist` can name an older
+  version (0.1.14 under a 0.1.15 executable): the script compares
+  versions with `--version`.
 - The copy is an app of its own to macOS (decision 2026-11-11): `Herdr
   Preview`, `dev.herdr.app.corgi-preview`, at
   `target/app-preview/app.noindex/Herdr Preview.app`. Its `Info.plist` is
