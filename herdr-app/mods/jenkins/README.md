@@ -6,8 +6,8 @@ large headings that fold away, with their last build's state; a Pipeline
 job's stages (the one at work, the ones that failed and why) and each
 stage's part of the console log; a job's recent builds; a build's whole
 console log (followed while it runs); and Build (with a form for the job's
-parameters) and Abort, each asked about first. It can live as a panel on the
-right of the window.
+parameters) and Abort, each asked about first. It can live in the window's
+right-hand panel, beside Files and Changes.
 
 It reaches Jenkins with **an API token alone**: no password, no SSO, no
 `jenkins-cli`. **The token's Jenkins user decides what the mod may do.** Give
@@ -21,7 +21,7 @@ It stands on its own: it needs no Corgi and no other mod, and Corgi's
 
 ```sh
 herdr-app/mods/jenkins/install.sh                     # into ~/.config/herdr-app (or $HERDR_APP_HOME)
-herdr-app/mods/jenkins/install.sh --panel right       # and as a panel on the right of the window, with a Jenkins button in the tab bar
+herdr-app/mods/jenkins/install.sh --panel right       # and in the right-hand panel beside Files and Changes, with a Jenkins button in the tab bar
 herdr-app/mods/jenkins/install.sh --panel off         # takes the panel and its button out again; the mod stays
 herdr-app/mods/jenkins/install.sh --home DIR          # into another app home
 herdr-app/mods/jenkins/install.sh --uninstall         # the mod, its panel and button; --forget also removes the settings and the token
@@ -30,21 +30,31 @@ herdr-app/mods/jenkins/install.sh --uninstall         # the mod, its panel and b
 It copies the mod to `mods/jenkins` in the app's home, after `herdr-app check`
 has passed it. Run it again to update.
 
-### As a panel on the right
+### In the right-hand panel
 
 `--panel right` changes the layout the window shows (or `--layout NAME`,
-`layouts/NAME.json`) in place: it adds one block at the right end of the
-layout's top row, after everything that was there, so the panel runs the
-window's full height in the sidebar's colour, and the Files and Changes
-panel (or whatever else the layout has) stays where it was and opens as
-before. Drag the panel's edge to size it; the app remembers. Running it
-again changes nothing, and it adds no second panel to a layout that shows
-Jenkins already. `--panel off` takes out the panel it added; `--uninstall`
-takes every block showing the mod out of your layouts (only out of NAME's
-with `--layout`), since a block naming a mod that is gone shows an error.
+`layouts/NAME.json`) in place: it adds Jenkins to the layout's right-hand
+panel, the one under the tab bar where Files and Changes (and GitLab, when
+that mod is installed) show, as one more child of its stack `panel-body`.
+One of them shows at a time, and opening Jenkins changes nothing else in
+the window: the tab bar keeps its width and its buttons their places. It
+looks as they do there: a card with a border, its own header under the tab
+bar. Drag the panel's edge to size it; the app remembers, for all of them.
+Running it again changes nothing, and it adds no second Jenkins to a stack
+that has one already. `--panel off` takes out the one it added;
+`--uninstall` takes every block showing the mod out of your layouts (only
+out of NAME's with `--layout`), since a block naming a mod that is gone
+shows an error.
 
-Herdr's own layouts (`main`, `terminals`, `win98`) are refused: Herdr
-replaces them on every start. Clone one first and name the clone:
+An earlier version of the installer put the panel in a block of its own at
+the right end of the layout's top row, full height, which made the tab bar
+narrower while it showed. Running `--panel right` again moves it into the
+stack and updates the button (below); nothing else in the layout changes.
+
+A layout with no such panel (a stack `panel-body` in a column `panel`, as
+in Herdr's `main`) is left alone. Herdr's own layouts (`main`, `terminals`,
+`win98`) are refused: Herdr replaces them on every start. Clone one first
+and name the clone:
 
 ```sh
 herdr-app do layout.clone '{"name":"main","as":"mine"}'
@@ -52,16 +62,24 @@ herdr-app/mods/jenkins/install.sh --panel right --layout mine
 ```
 
 Changing a layout needs `python3` (to read and write its JSON). Without
-it, add the block yourself as the last child of the layout's top row:
-`{ "id": "jenkins", "type": "block", "content": { "mod": "jenkins", "props": { "panel": true } }, "size": { "px": 320 }, "min": 260, "max": 640, "background": "chrome" }`.
-`props.panel` tells the mod to paint no background, so the block's shows.
+it, add the block yourself as the last child of the stack `panel-body`:
+`{ "id": "jenkins-panel", "type": "block", "content": { "mod": "jenkins", "props": { "panel": true } } }`.
+`props.panel` tells the mod it is in the panel, so it draws itself as Files
+and Changes do, and tells the installer the block is the one it manages.
+The id is `jenkins-panel`, not `jenkins`, because the app keeps a block's
+state (hidden, size) by id after the block is gone, and the earlier
+version's block `jenkins`, hidden by its button, would hide a stack child
+of that id.
 
 ### The Jenkins button
 
 `--panel right` also puts a **Jenkins** button into the layout's tab bar,
-beside Files and Changes (and GitLab, when that mod is installed), that
-shows and hides the panel. The tab bar is the mod the layout's `tabs` block
-shows:
+after Files and Changes (and GitLab), that works as theirs do: it shows
+Jenkins in the panel, switches the panel to Jenkins from another of them,
+and hides the panel while Jenkins shows; it is lit only while Jenkins
+shows. The tab bar also remembers, per space, that Jenkins was the open
+panel, as it does for Files and Changes. The tab bar is the mod the
+layout's `tabs` block shows:
 
 - **Herdr's own (`tabs`).** Herdr replaces it on every start and it has no
   place for another button, so the installer makes a copy of it,
@@ -72,20 +90,24 @@ shows:
   it.
 - **A copy already** (such as `tabs-gitlab`, which
   [herdr-gitlab](https://github.com/rem-aster/herdr-gitlab) makes, or your
-  own). The installer puts the button into that copy's `main.js`, just
-  before the window buttons, between two marker lines, and changes nothing
-  else in it. A copy that has a Jenkins button already, not between the
-  markers (one put in by hand), gets no second one.
+  own). The installer changes two places in that copy's `main.js`, each
+  between two marker lines, and nothing else in it: the button, just
+  before the window buttons, and the `const enabled = …;` line (the panels
+  the tab bar has buttons for and remembers), which gets Jenkins added
+  while the stack has it. A copy that has a Jenkins button already, not
+  between the markers (one put in by hand), is left as it is.
 - **Another of Herdr's** (the Terminals layout's `terminals-bar`), or no
-  `tabs` block: no button. `herdr-app do layout.toggle --id jenkins` shows
-  and hides the panel, from a key in `keys.json` as well.
+  `tabs` block: no button. `herdr-app do layout.select --stack panel-body
+  --child jenkins-panel`, then `herdr-app do layout.show --id panel`, shows
+  it, from keys in `keys.json` as well.
 
-`--panel off` and `--uninstall` take the button out again. If the
-installer made `tabs-jenkins` and nothing else in it was changed since,
-they point the layout back at Herdr's `tabs` and remove the copy (once no
-other layout shows it); a copy changed since (another mod's installer may
-put its own button in) stays the layout's, without the Jenkins button. A
-second layout that shows the same copy and has the panel keeps the button.
+`--panel off` and `--uninstall` take the button out again, and put the
+`enabled` line back as it was. If the installer made `tabs-jenkins` and
+nothing else in it was changed since, they point the layout back at Herdr's
+`tabs` and remove the copy (once no other layout shows it); a copy changed
+since (another mod's installer may put its own button in) stays the
+layout's, without the Jenkins button. A second layout that shows the same
+copy and has the panel keeps the button.
 
 **Another mod's install can take the button away.** One that replaces the
 tab bar copy's `main.js`, or points the layout's `tabs` block at another tab
@@ -95,25 +117,27 @@ leaves a layout that has its panel alone, and otherwise edits the copy the
 `tabs` block shows in place, `tabs-jenkins` included, so it keeps the
 button.)
 
-When the copy is not like Herdr's tab bar (no `.when(w?.buttons, …)` for
-the window buttons, or not the names below), the installer changes nothing
-and says so. Put the button in by hand, where the other panel buttons are,
-with the marker lines, so the installer can update it and take it out; then
-run `--panel right` again. It uses the tab bar's own `find`, `root` (the
-`layout()`), `t` (the `theme()`), `stop`, `h_flex`, `svg` and `run`; `jenkins`
-is the panel block's id:
+When the copy is not like Herdr's tab bar (no single `const enabled = …;`
+line, no `.when(w?.buttons, …)` for the window buttons, or not the names
+below), the installer changes nothing and says so. Make both changes by
+hand, with the marker lines, so the installer can update them and take them
+out; then run `--panel right` again. They use the tab bar's own `find`,
+`body` (the stack, `find(root, "panel-body")`) and `panelButton`;
+`jenkins-panel` is the stack child's id. The `enabled` line, its own line
+kept after `was:` (here Herdr's):
+
+```js
+    // >>> Jenkins panel: install.sh of mods/jenkins adds it to the panels here; --panel off puts back the line after was:
+    // was: const enabled = shared("workspace.panels") ?? ["files", "changes"];
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), ...(find(body, "jenkins-panel") ? ["jenkins-panel"] : [])];
+    // <<< Jenkins panel
+```
+
+and the button, after the other panel buttons:
 
 ```js
       // >>> Jenkins button: install.sh of mods/jenkins puts it here, and takes it out (--panel off)
-      .when(Boolean(find(root, "jenkins")), el => el.child((() => {
-        // Jenkins (mods/jenkins) is its own panel on the right: this button shows and hides it.
-        const on = !find(root, "jenkins").hidden;
-        return h_flex().id("panel-jenkins").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
-          .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
-          .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
-          .on_click(() => run("layout.toggle", { id: "jenkins" }))
-          .child(svg("mods/jenkins/icons/jenkins.svg").size(14)).child("Jenkins");
-      })()))
+      .when(enabled.includes("jenkins-panel"), el => el.child(panelButton("jenkins-panel", "Jenkins", "mods/jenkins/icons/jenkins.svg")))
       // <<< Jenkins button
 ```
 

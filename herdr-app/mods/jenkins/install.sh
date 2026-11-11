@@ -13,17 +13,20 @@
 # the app reloads a mod the moment its files change. Without --panel it
 # changes no layout and no key: the mod shows where you put it (README.md).
 #
-#   --panel right  also shows it as a panel on the right of the window: a
-#                  block at the right end of the layout's top row, after
-#                  everything that was there (the Files and Changes panel
-#                  stays where it was), full height, in the sidebar's colour.
-#                  Again: nothing changes. Drag its edge to size it.
-#                  It also puts a Jenkins button, which shows and hides
-#                  the panel, into the layout's tab bar beside Files and
-#                  Changes: into a copy of Herdr's tab bar (mods/tabs-jenkins,
-#                  which the layout's tabs block then shows) when the
-#                  layout shows Herdr's own, or between marker lines into
-#                  the copy it shows (such as herdr-gitlab's tabs-gitlab).
+#   --panel right  also shows it in the layout's right-hand panel, under
+#                  the tab bar, as one more child of its stack panel-body
+#                  beside Files and Changes (and GitLab): one of them shows
+#                  at a time, and the tab bar keeps its width. Again:
+#                  nothing changes. An earlier version's panel, a block at
+#                  the right end of the top row, is moved into the stack.
+#                  It also puts a Jenkins button, which shows Jenkins in
+#                  that panel as Files and Changes show theirs, into the
+#                  layout's tab bar beside them: into a copy of Herdr's tab
+#                  bar (mods/tabs-jenkins, which the layout's tabs block
+#                  then shows) when the layout shows Herdr's own, or between
+#                  marker lines into the copy it shows (such as
+#                  herdr-gitlab's tabs-gitlab), with Jenkins in the copy's
+#                  list of panels (enabled), so it is remembered per space.
 #                  If another mod's install later replaces that copy, run
 #                  --panel right again to bring the button back
 #   --panel off    takes that panel and its button out of the layout again
@@ -78,7 +81,7 @@ while [ $# -gt 0 ]; do
     --uninstall) uninstall=1 ;;
     --forget) forget=1 ;;
     -h | --help)
-      sed -n '2,48p' "$0"
+      sed -n '2,51p' "$0"
       exit 0
       ;;
     *) die "unknown argument $1 (see --help)" ;;

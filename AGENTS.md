@@ -546,28 +546,52 @@ sleep 1                                                      # the app sees a ne
 scripts/app-preview shot jenkins                             # or, without --panel: do tab.new --name Jenkins --mod jenkins
 ```
 
-`--panel right` puts the mod where the app itself docks a mod whose
-`mod.json` says `"place": "right"` (tried there): a block at the end of the
-layout's root row, after `work`, so the Files and Changes `panel` inside
-`work-body` keeps its toggle. The installer edits the layout with
+`--panel right` puts the mod into the layout's right-hand panel (decision
+2026-11-11): one more child of the stack `panel-body` inside the column
+`panel` under the tab bar, after Files, Changes and herdr-gitlab's GitLab,
+so opening it leaves the tab bar's width and buttons as they were (a block
+of its own at the end of the root row, as before, narrowed the whole `work`
+column). The child is `{"id": "jenkins-panel", "content": {"mod":
+"jenkins", "props": {"panel": true}}}`: `props.panel` makes the mod draw the
+card Files, Changes and GitLab draw there (`bg(background)`, `rounded(10)`,
+a `border` border; its own 42 px header) and marks the block as the
+installer's. Not the id `jenkins`: the app keeps a block's `hidden` and
+`size` by id in `layouts/.state/<layout>.json` after the block left the
+layout, and the old root-row block `jenkins`, hidden by its button, hid a
+stack child of that id (seen in the preview: the button lit, Files shown).
+A rerun moves an old root-row block (`props.panel`, outside the stack) into
+the stack. The installer edits the layout with
 `python3`, as it is a shell script with no JSON parser of its own
 (`install-layout.py` beside it, not copied into the mod); its test
 (`tests/test.mjs`) runs it on scratch layouts. `--panel right` also puts a
-Jenkins button into the tab bar the layout's `tabs` block shows (decision
-2026-11-11): Herdr's `tabs` (read-only, no extension point) is cloned by
-hand to `mods/tabs-jenkins` (asset paths rewritten, `cloned_from`, and a
-first line with the hash of what was cloned, by which `--panel off` and
-`--uninstall` tell a copy still as cloned, which they point the layout
-back from and remove, from one another installer changed, which stays),
-and a copy (herdr-gitlab's `tabs-gitlab`) gets it between marker lines
-just before `.when(w?.buttons, …)`; an unmarked `panel-jenkins` there is
-left alone and not doubled. Every edit is worked out and `herdr-app check`ed
-before anything is written. The test's tab bar is a stand-in
-(`STOCK_TABS`), as CI has no app home: when Herdr's `tabs` changes, check
-a scratch home holding a copy of the real `mods/tabs`. A narrow panel is `do
-layout.resize --id jenkins --px 260`. The preview's app copy shows its own
-"Herdr … are ready" update toast over the bottom right corner, where the
-panel's footer is, and no command dismisses it.
+Jenkins button into the tab bar the layout's `tabs` block shows: Herdr's
+`tabs` (read-only, no extension point) is cloned by hand to
+`mods/tabs-jenkins` (asset paths rewritten, `cloned_from`, and a first line
+with the hash of what was cloned, by which `--panel off` and `--uninstall`
+tell a copy still as cloned, which they point the layout back from and
+remove, from one another installer changed, which stays), and a copy
+(herdr-gitlab's `tabs-gitlab`) is edited in place. Either way two places
+change, each between marker lines: the tab bar's `const enabled = …;` line
+is replaced by one that adds `jenkins-panel` while the stack has it (so
+the stock `syncPanel` remembers it per space), with the line as it was kept
+after `// was: ` for `--panel off` to put back byte for byte, and a
+`panelButton("jenkins-panel", …)` goes just before `.when(w?.buttons, …)`,
+which gives the stock behaviour (select and show, or hide when it shows;
+lit only while it shows). An older install's button (a `layout.toggle` of
+the root-row block) is replaced between its markers; an unmarked Jenkins
+button is left alone and not doubled. Every edit is worked out and
+`herdr-app check`ed before anything is written. The test's tab bar is a
+stand-in (`STOCK_TABS`, with the real `syncPanel` and `panelButton`) that
+the test runs as the app would (`tabBar`), as CI has no app home: when
+Herdr's `tabs` changes, check a scratch home holding a copy of the real
+`mods/tabs`. A narrow panel is `do layout.resize --id panel --px 280` (the
+column's minimum); opening it from a script is `do layout.select --stack
+panel-body --child jenkins-panel` and `do layout.show --id panel`, what the
+button runs. The tab bar restores the panel a space had open when its copy
+reloads, so take a "closed" shot after `do layout.hide --id panel`. The
+preview's app copy shows its own "Herdr … are ready" update toast over the
+bottom right corner, where the panel's footer is, and no command dismisses
+it.
 
 The window takes no clicks, so a view behind one (a job, a log, the build
 form, the abort question) is reached as for the Projects list: in the
@@ -591,7 +615,8 @@ is no `TextEncoder` (`util.js` encodes UTF-8 itself) and no `process.env`;
 both into the header), so the test calls `init(null, …)` and its stand-in
 `props()` gives `w.props`. In the preview's dark theme `background`
 (#17191d) and `chrome` (#101114) are hard to tell apart by eye: compare a
-shot's pixels to see whether the panel paints its own. Which headings are
+shot's pixels (`sips -s format bmp` gives bytes Python reads without PIL,
+which is not installed) rather than trusting a look. Which headings are
 folded is kept with `setShared("jenkins.collapsed", …)`; the test's
 stand-in for `herdr` keeps `shared` per world.
 
