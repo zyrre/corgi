@@ -9,7 +9,7 @@
 //   node herdr-app/mods/jenkins/tests/test.mjs
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { registerHooks } from 'node:module';
 import os from 'node:os';
@@ -116,6 +116,8 @@ function world(overrides = {}) {
     waiter: null,
     opened: [], // URLs handed to the browser
     execs: [],
+    shared: {}, // what the app keeps for every mod across restarts (shared, setShared)
+    props: null, // the props of the block showing the mod: props() gives them, init gets none
     ...overrides,
   };
   w.app = path.join(w.home, '.config', 'herdr-app');
@@ -134,6 +136,12 @@ function world(overrides = {}) {
         resolve(command);
       };
     }),
+    props: () => w.props,
+    shared: (key) => w.shared[key],
+    setShared: (key, value) => {
+      w.shared[key] = JSON.parse(JSON.stringify(value));
+      return null;
+    },
     readTextFile: async (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null),
     // As the app's: refused when the file is not what the caller last read.
     writeTextFile: async (file, text, expected) => {
@@ -158,7 +166,7 @@ function world(overrides = {}) {
 const sources = {
   'gpui-kit': 'const k = globalThis.__kit; export const View = k.View, div = k.div, svg = k.svg;',
   'gpui-base': 'const k = globalThis.__kit; export const v_flex = k.v_flex, h_flex = k.h_flex, InputState = k.InputState, Input = k.Input, v_virtual_list = k.v_virtual_list, Scrollbar = k.Scrollbar, VirtualListScrollHandle = k.VirtualListScrollHandle;',
-  herdr: ['theme', 'settings', 'home', 'appHome', 'nextCommand', 'readTextFile', 'writeTextFile', 'exec']
+  herdr: ['theme', 'settings', 'home', 'appHome', 'nextCommand', 'props', 'shared', 'setShared', 'readTextFile', 'writeTextFile', 'exec']
     .map((name) => `export const ${name} = (...a) => globalThis.__world.api.${name}(...a);`).join('\n'),
 };
 globalThis.__kit = kit;
@@ -204,7 +212,7 @@ async function start(w) {
     open_url: (url) => w.opened.push(url),
   };
   const view = new module.default();
-  view.init({}, cx);
+  view.init(null, cx); // as the app: a block's props come from props()
   // Until no task is at work: the ones started meanwhile too.
   const settle = async () => {
     do await new Promise((resolve) => setImmediate(resolve)); while (w.pending > 0);
@@ -379,6 +387,42 @@ test('the helpers: addresses, bytes, states, parameters, console text', () => {
 
   assert.match(util.explain({ kind: 'forbidden', detail: 'viewer is missing the Job/Build permission' }, 'build api', 'viewer'), /^This token may not build api: Jenkins user viewer lacks the permission \(viewer is missing/);
   assert.match(util.explain({ kind: 'auth' }, 'x', 'jane'), /did not accept this user and token \(401\)/);
+
+  assert.deepEqual(['instat-develop', 'instat-master', 'team-dev', 'team/team-prod', 'live', 'devops', 'tools', 'masterclass'].map(util.envOf),
+    ['dev', 'prod', 'dev', 'prod', 'prod', '', '', '']);
+});
+
+test('the stage helpers: states, a stage\'s lines in the console, the ones to come', () => {
+  assert.deepEqual(['SUCCESS', 'FAILED', 'IN_PROGRESS', 'PAUSED_PENDING_INPUT', 'NOT_EXECUTED', 'ABORTED', 'UNSTABLE', 'WHAT'].map(util.stageState),
+    ['success', 'failed', 'running', 'paused', 'skipped', 'aborted', 'unstable', 'notbuilt']);
+  assert.ok(util.isPipeline({ _class: 'org.jenkinsci.plugins.workflow.job.WorkflowJob' }) && !util.isPipeline({ _class: 'hudson.model.FreeStyleProject' }));
+
+  // As a real Jenkins writes them: blocks inside a stage, a stage of the same name twice, parallel branches.
+  const lines = [
+    'Started by user Jane Doe', '[Pipeline] node', '[Pipeline] {',
+    '[Pipeline] stage', '[Pipeline] { (Build)', '[Pipeline] withEnv', '[Pipeline] {', '+ make', '[Pipeline] }', '[Pipeline] // withEnv', 'built', '[Pipeline] }', '[Pipeline] // stage',
+    '[Pipeline] stage', '[Pipeline] { (Deploy)', 'to north', '[Pipeline] }', '[Pipeline] // stage',
+    '[Pipeline] stage', '[Pipeline] { (Deploy)', '[Pipeline] parallel', '[Pipeline] [a] { (Branch: a)', '[a] hello', '[Pipeline] [a] }', 'still going',
+  ];
+  assert.deepEqual(util.stageRange(lines, 'Build'), { from: 5, to: 11, open: false });
+  assert.deepEqual(lines.slice(5, 11), ['[Pipeline] withEnv', '[Pipeline] {', '+ make', '[Pipeline] }', '[Pipeline] // withEnv', 'built']);
+  const first = util.stageRange(lines, 'Deploy', 0);
+  assert.deepEqual(lines.slice(first.from, first.to), ['to north']);
+  assert.deepEqual(util.stageRange(lines, 'Deploy', 1), { from: 20, to: lines.length, open: true }, 'the second, still running');
+  assert.deepEqual(util.stageRange(lines, 'Branch: a'), { from: 22, to: 23, open: false });
+  assert.equal(util.stageRange(lines, 'Test'), null);
+  assert.equal(util.stageRange(lines, 'Deploy', 2), null);
+
+  // What a running build's stages are next to the job's last finished run.
+  const describe = { id: '9', status: 'IN_PROGRESS', stages: [{ id: '4', name: 'Build', status: 'SUCCESS', durationMillis: 60_000 }, { id: '9', name: 'Test', status: 'IN_PROGRESS', startTimeMillis: 1_000, durationMillis: 5_000 }] };
+  const runs = [{ id: '9', status: 'IN_PROGRESS', stages: [] }, { id: '8', status: 'FAILED', stages: [{ name: 'Build', durationMillis: 1 }] },
+    { id: '7', status: 'SUCCESS', stages: [{ name: 'Build', durationMillis: 50_000 }, { name: 'Test', durationMillis: 40_000 }, { name: 'Deploy', durationMillis: 30_000 }] }];
+  const stages = util.stagesOf(describe, runs, true);
+  assert.deepEqual(stages.map((s) => [s.name, s.state, s.expected, s.nth]), [['Build', 'success', 50_000, 0], ['Test', 'running', 40_000, 0], ['Deploy', 'pending', 30_000, 0]]);
+  assert.equal(util.stageProgress(stages[1], 11_000), 0.25);
+  assert.equal(util.stageTook(stages[1], 11_000), '10s', 'a running stage counts from its start');
+  assert.deepEqual(util.stagesOf(describe, runs, false).map((s) => s.name), ['Build', 'Test'], 'none to come once it has ended');
+  assert.deepEqual(util.stagesOf({ stages: [{ name: 'A' }, { name: 'A' }] }).map((s) => s.nth), [0, 1]);
 });
 
 test('with no settings it asks for them, checks who the token is, and keeps them where only the owner reads', async () => {
@@ -499,10 +543,35 @@ test('the list: each folder\'s jobs with their last build, and a folder that is 
   assert.deepEqual([reads(), prod()], [1, 1], 'nothing is due yet');
   skew += 11_000;
   await mod.tick();
-  assert.deepEqual([reads(), prod()], [2, 1]);
+  assert.deepEqual([reads(), prod()], [2, 2], 'team-prod has a build that waits for input');
   skew += 60_000;
   await mod.tick();
-  assert.deepEqual([reads(), prod()], [3, 2]);
+  assert.deepEqual([reads(), prod()], [3, 3]);
+
+  // Each folder of the settings is a large heading, tagged DEV or PROD when
+  // its name says so, with how many jobs run, failed and are there.
+  const head = (place) => `jk-head-/job/${place}`;
+  assert.equal(row(mod, head('team-dev')), 'team-dev DEV 1 1 9');
+  assert.equal(row(mod, head('team-prod')), 'team-prod PROD 1 3');
+  let big = 0;
+  walk(byId(mod.render(), head('team-dev')), (n) => { if (n.calls.text_size?.[0] === 18 && n.children.includes('team-dev')) big += 1; });
+  assert.equal(big, 1, 'its name is large');
+  assert.equal(row(mod, head('no-such-folder')), 'no-such-folder', 'no tag for a name that says neither');
+  assert.deepEqual(icons(head('team-dev')).slice(0, 1), ['chevron-down']);
+
+  // A click folds it, and the app keeps that: a panel started again finds it folded.
+  await mod.click(head('team-dev'));
+  assert.equal(byId(mod.render(), item(['team-dev', 'api_master'])), null);
+  assert.equal(row(mod, head('team-dev')), 'team-dev DEV 1 1 9', 'folded, it still says how its jobs are');
+  assert.deepEqual(icons(head('team-dev')).slice(0, 1), ['chevron-right']);
+  assert.deepEqual(w.shared['jenkins.collapsed'], ['/job/team-dev']);
+  const again = await start(w);
+  assert.equal(byId(again.render(), item(['team-dev', 'api_master'])), null);
+  assert.ok(byId(again.render(), item(['team-prod', 'api_master'])));
+  await again.click(head('team-dev'));
+  assert.ok(byId(again.render(), item(['team-dev', 'api_master'])));
+  assert.deepEqual(w.shared['jenkins.collapsed'], []);
+  await mod.click(head('team-dev'));
 
   // A folder in the list opens as a list of its own; the browser gets the folder's page.
   await mod.click(item(['team-dev', 'tools']));
@@ -514,7 +583,16 @@ test('the list: each folder\'s jobs with their last build, and a folder that is 
   await fake.close();
 });
 
-test('a job\'s builds, and a finished build\'s log', async () => {
+// The stage rows of a job view, each on one line, and the icon of one.
+const stageRows = (mod) => ids(mod.render(), 'jk-stage-').map((id) => row(mod, id));
+const iconsOf = (mod, id) => {
+  const out = [];
+  walk(byId(mod.render(), id), (n) => { if (n.kind === 'svg') out.push(path.basename(n.args[0], '.svg')); });
+  return out;
+};
+const consoleReads = (fake) => fake.requests.filter((r) => r.path.endsWith('/logText/progressiveText')).length;
+
+test('a job: its newest build\'s stages, another build\'s, a stage\'s part of the log and the whole log', async () => {
   const fake = await startFakeJenkins();
   const w = configured(fake);
   const mod = await start(w);
@@ -524,30 +602,148 @@ test('a job\'s builds, and a finished build\'s log', async () => {
   assert.equal(row(mod, 'jk-build-127'), '#127 gitBranch=feature/export-columns 4m 00s · 1d');
   assert.equal(row(mod, 'jk-build-126'), '#126 Started by user Jane Doe 6m 00s · 2d');
   assert.equal(byId(mod.render(), 'jk-build-128-abort'), null, 'a finished build has nothing to abort');
-  assert.ok(fake.requests.at(-1).query.tree.includes('builds[') && fake.requests.at(-1).query.tree.endsWith('{0,20}'));
+  const read = fake.requests.find((r) => r.path === '/job/team-dev/job/api_master/api/json');
+  assert.ok(read.query.tree.includes('builds[') && read.query.tree.endsWith('{0,20}'));
 
+  // The newest build's stages, at once.
+  assert.ok(mod.says('Stages of #128 · success · took 6m 00s'));
+  assert.deepEqual(stageRows(mod), ['Checkout 18s', 'Build 1m 30s', 'Test 2m 42s', 'Deploy to dev 1m 30s']);
+  assert.deepEqual(iconsOf(mod, 'jk-stage-54'), ['success']);
+  assert.equal(byId(mod.render(), 'jk-build-128').calls.bg?.[0], '#selected', 'the build shown is marked in the list');
+  const describes = () => fake.requests.filter((r) => r.path.endsWith('/wfapi/describe')).map((r) => r.path);
+  assert.deepEqual(describes(), ['/job/team-dev/job/api_master/128/wfapi/describe']);
+
+  // Another build's, picked from the list: the failed one says why.
   await mod.click('jk-build-127');
-  const lines = texts(byId(mod.render(), 'jk-log-area'));
-  assert.equal(lines[0], 'Started by user Jane Doe');
-  assert.equal(lines.at(-1), 'Finished: FAILURE');
-  assert.ok(lines.includes('    schedule_test.go:41: got 3 rows, want 4 (räksmörgås)'));
-  assert.ok(lines.includes('FAIL    team/service/schedule    0.412s'), 'tabs are spaces');
-  assert.ok(mod.says('api_master #127') && mod.says('failed') && mod.says('gitBranch=feature/export-columns'));
-  assert.ok(mod.says(`${lines.length} lines`));
-  assert.equal(byId(mod.render(), 'jk-abort'), null);
-  assert.ok(mod.view.scroll.bottoms > 0, 'it shows the end of the log');
+  assert.ok(mod.says('Stages of #127 · failed · took 4m 00s'), mod.texts().join('|'));
+  assert.deepEqual(stageRows(mod), ['Checkout 16s', 'Build 1m 20s', 'Test 2m 24s script returned exit code 1']);
+  assert.deepEqual(iconsOf(mod, 'jk-stage-54'), ['failed']);
+  assert.equal(byId(mod.render(), 'jk-build-128').calls.bg, undefined);
+  await mod.click('jk-build-126');
+  assert.deepEqual(stageRows(mod), ['Checkout 18s', 'Build 1m 30s', 'Test skipped', 'Deploy to dev 1m 30s'], 'a stage its when passed over');
+  assert.deepEqual(iconsOf(mod, 'jk-stage-54'), ['skipped']);
+  await mod.click('jk-build-127');
   const reads = fake.requests.length;
   await mod.tick();
   await mod.tick();
-  assert.equal(fake.requests.length, reads, 'a finished build is not read again');
+  assert.equal(fake.requests.length, reads, 'the stages of a finished build are read once');
 
+  // A stage's part of the console: from its start to its end, and why it failed.
+  await mod.click('jk-stage-54');
+  const lines = texts(byId(mod.render(), 'jk-log-area'));
+  assert.equal(lines[0], '+ go test ./...');
+  assert.equal(lines.at(-1), 'FAIL    team/service/schedule    0.412s', 'tabs are spaces');
+  assert.ok(lines.includes('    schedule_test.go:41: got 3 rows, want 4 (räksmörgås)'));
+  assert.ok(!lines.some((l) => l.startsWith('Started by') || l.startsWith('Finished:') || l.startsWith('[Pipeline]')));
+  assert.ok(mod.says('took 2m 24s · api_master #127') && mod.says('script returned exit code 1'));
+  assert.ok(mod.says(`${lines.length} lines`) && !mod.says('Following the log'));
+  assert.ok(mod.view.scroll.bottoms > 0, 'it shows the end of the stage');
   await mod.click('jk-build-open');
-  assert.deepEqual(w.opened, [`${fake.url}/job/team-dev/job/api_master/127/`]);
+  assert.deepEqual(w.opened, [`${fake.url}/job/team-dev/job/api_master/127/execution/node/54/log/`]);
+
+  // The whole log, from there: read already.
+  const consoles = consoleReads(fake);
+  await mod.click('jk-whole-log');
+  const whole = texts(byId(mod.render(), 'jk-log-area'));
+  assert.equal(whole[0], 'Started by user Jane Doe');
+  assert.equal(whole.at(-1), 'Finished: FAILURE');
+  assert.ok(mod.says('api_master #127') && mod.says('failed') && mod.says('gitBranch=feature/export-columns'));
+  assert.equal(byId(mod.render(), 'jk-abort'), null);
+  assert.equal(consoleReads(fake), consoles);
+  await mod.tick();
+  assert.equal(consoleReads(fake), consoles, 'a finished build is not read again');
+  await mod.click('jk-build-open');
+  assert.equal(w.opened[1], `${fake.url}/job/team-dev/job/api_master/127/`);
+
+  // Esc: the job, still showing the build picked; the console log from there too.
+  await mod.key('escape');
+  assert.ok(mod.says('Stages of #127 · failed · took 4m 00s'));
+  await mod.click('jk-console');
+  assert.equal(texts(byId(mod.render(), 'jk-log-area')).at(-1), 'Finished: FAILURE');
   await mod.key('escape');
   await mod.click('jk-job-open');
-  assert.equal(w.opened[1], `${fake.url}/job/team-dev/job/api_master/`);
+  assert.equal(w.opened[2], `${fake.url}/job/team-dev/job/api_master/`);
   await mod.key('escape');
-  assert.ok(mod.says('team-prod'), 'Esc twice is the list again');
+  assert.ok(mod.says('team-prod'), 'Esc is the list again');
+  await fake.close();
+});
+
+test('a running build\'s stages: the one at work, how far by last time, the ones still to come', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake));
+  await mod.click(item(['team-dev', 'poller_master']));
+  assert.ok(mod.says('Stages of #57'));
+  assert.deepEqual(stageRows(mod), ['Checkout 18s', 'Build 1m 30s', 'Test 12s', 'Deploy to dev ~1m 30s']);
+  assert.equal(spinners(byId(mod.render(), 'jk-stage-54')), 1, 'the stage at work turns');
+  let bars = 0;
+  walk(byId(mod.render(), 'jk-stage-54'), (n) => { if (n.calls.w?.[0] === 36) bars += 1; });
+  assert.equal(bars, 1, 'with a bar, by the 2m 42s it took last time');
+  assert.deepEqual(iconsOf(mod, 'jk-stage-next-Deploy to dev'), ['notbuilt']);
+  assert.equal(byId(mod.render(), 'jk-stage-next-Deploy to dev').handlers.on_click, undefined, 'one still to come has no log');
+  assert.equal(fake.requests.filter((r) => r.path.endsWith('/wfapi/runs')).length, 1);
+
+  // Read again every five seconds while it runs.
+  const describes = () => fake.requests.filter((r) => r.path.endsWith('/57/wfapi/describe')).length;
+  assert.equal(describes(), 1);
+  skew += 20_000;
+  await mod.tick();
+  assert.equal(describes(), 2);
+  assert.equal(row(mod, 'jk-stage-54'), 'Test 32s');
+
+  // Its log, followed.
+  await mod.click('jk-stage-54');
+  const log = () => texts(byId(mod.render(), 'jk-log-area'));
+  assert.equal(log()[0], '+ go test ./...');
+  assert.ok(mod.says('Following the log') && mod.says('running for 32s · poller_master #57'));
+  const before = log().length;
+  skew += 10_000;
+  await mod.tick();
+  assert.equal(log().length, before + 5, 'its new lines, as they come');
+
+  // It ends: the stage is done, and so is the following.
+  skew += 5 * 60_000;
+  await mod.tick();
+  assert.ok(!mod.says('Following the log') && mod.says('took 2m 42s · poller_master #57'), mod.texts().join('|'));
+  assert.ok(!log().includes('[Pipeline] }') && !log().some((l) => l.startsWith('Deploy to dev')), 'only this stage\'s lines');
+  await mod.key('escape');
+  await mod.tick();
+  assert.deepEqual(stageRows(mod), ['Checkout 18s', 'Build 1m 30s', 'Test 2m 42s', 'Deploy to dev 1m 30s']);
+  await fake.close();
+});
+
+test('a build that waits for input, a freestyle job, and a Jenkins without Stage View', async () => {
+  let fake = await startFakeJenkins();
+  let mod = await start(configured(fake, { folders: '' }));
+  await mod.click(item(['team-prod']));
+  await mod.click(item(['team-prod', 'alarm-notify_master']));
+  assert.deepEqual(stageRows(mod), ['Build 3m 36s', 'Deploy to staging 2m 24s', 'Approve waiting for input', 'Deploy to prod ~4m 12s']);
+  assert.deepEqual(iconsOf(mod, 'jk-stage-54'), ['paused']);
+  await mod.click('jk-stage-54');
+  assert.deepEqual(texts(byId(mod.render(), 'jk-log-area')), ['[Pipeline] input', 'Deploy to production?', 'Proceed or Abort']);
+  assert.ok(mod.says('waiting for input for 3m 00s'));
+  await mod.key('escape');
+  await mod.key('escape');
+  await mod.key('escape');
+
+  // A freestyle job has no stages: its builds open their console log.
+  await mod.click(item(['nightly-cleanup']));
+  assert.ok(mod.says('Build #2210 · success · took 2m 00s'));
+  assert.ok(mod.says('This job is not a Pipeline, so it has no stages: its console log has it all.'));
+  assert.ok(!fake.requests.some((r) => r.path.includes('/job/nightly-cleanup/') && r.path.includes('wfapi')), 'not even asked');
+  await mod.click('jk-build-2210');
+  assert.equal(texts(byId(mod.render(), 'jk-log-area')).at(-1), 'Finished: SUCCESS');
+  await fake.close();
+
+  // A Jenkins without Pipeline Stage View answers 404: the console log still has it all.
+  fake = await startFakeJenkins({ stageView: false });
+  mod = await start(configured(fake));
+  await mod.click(item(['team-dev', 'api_master']));
+  assert.ok(mod.says('Jenkins shows no stages for this build (no Pipeline Stage View): its console log has it all.'), mod.texts().join('|'));
+  const asked = fake.requests.length;
+  await mod.tick();
+  assert.equal(fake.requests.length, asked, 'and is not asked again');
+  await mod.click('jk-console');
+  assert.equal(texts(byId(mod.render(), 'jk-log-area')).at(-1), 'Finished: SUCCESS');
   await fake.close();
 });
 
@@ -557,7 +753,7 @@ test('a running build\'s log is followed from where the last read ended, and rea
   await mod.click(item(['team-dev', 'poller_master']));
   assert.match(row(mod, 'jk-build-57'), /^#57 gitBranch=worktree\/lucky-pine 3\d%$/);
   assert.ok(byId(mod.render(), 'jk-build-57-abort'), 'a running build can be aborted');
-  await mod.click('jk-build-57');
+  await mod.click('jk-console');
   const log = () => texts(byId(mod.render(), 'jk-log-area'));
   const first = log();
   assert.ok(mod.says('Following the log') && mod.says('running'));
@@ -571,7 +767,8 @@ test('a running build\'s log is followed from where the last read ended, and rea
   const second = log();
   assert.equal(second.length, first.length + 10, 'ten more lines in twenty seconds');
   assert.deepEqual(second.slice(0, first.length), first, 'what was read stays as it was');
-  assert.equal(new Set(second).size, second.length, 'no line twice');
+  const ticked = (lines) => lines.filter((l) => /^ok |: step \d+ done$/.test(l));
+  assert.equal(new Set(ticked(second)).size, ticked(second).length, 'no line twice');
   assert.equal(starts()[1], Buffer.byteLength(`${first.join('\n')}\n`.replaceAll('    ', '\t')), 'the next read starts at the byte the last ended at');
   const before = mod.view.scroll.bottoms;
   await mod.tick();
@@ -676,7 +873,7 @@ test('Abort asks first, then stops the build', async () => {
   assert.equal(posts(fake).length, 0);
 
   // From the build's own view.
-  await mod.click('jk-build-57');
+  await mod.click('jk-console');
   await mod.click('jk-abort');
   await mod.click('jk-abort-yes');
   assert.deepEqual(posts(fake).map((r) => [r.path, r.status, r.crumb]), [['/job/team-dev/job/poller_master/57/stop', 302, CRUMB.crumb]]);
@@ -752,6 +949,16 @@ test('a Jenkins that does not answer: the list says so and keeps what it had', a
   assert.ok(mod.says('Could not reach Jenkins to read api_master: '));
 });
 
+test('in a side panel (props().panel) it paints no background, elsewhere its own', async () => {
+  const fake = await startFakeJenkins();
+  const bg = (mod) => kept(mod.render()).calls.bg?.[0];
+  assert.equal(bg(await start(configured(fake))), '#background', 'a tab or an overlay');
+  const w = configured(fake);
+  w.props = { panel: true };
+  assert.equal(bg(await start(w)), undefined, 'the panel\'s own colour shows');
+  await fake.close();
+});
+
 test('the refresh command reads again, and settings opens the settings', async () => {
   const fake = await startFakeJenkins();
   const mod = await start(configured(fake));
@@ -807,6 +1014,93 @@ test('install.sh puts the mod\'s own files in an app home, and takes them out ag
   assert.notEqual(run('--home', app).code, 0);
   assert.notEqual(run('--uninstall', '--home', app).code, 0);
   assert.equal(fs.readFileSync(path.join(target, 'main.js'), 'utf8'), '// somebody else\'s\n');
+  fs.rmSync(home, { recursive: true });
+});
+
+test('install.sh --panel right puts it on the right of a layout, once, and --panel off and --uninstall take it out', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jenkins-panel-'));
+  const app = path.join(home, 'app');
+  const checker = path.join(home, 'herdr-app');
+  fs.writeFileSync(checker, '#!/bin/sh\n: > "$2/jsconfig.json"\n', { mode: 0o755 });
+  const run = (...args) => {
+    const r = spawnSync('sh', [path.join(MOD, 'install.sh'), ...args, '--home', app], { env: { ...process.env, HERDR_APP_BIN: checker, HERDR_APP_HOME: '' }, encoding: 'utf8' });
+    return { code: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  // A layout as `corgi app-layout` leaves Herdr's main: a sidebar, and the
+  // work column whose Files and Changes panel (with another mod's block in it) is hidden.
+  const files = { id: 'panel-body', type: 'stack', active: 'files', children: [
+    { id: 'files', type: 'block', content: { mod: 'files' } }, { id: 'changes', type: 'block', content: { mod: 'changes' } },
+    { id: 'gitlab', type: 'block', content: { mod: 'gitlab' } }] };
+  const corgi = { id: 'root', type: 'row', background: 'canvas', divider: { width: 1, color: 'border' }, children: [
+    { id: 'sidebar', type: 'column', size: { px: 268 }, background: 'chrome', children: [{ id: 'spaces', type: 'block', content: { mod: 'projects' } }] },
+    { id: 'work', type: 'column', resizable: false, children: [
+      { id: 'tabs', type: 'block', size: { px: 42 }, content: { mod: 'tabs-gitlab' } },
+      { id: 'work-body', type: 'row', gap: 8, children: [{ id: 'main', type: 'block', content: { tab: 'active' } },
+        { id: 'panel', type: 'column', hidden: true, size: { px: 368 }, children: [files] }] },
+      { id: 'status', type: 'block', size: { px: 28 }, content: { mod: 'workspace-status' } }] }],
+    cloned_from: { name: 'main', version: '0.1.14' }, titlebar: 'none', note: 'räksmörgås' };
+  fs.mkdirSync(path.join(app, 'mods'), { recursive: true });
+  fs.mkdirSync(path.join(app, 'layouts'));
+  const file = (name) => path.join(app, 'layouts', `${name}.json`);
+  const read = (name) => JSON.parse(fs.readFileSync(file(name), 'utf8'));
+  fs.writeFileSync(file('corgi'), JSON.stringify(corgi, null, 2), { mode: 0o600 });
+  fs.writeFileSync(file('main'), JSON.stringify({ ...corgi, cloned_from: undefined }));
+  fs.writeFileSync(path.join(app, 'installed.json'), JSON.stringify({ 'layout:main': {}, 'layout:terminals': {}, agents: {} }));
+  fs.writeFileSync(path.join(app, 'shared.json'), JSON.stringify({ layout: 'corgi', 'space.colors': {} }));
+  const main = fs.readFileSync(file('main'), 'utf8');
+
+  // To the layout the window shows: one block more, at the right end of the top row, and nothing else changed.
+  let r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.ok(fs.existsSync(path.join(app, 'mods', 'jenkins', 'main.js')), 'the mod is installed with it');
+  const panel = { id: 'jenkins', type: 'block', content: { mod: 'jenkins', props: { panel: true } }, size: { px: 320 }, min: 260, max: 640, background: 'chrome' };
+  assert.deepEqual(read('corgi'), { ...corgi, children: [...corgi.children, panel] });
+  assert.deepEqual(Object.keys(read('corgi')), Object.keys(corgi), 'its fields in their order');
+  assert.ok(fs.readFileSync(file('corgi'), 'utf8').includes('räksmörgås'), 'text as it was, not escaped');
+  assert.equal(fs.statSync(file('corgi')).mode & 0o777, 0o600, 'its mode kept');
+  assert.deepEqual(fs.readdirSync(path.join(app, 'layouts')).sort(), ['corgi.json', 'main.json'], 'nothing left beside it');
+
+  // Again: nothing changes, so the app reloads nothing.
+  const before = fs.readFileSync(file('corgi'), 'utf8'), at = fs.statSync(file('corgi')).mtimeMs;
+  r = run('--panel', 'right', '--layout', 'corgi');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /shows Jenkins already \(block jenkins\)/);
+  assert.equal(fs.readFileSync(file('corgi'), 'utf8'), before);
+  assert.equal(fs.statSync(file('corgi')).mtimeMs, at);
+
+  // Herdr's own layouts, and ones that are not there, are left alone.
+  r = run('--panel', 'right', '--layout', 'main');
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /main is Herdr's own layout.*clone it first/);
+  assert.equal(fs.readFileSync(file('main'), 'utf8'), main);
+  assert.notEqual(run('--panel', 'right', '--layout', 'nope').code, 0);
+  assert.notEqual(run('--panel', 'right', '--layout', '../corgi').code, 0);
+  assert.notEqual(run('--panel', 'left').code, 0);
+
+  // An id taken already: the block gets another.
+  fs.writeFileSync(file('mine'), JSON.stringify({ ...corgi, children: [...corgi.children, { id: 'jenkins', type: 'column', children: [] }] }));
+  assert.equal(run('--panel', 'right', '--layout', 'mine').code, 0);
+  assert.deepEqual(read('mine').children.map((c) => c.id), ['sidebar', 'work', 'jenkins', 'jenkins-2']);
+
+  // Off: the panel goes; the layout is as it was, and the mod stays.
+  r = run('--panel', 'off', '--layout', 'corgi');
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(read('corgi'), corgi);
+  assert.ok(fs.existsSync(path.join(app, 'mods', 'jenkins', 'main.js')));
+  assert.match(run('--panel', 'off', '--layout', 'corgi').out, /has no Jenkins panel/);
+
+  // A block a person put in by hand stays with --panel off; the uninstall takes
+  // every one out, of every layout of theirs, and a stack shows another child.
+  const own = { ...corgi, children: [corgi.children[0], { ...corgi.children[1], children: [corgi.children[1].children[0], { ...corgi.children[1].children[1], children: [corgi.children[1].children[1].children[0], { ...corgi.children[1].children[1].children[1], children: [{ ...files, active: 'mine', children: [...files.children, { id: 'mine', type: 'block', content: { mod: 'jenkins' } }] }] }] }, corgi.children[1].children[2]] }] };
+  fs.writeFileSync(file('corgi'), JSON.stringify(own));
+  assert.equal(run('--panel', 'right').code, 0);
+  assert.match(run('--panel', 'off').out, /has no Jenkins panel/, 'right found the block by hand, so added none');
+  r = run('--uninstall');
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(read('corgi').children[1].children[1].children[1].children[0], { ...files, active: 'files' });
+  assert.deepEqual(read('mine').children.map((c) => c.id), ['sidebar', 'work', 'jenkins']);
+  assert.equal(fs.readFileSync(file('main'), 'utf8'), main);
+  assert.ok(!fs.existsSync(path.join(app, 'mods', 'jenkins')));
   fs.rmSync(home, { recursive: true });
 });
 

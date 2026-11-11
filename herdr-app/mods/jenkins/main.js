@@ -1,19 +1,25 @@
 // Jenkins in the Herdr app: the jobs of the folders you name, each with its
-// last build's state, a job's recent builds, a build's console log (followed
-// while it runs), and two actions, build (with a form for its parameters) and
+// last build's state under a heading that folds, a job's Pipeline stages
+// (of its newest build, or of one picked from its recent builds) and each
+// stage's part of the console, a build's whole console log (followed while it
+// runs), and two actions, build (with a form for its parameters) and
 // abort, each asked about first. It reaches Jenkins with an API token alone
 // (api.js), so the token's Jenkins user decides what it may do: what Jenkins
 // refuses shows as "This token may not …", and nothing works around it.
-// One view at a time, in a stack: the list, a folder, a job, a build, the
-// build form, the settings. Standalone: no other mod and no CLI is needed.
+// One view at a time, in a stack: the list, a folder, a job, a stage, a
+// build, the build form, the settings. Given `{ panel: true }` as its props
+// (a side panel of the layout, which install.sh --panel puts there), it paints
+// no background of its own, so the panel's shows, as in the sidebar. The app
+// gives a block's props through `props()`, not as init's argument. Standalone: no other mod and no CLI is needed.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { theme, home, nextCommand, settings as look } from "herdr";
+import { theme, home, nextCommand, settings as look, shared, setShared, props as given } from "herdr";
 import { Client, loadSettings, saveSettings, settingsPath, ready } from "./api.js";
 import {
   parsePlaces, childOf, leaf, hostOf, normalizeBase, isFolder, jobState, buildState, progress, ago, took, span,
   causeOf, buildParams, paramFields, formBody, emptyLog, appendLog, logLines, explain, oneLine, LABEL,
+  envOf, isPipeline, stagesOf, stageState, stageTook, stageProgress, stageRange, STAGE_LABEL,
 } from "./util.js";
 import { icon, spinner, look as stateLook, mark, bar, iconButton, pill } from "./ui.js";
 
@@ -21,10 +27,16 @@ const LIST_EVERY = 60000, LIST_BUSY = 10000; // the lists: at rest, and while a 
 const JOB_EVERY = 30000, JOB_BUSY = 5000;
 const ROW = 18; // a console line's height
 
+const RUNS_EVERY = 60000; // a job's last runs, for what each stage took last time
+const FOLDED = "jenkins.collapsed"; // the headings folded, kept by the app across restarts
+
 const active = (items) => (items ?? []).some((j) => ["running", "queued"].includes(jobState(j)));
 
 export default class Jenkins extends View {
-  init(_props, cx) {
+  init(initial, cx) {
+    let layout = null;
+    try { layout = given(); } catch { /* shown where it has no props */ }
+    this.panel = Boolean((layout ?? initial)?.panel);
     this.handle = cx.focus_handle();
     this.scroll = VirtualListScrollHandle.new();
     this.settings = null; // null until read
@@ -33,8 +45,14 @@ export default class Jenkins extends View {
     this.places = [];
     this.lists = new Map(); // place path → { items, error, loading, at }
     this.jobs = new Map(); // job path → { data, error, loading, at }
-    this.stack = []; // the views over the list: { kind: "folder" | "job" | "build" | "trigger" | "settings", place, number }
-    this.log = null; // the build view's console: { place, number, build, text, error, loading, done, follow }
+    this.stages = new Map(); // "<job path>/<number>" → { data, error, missing, loading, at }: wfapi/describe
+    this.runs = new Map(); // job path → { runs, loading, at }: wfapi/runs
+    this.folded = new Set(); // the paths of the headings folded
+    try { this.folded = new Set((shared(FOLDED) ?? []).filter((p) => typeof p === "string")); } catch { /* none kept */ }
+    // The views over the list: { kind: "folder" | "job" | "stage" | "build" | "trigger" | "settings", place, number, stage }.
+    // A job's `number` is the build picked (none: its newest); a stage's `stage` is { id, name, nth }.
+    this.stack = [];
+    this.log = null; // the console of the stage or build view: { place, number, build, text, error, loading, done, follow }
     this.form = null; // the build form: { place, fields, values, inputs }
     this.confirm = null; // an abort being asked about: { place, number }
     this.notice = null; // what an action came to: { tone: "ok" | "error", text }
@@ -87,7 +105,7 @@ export default class Jenkins extends View {
     this.client = ready(s) ? new Client(s) : null;
     this.places = parsePlaces(s.folders, normalizeBase(s.url));
     this.who = null; this.whoError = "";
-    this.lists = new Map(); this.jobs = new Map();
+    this.lists = new Map(); this.jobs = new Map(); this.stages = new Map(); this.runs = new Map();
     this.log = null; this.form = null; this.confirm = null;
     this.stack = this.stack.filter((v) => v.kind === "settings");
     for (const key of Object.keys(this.inputs)) this.inputs[key].set_value(s[key] ?? "");
@@ -167,7 +185,8 @@ export default class Jenkins extends View {
     for (const place of this.places) this.loadList(place, cx);
     for (const v of this.stack) if (v.kind === "folder") this.loadList(v.place, cx);
     if (all && (view.kind === "job" || view.kind === "trigger")) this.loadJob(view.place, cx);
-    if (all && view.kind === "build" && this.log) { this.log.done = false; this.pollLog(cx); }
+    if (all && view.kind === "stage") this.loadStages(view.place, view.number, cx, true);
+    if (all && (view.kind === "build" || view.kind === "stage") && this.log) { this.log.done = false; this.pollLog(cx); }
   }
 
   loadList(place, cx) {
@@ -193,7 +212,68 @@ export default class Jenkins extends View {
       let next;
       try { next = { data: await client.job(place), error: "" }; }
       catch (e) { next = { data: had.data, error: explain(e, `read ${leaf(place.label)}`, this.user()) }; }
-      if (gen === this.gen) this.jobs.set(place.path, { ...next, loading: false, at: Date.now() });
+      if (gen !== this.gen) return;
+      this.jobs.set(place.path, { ...next, loading: false, at: Date.now() });
+      // The stages of the build the job view shows, once the job says which that is.
+      const view = this.view();
+      if (view.kind === "job" && view.place.path === place.path) this.loadPicked(view, cx);
+      cx.notify();
+    });
+  }
+
+  // The build a job view shows: the one picked from its builds, else its newest.
+  picked(view) {
+    const builds = this.jobs.get(view.place.path)?.data?.builds ?? [];
+    return builds.find((b) => b.number === view.number) ?? builds[0] ?? null;
+  }
+
+  // Reads the stages of the build a job view shows when they are due: once
+  // for a finished build, every few seconds while it runs.
+  loadPicked(view, cx, force = false) {
+    const job = this.jobs.get(view.place.path)?.data, build = this.picked(view);
+    if (!build || !isPipeline(job)) return;
+    const entry = this.stages.get(`${view.place.path}/${build.number}`);
+    if (force || this.stagesDue(entry, build.building)) this.loadStages(view.place, build.number, cx, force);
+  }
+
+  // Stages are read again while their build runs (or, read while it ran, has not been seen to end).
+  stagesDue(entry, building) {
+    if (!entry) return true;
+    if (entry.loading || entry.missing) return false;
+    const live = building || ["IN_PROGRESS", "PAUSED_PENDING_INPUT", "QUEUED"].includes(entry.data?.status);
+    return live ? Date.now() - (entry.at ?? 0) >= JOB_BUSY : !entry.data && !entry.error;
+  }
+
+  loadStages(place, number, cx, force = false) {
+    const key = `${place.path}/${number}`, had = this.stages.get(key) ?? { data: null, error: "" };
+    if (had.loading || !this.client || (had.missing && !force)) return;
+    const gen = this.gen, client = this.client;
+    this.stages.set(key, { ...had, loading: true });
+    cx.spawn(async (cx) => {
+      let next;
+      try { next = { data: await client.stages(place, number), error: "", missing: false }; }
+      catch (e) {
+        next = e.kind === "missing" ? { data: null, error: "", missing: true }
+          : { data: had.data, error: explain(e, `read the stages of #${number}`, this.user()), missing: false };
+      }
+      if (gen !== this.gen) return;
+      this.stages.set(key, { ...next, loading: false, at: Date.now() });
+      if (next.data) this.loadRuns(place, cx);
+      cx.notify();
+    });
+  }
+
+  // The job's last runs, for what each stage took last time: read now and
+  // then once a minute, while its stages are shown.
+  loadRuns(place, cx) {
+    const had = this.runs.get(place.path);
+    if (had?.loading || !this.client || (had && Date.now() - had.at < RUNS_EVERY)) return;
+    const gen = this.gen, client = this.client;
+    this.runs.set(place.path, { runs: had?.runs ?? [], loading: true, at: had?.at ?? 0 });
+    cx.spawn(async (cx) => {
+      let runs = had?.runs ?? [];
+      try { runs = await client.runs(place); } catch { /* only an estimate: none */ }
+      if (gen === this.gen) this.runs.set(place.path, { runs, loading: false, at: Date.now() });
       cx.notify();
     });
   }
@@ -250,8 +330,12 @@ export default class Jenkins extends View {
     if (view.kind === "job") {
       const entry = this.jobs.get(view.place.path), job = entry?.data;
       if (due(entry, JOB_EVERY, JOB_BUSY, Boolean(job?.inQueue || (job?.builds ?? []).some((b) => b.building)))) this.loadJob(view.place, cx);
+      this.loadPicked(view, cx);
     }
-    if (view.kind === "build") this.pollLog(cx);
+    if (view.kind === "stage" && this.stagesDue(this.stages.get(`${view.place.path}/${view.number}`), Boolean(this.log?.build?.building))) {
+      this.loadStages(view.place, view.number, cx);
+    }
+    if (view.kind === "build" || view.kind === "stage") this.pollLog(cx);
   }
 
   // --- moving about --------------------------------------------------------------
@@ -262,13 +346,14 @@ export default class Jenkins extends View {
     this.confirm = null;
     if (this.notice?.tone === "ok") this.notice = null;
     if (view.kind === "folder") this.loadList(view.place, cx);
-    if (view.kind === "job") this.loadJob(view.place, cx);
+    if (view.kind === "job") { this.loadJob(view.place, cx); this.loadPicked(view, cx); }
     if (view.kind === "settings") { this.check = null; this.order = Object.values(this.inputs); }
-    if (view.kind === "build") {
+    if (view.kind === "build" || view.kind === "stage") {
       const known = (this.jobs.get(view.place.path)?.data?.builds ?? []).find((b) => b.number === view.number) ?? null;
       this.log = { place: view.place, number: view.number, build: known, text: emptyLog(), error: "", loading: false, done: false, follow: true, followed: false };
       this.pollLog(cx);
     }
+    if (view.kind === "stage") this.loadStages(view.place, view.number, cx);
     this.handle.focus();
     cx.notify();
   }
@@ -276,7 +361,7 @@ export default class Jenkins extends View {
   back(cx) {
     const left = this.stack.pop();
     if (!left) return false;
-    if (left.kind === "build") this.log = null;
+    if (left.kind === "build" || left.kind === "stage") this.log = null;
     if (left.kind === "trigger") this.form = null;
     this.confirm = null;
     const now = this.view();
@@ -284,6 +369,25 @@ export default class Jenkins extends View {
     this.handle.focus();
     cx.notify();
     return true;
+  }
+
+  // Shows the stages of another of the job's builds, in the same view.
+  pick(place, number, cx) {
+    const view = this.view();
+    if (view.kind !== "job" || view.place.path !== place.path) return;
+    view.number = number;
+    this.loadPicked(view, cx);
+    cx.notify();
+  }
+
+  // From a stage's part of the console to all of it, which is read already:
+  // the stage view becomes the build's, and Esc goes back to the job.
+  wholeLog(cx) {
+    const view = this.view();
+    if (view.kind !== "stage") return;
+    this.stack[this.stack.length - 1] = { kind: "build", place: view.place, number: view.number };
+    if (this.log) { this.log.follow = true; this.toEnd(cx); }
+    cx.notify();
   }
 
   // --- acting --------------------------------------------------------------------
@@ -429,14 +533,56 @@ export default class Jenkins extends View {
       .child(right);
   }
 
-  // A place's header and its rows.
-  section(place, t, now, title) {
+  // Folds a heading of the list, or unfolds it; the app keeps which are folded.
+  fold(place, cx) {
+    if (this.folded.has(place.path)) this.folded.delete(place.path);
+    else this.folded.add(place.path);
+    try { setShared(FOLDED, [...this.folded]); } catch { /* kept until the panel starts over */ }
+    cx.notify();
+  }
+
+  // "DEV" or "PROD" beside a heading, when the folder's name says which.
+  envTag(env, t) {
+    const color = env === "prod" ? t.ansi3 : t.ansi4;
+    return div().flex_none().h(18).px(6).flex().items_center().rounded(5).border_1().border_color(color)
+      .text_size(10.5).font_semibold().text_color(color).child(env.toUpperCase());
+  }
+
+  // A folder of the settings' list: its name, large, and a click folds it.
+  // Folded, it still says how many of its jobs run and how many failed.
+  heading(place, items, t, title) {
+    const folded = this.folded.has(place.path), env = envOf(place.label);
+    const count = (state) => (items ?? []).filter((j) => jobState(j) === state).length;
+    const running = count("running"), failed = count("failed");
+    // The name and its tag keep their width; in a narrow panel the counts give way first.
+    return h_flex().id(`jk-head-${place.path}`).h(46).flex_none().mt(4).pl(4).pr(4).gap(8).items_center().rounded(7).overflow_hidden()
+      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(folded ? "Show its jobs" : "Fold it away")
+      .on_click((_e, cx) => this.fold(place, cx))
+      .child(svg(icon(folded ? "chevron-right" : "chevron-down")).size(16).flex_none().text_color(t.muted))
+      .child(div().flex_none().text_size(18).font_semibold().child(title))
+      .when(Boolean(env), (el) => el.child(this.envTag(env, t)))
+      .child(h_flex().flex_1().min_w(0).overflow_hidden().gap(8).items_center().justify_end()
+        .when(running > 0, (el) => el.child(h_flex().id(`jk-head-running-${place.path}`).flex_none().gap(3).items_center().text_size(12).text_color(t.working)
+          .tooltip(`${running} running`).child(spinner(t, 12)).child(String(running))))
+        .when(failed > 0, (el) => el.child(h_flex().id(`jk-head-failed-${place.path}`).flex_none().gap(3).items_center().text_size(12).text_color(t.ansi1)
+          .tooltip(`${failed} failed last time`).child(svg(icon("failed")).size(12)).child(String(failed))))
+        .when(Boolean(items), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child(String(items.length))))
+        .child(iconButton(`jk-open-${place.path}`, "external", "Open in the browser", (cx) => this.open(this.client.page(place), cx), t, { size: 22 })));
+  }
+
+  // A place's header and its rows: a large heading that folds for the
+  // folders of the list (`big`), a small one for a folder opened from it.
+  section(place, t, now, title, big = false) {
     const entry = this.lists.get(place.path), items = entry?.items;
-    const rows = [h_flex().h(28).flex_none().pt(6).px(8).gap(6).items_center().text_size(11).font_medium().text_color(t.dim)
+    const rows = [big ? this.heading(place, items, t, title) : h_flex().h(28).flex_none().pt(6).px(8).gap(6).items_center().text_size(11).font_medium().text_color(t.dim)
       .child(div().min_w(0).truncate().child(title))
       .when(Boolean(items), (el) => el.child(div().flex_none().child(String(items.length))))
       .child(div().flex_1())
       .child(iconButton(`jk-open-${place.path}`, "external", "Open in the browser", (cx) => this.open(this.client.page(place), cx), t, { size: 20 }))];
+    if (big && this.folded.has(place.path)) {
+      if (entry?.error) rows.push(this.line(entry.error, t, t.blocked));
+      return rows;
+    }
     if (entry?.error) rows.push(this.line(entry.error, t, t.blocked));
     if (!items) { if (!entry?.error) rows.push(this.line("Reading the jobs…", t)); }
     else if (!items.length) rows.push(this.line("No jobs here, or none this token may see.", t));
@@ -456,7 +602,7 @@ export default class Jenkins extends View {
     const who = this.who ? (this.who.name === this.who.id ? this.who.id : `${this.who.name} (${this.who.id})`) : "";
     const rows = [...this.cards(t)];
     if (this.whoError) rows.push(this.line(this.whoError, t, t.blocked));
-    for (const place of this.places) rows.push(...this.section(place, t, now, place.label || host));
+    for (const place of this.places) rows.push(...this.section(place, t, now, place.label || host, true));
     return [
       this.header(t, [
         svg(icon("jenkins")).size(16).ml(4).flex_none().text_color(t.muted),
@@ -483,12 +629,15 @@ export default class Jenkins extends View {
     ];
   }
 
-  buildRow(place, build, t, now) {
+  // A build of the job view's list. A Pipeline job's build shows its stages
+  // above the list when clicked (`picked`); a freestyle one's opens its log.
+  buildRow(place, build, t, now, pipeline, picked) {
     const state = buildState(build), params = buildParams(build).map((p) => `${p.name}=${p.value}`).join(" · ");
     const id = `jk-build-${build.number}`;
     return h_flex().id(id).h(30).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-      .tooltip(`#${build.number}: ${LABEL[state]}. Click for its log`)
-      .on_click((_e, cx) => this.show({ kind: "build", place, number: build.number }, cx))
+      .when(picked, (el) => el.bg(t.selected))
+      .tooltip(`#${build.number}: ${LABEL[state]}. Click for its ${pipeline ? "stages" : "log"}`)
+      .on_click((_e, cx) => (pipeline ? this.pick(place, build.number, cx) : this.show({ kind: "build", place, number: build.number }, cx)))
       .child(mark(state, t))
       .child(div().flex_none().font_medium().child(`#${build.number}`))
       .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(oneLine(params || causeOf(build))))
@@ -497,13 +646,54 @@ export default class Jenkins extends View {
       .when(!build.building, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(`${took(build, now)} · ${ago(build.timestamp, now)}`)));
   }
 
+  // A stage of a build: its state, name and time, a bar while it runs (by
+  // what it took last time), and why it failed. A click shows its log.
+  stageRow(place, number, stage, t, now) {
+    const { state } = stage, part = stageProgress(stage, now), id = `jk-stage-${stage.id ?? `next-${stage.name}`}`;
+    const quiet = state === "pending" || state === "skipped";
+    const time = state === "pending" ? (stage.expected > 0 ? `~${span(stage.expected)}` : "")
+      : state === "paused" ? "waiting for input" : state === "skipped" ? "skipped" : stageTook(stage, now);
+    const timeColor = state === "running" ? t.working : state === "paused" ? t.ansi3 : t.dim;
+    const why = oneLine(stage.error?.message ?? "");
+    return v_flex().id(id).flex_none().px(8).py(6).gap(2).rounded(6)
+      .when(state !== "pending", (el) => el.cursor_pointer().hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => this.show({ kind: "stage", place, number, stage: { id: stage.id, name: stage.name, nth: stage.nth } }, cx)))
+      .tooltip(`${stage.name}: ${STAGE_LABEL[state] ?? state}${state === "pending" ? "" : ". Click for its log"}`)
+      .child(h_flex().gap(8).items_center()
+        .child(mark(state, t))
+        .child(div().flex_1().min_w(0).truncate().text_color(quiet ? t.muted : t.foreground).when(state === "running", (el) => el.font_medium()).child(stage.name))
+        .when(part !== null, (el) => el.child(bar(part, t, 36)))
+        .child(div().flex_none().text_size(11).text_color(timeColor).child(time)))
+      .when(Boolean(why), (el) => el.child(div().pl(22).truncate().text_size(11.5).text_color(state === "failed" ? t.ansi1 : t.muted).child(why)));
+  }
+
+  // The stages of the build a job view shows, and the way to its whole log.
+  stagesPart(place, job, build, t, now) {
+    const head = h_flex().h(30).flex_none().pt(8).px(8).gap(6).items_center().text_size(11).font_medium().text_color(t.dim)
+      .child(div().flex_1().min_w(0).truncate().child(`${isPipeline(job) ? "Stages of" : "Build"} #${build.number}${build.building ? "" : ` · ${LABEL[buildState(build)]} · took ${took(build, now)}`}`))
+      .child(h_flex().id("jk-console").flex_none().gap(4).items_center().px(6).h(22).rounded(6).cursor_pointer().text_color(t.accent)
+        .hover((s) => s.bg(t.hover)).tooltip(`The console log of #${build.number}`)
+        .on_click((_e, cx) => this.show({ kind: "build", place, number: build.number }, cx))
+        .child(svg(icon("console")).size(12)).child("Console log"));
+    if (!isPipeline(job)) return [head, this.line("This job is not a Pipeline, so it has no stages: its console log has it all.", t)];
+    const entry = this.stages.get(`${place.path}/${build.number}`);
+    if (entry?.missing) return [head, this.line("Jenkins shows no stages for this build (no Pipeline Stage View): its console log has it all.", t)];
+    const rows = [head];
+    if (entry?.error) rows.push(this.line(entry.error, t, t.blocked));
+    if (!entry?.data) { if (!entry?.error) rows.push(this.line("Reading the stages…", t)); return rows; }
+    const stages = stagesOf(entry.data, this.runs.get(place.path)?.runs, build.building);
+    if (!stages.length) rows.push(this.line(build.building ? "No stage has started yet." : "This build ran no stages.", t));
+    rows.push(...stages.map((s) => this.stageRow(place, build.number, s, t, now)));
+    return rows;
+  }
+
   renderJob(view, t, now) {
     const entry = this.jobs.get(view.place.path), job = entry?.data, name = leaf(view.place.label);
     const rows = [...this.cards(t)];
     if (entry?.error) rows.push(this.line(entry.error, t, t.blocked));
     if (!job) { if (!entry?.error) rows.push(this.line("Reading the job…", t)); }
     else {
-      const builds = job.builds ?? [];
+      const builds = job.builds ?? [], picked = this.picked(view), pipeline = isPipeline(job);
       rows.push(v_flex().px(10).pt(10).pb(4).gap(3)
         .child(div().text_size(11).text_color(t.dim).child(view.place.label))
         .when(Boolean(oneLine(job.description)), (el) => el.child(div().text_size(12).text_color(t.muted).child(oneLine(job.description)))));
@@ -511,8 +701,9 @@ export default class Jenkins extends View {
         rows.push(h_flex().h(30).flex_none().px(8).gap(8).items_center().text_size(12).text_color(t.ansi3)
           .child(mark("queued", t)).child("A build waits in the queue"));
       }
-      rows.push(div().h(28).flex_none().pt(8).px(8).text_size(11).font_medium().text_color(t.dim).child(builds.length ? "Builds" : "Never built"));
-      rows.push(...builds.map((b) => this.buildRow(view.place, b, t, now)));
+      if (picked) rows.push(...this.stagesPart(view.place, job, picked, t, now));
+      rows.push(div().h(28).flex_none().pt(10).px(8).text_size(11).font_medium().text_color(t.dim).child(builds.length ? "Builds" : "Never built"));
+      rows.push(...builds.map((b) => this.buildRow(view.place, b, t, now, pipeline, pipeline && b.number === picked?.number)));
     }
     return [
       this.header(t, [
@@ -532,27 +723,49 @@ export default class Jenkins extends View {
     return div().w_full().h(ROW).flex_none().px(12).truncate().text_color(color).child(line || " ");
   }
 
+  // The stage a stage view shows, as its build's stages were read last.
+  stageOf(view) {
+    const stages = this.stages.get(`${view.place.path}/${view.number}`)?.data?.stages ?? [];
+    let nth = -1;
+    const found = stages.find((s) => s.id === view.stage.id) ?? stages.find((s) => s.name === view.stage.name && ++nth === view.stage.nth);
+    return found ? { ...found, state: stageState(found.status) } : null;
+  }
+
+  // A build's console log, or (a stage view) the part of it one stage wrote.
   renderBuild(view, t, now) {
     const log = this.log, build = log?.build, state = build ? buildState(build) : null, l = state ? stateLook(state, t) : null;
-    const lines = log ? logLines(log.text) : [], list = `jk-log-${view.place.path}-${view.number}`;
+    const isStage = view.kind === "stage", stage = isStage ? this.stageOf(view) : null;
+    const all = log ? logLines(log.text) : [];
+    const range = isStage ? stageRange(all, view.stage.name, view.stage.nth) : null;
+    const lines = !isStage ? all : range ? all.slice(range.from, range.to) : [];
+    const list = `jk-log-${view.place.path}-${view.number}${isStage ? `-${view.stage.name}-${view.stage.nth}` : ""}`;
     const params = build ? buildParams(build).map((p) => `${p.name}=${p.value}`).join(" · ") : "";
     const width = Math.max(300, (log?.text.widest ?? 0) * 7 + 40);
     const facts = !build ? "" : build.building
       ? `Started ${ago(build.timestamp, now)} ago · running for ${took(build, now)}`.replace("now ago", "just now")
       : `${ago(build.timestamp, now)} ago · took ${took(build, now)}`.replace("now ago", "just now");
+    const shown = isStage ? stage?.state ?? null : state, sl = shown ? stateLook(shown, t) : l;
     const parts = [
       this.header(t, [
         this.backButton(t),
-        state ? mark(state, t) : null,
-        div().flex_none().max_w(260).truncate().font_semibold().child(`${leaf(view.place.label)} #${view.number}`),
-        div().flex_1().min_w(0).truncate().text_size(11).text_color(l?.color ?? t.dim).child(state ? LABEL[state] : ""),
+        shown ? mark(shown, t) : null,
+        div().flex_none().max_w(260).truncate().font_semibold().child(isStage ? view.stage.name : `${leaf(view.place.label)} #${view.number}`),
+        div().flex_1().min_w(0).truncate().text_size(11).text_color(sl?.color ?? t.dim)
+          .child(isStage ? (shown ? STAGE_LABEL[shown] ?? "" : "") : state ? LABEL[state] : ""),
         build?.building ? pill("jk-abort", "Abort…", t, { tone: "danger", icon: "stop", tip: "Abort this build: asks first", onClick: (cx) => this.askAbort(view.place, view.number, cx) }) : null,
         this.refreshButton(t),
-        iconButton("jk-build-open", "external", "Open in the browser", (cx) => this.open(this.client.page(view.place, view.number), cx), t),
+        iconButton("jk-build-open", "external", "Open in the browser", (cx) => this.open(isStage && stage?.id ? this.client.stagePage(view.place, view.number, stage.id) : this.client.page(view.place, view.number), cx), t),
       ]),
       ...this.cards(t),
     ];
-    if (build) {
+    if (isStage) {
+      const time = stage ? (stage.state === "paused" ? `waiting for input for ${stageTook(stage, now)}` : stage.state === "running" ? `running for ${stageTook(stage, now)}` : `took ${stageTook(stage, now)}`) : "";
+      const why = oneLine(stage?.error?.message ?? "");
+      parts.push(v_flex().flex_none().px(12).py(8).gap(3).border_b(1).border_color(t.border).text_size(11.5).text_color(t.dim)
+        // The time first: a narrow panel cuts the end.
+        .child(div().truncate().child([time, `${leaf(view.place.label)} #${view.number}`].filter(Boolean).join(" · ")))
+        .when(Boolean(why), (el) => el.child(div().truncate().text_color(stage.state === "failed" ? t.ansi1 : t.muted).child(why))));
+    } else if (build) {
       const part = progress(build, now);
       parts.push(v_flex().flex_none().px(12).py(8).gap(3).border_b(1).border_color(t.border).text_size(11.5).text_color(t.dim)
         .child(h_flex().gap(8).items_center()
@@ -561,7 +774,13 @@ export default class Jenkins extends View {
         .when(Boolean(params), (el) => el.child(div().truncate().child(params))));
     }
     if (log?.error) parts.push(this.line(log.error, t, t.blocked));
-    if (!lines.length) parts.push(div().flex_1().min_h(0).child(this.line(log?.error ? "" : log?.done ? "This build wrote nothing." : "Reading the log…", t)));
+    const empty = log?.error ? ""
+      : !log?.done && !all.length ? "Reading the log…"
+        : !isStage ? (log?.done ? "This build wrote nothing." : "Reading the log…")
+          : range ? (range.open ? "Nothing yet." : "This stage wrote nothing.")
+            : log?.text.dropped ? `This stage began before the last ${all.length} lines, which are all that is kept: the browser has it.`
+              : log?.done ? "The console has no part for this stage." : "Reading the log…";
+    if (!lines.length) parts.push(div().flex_1().min_h(0).child(this.line(empty, t)));
     else {
       parts.push(div().id("jk-log-area").flex_1().min_h(0).relative().font_family(look().font_family ?? "JetBrains Mono").text_size(11.5)
         // Scrolling by hand stops the following; the footer's button takes it up again.
@@ -571,14 +790,16 @@ export default class Jenkins extends View {
             (range) => lines.slice(range.start, range.end).map((line) => this.logRow(line, t))).track_scroll(this.scroll).size_full())))
         .child(Scrollbar.vertical(list).viewport_from_layout().absolute().inset_0()));
     }
-    const live = Boolean(build?.building) && !log?.done;
+    const live = Boolean(build?.building) && !log?.done && (!isStage || Boolean(range?.open));
     parts.push(h_flex().h(26).flex_none().px(12).gap(8).items_center().border_t(1).border_color(t.border).text_size(11).text_color(t.dim)
       .when(live, (el) => el.child(spinner(t, 12)))
       .child(div().flex_1().min_w(0).truncate().child([
         live ? "Following the log" : null,
         `${lines.length} line${lines.length === 1 ? "" : "s"}`,
-        log?.text.dropped ? `the last ${lines.length} of ${lines.length + log.text.dropped}: the browser has the rest` : null,
+        !isStage && log?.text.dropped ? `the last ${lines.length} of ${lines.length + log.text.dropped}: the browser has the rest` : null,
       ].filter(Boolean).join(" · ")))
+      .when(isStage, (el) => el.child(div().id("jk-whole-log").flex_none().cursor_pointer().text_color(t.accent)
+        .tooltip("The whole console log of this build").on_click((_e, cx) => this.wholeLog(cx)).child("Whole log")))
       .when(Boolean(log) && !log.follow, (el) => el.child(div().id("jk-follow").flex_none().cursor_pointer().text_color(t.accent)
         .on_click((_e, cx) => { log.follow = true; this.toEnd(cx); cx.notify(); }).child(live ? "Follow" : "To the end"))));
     return parts;
@@ -693,11 +914,11 @@ export default class Jenkins extends View {
       : view.kind === "settings" ? this.renderSettings(t)
         : view.kind === "folder" ? this.renderFolder(view, t, now)
           : view.kind === "job" ? this.renderJob(view, t, now)
-            : view.kind === "build" ? this.renderBuild(view, t, now)
+            : view.kind === "build" || view.kind === "stage" ? this.renderBuild(view, t, now)
               : view.kind === "trigger" ? this.renderTrigger(view, t)
                 : this.renderList(t, now);
     return v_flex().id("jenkins").track_focus(this.handle).size_full().min_h(0).overflow_hidden()
-      .bg(t.background).text_color(t.foreground).text_size(13)
+      .when(!this.panel, (el) => el.bg(t.background)).text_color(t.foreground).text_size(13)
       .on_key_down((e, cx) => this.key(e, cx))
       .children(parts);
   }
