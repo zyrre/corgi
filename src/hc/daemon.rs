@@ -19,11 +19,9 @@
 //!    stops wake no one, and no supervisor is typed into and no handover
 //!    moves on until `corgi resume`: the wakes wait in the inboxes.
 //!
-//! It never names or makes a space of the Herdr app: the app calls a space
-//! nobody named after where its first terminal is. An earlier daemon made
-//! the Corgi space when `corgi app-space` had found the app's window closed
-//! and left a note; this one deletes such a note when it starts
-//! ([`app_space::forget_pending`]) and never talks to the app's window.
+//! It never names or makes a space of the Herdr app, and never talks to the
+//! app's window: the app calls a space nobody named after where its first
+//! terminal is.
 //!
 //! Passes also run on a timer: every few seconds while an inbox waits for a
 //! supervisor that rests (a draft in its box gives no event when it is
@@ -55,7 +53,6 @@ use super::{
     pause,
 };
 use crate::{
-    app_space,
     model::AgentState,
     paths::{corgi_state_dir, socket_state_file},
     time::{LocalTime, unix_now},
@@ -248,9 +245,6 @@ pub fn run(options: Options) -> Result<()> {
         options.socket.display(),
         options.corgi_bin.display()
     ));
-    if app_space::forget_pending() {
-        log("forgot a pending Corgi space: only corgi app-space, run by hand, makes one now");
-    }
     let mut daemon = Daemon {
         core: HcCore::new(options.client.clone(), options.corgi_bin.clone()),
         options,

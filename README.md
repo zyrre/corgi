@@ -68,7 +68,7 @@ A layout of your own gets the list in place, and nothing else in it changes, so 
 | You | `corgi supervisor [PROJECT]` starts a project's supervisor; `corgi daemon install`, `status` and `uninstall` manage the service; `corgi notify` adds a line to a supervisor's inbox |
 | A supervisor | `spawn`, `fleet`, `digest`, `report`, `inbox`, `tag`, `role` |
 | The app's mods | `status`, `usage`, `projects`, `open`, `merge`, `close`, `pause`, `resume`, each with `--json` |
-| The installer | `app-layout`, `app-space`, `daemon install` |
+| The installer | `app-layout`, `daemon install` |
 
 ## Install
 

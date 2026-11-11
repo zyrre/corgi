@@ -7,7 +7,6 @@ use anyhow::Result;
 
 mod activity;
 mod app_layout;
-mod app_space;
 mod backlog;
 #[cfg(test)]
 mod brand_tile;
@@ -18,6 +17,7 @@ mod draft;
 mod git;
 mod harness;
 mod hc;
+mod herdr_app;
 mod inbox;
 mod inbox_privacy;
 mod job;
@@ -66,7 +66,6 @@ Commands:
   open        Open a project: name its supervisor's terminal, or start it
   daemon      Wake supervisors on herdr-core, as a service
   app-layout  Put Corgi's Projects list into the Herdr app's layout, or take it out
-  app-space   Make the Herdr app's Corgi space by hand, or remove it
 
 Run corgi COMMAND --help for a command's options, and corgi --version for the
 version and the commit it was built from (--version --json for both as JSON).";
@@ -114,8 +113,6 @@ fn main() -> Result<()> {
         Some("role") => commands::role_command(&args[2..]),
         Some("daemon") if help() => usage(commands::DAEMON_USAGE),
         Some("daemon") => commands::daemon_command(&args[2..]),
-        Some("app-space") if help() => usage(commands::APP_SPACE_USAGE),
-        Some("app-space") => commands::app_space_command(&args[2..]),
         Some("app-layout") if help() => usage(commands::APP_LAYOUT_USAGE),
         Some("app-layout") => commands::app_layout_command(&args[2..]),
         Some("projects") if help() => usage(commands::PROJECTS_USAGE),

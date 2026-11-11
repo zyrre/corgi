@@ -164,7 +164,7 @@ check "each in a space" test "$(count "--label herdr.space=preview-")" = 8
 check "the app is a copy" test -x "$preview/Herdr.app/Contents/MacOS/Herdr"
 check "the Projects mod is the checkout's" cmp "$checkout/herdr-app/mods/projects/main.js" "$preview/home/mods/projects/main.js"
 check "the brand row mod is the checkout's" cmp "$checkout/herdr-app/mods/corgi-brand/main.js" "$preview/home/mods/corgi-brand/main.js"
-check "the mods run the canned corgi" grep -qF "\"$preview/fake/corgi\"" "$preview/home/mods/projects/config.json" "$preview/home/mods/corgi/config.json"
+check "the Projects mod runs the canned corgi" grep -qF "\"$preview/fake/corgi\"" "$preview/home/mods/projects/config.json"
 check "the layout gets the Projects list from the checkout's corgi, asking the preview's window" logged "corgi app-layout --app $preview/Herdr.app/Contents/MacOS/Herdr --home $link/home"
 check "the window is switched to the corgi layout" logged "do layout.switch --name corgi"
 check "the canned status is JSON" python3 -m json.tool "$preview/fake/status.json"
