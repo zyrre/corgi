@@ -401,13 +401,13 @@ pub fn first_setting(settings: &[Value], pick: impl Fn(&Value) -> &Value) -> Opt
 /// session. The empty value leaves the harness or model default in charge.
 pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
-/// The harness a launch that names none starts on: the one the last spawn
-/// recorded, if it is still installed; otherwise `CORGI_DEFAULT_AGENT` if
+/// The harness a launch that names none starts on: the one someone last
+/// chose ([`record_chosen_harness`]), if it is still installed; otherwise `CORGI_DEFAULT_AGENT` if
 /// set, otherwise the first installed harness of [`Harness::KNOWN`],
 /// otherwise `codex`.
 pub fn default_harness() -> Harness {
     default_harness_from(
-        last_spawn_harness(),
+        last_chosen_harness(),
         std::env::var("CORGI_DEFAULT_AGENT").ok(),
         &Harness::installed(),
     )
@@ -435,15 +435,50 @@ fn default_harness_from(
         .unwrap_or_else(|| Harness::KNOWN[0].clone())
 }
 
-/// The harness kind in `last-harness.json` in Corgi's state directory, which
-/// the Herdr TUI's launches recorded. Nothing on herdr-core writes it yet, so
-/// it names the last spawn made there, if any. Tests read none, so they
-/// never depend on the developer's own state.
-fn last_spawn_harness() -> Option<String> {
+/// The file in Corgi's state directory that names the harness someone last
+/// chose for a launch ([`record_chosen_harness`]).
+const LAST_HARNESS_FILE: &str = "last-harness.json";
+
+/// The harness kind in [`LAST_HARNESS_FILE`]. Tests read none, so they never
+/// depend on the developer's own state.
+fn last_chosen_harness() -> Option<String> {
     if cfg!(test) {
         return None;
     }
-    read_last_harness(&corgi_state_dir()?.join("last-harness.json"))
+    read_last_harness(&corgi_state_dir()?.join(LAST_HARNESS_FILE))
+}
+
+/// Records `harness` as the one last chosen, once a launch on it has
+/// started: `corgi supervisor`, `corgi open` and a `corgi spawn` that a
+/// person ran (not a supervisor) with `--harness`. A launch that names no
+/// harness chose nothing, so the record stays as it was. Failing to record
+/// fails no launch, and tests of the crate record nothing, so they never
+/// touch the developer's own state.
+pub fn record_chosen_harness(harness: &Harness) {
+    if cfg!(test) {
+        return;
+    }
+    if let Some(dir) = corgi_state_dir() {
+        let _ = write_last_harness(&dir.join(LAST_HARNESS_FILE), harness);
+    }
+}
+
+/// Replaces the record at `path` with `harness` in one step: a temporary file
+/// of this process's own is renamed over it, so a reader sees the old record
+/// or the new one, never half of either.
+fn write_last_harness(path: &Path, harness: &Harness) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".{}.tmp", std::process::id()));
+    let temporary = PathBuf::from(temporary);
+    let record = serde_json::json!({ "harness": harness.kind() }).to_string();
+    let written = fs::write(&temporary, record).and_then(|()| fs::rename(&temporary, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    written
 }
 
 /// The kind recorded in the file at `path` (`{"harness":"claude"}`), or
@@ -784,5 +819,31 @@ mod tests {
             fs::write(&path, corrupt).unwrap();
             assert_eq!(read_last_harness(&path), None, "{corrupt:?}");
         }
+    }
+
+    #[test]
+    fn a_recorded_harness_is_read_back_and_replaces_the_one_before() {
+        let scratch = crate::test_support::ScratchDir::new("last-harness-write");
+        // The state directory may not be there yet.
+        let path = scratch.join("state/corgi").join(LAST_HARNESS_FILE);
+        write_last_harness(&path, &Harness::Codex).unwrap();
+        assert_eq!(read_last_harness(&path).as_deref(), Some("codex"));
+        write_last_harness(&path, &Harness::Claude).unwrap();
+        assert_eq!(read_last_harness(&path).as_deref(), Some("claude"));
+        // ... and what it read back is the default, while installed.
+        assert_eq!(
+            default_harness_from(
+                read_last_harness(&path),
+                None,
+                &[Harness::Codex, Harness::Claude]
+            ),
+            Harness::Claude
+        );
+        // No temporary file is left beside it.
+        let left: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [LAST_HARNESS_FILE]);
     }
 }

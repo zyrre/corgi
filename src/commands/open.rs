@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::{
     choices::{Choice, ChoiceList},
-    harness::{EFFORT_LEVELS, Harness, default_harness},
+    harness::{EFFORT_LEVELS, Harness, default_harness, record_chosen_harness},
     hc::{self, HcClient},
     launch::{SUPERVISOR_HOME_REFUSAL, create_project, saved_supervisor_plan, supervisor_plan},
     model::Agent,
@@ -346,6 +346,9 @@ fn open_project(client: &HcClient, options: &OpenOptions) -> Result<Value> {
         None,
         Shell::Offered(&options.terminals),
     )?;
+    if options.harness.is_some() {
+        record_chosen_harness(&plan.harness);
+    }
     let place = match started {
         Started::New => "a new terminal",
         Started::Own => "its own terminal",

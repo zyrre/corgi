@@ -177,6 +177,13 @@ fn as_supervisor(terminal: &Value, root: &str) -> Value {
     supervisor
 }
 
+/// What `last-harness.json` in `world`'s state names, if it is there.
+fn last_harness(world: &World) -> Option<String> {
+    let text = fs::read_to_string(world.state().join("last-harness.json")).ok()?;
+    let record: Value = serde_json::from_str(&text).unwrap();
+    Some(record["harness"].as_str().unwrap().to_string())
+}
+
 fn called<'a>(calls: &'a [String], start: &str) -> Vec<&'a String> {
     calls
         .iter()
@@ -251,6 +258,9 @@ fn open_starts_the_supervisor_in_the_shell_that_waits_in_the_project() {
         format!("{root}\n")
     );
     assert!(world.state().join("supervisors/weather/ROLE.md").is_file());
+    // The harness asked for is the default of the next launch that names
+    // none (corgi open on a new project).
+    assert_eq!(last_harness(&world).as_deref(), Some("claude"));
 
     // From then on that terminal is the project's supervisor: open names it
     // and starts nothing.
@@ -299,8 +309,8 @@ fn open_starts_a_new_terminal_when_no_shell_waits_and_makes_a_new_project() {
     world.answer("get.t5", &shell("t5", "/usr").to_string());
 
     // Without --create a missing directory is refused, as JSON, and stays
-    // missing.
-    let (refused, output) = world.json(&["open", &fresh_text, "--json"]);
+    // missing; it chose no harness either.
+    let (refused, output) = world.json(&["open", &fresh_text, "--json", "--harness", "codex"]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(refused["result"], "failed");
     assert!(
@@ -312,6 +322,7 @@ fn open_starts_a_new_terminal_when_no_shell_waits_and_makes_a_new_project() {
     );
     assert!(!fresh.exists());
     assert!(world.calls().is_empty(), "{:?}", world.calls());
+    assert_eq!(last_harness(&world), None);
 
     let (opened, output) = world.json(&[
         "open",
@@ -396,6 +407,8 @@ fn supervisor_with_a_terminal_starts_there_or_nowhere() {
             .contains("the shell that was open in"),
         "{started}"
     );
+    // Started on the default harness, it chose none to remember.
+    assert_eq!(last_harness(&world), None);
 
     // It is a supervisor's alone, never a worker's.
     let output = world.corgi(&["spawn", "--project", &root, "--terminal", "t5"]);
@@ -405,6 +418,78 @@ fn supervisor_with_a_terminal_starts_there_or_nowhere() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn a_harness_a_person_asks_for_is_remembered_and_a_supervisors_is_not() {
+    let world = World::new("harness");
+    let root = world.repo("weather");
+    let task = world.private.join("task.md");
+    fs::write(&task, "Fix the cache\n").unwrap();
+    let task = task.to_string_lossy().into_owned();
+    world.answer(
+        "run",
+        &json!({"address": "t9", "name": "weather", "state": "live", "turn": 0}).to_string(),
+    );
+    world.answer("get.t9", &with_agent(&shell("t9", &root)).to_string());
+    // No terminal is called weather yet, so the worker takes that name.
+    world.answer("get.weather", "");
+    fs::write(world.private.join("hc/get.weather.code"), "3").unwrap();
+    fs::write(
+        world.private.join("hc/get.weather.err"),
+        r#"{"error":{"kind":"not_found","message":"no terminal weather","hint":""}}"#,
+    )
+    .unwrap();
+    let spawn = |caller: Option<&str>, harness: &str| {
+        let output = world.corgi_in(
+            caller,
+            &[
+                "spawn",
+                "--project",
+                &root,
+                "--checkout",
+                "directory",
+                "--harness",
+                harness,
+                "--task-file",
+                &task,
+            ],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    // A person's corgi supervisor --harness, then corgi spawn --harness.
+    let waiting = shell("t5", &root);
+    world.answer("get.t5.1", &waiting.to_string());
+    world.answer("get.t5.2", &waiting.to_string());
+    world.answer("get.t5", &with_agent(&waiting).to_string());
+    world.answer("label", &waiting.to_string());
+    let (started, output) = world.json(&[
+        "supervisor",
+        &root,
+        "--harness",
+        "codex",
+        "--terminal",
+        "t5",
+    ]);
+    assert!(output.status.success(), "{started}");
+    assert_eq!(last_harness(&world).as_deref(), Some("codex"));
+    spawn(None, "claude");
+    assert_eq!(last_harness(&world).as_deref(), Some("claude"));
+
+    // The project's supervisor spawning on a harness of its choice changes
+    // nothing: that was not the person's choice.
+    let supervisor = as_supervisor(&with_agent(&waiting), &root);
+    let listed = json!({"terminals": [supervisor]}).to_string();
+    world.answer("ls", &listed);
+    world.answer("ls.supervisor", &listed);
+    world.answer("get.t5", &supervisor.to_string());
+    spawn(Some("t5"), "codex");
+    assert_eq!(last_harness(&world).as_deref(), Some("claude"));
 }
 
 #[test]

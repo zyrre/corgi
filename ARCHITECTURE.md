@@ -61,7 +61,7 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ hc/spawn-<hash>.lock ─ held by a corgi spawn --request-id of one project
   ├─ usage/<provider>.json, .lock ─ the plan-usage reading every process shares
   ├─ opencode-plugin ───── the answer to the installer's OpenCode question
-  └─ last-harness.json ── read, never written (see "Open ends")
+  └─ last-harness.json ── the harness a person last chose with --harness
 
 Agent session files (read, never written)
   ├─ {$CLAUDE_CONFIG_DIR,~/.claude}/projects/<slug>/<session>.jsonl
@@ -197,6 +197,11 @@ for the project, a running worker with that id is printed with
 on its calling supervisor's harness, else the default
 (`harness::default_harness`: the one `last-harness.json` names, else
 `CORGI_DEFAULT_AGENT`, else the first installed of `Harness::KNOWN`).
+`last-harness.json` is written once a launch has started on a harness a
+person asked for with `--harness`: `corgi supervisor`, `corgi open`, and a
+`corgi spawn` run outside Corgi's agents (a supervisor's choice for its
+worker is not the person's). `corgi open` on a new project with no saved
+launch starts its supervisor on it.
 
 Claude Code's folder-trust question is the one question Corgi answers, and
 only for a project Corgi created (`created-projects`): the launch presses
@@ -455,8 +460,5 @@ own fetch and push during a merge. The Claude Code token is sent to
 
 Kept as they were, each for a decision of its own:
 
-- `last-harness.json` is read for the default harness but nothing on hc
-  writes it, so it names whatever the last launch before herdr-core
-  recorded.
 - `supervisor/ROLE.md` still says "dashboard", "pane" and "Corgi workspace"
   in places; the role's size is capped by a test and its wording pinned.
