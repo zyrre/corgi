@@ -16,8 +16,10 @@ import { View, div } from "gpui-kit";
 import { theme, props as blockProps } from "herdr";
 import Brand from "./brand.js";
 import Projects from "./projects.js";
+// MOCKUP ONLY (questions round): canned data, see mock.js.
+import Questions from "./questions.js";
 
-const VIEWS = new Map([["projects", Projects], ["brand", Brand]]);
+const VIEWS = new Map([["projects", Projects], ["brand", Brand], ["questions", Questions]]);
 
 // A view this Corgi does not have (a layout made for a newer one): says so
 // in its block rather than show another view there.

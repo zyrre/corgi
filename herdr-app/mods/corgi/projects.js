@@ -55,6 +55,7 @@ import {
 } from "herdr";
 import { narrow, toggleSidebar, sidebarPx, oneLine, tildePaths, spinner, BADGES, badgeKey, badge } from "./ui.js";
 import { store, POLL_MS, USAGE_POLL_MS, MACHINES_MS, NO_CORGI } from "./data.js";
+import { open as openQuestions, mock, mockCommand } from "./mock.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -317,6 +318,7 @@ export default class Projects {
           return;
         }
         if (command === "open") this.plus(cx);
+        else if (mockCommand(command)) cx.notify();
       }
     });
   }
@@ -1684,6 +1686,12 @@ export default class Projects {
     const model = oneLine(a.corgi?.model);
     const ctx = Number.isFinite(a.corgi?.ctx_pct) ? `${Math.round(a.corgi.ctx_pct)}%` : "";
     const key = badgeKey(a);
+    // MOCKUP ONLY: the open-question count on a supervisor's row, in the
+    // variant mock.js names (a: line 1 right, b: line 2 beside the state,
+    // c: in place of the state's badge).
+    const asked = a.supervisor && a.corgi?.project ? openQuestions(base(a.corgi.project)).length : 0;
+    const variant = mock().row;
+    const ask = asked > 0 && variant !== "off" && this.questionMark(a, asked, variant, t);
     return v_flex()
       .id(`agent-${a.address}`)
       .pl(22)
@@ -1700,13 +1708,38 @@ export default class Projects {
       .on_click(() => run("agent.focus", { terminal: a.address }))
       .on_mouse_down("right", () => this.menu(w))
       .child(h_flex().h(18).items_center()
-        .child(div().flex_1().min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task)))
+        .child(div().flex_1().min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
+        .when(Boolean(ask) && variant === "a", (el) => el.child(ask)))
       .child(h_flex().h(16).gap(5).items_center().text_size(11).text_color(t.dim)
         .when(Boolean(pic), (el) => el.child(pic))
         .when(Boolean(model), (el) => el.child(div().flex_shrink(1).min_w(0).truncate().child(model)))
         .when(Boolean(model && ctx), (el) => el.child(div().flex_none().child("·")))
         .when(Boolean(ctx), (el) => el.child(div().flex_none().child(ctx)))
-        .when(Boolean(key), (el) => el.child(div().flex_1()).child(key === "merge" ? this.mergeMark(a, t) : badge(t, key).id(`badge-${a.address}`))));
+        .when(Boolean(key || ask), (el) => el.child(div().flex_1()))
+        .when(Boolean(ask) && variant === "b", (el) => el.child(ask))
+        .when(Boolean(ask) && variant === "c", (el) => el.child(ask))
+        .when(Boolean(key) && !(ask && variant === "c"), (el) => el.child(key === "merge" ? this.mergeMark(a, t) : badge(t, key).id(`badge-${a.address}`))));
+  }
+
+  // MOCKUP ONLY: a supervisor's open questions, `n`, as variant `v` draws
+  // them. A click shows the Questions panel on this project's questions.
+  questionMark(a, n, v, t) {
+    const project = base(a.corgi.project);
+    const show = (_e, cx) => {
+      cx.stop_propagation();
+      setShared("corgi.questions.project", project);
+      run("layout.select", { stack: "panel-body", child: "corgi-questions" });
+      run("layout.show", { id: "panel" });
+    };
+    const tip = `${n} open question${n > 1 ? "s" : ""} from ${project}'s supervisor: show them`;
+    const pill = div().id(`ask-${a.address}`).flex_none().rounded(4).font_semibold().cursor_pointer().tooltip(tip)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(show);
+    if (v === "a") {
+      return pill.ml(6).px(5).h(16).flex().items_center().gap(3).text_size(10.5).bg(t.accent).text_color(t.accent_foreground)
+        .child(svg("mods/corgi/question.svg").size(11)).child(String(n));
+    }
+    if (v === "b") return pill.px(5).text_size(10).border_1().border_color(t.accent).text_color(t.accent).child(`${n} Q`);
+    return pill.px(5).text_size(10).bg(t.accent).text_color(t.accent_foreground).child(`${n} QUESTION${n > 1 ? "S" : ""}`);
   }
 
   // A space in the rail: its number, and the most urgent state in it.

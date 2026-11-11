@@ -2172,11 +2172,23 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   const brand = await start(w, { view: 'brand' });
   await brand.tick(5000);
   assert.deepEqual(texts(brand.render()), ['Herdr', '+', 'Corgi']);
-  const later = await start(w, { view: 'questions' });
+  const later = await start(w, { view: 'board' });
   await later.tick(5000);
-  assert.deepEqual(texts(later.render()), ['This Corgi has no view questions: update Corgi.']);
+  assert.deepEqual(texts(later.render()), ['This Corgi has no view board: update Corgi.']);
   assert.deepEqual(w.execs, []);
   assert.deepEqual(w.ran, []);
+}
+
+// MOCKUP ONLY (questions round): the mock Questions panel draws its canned
+// cards and runs nothing.
+{
+  const w = window();
+  const panel = await start(w, { view: 'questions' });
+  await panel.tick(1000);
+  const shown = texts(panel.render());
+  assert.ok(shown.includes('Keep the old column names for one release?'), shown.join(' | '));
+  assert.ok(shown.includes('Send'));
+  assert.deepEqual(w.execs, []);
 }
 
 // Copies of the mod share what Corgi says: however many blocks show the
