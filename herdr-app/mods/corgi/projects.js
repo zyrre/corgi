@@ -1,4 +1,4 @@
-// Corgi's Projects list for the Herdr app (io.github.zyrre.corgi): the
+// The Corgi mod's Projects list (its `projects` view, main.js): the
 // sidebar's spaces, each repository with its agents under it, and "Open
 // project" on its +. It stands where Herdr's Spaces and Agents lists stand in
 // Herdr's own layout; `corgi app-layout` puts it there, in the layout itself.
@@ -12,8 +12,8 @@
 // any repository (~, other folders) show as spaces, with
 // their agents under them. Click a space to show it and an agent to show its
 // terminal; right-click for the space's menu; drag a space to reorder. The
-// command `projects.open` does what the + does, for a key of the person's
-// (keys.json: "cmd-o": "projects.open").
+// command `corgi.open` does what the + does, for a key of the person's
+// (keys.json: "cmd-o": "corgi.open").
 //
 // Each agent's row ends with its state's badge (WORKING, BLOCKED, DONE,
 // IDLE, PAUSED, EXITED), the words `corgi fleet` uses for a state.
@@ -42,37 +42,19 @@
 // header, with their agents' Corgi data from that machine's own corgi,
 // asked there through herdr-core (`exec` with `on`); a merge, a close, a
 // pull and a pause of its agents run there too. Plan usage and the last
-// line stay this computer's.
+// line stay this computer's. What Corgi says is read in data.js, once for
+// every copy of the mod.
 //
 // It began as a copy of Herdr's `spaces` mod and is Corgi's own since.
 
-import { View, div, image, svg } from "gpui-kit";
+import { div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import {
   spaces, machines, panes, agents, focused, run, openOverlay, exec, hc, theme, shared, setShared, setAgentOrder,
-  watchFolder, window, layout, home, appHome, readTextFile, nextCommand, notify,
+  watchFolder, window, home, nextCommand, notify,
 } from "herdr";
-
-function find(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
-
-// The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
-const narrow = () => (find(layout(), "sidebar")?.size?.px ?? Infinity) < 160;
-
-// To the rail (on macOS wide enough for the traffic lights), or back to the width it had.
-function toggleSidebar() {
-  const width = find(layout(), "sidebar")?.size?.px;
-  if (!narrow()) setShared("sidebar.width", width);
-  // Mods written before the rail went by width still read the flag.
-  setShared("sidebar.collapsed", !narrow());
-  run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
-}
+import { narrow, toggleSidebar, sidebarPx, oneLine, tildePaths, spinner, BADGES, badgeKey, badge } from "./ui.js";
+import { store, POLL_MS, USAGE_POLL_MS, MACHINES_MS, NO_CORGI } from "./data.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -90,29 +72,6 @@ const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
-// How often Corgi's status is read again besides when the live agents
-// change, and never more often.
-const POLL_MS = 5000;
-// Another machine's status is read as often, but no sooner than three
-// times its last read took: a slow machine is asked less often.
-const SLOW_FACTOR = 3;
-// A machine without corgi is looked at again this often (it may be installed).
-const LOCATE_MS = 60000;
-// Where corgi is on another machine, run there in `sh` (exec takes no
-// login shell): the path that machine's own Corgi install recorded for its
-// app (an older install there may have recorded it only for the retired
-// Corgi mod), `corgi` on PATH, on its login shell's PATH, then the usual
-// places.
-// Prints the first that is there, or exits 3.
-const LOCATE_CORGI = [
-  'try() { case "$1" in /*) if [ -x "$1" ]; then printf \'%s\\n\' "$1"; exit 0; fi ;; esac; }',
-  'app="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"',
-  'try "$(sed -n \'s/.*"corgi"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$app/mods/projects/config.json" "$app/mods/corgi/config.json" 2>/dev/null | head -n 1)"',
-  'try "$(command -v corgi)"',
-  'try "$("${SHELL:-/bin/sh}" -lc \'command -v corgi\' </dev/null 2>/dev/null | tail -n 1)"',
-  'for c in "$HOME/.local/bin/corgi" "$HOME/.local/share/corgi/target/release/corgi" "$HOME/.cargo/bin/corgi"; do try "$c"; done',
-  "exit 3",
-].join("\n");
 // How many suggestions "Open project" shows at once.
 const SUGGESTIONS = 8;
 // Starting a supervisor waits for its shell, its agent and a folder-trust
@@ -130,54 +89,8 @@ const DAEMON_COMMAND = "corgi daemon install";
 // waits for each to come back: some seconds an agent, a few minutes at most.
 const PAUSE_TIMEOUT_MS = 300000;
 // The pause button's icons: ⏸ and ▶, the mod's own.
-const PAUSE_ICON = "mods/projects/pause.svg";
-
-// Something running (a pull, a merge, a close, a pause, a working space in
-// the rail): braille frames, stepped natively while shown, as Herdr's peek
-// mod draws its spinner. Not a turning svg: the app turns one at about 10 fps
-// while the window is quiet and smoothly only while something else redraws
-// it, so it reads as lagging; frames are meant to step. In a fixed box `size`
-// square, so nothing beside it moves whatever width the font gives a glyph;
-// the glyph is drawn larger than the box, since braille is small in the UI
-// font.
-const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-function spinner(t, size = 12) {
-  return div().w(size).h(size).flex_none().flex().items_center().justify_center().overflow_hidden()
-    .text_size(size + 6).line_height(`${size}px`).text_color(t.working).frames(SPIN, 90).child(SPIN[0]);
-}
-
-// An agent's state as a badge. A worker tagged ready to merge shows MERGE in place of its
-// state (the mark that opens the merge question, `mergeMark`); a paused
-// one PAUSED; one whose agent exited EXITED. An agent in no state shows none.
-const BADGES = { working: "WORKING", blocked: "BLOCKED", merge: "MERGE", done: "DONE", idle: "IDLE", paused: "PAUSED", exited: "EXITED" };
-function badgeKey(a) {
-  if (a.status === "paused") return "paused";
-  if (a.corgi?.tag === "merge") return "merge";
-  if (BADGES[a.status]) return a.status;
-  return a.corgi?.state === "exited" ? "exited" : null;
-}
-// Text on a solid fill: near-black on a light one, white on a dark one.
-function onFill(c) {
-  const m = /^#([0-9a-f]{6})/i.exec(c ?? "");
-  if (!m) return "#ffffff";
-  const n = parseInt(m[1], 16);
-  const [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map((v) => {
-    v /= 255;
-    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.3 ? "#16161a" : "#ffffff";
-}
-// The badge of state `key`, drawn as the MERGE mark is: a small pill, solid
-// in the state's color (`text`, default its word). IDLE, the state at rest, is
-// a quiet tint; EXITED an outline, so that neither shouts. No animation.
-function badge(t, key, text = BADGES[key]) {
-  const pill = div().flex_none().px(5).rounded(4).text_size(10).font_semibold().child(text);
-  if (key === "idle") return pill.bg(t.muted + "33").text_color(t.muted);
-  if (key === "exited") return pill.border_1().border_color(t.blocked).text_color(t.blocked);
-  const fill = { working: t.working, blocked: t.blocked, merge: t.accent, done: t.done ?? t.dim, paused: t.muted }[key] ?? t.dim;
-  return pill.bg(fill).text_color(key === "merge" ? t.accent_foreground : onFill(fill));
-}
-const PLAY_ICON = "mods/projects/play.svg";
+const PAUSE_ICON = "mods/corgi/pause.svg";
+const PLAY_ICON = "mods/corgi/play.svg";
 // How long the toast of a pause that found no agent working stays.
 const NOTE_MS = 3000;
 // A pull fetches first: a slow remote, a big fetch.
@@ -194,18 +107,8 @@ const PULL_SCRIPT = 'ssh="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand)
 // that draws space avatars): one strong color per hue, light and dark alike.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 
-// Text shown on one line: a `\n` would start a second one even when truncated.
-const oneLine = (text) => (text ?? "").replace(/\s+/g, " ").trim();
-// A text with the paths under the home folder as `~/…`, to fit the sidebar.
-const tildePaths = (text) => {
-  const h = home();
-  return h ? text.split(`${h}/`).join("~/") : text;
-};
 // The where() of a listed row: the checkout its git was read in.
 const rowKey = (r) => JSON.stringify([r.w.machine ?? null, r.at]);
-// A Corgi project by its machine (null: this computer) and folder: two
-// machines may each have one in the same folder.
-const projectKey = (machine, dir) => JSON.stringify([machine ?? null, dir]);
 // " on lab" after an agent of another machine's, nothing for this computer's.
 const onMachine = (machine) => (machine ? ` on ${machine}` : "");
 
@@ -256,9 +159,6 @@ function stateMark(t, status) {
   return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
 }
 
-// How often plan usage is read: `corgi usage --json` reads the cache every
-// Corgi process shares, which asks the provider at most once a minute.
-const USAGE_POLL_MS = 60000;
 // The narrowest sidebar whose herd card shows the plans' reset times.
 const RESETS_FIT = 330;
 
@@ -281,8 +181,7 @@ function readingAge(elapsed) {
   return m < 1 ? "<1m" : m < 60 ? `${m}m` : m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
 }
 
-// What the field says with no corgi to ask, and with one too old to answer.
-const NO_CORGI = "The corgi command was not found. Install Corgi: run herdr-app/install.sh from its repository.";
+// What the field says with a corgi too old to answer.
 const OLD_CORGI = "This corgi is older than the Projects list. Update Corgi: run herdr-app/install.sh from its repository again.";
 
 // The Open project field's keys, each kept whole when the line wraps.
@@ -295,21 +194,6 @@ const STATUS = { working: "working", blocked: "blocked", done: "done", idle: "id
 // in a few letters: its commit, else its release.
 const buildName = (b) => [b.commit ? b.commit.slice(0, 7) : `Corgi ${b.version}`, ...(b.dirty ? ["modified"] : [])].join(" · ");
 const sameBuild = (a, b) => a.version === b.version && (a.commit ?? null) === (b.commit ?? null) && Boolean(a.dirty) === Boolean(b.dirty);
-
-// Where corgi may be, in order: what the installer wrote for this mod, then
-// the usual places.
-async function corgiCandidates() {
-  const list = [];
-  try {
-    const config = JSON.parse((await readTextFile(`${appHome()}/mods/projects/config.json`)) ?? "{}");
-    if (config.corgi) list.push(config.corgi);
-  } catch (_) {
-    // No config: the mod was added on its own.
-  }
-  const h = home();
-  list.push("corgi", `${h}/.local/bin/corgi`, `${h}/.local/share/corgi/target/release/corgi`, `${h}/.cargo/bin/corgi`);
-  return [...new Set(list)];
-}
 
 // What an agent with no task of Corgi's is called: what it titled its
 // terminal, when that says something, else its tab's name, else its program.
@@ -324,7 +208,19 @@ function ownTitle(row, tab) {
   return tab?.named ? tab.name : prog || "agent";
 }
 
-export default class Projects extends View {
+export default class Projects {
+  // What Corgi says, from the store every copy shares (data.js).
+  get corgi() { return store.corgi; }
+  get seen() { return store.seen; }
+  get remotes() { return store.remotes; }
+  get corgiAgents() { return store.agents; }
+  get corgiProjects() { return store.projects; }
+  get paused() { return store.paused; }
+  get build() { return store.build; }
+  get daemon() { return store.daemon; }
+  get usage() { return store.usage; }
+  get machines() { return store.machines; }
+
   init(_props, cx) {
     this.git = {}; // where() -> { name, branch, upstream, ahead, behind, repo, linked }, null: not a repo
     // Pulls from a ↓N, by where(): { phase: "running" }, or "failed" with
@@ -345,29 +241,16 @@ export default class Projects extends View {
     this.born = {};
     this.pressed = null;
     this.over = null;
-    this.machines = [];
     this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
     for (const state of Object.values(this.reconnecting)) state.busy = false;
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
 
-    // Corgi: its program here, and what it says of each agent, by terminal.
-    this.corgi = null;
-    // What each machine's Corgi said last (null: this computer): { agents:
-    // terminal -> agent, projects: dir -> project, paused }. A machine whose
-    // Corgi did not answer has none: its rows show without Corgi's data.
-    this.seen = new Map();
-    // Corgi on the other machines, by name: { path (null: not found yet),
-    // missing, loading, last, took, located }.
-    this.remotes = {};
-    // Every machine's, together. An agent of another machine's is under
-    // its app address (`lab/t3`) and has its `machine`.
-    this.corgiAgents = new Map(); // address -> { role, task, worktree, state, project, machine, ... }
-    this.corgiProjects = new Map(); // projectKey(machine, dir) -> { base, supervisor, ... }
-    this.build = null; // the corgi that answers: { version, commit, dirty, source, newer }
-    this.daemon = null; // { running, pid, build, installed }
-    // Plan usage, as `corgi usage --json` gives it: { now, providers }.
-    this.usage = null;
-    this.usageLoading = false;
+    // The store's version this copy drew last, and how many answers each
+    // machine's Corgi had given then (see `sync`).
+    this.version = -1;
+    this.answers = new Map(store.answers);
+    // This copy's turns at reading for all (data.js, `Turns`).
+    this.turns = {};
     // The one merge under way, shown under its worker's row: { terminal,
     // name, dir, branch, base, phase, outcome, problem, closed }. Its phases:
     // confirm, running, result, asking (the supervisor), asked; once merged
@@ -376,17 +259,11 @@ export default class Projects extends View {
     // through), shown under the project once the worker's row is gone. A
     // close that went through puts the card away.
     this.merge = null;
-    // What `corgi status` says of a pause, every machine's together: { any,
-    // agents }, null when no machine's corgi knows one (no button then).
-    this.paused = null;
     // A pause or resume under way, { verb, phase: "running", count }, or
     // one that left agents behind, { verb, phase: "failed", failed, message }.
     this.pausing = null;
     // The offer's Close, which holds the keyboard so that Enter takes it.
     this.closeFocus = cx.focus_handle();
-    this.loading = false;
-    this.again = false;
-    this.agentKey = "";
 
     // Open project: the field, what it suggests, and what Enter is doing.
     this.open = false;
@@ -408,28 +285,29 @@ export default class Projects extends View {
     this.input.on("submit", (_e, cx) => this.submit(cx));
     this.handle = cx.focus_handle();
 
-    this.refreshMachines(cx);
-    cx.timer.every(15000, (cx) => this.refreshMachines(cx));
+    store.refreshMachines(cx, this.turns);
+    cx.timer.every(MACHINES_MS, (cx) => store.refreshMachines(cx, this.turns));
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
-    this.refreshCorgi(cx);
+    // Every copy polls; the store reads for all of them at once.
+    store.poll(cx, this.turns);
     cx.timer.every(POLL_MS, (cx) => {
-      this.refreshCorgi(cx);
-      this.refreshRemotes(cx);
+      store.poll(cx, this.turns);
+      store.refreshRemotes(cx);
     });
-    cx.timer.every(USAGE_POLL_MS, (cx) => this.refreshUsage(cx));
+    cx.timer.every(USAGE_POLL_MS, (cx) => store.refreshUsage(cx, this.turns));
     // Live agents changing is a sign Corgi's status did too; comparing is
     // cheap. Another machine's is read again only once its time has come.
+    // A read another copy began shows here on this tick.
     cx.timer.every(1000, (cx) => {
-      const key = agents().map((a) => `${a.address}:${a.status}`).join(",");
-      if (key !== this.agentKey) {
-        this.agentKey = key;
+      if (store.agentsChanged()) {
         this.refreshCorgi(cx);
-        this.refreshRemotes(cx);
+        store.refreshRemotes(cx);
       }
+      if (this.sync()) cx.notify();
     });
-    // `projects.open`, from a key or `herdr-app do`.
+    // `corgi.open`, from a key or `herdr-app do`.
     cx.spawn(async (cx) => {
       for (;;) {
         let command;
@@ -445,85 +323,23 @@ export default class Projects extends View {
 
   // --- Corgi -------------------------------------------------------------------
 
-  // The first corgi that answers `status --json`, kept until it stops answering.
-  async status() {
-    const candidates = this.corgi ? [this.corgi] : await corgiCandidates();
-    for (const path of candidates) {
-      try {
-        const r = await exec(path, ["status", "--json"], { timeout: 20000 });
-        if (r.code !== 0) continue;
-        const status = JSON.parse(r.stdout);
-        this.corgi = path;
-        return status;
-      } catch (_) {
-        // Not there, or not a corgi that knows status: the next one.
-      }
-    }
-    this.corgi = null;
-    return null;
-  }
-
+  // Reads this computer's Corgi again, now.
   refreshCorgi(cx) {
-    if (this.loading) {
-      this.again = true;
-      return;
-    }
-    this.loading = true;
-    cx.spawn(async (cx) => {
-      const status = await this.status();
-      // With no answer the pause stays as it was last said.
-      this.learn(null, status ?? { projects: [], paused: this.seen.get(null)?.paused ?? null });
-      this.build = status?.corgi ?? null;
-      this.daemon = status?.daemon ?? null;
-      if (status) this.dropGoneMerge(null);
-      this.loading = false;
-      // The first answer names the corgi to ask for usage too.
-      if (status && !this.usage) this.refreshUsage(cx);
-      cx.notify();
-      if (this.again) {
-        this.again = false;
-        this.refreshCorgi(cx);
-      }
-    });
+    store.refresh(cx);
   }
 
-  // Keeps what `machine`'s Corgi said (`status`), or forgets it (null), and
-  // puts every machine's together again.
-  learn(machine, status) {
-    if (!status) this.seen.delete(machine);
-    else {
-      const agents = new Map();
-      for (const p of status.projects ?? []) {
-        for (const a of p.agents ?? []) {
-          if (!a.terminal) continue;
-          // Corgi there names its own core's terminals; the app, `lab/t3`.
-          if (machine) agents.set(`${machine}/${a.terminal}`, { ...a, project: p.dir, machine });
-          else agents.set(a.terminal, { ...a, project: p.dir });
-        }
-      }
-      const projects = new Map((status.projects ?? []).map((p) => [p.dir, p]));
-      this.seen.set(machine, { agents, projects, paused: status.paused ?? null });
+  // Whether the store changed since this copy last drew, and what follows
+  // each machine's new answer here: a merge card with nothing left to stand
+  // for goes.
+  sync() {
+    if (this.version === store.version) return false;
+    this.version = store.version;
+    for (const [machine, n] of store.answers) {
+      if (this.answers.get(machine) === n) continue;
+      this.answers.set(machine, n);
+      this.dropGoneMerge(machine);
     }
-    this.combine();
-  }
-
-  // Every machine's agents, projects and pause, together.
-  combine() {
-    this.corgiAgents = new Map();
-    this.corgiProjects = new Map();
-    let paused = null;
-    // This computer's first: its agents, then each other machine's.
-    for (const m of this.seenMachines()) {
-      const s = this.seen.get(m);
-      for (const [address, a] of s.agents) this.corgiAgents.set(address, a);
-      for (const [dir, p] of s.projects) this.corgiProjects.set(projectKey(m, dir), p);
-      if (s.paused) {
-        paused ??= { any: false, agents: [] };
-        paused.any ||= Boolean(s.paused.any);
-        paused.agents.push(...(s.paused.agents ?? []).map((a) => (m ? { ...a, machine: m } : a)));
-      }
-    }
-    this.paused = paused;
+    return true;
   }
 
   // A question about a worker that is gone, or no longer tagged, and a
@@ -538,93 +354,15 @@ export default class Projects extends View {
 
   // The project an agent of Corgi's is in, from its machine's status.
   projectOf(machine, dir) {
-    return this.corgiProjects.get(projectKey(machine, dir));
+    return store.projectOf(machine, dir);
   }
 
-  // The other machines whose Corgi is read: those connected now. One that
-  // went away or was removed is forgotten, and its rows show without data.
-  remoteMachines() {
-    const connected = this.machines.filter((m) => m.state === "connected").map((m) => m.name);
-    for (const m of [...this.seen.keys()]) if (m !== null && !connected.includes(m)) this.learn(m, null);
-    for (const m of Object.keys(this.remotes)) if (!this.machines.some((k) => k.name === m)) delete this.remotes[m];
-    return connected;
-  }
-
-  refreshRemotes(cx) {
-    for (const m of this.remoteMachines()) this.refreshRemote(m, cx);
-  }
-
-  // Where corgi is on `machine`: its path, or null when it has none.
-  // Rejects when the machine cannot be asked.
-  async locate(machine) {
-    const r = await exec("sh", ["-c", LOCATE_CORGI], { on: machine, timeout: 20000 });
-    const path = r.code === 0 ? r.stdout.trim().split("\n").pop() : "";
-    return path.startsWith("/") ? path : null;
-  }
-
-  // `corgi status --json` on another machine, through herdr-core: at most
-  // every POLL_MS, less often when the machine is slow to answer, and
-  // `now` (after a merge, close or pause there) whenever none is running.
   refreshRemote(machine, cx, now = false) {
-    const r = (this.remotes[machine] ??= { path: null, missing: false, loading: false, last: 0, took: 0, located: 0 });
-    if (r.loading) return;
-    const at = Date.now();
-    if (!now && at - r.last < Math.max(POLL_MS, r.took * SLOW_FACTOR)) return;
-    if (!r.path && r.missing && at - r.located < LOCATE_MS) return;
-    r.loading = true;
-    r.last = at;
-    cx.spawn(async (cx) => {
-      let status = null;
-      try {
-        if (!r.path) {
-          r.located = Date.now();
-          r.path = await this.locate(machine);
-          r.missing = !r.path;
-        }
-        if (r.path) {
-          const res = await exec(r.path, ["status", "--json"], { on: machine, timeout: 20000 });
-          // Gone, or too old to know status: looked for again next time.
-          if (res.code === 0) status = JSON.parse(res.stdout);
-          else r.path = null;
-        }
-      } catch (_) {
-        // Away, corgi gone from there, or an answer that is not JSON: no
-        // data until it answers, and corgi is looked for again first.
-        r.path = null;
-      }
-      r.took = Date.now() - at;
-      r.loading = false;
-      // Gone meanwhile: nothing to keep.
-      if (this.machines.some((k) => k.name === machine && k.state === "connected")) {
-        this.learn(machine, status);
-        if (status) this.dropGoneMerge(machine);
-      }
-      cx.notify();
-    });
+    store.refreshRemote(machine, cx, now);
   }
 
-  // Reads `machine`'s Corgi again after acting there.
   refreshOn(machine, cx) {
-    if (machine) this.refreshRemote(machine, cx, true);
-    else this.refreshCorgi(cx);
-  }
-
-  // Plan usage from the corgi that answers status; a corgi too old to know
-  // `usage` leaves the boxes out.
-  refreshUsage(cx) {
-    if (!this.corgi || this.usageLoading) return;
-    this.usageLoading = true;
-    const path = this.corgi;
-    cx.spawn(async (cx) => {
-      try {
-        const r = await exec(path, ["usage", "--json"], { timeout: 30000 });
-        if (r.code === 0) this.usage = JSON.parse(r.stdout);
-      } catch (_) {
-        // Kept as it was: the next minute asks again.
-      }
-      this.usageLoading = false;
-      cx.notify();
-    });
+    store.refreshOn(machine, cx);
   }
 
   // --- Merge --------------------------------------------------------------------
@@ -644,22 +382,8 @@ export default class Projects extends View {
     cx.notify();
   }
 
-  // What `corgi COMMAND ARGS` (merge, close, pause, resume) answered on
-  // `machine` (null: this computer): its JSON, or a refusal saying why
-  // there is none.
-  async corgiJson(command, args, what, timeout = MERGE_TIMEOUT_MS, machine = null) {
-    const path = machine ? this.remotes[machine]?.path : this.corgi;
-    if (!path) return { result: "refused", message: machine ? `Corgi isn't installed on ${machine}` : NO_CORGI };
-    try {
-      const r = await exec(path, [command, ...args], machine ? { timeout, on: machine } : { timeout });
-      try {
-        return JSON.parse(r.stdout);
-      } catch (_) {
-        return { result: "refused", message: oneLine(r.stderr) || `corgi ${command} exited with ${r.code}` };
-      }
-    } catch (e) {
-      return { result: "refused", message: `${what} did not answer: ${e}` };
-    }
+  corgiJson(command, args, what, timeout = MERGE_TIMEOUT_MS, machine = null) {
+    return store.corgiJson(command, args, what, timeout, machine);
   }
 
   corgiMerge(m, args, what) {
@@ -916,9 +640,8 @@ export default class Projects extends View {
     return n;
   }
 
-  // The machines whose Corgi answered, this computer (null) first.
   seenMachines() {
-    return [...this.seen.keys()].sort((a, b) => (a === null ? -1 : b === null ? 1 : a.localeCompare(b)));
+    return store.seenMachines();
   }
 
   // The button: resumes while any agent is paused, on each machine that has
@@ -965,16 +688,8 @@ export default class Projects extends View {
       } else if (failed.length || refused.length) {
         this.pausing = { verb, phase: "failed", failed, message: several ? "" : oneLine(results[0][1].message) };
       } else this.pausing = null;
-      // The button follows at once; the status read after confirms it. A
-      // resume lets go of every mark, also of an agent that did not come back.
-      for (const [m, r] of results) {
-        const seen = this.seen.get(m);
-        if (!seen) continue;
-        const stopped = r.paused ?? [];
-        if (verb === "pause" && stopped.length) seen.paused = { any: true, agents: stopped.map((name) => ({ name })) };
-        if (verb === "resume" && r.result !== "refused") seen.paused = { any: false, agents: [] };
-      }
-      this.combine();
+      // The button follows at once; the status read after confirms it.
+      store.pauseDone(verb, results);
       cx.notify();
       for (const m of on) this.refreshOn(m, cx);
     });
@@ -1081,7 +796,7 @@ export default class Projects extends View {
     const BAR = 34;
     // The reset times need a sidebar of about 330 px; narrower they go whole,
     // rather than leave a lone `…`, and stay in the line's tooltip.
-    const roomy = (find(layout(), "sidebar")?.size?.px ?? Infinity) >= RESETS_FIT;
+    const roomy = sidebarPx() >= RESETS_FIT;
     const win = (name, w) =>
       h_flex().flex_1().min_w(0).gap(4).items_center()
         .child(div().flex_none().text_color(t.dim).child(name))
@@ -1195,7 +910,7 @@ export default class Projects extends View {
       const query = this.query;
       let rows = null;
       let failure = null;
-      if (!this.corgi) await this.status();
+      if (!this.corgi) await store.status();
       if (!this.corgi) failure = NO_CORGI;
       else {
         try {
@@ -1437,16 +1152,9 @@ export default class Projects extends View {
     return [key, ...(repo ? [...keys].filter((k) => this.git[k]?.repo === repo) : [])];
   }
 
+  // The machines, read again now for every copy: after a reconnect.
   refreshMachines(cx) {
-    cx.spawn(async (cx) => {
-      try {
-        const r = await hc(["machine", "ls", "--json"]);
-        if (r.code === 0) this.machines = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary);
-      } catch {}
-      // A machine just connected is read at once; one gone is forgotten.
-      this.refreshRemotes(cx);
-      cx.notify();
-    });
+    store.refreshMachines(cx);
   }
 
   rebuilt(machine) {
@@ -2022,6 +1730,7 @@ export default class Projects extends View {
   }
 
   render() {
+    this.sync();
     const t = theme();
     const collapsed = narrow();
     const version = collapsed ? null : this.versionLine(t);

@@ -10,8 +10,8 @@ parts:
 - `corgi daemon`, the same binary as a service of the user's session, which
   wakes supervisors when their workers stop, types their inboxes in, and
   hands them over to fresh sessions;
-- the mods in `herdr-app/mods/` (JavaScript, run by the app): the Projects
-  list of the sidebar and its brand row.
+- Corgi's mod, `herdr-app/mods/corgi` (JavaScript, run by the app), whose
+  views are the Projects list of the sidebar and its brand row.
 
 Everything runs on **herdr-core** (`hc`), the app's backend: agents are
 programs in hc terminals, and Corgi finds its own among them by the labels
@@ -21,10 +21,12 @@ it gave them. Corgi has no other backend and draws nothing itself.
 
 ```text
 Herdr app window (herdr-app)
-  └─ mods (herdr-app/mods/, JS)
-       ├─ projects ──── the sidebar's list: runs corgi status/usage/projects/open/
-       │                merge/close/pause/resume --json, here and on other machines
-       └─ corgi-brand ─ the sidebar's top row
+  └─ corgi, the mod (herdr-app/mods/corgi, JS): a block per view, named in its props
+       ├─ projects ── the sidebar's list: runs corgi projects/open/merge/close/
+       │              pause/resume --json, here and on other machines
+       ├─ brand ───── the sidebar's top row
+       └─ data.js ─── corgi status and usage --json and hc machine ls, read
+                      once for every block that shows the mod
 
 herdr-core (hc), one core per session
   ├─ <project>-supervisor ── a kept shell terminal with the supervisor typed into it
@@ -402,13 +404,16 @@ agents; this is what the binary does for them.
   (`.credentials.json`, or the macOS Keychain), which is unofficial and
   read-only. One reading per provider is shared by every process on the
   machine (`usage/<provider>.json`) and fetched at most once a minute.
-- **Layout.** `corgi app-layout` puts the Projects mod where the sidebar's
-  `spaces` block was, takes out its `agents` block, and puts the brand row
-  mod in its `brand` block, in the layout the window shows, and changes
-  nothing else, so other mods can change the same layout. Herdr's shipped
-  layouts are read-only (replaced on every start), so a shipped `main` is
-  first cloned to `corgi` and the window switched to it; a personal layout
-  is edited in place. `remove` puts Spaces and Agents back.
+- **Layout.** `corgi app-layout` makes the sidebar's `spaces` block show
+  the `corgi` mod's Projects list (`{"mod": "corgi", "props": {"view":
+  "projects"}}`), takes out its `agents` block, and makes its `brand` block
+  show the mod's brand row (`"view": "brand"`), in the layout the window
+  shows, and changes nothing else, so other mods can change the same
+  layout. Herdr's shipped layouts are read-only (replaced on every start),
+  so a shipped `main` is first cloned to `corgi` and the window switched to
+  it; a personal layout is edited in place. Blocks of the two mods Corgi
+  had before (`projects`, `corgi-brand`) become the one mod's, in every
+  personal layout. `remove` puts Spaces and Agents back, from either form.
 
 ## Installing
 
@@ -425,11 +430,13 @@ clones the checkout and runs that copy; in a checkout it
 3. asks once whether to add the OpenCode status plugin
    (`herdr-app/opencode/corgi-hc-status.js`), without which an OpenCode
    worker reports no state to hc and wakes no supervisor;
-4. puts each mod into the app's home, checked with `herdr-app check` and
-   swapped in whole, only when it differs;
-5. runs `corgi app-layout`.
+4. puts the mod into the app's home, checked with `herdr-app check` and
+   swapped in whole, only when it differs (in place of the retired overview
+   mod an earlier install left in `mods/corgi`);
+5. runs `corgi app-layout`, and then removes the old `projects` and
+   `corgi-brand` mods, when they are Corgi's.
 
-The mods run that checkout's `target/release/corgi` (named in each mod's
+The mod runs that checkout's `target/release/corgi` (named in its
 `config.json`). `--uninstall` undoes it.
 
 ## Configuration

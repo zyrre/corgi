@@ -1,10 +1,10 @@
 //! The Corgi logo of the Herdr app's sidebar brand row,
-//! `herdr-app/mods/corgi-brand/corgi.png`: a pixel corgi beside Herdr's own
+//! `herdr-app/mods/corgi/corgi.png`: a pixel corgi beside Herdr's own
 //! logo (see `brand_logo_svg`). `cargo brand-tile`, the alias for running
 //! the ignored test at the bottom of this file, draws it again; another
 //! test fails when the committed file is not the one drawn here.
 
-/// The sidebar brand row's Corgi logo (`herdr-app/mods/corgi-brand/corgi.png`)
+/// The sidebar brand row's Corgi logo (`herdr-app/mods/corgi/corgi.png`)
 /// as pixel art: a corgi's face on a 32 by 32 grid, the left half drawn here
 /// and mirrored. `.` is clear; the others are
 /// [`BRAND_COLOURS`]'. The face's painted cells run from row and column 5 to
@@ -144,10 +144,7 @@ mod tests {
     use super::*;
 
     fn brand_dir() -> &'static Path {
-        Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/herdr-app/mods/corgi-brand"
-        ))
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/herdr-app/mods/corgi"))
     }
 
     #[test]
@@ -211,8 +208,8 @@ mod tests {
     /// which may round differently on another processor.
     #[test]
     fn the_committed_brand_tile_is_the_one_drawn_here() {
-        let file = fs::File::open(brand_dir().join("corgi.png"))
-            .expect("herdr-app/mods/corgi-brand/corgi.png");
+        let file =
+            fs::File::open(brand_dir().join("corgi.png")).expect("herdr-app/mods/corgi/corgi.png");
         let mut reader = png::Decoder::new(std::io::BufReader::new(file))
             .read_info()
             .expect("a PNG");
@@ -231,7 +228,7 @@ mod tests {
         );
     }
 
-    /// Draws the brand row's logo into `herdr-app/mods/corgi-brand/`; run it
+    /// Draws the brand row's logo into `herdr-app/mods/corgi/`; run it
     /// with `cargo brand-tile`.
     #[test]
     #[ignore = "writes the brand row's logo; run it with `cargo brand-tile`"]

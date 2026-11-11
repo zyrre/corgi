@@ -1,4 +1,4 @@
-// Runs the Herdr app's mods (herdr-app/mods/*) under Node, past the first
+// Runs the Herdr app's Corgi mod (herdr-app/mods/corgi) under Node, past the first
 // frame `herdr-app check` renders: with stand-ins for the app's `gpui-kit`,
 // `gpui-base` and `herdr` modules, a made-up window (spaces, panes, agents)
 // and canned answers for the programs a mod runs. A stand-in element keeps
@@ -162,6 +162,7 @@ function world(overrides = {}) {
 const HERDR_EXPORTS = [
   'spaces', 'panes', 'agents', 'terminals', 'machines', 'focused', 'layout', 'window', 'theme', 'shared', 'setShared',
   'setAgentOrder', 'run', 'notify', 'openOverlay', 'home', 'appHome', 'readTextFile', 'watchFolder', 'nextCommand', 'hc', 'exec',
+  'props',
 ];
 const sources = {
   'gpui-kit': 'const k = globalThis.__kit; export const View = k.View, div = k.div, svg = k.svg, image = k.image;',
@@ -181,13 +182,29 @@ registerHooks({
     return next(url, url.includes('/herdr-app/mods/') ? { ...context, format: 'module' } : context);
   },
 });
+// A mod's own modules (`./data.js`) come with the copy of main.js that
+// imports them, so each `start` has modules of its own, as an app start
+// does, and copies started with the same `module` share them, as the
+// copies of one app's mod do.
+registerHooks({
+  resolve(specifier, context, next) {
+    const resolved = next(specifier, context);
+    const parent = context.parentURL ? new URL(context.parentURL) : null;
+    if (!parent?.pathname.includes('/herdr-app/mods/') || !parent.search || !specifier.startsWith('.')) return resolved;
+    const url = new URL(resolved.url);
+    url.search = parent.search;
+    return { ...resolved, url: url.href };
+  },
+});
 
 let copies = 0;
-// A mod, started in the window `w`: its view, and what its tasks and timers are.
-async function start(mod, w) {
+// A copy of the Corgi mod, started in the window `w` with the block's
+// `props`: its view, and what its tasks and timers are. Copies given the
+// same `module` (a name) share its modules, as the copies of one mod in the
+// app do; any other start loads them afresh, as an app start does.
+async function start(w, props = {}, module = `copy-${copies++}`) {
   globalThis.__world = w;
-  // A fresh module each time: a mod keeps state at its top level.
-  const module = await import(new URL(`../herdr-app/mods/${mod}/main.js?copy=${copies++}`, import.meta.url));
+  const loaded = await import(new URL(`../herdr-app/mods/corgi/main.js?module=${module}`, import.meta.url));
   const tasks = [];
   const cx = {
     notified: 0,
@@ -215,9 +232,13 @@ async function start(mod, w) {
       this.stopped += 1;
     },
   };
-  const view = new module.default();
-  // A mod with nothing to set up (the brand row) has no init.
-  view.init?.({}, cx);
+  const mod = new loaded.default();
+  // The block's props come from `props()`, as in the app; init's own
+  // argument is not them.
+  w.api.props = () => props;
+  mod.init(undefined, cx);
+  // The view the props chose (projects.js, brand.js).
+  const view = mod.part;
   // Runs until no task is left running, the ones started meanwhile too.
   const settle = async () => {
     while (tasks.length) await tasks.shift();
@@ -228,7 +249,7 @@ async function start(mod, w) {
     await settle();
   };
   await settle();
-  return { view, cx, settle, tick, render: () => view.render(cx) };
+  return { mod, view, cx, settle, tick, render: () => mod.render(cx) };
 }
 
 // --- reading a rendered view -----------------------------------------------------
@@ -426,15 +447,15 @@ function window(answers = {}) {
       agent('sp-home', 't7', 'done', '~/notes'),
     ],
     focused: { space: 'sp-home', tab: 'tab-sp-home', pane: 'pane-t8', terminal: 't8' },
-    files: { [`${APP}/mods/projects/config.json`]: JSON.stringify({ corgi: CORGI }) },
+    files: { [`${APP}/mods/corgi/config.json`]: JSON.stringify({ corgi: CORGI }) },
   });
   w.programs = [git, corgi({ status: STATUS, ...answers })];
   return w;
 }
 
-// The Projects mod with git read for every space.
-async function projects(w) {
-  const mod = await start('projects', w);
+// The Projects list (the mod's default view) with git read for every space.
+async function projects(w, props = {}, module = undefined) {
+  const mod = await start(w, props, module);
   await mod.tick(250);
   return mod;
 }
@@ -1073,7 +1094,7 @@ const opens = (w) => w.execs.filter((call) => call[1] === 'open').map((call) => 
   assert.equal(byId(mod.render(), 'open-project'), null);
 }
 
-// `projects.open`, as a key of the person's sends it, is the +.
+// `corgi.open`, as a key of the person's sends it, is the +.
 {
   const w = window({ projects: SUGGESTED });
   w.commands.push('open');
@@ -1563,10 +1584,10 @@ function pictures(el) {
 // the two names alike, Corgi's cut first, and the shipped row's buttons.
 {
   const w = world();
-  const mod = await start('corgi-brand', w);
+  const mod = await start(w, { view: 'brand' });
   const root = mod.render();
   assert.deepEqual(texts(root), ['Herdr', '+', 'Corgi']);
-  assert.deepEqual(pictures(root), ['frame/welcome/herdr.png', 'mods/corgi-brand/corgi.png', 'mods/corgi-brand/search.svg', 'mods/corgi-brand/sidebar.svg']);
+  assert.deepEqual(pictures(root), ['frame/welcome/herdr.png', 'mods/corgi/corgi.png', 'mods/corgi/search.svg', 'mods/corgi/sidebar.svg']);
   assert.deepEqual(kept(root).calls.pl, [76], 'room for the traffic lights');
   const herdr = byId(root, 'brand-herdr');
   const corgi = byId(root, 'brand-corgi');
@@ -1590,7 +1611,7 @@ function pictures(el) {
   w.sidebar = 210;
   const tight = mod.render();
   assert.deepEqual(texts(tight), []);
-  assert.deepEqual(pictures(tight), ['frame/welcome/herdr.png', 'mods/corgi-brand/search.svg', 'mods/corgi-brand/sidebar.svg']);
+  assert.deepEqual(pictures(tight), ['frame/welcome/herdr.png', 'mods/corgi/search.svg', 'mods/corgi/sidebar.svg']);
   w.sidebar = 220;
   assert.deepEqual(texts(mod.render()), ['Herdr', '+', 'Corgi'], 'room for both logos: the words are cut by the window');
   w.sidebar = 268;
@@ -1615,7 +1636,7 @@ function pictures(el) {
   w.sidebar = 44;
   const other = mod.render();
   assert.deepEqual(texts(other), []);
-  assert.deepEqual(pictures(other), ['mods/corgi-brand/sidebar.svg']);
+  assert.deepEqual(pictures(other), ['mods/corgi/sidebar.svg']);
   click(other, 'sidebar-toggle', mod.cx);
   assert.deepEqual(w.ran.at(-1), ['layout.resize', { id: 'sidebar', px: 268 }]);
   assert.deepEqual(kept(mod.render()).calls.pl, [14], 'no traffic lights off macOS');
@@ -1642,7 +1663,7 @@ function pauseStatus(any) {
 }
 const pauses = (w) => w.execs.filter((call) => call[1] === 'pause' || call[1] === 'resume').map((call) => call.slice(1));
 // The button as it reads: its icon (⏸ or ▶) and its text.
-const ICONS = { 'mods/projects/pause.svg': '⏸', 'mods/projects/play.svg': '▶' };
+const ICONS = { 'mods/corgi/pause.svg': '⏸', 'mods/corgi/play.svg': '▶' };
 const header = (root) => {
   const button = byId(root, 'agents-pause');
   if (!button) return null;
@@ -1873,7 +1894,7 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   // Asked on lab: where corgi is (a shell there), then its status, once.
   const [look, status] = onLab(w);
   assert.deepEqual([look[0], look[1][0], look[2]], ['sh', '-c', { on: LAB, timeout: 20000 }]);
-  for (const place of ['$app/mods/projects/config.json', 'command -v corgi', "-lc 'command -v corgi'", '$HOME/.local/bin/corgi', '$HOME/.cargo/bin/corgi']) {
+  for (const place of ['$app/mods/corgi/config.json', '$app/mods/projects/config.json', 'command -v corgi', "-lc 'command -v corgi'", '$HOME/.local/bin/corgi', '$HOME/.cargo/bin/corgi']) {
     assert.ok(look[1][1].includes(place), `the look tries ${place}`);
   }
   assert.deepEqual(status, [LAB_CORGI, ['status', '--json'], { on: LAB, timeout: 20000 }]);
@@ -2106,7 +2127,7 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
 
 // --- Corgi's layout: the installer changes it, never a mod ------------------------------
 
-// The Projects mod never runs `corgi app-layout` (it would clone and switch
+// The Projects list never runs `corgi app-layout` (it would clone and switch
 // layouts), switches the window's layout or says anything of the layout.
 {
   const w = window();
@@ -2117,18 +2138,113 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   assert.deepEqual(w.toasts, []);
 }
 
-// No mod turns an svg for a spinner: every one is the braille frames of
-// `spinner` (the app turns `spin` at about 10 fps while the window is quiet).
-// The rows and HERD have none at all (their badges say WORKING).
+// No module of the mod turns an svg for a spinner: every one is the
+// braille frames of `spinner` (the app turns `spin` at about 10 fps while
+// the window is quiet). The rows and HERD have none at all (their badges
+// say WORKING).
 {
   const { readdirSync, readFileSync } = await import('node:fs');
-  const mods = new URL('../herdr-app/mods/', import.meta.url);
-  for (const mod of readdirSync(mods)) {
-    let source;
-    try { source = readFileSync(new URL(`${mod}/main.js`, mods), 'utf8'); } catch { continue; }
-    assert.ok(!/\.spin\(/.test(source), `${mod}/main.js still turns an svg with .spin(`);
-    assert.ok(!source.includes('spinner.svg'), `${mod}/main.js still draws spinner.svg`);
+  const dir = new URL('../herdr-app/mods/corgi/', import.meta.url);
+  const modules = readdirSync(dir).filter((name) => name.endsWith('.js'));
+  assert.ok(modules.includes('projects.js') && modules.includes('data.js'), modules.join(' '));
+  for (const name of modules) {
+    const source = readFileSync(new URL(name, dir), 'utf8');
+    assert.ok(!/\.spin\(/.test(source), `corgi/${name} still turns an svg with .spin(`);
+    assert.ok(!source.includes('spinner.svg'), `corgi/${name} still draws spinner.svg`);
   }
+}
+
+// --- One mod, its views chosen by the blocks' props ---------------------------------
+
+// The installer's test for the retired overview mod (`mods/corgi` whose
+// main.js sets up its own install of corgi) must never match this one.
+{
+  const { readFileSync } = await import('node:fs');
+  const main = readFileSync(new URL('../herdr-app/mods/corgi/main.js', import.meta.url), 'utf8');
+  assert.ok(main.includes('io.github.zyrre.corgi'), "the installer's mark of Corgi's mods");
+  assert.ok(!/^const INSTALLER = /m.test(main), 'the mark of the retired overview mod');
+}
+
+// The brand row runs nothing; a view this Corgi lacks says so and runs
+// nothing either.
+{
+  const w = window();
+  const brand = await start(w, { view: 'brand' });
+  await brand.tick(5000);
+  assert.deepEqual(texts(brand.render()), ['Herdr', '+', 'Corgi']);
+  const later = await start(w, { view: 'questions' });
+  await later.tick(5000);
+  assert.deepEqual(texts(later.render()), ['This Corgi has no view questions: update Corgi.']);
+  assert.deepEqual(w.execs, []);
+  assert.deepEqual(w.ran, []);
+}
+
+// Copies of the mod share what Corgi says: however many blocks show the
+// Projects list (and the brand row beside them), `corgi status`, `corgi
+// usage` and `hc machine ls` run once per refresh, and every copy shows
+// the answer.
+{
+  const USAGE = { now: 1, providers: [] };
+  const w = window({ usage: USAGE });
+  let machineLists = 0;
+  w.api.hc = async () => {
+    machineLists += 1;
+    return { code: 0, stdout: JSON.stringify({ machines: w.machineList }), stderr: '' };
+  };
+  const reads = (what) => w.execs.filter((call) => call[1] === what).length;
+  const a = await projects(w, {}, 'shared');
+  const b = await projects(w, { view: 'projects' }, 'shared');
+  const brand = await start(w, { view: 'brand' }, 'shared');
+  // The first copy read for both; the second found it read.
+  assert.equal(reads('status'), 1);
+  assert.equal(reads('usage'), 1);
+  assert.equal(machineLists, 1);
+  assert.deepEqual(texts(byId(b.render(), 'agent-t3'))[0], 'Fix the cache so that it holds');
+  // Their timers tick out of step: still one read a period, by whichever
+  // copy's tick comes first.
+  for (let round = 1; round <= 3; round++) {
+    await b.tick(5000);
+    await a.tick(5000);
+    await brand.tick(5000);
+    assert.equal(reads('status'), 1 + round, `round ${round}`);
+  }
+  await a.tick(60000);
+  await b.tick(60000);
+  assert.equal(reads('usage'), 2);
+  await b.tick(15000);
+  await a.tick(15000);
+  assert.equal(machineLists, 2);
+  // The live agents changing reads at once, once.
+  const before = reads('status');
+  w.agents[0] = { ...w.agents[0], status: 'working' };
+  await a.tick(1000);
+  await b.tick(1000);
+  assert.equal(reads('status'), before + 1);
+  // A read one copy made shows in the other on its next tick.
+  w.programs[1] = corgi({ status: { ...STATUS, projects: [{ ...STATUS.projects[0], agents: STATUS.projects[0].agents.map((x) => (x.terminal === 't3' ? { ...x, task: 'Warm the cache' } : x)) }] }, usage: USAGE });
+  const drawn = b.cx.notified;
+  await a.tick(5000);
+  await b.tick(5000);
+  assert.equal(reads('status'), before + 2);
+  await b.tick(1000);
+  assert.ok(b.cx.notified > drawn, 'the other copy draws again');
+  assert.deepEqual(texts(byId(b.render(), 'agent-t3'))[0], 'Warm the cache');
+  // A copy that is gone (its timers stopped) leaves the reading to the rest.
+  for (let round = 1; round <= 2; round++) {
+    await b.tick(5000);
+    assert.equal(reads('status'), before + 2 + round);
+  }
+  // The brand row ran nothing of its own.
+  assert.ok(w.execs.every(([command, verb]) => command === 'git' || ['status', 'usage'].includes(verb)), JSON.stringify(w.execs));
+}
+
+// A copy started on its own, as after the mod is saved again (each copy
+// starts over on new modules), reads for itself.
+{
+  const w = window();
+  await projects(w, {}, 'one');
+  await projects(w, {}, 'two');
+  assert.equal(w.execs.filter((call) => call[1] === 'status').length, 2);
 }
 
 console.log('app mods: ok');

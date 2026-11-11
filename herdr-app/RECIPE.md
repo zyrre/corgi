@@ -1,6 +1,7 @@
 # Corgi
 
-Two mods and a change to your layout. The **Projects** mod is a sidebar list that stands in your layout where
+One mod, `corgi`, and a change to your layout. Each block of the layout that shows the mod shows one of its
+views, named in the block's props (`{"mod": "corgi", "props": {"view": "projects"}}`). The **Projects** list is a sidebar list that stands in your layout where
 Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, two lines each
 (the agent's task; under it, smaller, its harness's icon, its model, how
 full its context is and, at the right, its state as a badge: `WORKING`,
@@ -20,19 +21,24 @@ reads `▶ Agents`, which brings exactly those back. The
 last line says which Corgi runs (`Corgi 0.2.3 · 5b50895`) and whether a
 newer one has been merged since.
 
-The **brand row** mod draws the row at the top of the sidebar: Herdr's logo
+The **brand row** (`"view": "brand"`) draws the row at the top of the sidebar: Herdr's logo
 and "Herdr", a dim `+`, then Corgi's pixel corgi and "Corgi", so the window
 says it is Herdr with Corgi. Its search and sidebar buttons are Herdr's.
 
+A block with no view shows the Projects list; one naming a view this Corgi
+lacks says so in its block. The views' copies share what Corgi says: `corgi
+status` and `corgi usage` are read once for every block that shows the mod.
 They need the `corgi` command-line tool; `herdr-app/install.sh` in the
-Corgi repository installs the tool and the mods, and puts the Projects
+Corgi repository installs the tool and the mod, and puts the Projects
 list and the brand row into the layout the window shows. A layout of your own gets it in
 place; Herdr's own `main` is cloned to `corgi` first, which the window
 switches to (`"main"` shows Herdr's own again). Nothing else in the layout
-changes, so another mod's changes to it (a panel, a tab bar) stay. The
-Corgi mod, an overview of every project that an earlier Corgi showed in a
-space of its own, is retired, since Corgi's place in the app is the
-Projects list: the install removes one an earlier install left.
+changes, so another mod's changes to it (a panel, a tab bar) stay. Corgi
+had a mod per view before (`projects` and `corgi-brand`): the install makes
+their blocks the one mod's in each of your layouts, then removes their
+folders. The overview mod an earlier Corgi showed in a space of its own,
+also in `mods/corgi`, is retired, since Corgi's place in the app is the
+Projects list: the install replaces one an earlier install left.
 
 <!-- preview.png is still to be made, from a look at the running window. -->
 
@@ -42,15 +48,15 @@ Projects list: the install removes one an earlier install left.
 
 In the layout (yours, or `layouts/corgi.json`, listed as "Corgi", cloned
 from Herdr's `main`), the sidebar's block that showed Herdr's `spaces` mod
-shows the `projects` mod, and the block that showed its `agents` mod is
-gone, so in `main`'s sidebar the one list takes the whole height between
-the brand row and the footer. The brand row's block shows the
-`corgi-brand` mod; the footer stays Herdr's. Everything else is as it was
+shows the `corgi` mod's `projects` view, and the block that showed its
+`agents` mod is gone, so in `main`'s sidebar the one list takes the whole
+height between the brand row and the footer. The brand row's block shows
+its `brand` view; the footer stays Herdr's. Everything else is as it was
 (see "The layout").
 
 ### The brand row
 
-The `corgi-brand` mod fills the sidebar's `brand` block (46 px, on
+The `brand` view fills the sidebar's `brand` block (46 px, on
 `chrome`, text 13.5 px), as Herdr's `workspace-chrome` did:
 
 - From the left: Herdr's logo (`frame/welcome/herdr.png`, 20 px, radius
@@ -79,7 +85,7 @@ The `corgi-brand` mod fills the sidebar's `brand` block (46 px, on
   the rail (76 px on macOS, 44 elsewhere) and unfolds it to the width it
   had (`sidebar.width`, else 268), and sets `sidebar.collapsed`.
 
-The Projects mod fills its block on `chrome`, text 13 px:
+The `projects` view fills its block on `chrome`, text 13 px:
 
 - **Herd card** (the first thing in the mod, right under the brand row and
   above the header, 4 px above it and 2 px below; not in the rail, and not
@@ -256,6 +262,13 @@ The Projects mod fills its block on `chrome`, text 13 px:
   `agent.next` and `agent.prev` follow the list's order.
 - It reads `corgi status --json` when it starts, every 5 seconds, and when
   the app's live agents change (compared once a second), never more often.
+  Every copy of the mod (each block showing it) shares that read, and plan
+  usage and `hc machine ls` with it (`data.js`): the copies' timers take
+  turns, so a tick that finds a read begun on another copy's tick since its
+  own last one reads nothing, and `corgi status` runs once a period however
+  many blocks show the mod. The other copies draw the answer on their next
+  second's tick. A read whose copy closed under it counts as gone after 45
+  seconds.
   Each space's git is read as Herdr's Spaces list
   reads it. Without a `corgi` it still lists every space and agent, by
   their own titles.
@@ -266,8 +279,8 @@ The Projects mod fills its block on `chrome`, text 13 px:
   its last read took, so a slow machine is asked less often; a change in
   the live agents reads it again only once that time has come. Its
   `corgi` is found once, by a `sh -c` there: the path that machine's own
-  install wrote in its app's `mods/projects/config.json` (or, by an older
-  install, `mods/corgi/config.json`), `corgi` on the `PATH` exec has there, on its
+  install wrote in its app's `mods/corgi/config.json` (or, by an older
+  install, `mods/projects/config.json`), `corgi` on the `PATH` exec has there, on its
   login shell's `PATH` (`$SHELL -lc`), then `~/.local/bin/corgi`,
   `~/.local/share/corgi/target/release/corgi` and `~/.cargo/bin/corgi`.
   Found, it is kept until a read fails; with none, the header says so (see
@@ -283,8 +296,9 @@ The Projects mod fills its block on `chrome`, text 13 px:
   tagged worker counts as `MERGE` and its paused agent as paused once its
   Corgi has answered. Each machine's own `corgi daemon` wakes its own
   supervisors.
-- `+` (or the command `projects.open`, for a key such as `"cmd-o":
-  "projects.open"` in `keys.json`) opens the field with the keyboard in it,
+- `+` (or the command `corgi.open`, for a key such as `"cmd-o":
+  "corgi.open"` in `keys.json`; it was `projects.open` while the list was a
+  mod of its own) opens the field with the keyboard in it,
   and again puts it away; on the rail it unfolds the sidebar first. Opened,
   and after every key, it runs `corgi projects --json --query <text> --open
   <folder>…` with the folders its spaces on this computer are in: Corgi's
@@ -437,43 +451,52 @@ The Projects mod fills its block on `chrome`, text 13 px:
 
 ## Built from
 
-- The Projects mod, `mods/projects/` (`main.js`, `mod.json`: `"place":
-  "none"`, `"title": "Projects"`). It began as a copy of Herdr's `spaces`
-  mod (herdr-app 0.1.14) and is Corgi's own since: it follows no later
-  version of it. Imports: `View`, `div`, `image`, `svg` from `gpui-kit`;
-  `v_flex`, `h_flex`, `InputState`, `Input` from `gpui-base`; `spaces`,
-  `machines`, `panes`, `agents`, `focused`, `run`, `openOverlay`, `exec`,
-  `hc`, `theme`, `shared`, `setShared`, `setAgentOrder`, `watchFolder`,
-  `window`, `layout`, `home`, `appHome`, `readTextFile`,
-  `nextCommand` from `herdr`. App commands: `space.select`, `space.move`,
-  `space.new`, `agent.focus`, `layout.resize`; its own command `open`
-  (`projects.open`). It opens Herdr's `menu` mod as a popup and draws
-  Herdr's icons (`mods/workspace-chrome/*.svg`, the programs' `icons/`).
-  Programs: `git` (status and `rev-parse`, per space), `hc machine ls`,
-  `corgi status --json`, `corgi projects --json …`, `corgi open … --json`,
-  `corgi merge … --json` (with `--pull`, `--skip-upstream`, or
-  `--ask-supervisor <error> [--commit <commit>]`), `corgi close`, `corgi
-  pause`, `corgi resume`, and `sh -c` for a pull. On another machine,
-  through `exec`'s `on`: `git`, the pull's `sh -c`, the `sh -c` that finds
-  `corgi` there, and that `corgi`'s `status`, `merge`, `close`, `pause`
-  and `resume`; `corgi projects`, `open` and `usage` run on this computer
-  only. Files: `mods/projects/config.json` (`{ "corgi": "<path>" }`,
-  written by `herdr-app/install.sh`).
-- The brand row mod, `mods/corgi-brand/` (`main.js`, `mod.json`:
-  `"place": "none"`, `corgi.png`, and `search.svg` and `sidebar.svg`,
-  copies of Herdr's). It began as a copy of the brand row of Herdr's
-  `workspace-chrome` mod (herdr-app 0.1.14) and is Corgi's own since: it
-  follows no later version of it. Imports: `View`, `div`, `image`, `svg`
-  from `gpui-kit`; `h_flex` from `gpui-base`; `theme`, `run`, `window`,
-  `shared`, `setShared`, `layout` from `herdr`. App commands: `mod.open`
-  (`picker`), `layout.resize`. No programs or files.
+- The mod, `mods/corgi/` (`mod.json`: `"place": "none"`, `"title":
+  "Corgi"`). `main.js` reads the block's `props()` and hands its init and
+  render to the view it names (`projects`, the default, or `brand`; any
+  other draws one line saying this Corgi lacks it). The views' modules:
+  - `projects.js`, the Projects list. It began as a copy of Herdr's
+    `spaces` mod (herdr-app 0.1.14) and is Corgi's own since: it follows no
+    later version of it. Imports: `div`, `image`, `svg` from `gpui-kit`;
+    `v_flex`, `h_flex`, `InputState`, `Input` from `gpui-base`; `spaces`,
+    `machines`, `panes`, `agents`, `focused`, `run`, `openOverlay`,
+    `exec`, `hc`, `theme`, `shared`, `setShared`, `setAgentOrder`,
+    `watchFolder`, `window`, `home`, `nextCommand`, `notify` from `herdr`.
+    App commands: `space.select`, `space.move`, `space.new`,
+    `agent.focus`, `layout.resize`; its own command `open` (`corgi.open`).
+    It opens Herdr's `menu` mod as a popup and draws Herdr's icons
+    (`mods/workspace-chrome/*.svg`, the programs' `icons/`) and its own
+    `pause.svg` and `play.svg`. Programs: `git` (status and `rev-parse`,
+    per space), `corgi projects --json …`, `corgi open … --json`, `corgi
+    merge … --json` (with `--pull`, `--skip-upstream`, or
+    `--ask-supervisor <error> [--commit <commit>]`), `corgi close`, `corgi
+    pause`, `corgi resume`, and `sh -c` for a pull. On another machine,
+    through `exec`'s `on`: `git`, the pull's `sh -c`, and that machine's
+    `corgi`'s `merge`, `close`, `pause` and `resume`; `corgi projects`,
+    `open` and `usage` run on this computer only.
+  - `brand.js`, the brand row (with `corgi.png`, and `search.svg` and
+    `sidebar.svg`, copies of Herdr's). It began as a copy of the brand row
+    of Herdr's `workspace-chrome` mod (herdr-app 0.1.14) and is Corgi's own
+    since: it follows no later version of it. Imports: `div`, `image`,
+    `svg` from `gpui-kit`; `h_flex` from `gpui-base`; `theme`, `run`,
+    `window` from `herdr`. App commands: `mod.open` (`picker`),
+    `layout.resize`. No programs or files.
+  - `data.js`, what Corgi says, read once for every copy: `corgi status
+    --json` and `corgi usage --json` here, `hc machine ls`, and on another
+    machine the `sh -c` that finds `corgi` there and its `status`. Files:
+    `mods/corgi/config.json` (`{ "corgi": "<path>" }`, written by
+    `herdr-app/install.sh`).
+  - `ui.js`, what the views draw alike: the sidebar's width and rail, the
+    spinner, a state's badge, one-line text.
 - The layout: no file of this folder, but the one change `corgi
   app-layout` makes to the app's own (see "The layout").
 - `corgi projects --json` prints `{query, parent, projects: [{dir, name,
   badge, new, supervisor}]}`; `corgi open … --json` prints `{result: started
   | running | failed, message, project, name, terminal, created, place: new
   | own | shell}`; `corgi app-layout --json` prints `{result: edited |
-  cloned | unchanged | refused, layout, path, message}`.
+  cloned | unchanged | refused, layout, path, upgraded, message}`
+  (`upgraded`: the other layouts whose blocks of Corgi's old mods were made
+  the one mod's).
 - `corgi status --json` prints `{version: 2, generated, hc: {running,
   error}, daemon: {running, pid, build: {version, commit, dirty} | null,
   installed}, corgi: {version, commit, dirty, source, newer: {branch,
@@ -494,15 +517,17 @@ The Projects mod fills its block on `chrome`, text 13 px:
 ## The layout
 
 - `herdr-app/install.sh` runs `corgi app-layout --app <herdr-app> --home
-  <app home>` after the Projects mod is in place. It takes the layout the
+  <app home>` after the mod is in place. It takes the layout the
   window shows (`herdr-app status`; with the window closed the one it
   showed last, `layout` in `shared.json`, else `main`), or the one named
   with `--layout NAME`.
 - The change: in the node `sidebar` (or the whole layout, when it has no
-  such node), the one block whose `content.mod` is `spaces` shows
-  `projects` (it keeps its id `spaces`, its size and everything else),
-  the blocks whose `content.mod` is `agents` go, and the block `brand`
-  shows `corgi-brand` when it shows `workspace-chrome` (a layout with no
+  such node), the one block whose `content.mod` is `spaces` shows the
+  `corgi` mod's Projects list (`content` `{"mod": "corgi", "props":
+  {"view": "projects"}}`; it keeps its id `spaces`, its size and
+  everything else), the blocks whose `content.mod` is `agents` go, and the
+  block `brand` shows the mod's brand row (`"view": "brand"`, beside any
+  props it had) when it shows `workspace-chrome` (a layout with no
   `brand` block, or one showing another mod, keeps it as it is; the
   footer, `sidebar-footer`, stays `workspace-chrome`). Nothing else is touched:
   herdr-gitlab's `gitlab` block in `panel-body` and its `tabs-gitlab` tab
@@ -517,20 +542,28 @@ The Projects mod fills its block on `chrome`, text 13 px:
   clone does, and the command says how to switch
   (`herdr-app do layout.switch '{"name":"corgi"}'`). A `corgi` layout that
   is there already is used, and switched to, instead.
-- Run again, it changes nothing: a sidebar that shows `projects` keeps its
-  lists as they are, even with an Agents list put back by hand; a layout
-  Corgi changed before it had a brand row gets the brand row then. Corgi never builds
+- Corgi's old mods: a block anywhere in the layout that shows `projects`
+  or `corgi-brand` shows the `corgi` mod's view of the same (`projects`,
+  `brand`) instead, keeping the rest of the block, and so does every other
+  layout of the person's own that names them (`upgraded`), with nothing
+  else changed in it; the installer removes their folders only after.
+- Run again, it changes nothing: a sidebar that shows the Projects list
+  (the `corgi` mod with view `projects`, or no view) keeps its lists as
+  they are, even with an Agents list put back by hand; a layout Corgi
+  changed before it had a brand row gets the brand row then. Corgi never builds
   a layout from `main` again and does not follow Herdr's later changes to
   it.
-- A sidebar with no `spaces` and no `projects` block, or with more than
+- A sidebar with no `spaces` block and no Projects list, or with more than
   one `spaces` block, is not guessed at: nothing is changed or cloned, and
   the command says why (`--json`: `refused`, exit 0).
 - `corgi app-layout remove` (run by `herdr-app/install.sh --uninstall`,
-  before the Projects mod goes) puts Spaces and Agents back in each of the
-  person's layouts that shows `projects` or `corgi-brand`: the `projects`
-  block shows `spaces` again, an `agents` block (the one in Herdr's `main`)
-  follows it when the layout has none, and the `corgi-brand` block shows
-  `workspace-chrome` again. No layout is deleted (`corgi` stays, as the
+  before the mod goes) puts Spaces and Agents back in each of the
+  person's layouts that shows the Projects list or the brand row, of the
+  `corgi` mod or of its old `projects` and `corgi-brand`: the Projects
+  list's block shows `spaces` again, an `agents` block (the one in Herdr's
+  `main`) follows it when the layout has none, and the brand row's block
+  shows `workspace-chrome` again (without the `view` prop, and without
+  `props` when that was all). No layout is deleted (`corgi` stays, as the
   person's own) and the window is not switched.
 
 ## Watch out
@@ -548,7 +581,7 @@ The Projects mod fills its block on `chrome`, text 13 px:
   `agents` mods: Herdr replaces them whole on every start and moves an
   edited one aside. That is why a shipped layout is cloned to `corgi`
   before Corgi changes it.
-- The Projects mod is one mod standing where two stood, so what only
+- The Projects list is one list standing where two stood, so what only
   Herdr's Agents list did, it must: `setAgentOrder` on every render (or
   `agent.next` and `agent.prev` follow no list), and the `»` that unfolds
   the rail (on macOS the brand row has no room for its toggle there).
@@ -602,17 +635,22 @@ The Projects mod fills its block on `chrome`, text 13 px:
 - `herdr-app check` renders the first frame, where the field is closed and
   the window has no agents. To check the field and the agent rows, check a
   scratch copy of the mod whose `init` opens the field and whose `render`
-  adds rows made from made-up agents; `node scripts/test-app-mods.mjs` in
-  the Corgi repository runs both mods' other views with stand-ins.
+  adds rows made from made-up agents (for the brand row, a copy whose
+  `main.js` defaults to `brand`); `node scripts/test-app-mods.mjs` in
+  the Corgi repository runs every view with stand-ins.
+- A view reads its block's props with `props()` from `herdr`: `init`'s own
+  argument is not them. Module scope is shared by every copy of the mod
+  (each block showing it), which is where `data.js` keeps its one store;
+  a copy's own state stays on its view.
 - None of those shows what the window draws. In the Corgi repository,
   `scripts/app-preview start` opens a window of the checkout's own, with
-  these mods and made-up projects on a herdr-core of its own, and
+  this mod and made-up projects on a herdr-core of its own, and
   `scripts/app-preview shot <name>` saves a picture of it (macOS).
 
 ## Done when
 
-- `herdr-app check mods/projects` and `herdr-app check mods/corgi-brand`
-  pass.
+- `herdr-app check mods/corgi` passes, and so does a copy defaulting to
+  the `brand` view.
 - After `herdr-app/install.sh` on Herdr's `main`, `layouts/corgi.json` is
   there, records `cloned_from` and differs from `layouts/main.json` only in
   the sidebar's three blocks (`brand`, `spaces`, `agents`), and the window shows it: the sidebar is one

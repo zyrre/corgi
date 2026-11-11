@@ -571,7 +571,8 @@ fn app_layout_changes_the_sidebar_of_the_layout_in_the_home_it_is_given() {
     let layout = read("corgi");
     assert_eq!(
         layout["children"][0]["children"],
-        json!([{ "id": "spaces", "type": "block", "content": { "mod": "projects" } }])
+        json!([{ "id": "spaces", "type": "block",
+                 "content": { "mod": "corgi", "props": { "view": "projects" } } }])
     );
     assert_eq!(
         layout["cloned_from"],
@@ -589,6 +590,36 @@ fn app_layout_changes_the_sidebar_of_the_layout_in_the_home_it_is_given() {
         said.starts_with("put Corgi's Projects list in the sidebar of your layout mine"),
         "{said}"
     );
+
+    // Another layout of the person's own that still names Corgi's old
+    // mods has the one mod's views in their blocks, and nothing else
+    // changes in it.
+    let old = json!({ "id": "root", "type": "row", "children": [
+        { "id": "sidebar", "type": "column", "children": [
+            { "id": "brand", "type": "block", "content": { "mod": "corgi-brand" } },
+            { "id": "spaces", "type": "block", "content": { "mod": "projects" } } ] },
+        { "id": "main", "type": "block", "content": { "tab": "active" } } ] });
+    fs::write(home.join("layouts/legacy.json"), old.to_string()).unwrap();
+    let (upgraded, _) = world.json(&["app-layout", "--home", &home_text, "--json"]);
+    assert_eq!(upgraded["result"], "unchanged");
+    assert_eq!(upgraded["upgraded"], json!(["legacy"]));
+    assert!(
+        upgraded["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("; Corgi's mod in place of its old ones in your layout legacy"),
+        "{upgraded}"
+    );
+    assert_eq!(
+        read("legacy")["children"][0]["children"],
+        json!([
+            { "id": "brand", "type": "block",
+              "content": { "mod": "corgi", "props": { "view": "brand" } } },
+            { "id": "spaces", "type": "block",
+              "content": { "mod": "corgi", "props": { "view": "projects" } } } ])
+    );
+    let (again, _) = world.json(&["app-layout", "--home", &home_text, "--json"]);
+    assert_eq!(again["upgraded"], json!([]));
 
     // One with nowhere to put it is left, exits 0 and says why.
     fs::write(
@@ -618,7 +649,7 @@ fn app_layout_changes_the_sidebar_of_the_layout_in_the_home_it_is_given() {
     assert!(output.status.success());
     let said = String::from_utf8_lossy(&output.stdout);
     assert!(
-        said.contains("back in place of Corgi's Projects list in: corgi, mine;"),
+        said.contains("back in place of Corgi's Projects list in: corgi, legacy, mine;"),
         "{said}"
     );
     for name in ["corgi", "mine"] {
@@ -627,6 +658,14 @@ fn app_layout_changes_the_sidebar_of_the_layout_in_the_home_it_is_given() {
             main["children"][0]["children"]
         );
     }
+    assert_eq!(
+        read("legacy")["children"][0]["children"],
+        json!([
+            { "id": "brand", "type": "block", "content": { "mod": "workspace-chrome" } },
+            { "id": "spaces", "type": "block", "content": { "mod": "spaces" } },
+            // The Agents block of Herdr's main in this home.
+            { "id": "agents", "type": "block", "content": { "mod": "agents" } } ])
+    );
     assert!(home.join("layouts/corgi.json").exists());
 }
 

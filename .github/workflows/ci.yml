@@ -61,7 +61,7 @@ jobs:
         with:
           node-version: 26
 
-      - name: Test the Projects and brand row mods
+      - name: Test the Corgi mod
         run: node scripts/test-app-mods.mjs
 
       - name: Test the Jenkins mod

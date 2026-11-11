@@ -1,7 +1,7 @@
 # Development handoff
 
 Corgi is a tool for the Herdr app: the `corgi` binary (the command-line
-tools and the daemon), the mods in `herdr-app/mods/`, and the supervisor's
+tools and the daemon), its mod in `herdr-app/mods/corgi`, and the supervisor's
 role in `supervisor/`. ARCHITECTURE.md says how it works and why.
 
 After making a change, ensure it is visible in the running environment before
@@ -149,7 +149,7 @@ docker run --rm -v "$PWD":/src:ro -w /src -e CARGO_TARGET_DIR=/tmp/t \
 ```
 
 `cargo brand-tile` draws the brand row's logo
-(`herdr-app/mods/corgi-brand/corgi.png`) again from `src/brand_tile.rs`; a
+(`herdr-app/mods/corgi/corgi.png`) again from `src/brand_tile.rs`; a
 test fails while the committed file is not the one drawn there.
 
 To see how Claude Code sizes a model's context window when a new model
@@ -195,17 +195,31 @@ and OpenCode plugin and links `~/.local/bin/corgi`. Use `--mod-only --home`
 
 ## The Herdr app mod
 
-`herdr-app/mods/projects/` is the Herdr app's Projects mod, the list in
-the layout's sidebar, and `herdr-app/mods/corgi-brand/` its brand row mod, the
-"Herdr + Corgi" row at the sidebar's top; `herdr-app/RECIPE.md` describes
-them for people and agents, and `herdr-app/install.sh` installs them with
-the CLI and runs `corgi app-layout`
-(`src/app_layout.rs`). That changes one thing in the
+`herdr-app/mods/corgi/` is Corgi's one mod for the Herdr app (decision
+2026-11-11): each layout block that shows it shows the view its props name,
+`{"mod": "corgi", "props": {"view": "projects"}}`. `main.js` picks the
+view from `props()` (init's own argument is not the block's props) and
+hands it init and render; the views are modules of their own:
+`projects.js`, the Projects list in the layout's sidebar (the default, with
+no view), and `brand.js`, the "Herdr + Corgi" row at the sidebar's top;
+`ui.js` holds what they draw alike, and `data.js` what Corgi says (`corgi
+status`, `corgi usage`, `hc machine ls`), read once for every copy: the
+app runs a mod's modules once per source version and shares them by its
+copies, so `data.js`'s `store` is every block's, and the copies' timers
+take turns at reading. A later view (questions, in the right-hand
+`panel-body` stack) goes beside them as a module and an entry in `main.js`'s
+`VIEWS`. `herdr-app/RECIPE.md` describes the mod for people and agents,
+and `herdr-app/install.sh` installs it with the CLI and runs `corgi
+app-layout` (`src/app_layout.rs`). That changes one thing in the
 layout the window shows, in place, the left sidebar: its `spaces` block
-shows `projects`, its `agents` block goes, and its `brand` block shows
-`corgi-brand` instead of `workspace-chrome` (the `sidebar-footer` block
-stays `workspace-chrome`'s; a layout without a `brand` block keeps the
-rest of the change). A shipped layout
+shows the mod's `projects` view, its `agents` block goes, and its `brand`
+block shows the mod's `brand` view instead of `workspace-chrome` (the
+`sidebar-footer` block stays `workspace-chrome`'s; a layout without a
+`brand` block keeps the rest of the change). Corgi had a mod per view
+before, `projects` and `corgi-brand`: `app-layout` makes their blocks the
+one mod's in every personal layout (`upgrade_layouts`), `remove` restores
+Herdr's from either form, and the install removes their folders only after
+the layout was changed, and only when they are Corgi's. A shipped layout
 (`main`) is first cloned to `corgi`, as `layout.clone` does, and switched
 to; Corgi never rebuilds a layout from `main` and no mod touches the
 layout, so other mods' changes to it (herdr-gitlab's `gitlab` block in
@@ -213,39 +227,47 @@ layout, so other mods' changes to it (herdr-gitlab's `gitlab` block in
 real copies of the app's layouts and its `installed.json` (which names the
 shipped ones). The Corgi space and the Corgi mod it showed (an overview
 of every project) are retired (decision 2026-11-10: the user closed theirs
-on purpose; what Corgi needs in the app goes into the Projects mod), and
-`corgi app-space` with them. The install removes a `mods/corgi` an earlier
-install left in the app's home, when its `main.js` names
-`io.github.zyrre.corgi`. Herdr's shipped
+on purpose; what Corgi needs in the app goes into the Corgi mod), and
+`corgi app-space` with them. The overview lived in `mods/corgi` too, where
+the one mod goes now: the install removes it (`retired` in the installer)
+only when its `main.js` names `io.github.zyrre.corgi` and sets up its own
+install of corgi (`const INSTALLER = `), which every version of the
+overview did and the one mod never does (`scripts/test-app-mods.mjs`
+checks that). Herdr's shipped
 layouts and mods
 (`~/.config/herdr-app/layouts/main.json`, `mods/spaces`, `mods/agents`, …)
 are read-only: Herdr replaces them on every start and moves an edited one
 aside, so never edit them, and never switch the user's window to another
 layout without being asked to (the install's switch to the `corgi` clone
-is what the user asks for by installing). The Projects mod began as a copy of Herdr's
-`spaces`, and the brand row mod as a copy of the brand row of Herdr's
+is what the user asks for by installing). The Projects list began as a copy of Herdr's
+`spaces` mod, and the brand row as a copy of the brand row of Herdr's
 `workspace-chrome` (with its own copies of the two icons it draws); both
 are Corgi's own and follow no later version of them.
 
-The Projects mod reads `corgi status --json` and runs `corgi merge`
+The Projects list reads `corgi status --json` and runs `corgi merge`
 (both in `src/commands/status.rs`) from a tagged worker's MERGE mark (and `corgi merge … --ask-supervisor` for
 "Ask supervisor to fix"), and runs `corgi projects` and `corgi
 open` (`src/commands/open.rs`). Check every change with
-`herdr-app check herdr-app/mods/projects` and `herdr-app check
-herdr-app/mods/corgi-brand` (it writes `jsconfig.json` and
+`herdr-app check herdr-app/mods/corgi` (it writes `jsconfig.json` and
 `gpui-kit.d.ts` there, which Git ignores). `check` renders only the first
-frame (the Projects list with its field closed and no agents), so a
-mistake in another view passes it. Two things
+frame of the default view (the Projects list with its field closed and no
+agents; `props()` is empty there), so a mistake in another view, the brand
+row included, passes it: check a scratch copy whose `main.js` defaults to
+`brand` too. Two things
 cover the rest. The first must pass before a mod change is handed off:
 
 ```bash
 node scripts/test-app-mods.mjs
 ```
 
-It runs the mods under Node with stand-ins for `gpui-kit`, `gpui-base` and
+It runs the mod under Node with stand-ins for `gpui-kit`, `gpui-base` and
 `herdr` (chainable records whose `child`, `when` and `on_*` calls are kept,
 so a test reads each view's texts and calls its click and key handlers) and
 canned answers for `git` and `corgi`; add a case there for what you change.
+`start(w, props, module)` starts a copy with the block's `props`; copies
+given the same `module` name share the mod's modules (and so `data.js`'s
+store), as the copies of one mod do in the app, and any other start loads
+them afresh.
 `mod.tick()` and `mod.settle()` wait for every task still running, so a
 test that checks a state while one is pending (a canned `corgi` whose
 promise it resolves later) fires `mod.cx.timers` by hand instead.
@@ -268,9 +290,9 @@ change to a mod or to the layout in it before handing off, after the two
 fast checks above:
 
 ```bash
-cargo build --release                  # the mods run target/release/corgi
-scripts/app-preview start              # again after an edit: installs the mods again
-scripts/app-preview do projects.open   # any command of `herdr-app commands`, or a mod's own
+cargo build --release                  # the mod runs target/release/corgi
+scripts/app-preview start              # again after an edit: installs the mod again
+scripts/app-preview do corgi.open      # any command of `herdr-app commands`, or a mod's own
 scripts/app-preview shot open-project  # prints target/app-preview/open-project.png
 scripts/app-preview status             # layout, focus, and errors from mods and files
 scripts/app-preview stop               # always, before the final report
@@ -320,9 +342,9 @@ answers, on the preview's core. So is a close after a merge:
 `fake/close.json` (`fake/forced.json` for `--force`, `fake/close.delay`). The window takes no clicks from a script,
 so a state behind one (the question under a MERGE mark, a card's button)
 is reached by saving a copy of the mod into the preview's home
-(`/tmp/corgi-ap-…/home/mods/projects/main.js`; the app reloads it) whose
+(`/tmp/corgi-ap-…/home/mods/corgi/projects.js`; the app reloads it) whose
 command loop calls the handler the click calls (`this.askMerge`,
-`this.runMerge`, `this.closeWorker`), then `do projects.<command>`; `start` again puts the
+`this.runMerge`, `this.closeWorker`), then `do corgi.<command>`; `start` again puts the
 worktree's own mod back. Take a shot a second after a reload: until each
 space's git is read, the worktrees' spaces show as rows of their own.
 Change the made-up projects in `start_fakes` when a view needs
@@ -336,7 +358,7 @@ the script. What its choices rest on:
   pane the second window shows is resized to its size in the user's window
   too (a supervisor's screen was redrawn at the test window's width for
   the seconds a test ran), and the spaces are one document that every window's mods
-  write (the Projects mod reorders them with `space.move`).
+  write (the Projects list reorders them with `space.move`).
 - The app is run from a copy of the installed `Herdr.app`: it stages its
   own update beside its executable and swaps it in when it quits, which a
   second copy of the user's app would do under their running one. The home
@@ -402,7 +424,7 @@ run can land in Corgi's real state:
 `XDG_STATE_HOME=<scratch>/state sh herdr-app/install.sh --mod-only --home
 <scratch>/app` (`--uninstall --home` removes only what is in that home;
 an install without `--mod-only` still installs the user's daemon and
-OpenCode plugin). It checks the mods with the real `herdr-app check` and
+OpenCode plugin). It checks the mod with the real `herdr-app check` and
 changes the layout with the worktree's `target/release/corgi`; with no
 window on that home the shipped `main` is cloned to `corgi` by hand
 (`layout.clone` needs the window). `herdr-app check` runs the Projects
@@ -435,7 +457,7 @@ socket accepts a connection, so it may be run on the user's real core and
 state. Never run `corgi merge` against a real project; its tests use scratch
 repositories and a fake `hc` script.
 
-The Projects mod's `⏸ Agents` runs `corgi pause --json` and `▶ Agents`
+The Projects list's `⏸ Agents` runs `corgi pause --json` and `▶ Agents`
 `corgi resume --json` (`src/commands/pause.rs`, `src/hc/pause.rs`).
 Never run either on the user's core: a pause stops their working agents,
 and while it holds any agent their daemon types nothing into a supervisor.
@@ -457,7 +479,7 @@ the preview window, `fake/pause.json` and `fake/resume.json` (with
 `paused` and an agent's `"state": "paused", "paused": true` are what the
 list shows.
 
-The Projects mod also reads the Corgi of each other machine the window
+The Projects list also reads the Corgi of each other machine the window
 shows (`exec(…, { on })`, see RECIPE.md "How it behaves"): it runs merge,
 close and pause there, so every such call passes the worker's machine, and
 this computer's calls pass no `on` at all. In `scripts/test-app-mods.mjs`,
@@ -525,7 +547,7 @@ scripts/app-preview do tab.new --name Jenkins --mod jenkins  # or: do mod.open -
 ```
 
 The window takes no clicks, so a view behind one (a job, a log, the build
-form, the abort question) is reached as for the Projects mod: in the
+form, the abort question) is reached as for the Projects list: in the
 preview home's copy of `main.js`, add commands to the `nextCommand` loop
 that call what the click calls (`this.show({ kind: "job", place })`,
 `this.askBuild(place, cx)`, `this.build(cx)`, `this.askAbort(place, n,
@@ -551,7 +573,7 @@ CORGI_BUILD=source herdr-app/install.sh
 
 It builds `target/release/corgi` from what is checked out, installs the
 daemon's service again, which restarts the daemon on the new binary, puts
-the mods into the app's home when they differ, and makes sure the layout
+the mod into the app's home when it differs, and makes sure the layout
 has the Projects list (which, once it has, changes nothing). Nothing else
 needs reloading: the app reloads a mod the moment its files change (each
 shown copy starts over, so an open "Open project" field or a merge's result
