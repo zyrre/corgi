@@ -17,20 +17,32 @@
 #                  block at the right end of the layout's top row, after
 #                  everything that was there (the Files and Changes panel
 #                  stays where it was), full height, in the sidebar's colour.
-#                  Again: nothing changes. Drag its edge to size it
-#   --panel off    takes that panel out of the layout again; the mod stays
+#                  Again: nothing changes. Drag its edge to size it.
+#                  It also puts a Jenkins button, which shows and hides
+#                  the panel, into the layout's tab bar beside Files and
+#                  Changes: into a copy of Herdr's tab bar (mods/tabs-jenkins,
+#                  which the layout's tabs block then shows) when the
+#                  layout shows Herdr's own, or between marker lines into
+#                  the copy it shows (such as herdr-gitlab's tabs-gitlab).
+#                  If another mod's install later replaces that copy, run
+#                  --panel right again to bring the button back
+#   --panel off    takes that panel and its button out of the layout again
+#                  (and points it back at Herdr's tab bar while the copy is
+#                  as this script made it); the mod stays
 #   --layout NAME  the layout to change (layouts/NAME.json): by default the
 #                  one the window shows. Herdr's own layouts (main,
 #                  terminals, win98) are refused, since Herdr replaces them
 #                  on every start: clone one first (herdr-app do layout.clone)
-#   --uninstall   removes mods/jenkins, and every block showing it from your
-#                 layouts (only from NAME's, with --layout). The settings,
+#   --uninstall   removes mods/jenkins, and every block showing it and the
+#                 button from your layouts (only from NAME's, with
+#                 --layout), as --panel off does. The settings,
 #                 which hold the token (jenkins/settings.json in the app's
 #                 home), stay
 #   --forget      with --uninstall: removes the settings too
 #
 # A layout is changed in place, keeping all else in it as it was, which
-# needs python3 to read and write its JSON. The app shows a changed layout
+# needs python3 (install-layout.py, beside this script) to read and write
+# its JSON. The app shows a changed layout
 # within a second.
 #
 #   HERDR_APP_BIN=<path>   the herdr-app to check the mod with
@@ -66,7 +78,7 @@ while [ $# -gt 0 ]; do
     --uninstall) uninstall=1 ;;
     --forget) forget=1 ;;
     -h | --help)
-      sed -n '2,40p' "$0"
+      sed -n '2,48p' "$0"
       exit 0
       ;;
     *) die "unknown argument $1 (see --help)" ;;
@@ -90,140 +102,17 @@ mark='// Jenkins in the Herdr app'
 # Only ever replace or remove a folder that holds this mod.
 ours() { [ -f "$1/main.js" ] && head -n 1 "$1/main.js" | grep -qF "$mark"; }
 
-# Changes layouts in place: `add` puts the panel into one, `off` takes the
-# panel this script put in out of one, `all` takes every block showing the
-# mod out of every layout of the person's (or of --layout's), for the
-# uninstall. Herdr's own layouts are never changed. Each is written whole
-# with one rename, keeping its mode and all else in it.
+# Changes layouts in place, and the tab bar their `tabs` block shows
+# (install-layout.py says how): `add` puts the panel into one and a button
+# for it into its tab bar, `off` takes the panel this script put in and the
+# button out of one, `all` takes every block showing the mod and the button
+# out of every layout of the person's (or of --layout's), for the uninstall.
+# Herdr's own layouts and mods are never changed.
 edit_layouts() {
   command -v python3 >/dev/null 2>&1 ||
     die "changing a layout needs python3, which is not on PATH: add the block by hand (README.md has it)"
-  python3 -I - "$1" "$home_dir" "$layout" <<'PY'
-import json, os, sys
-
-action, home, name = sys.argv[1:4]
-MOD = "jenkins"
-# The block of the panel: full height at the right end of the top row, in the sidebar's colour.
-PANEL = {"type": "block", "content": {"mod": MOD, "props": {"panel": True}},
-         "size": {"px": 320}, "min": 260, "max": 640, "background": "chrome"}
-
-
-def say(text):
-    print(f"jenkins mod: {text}", file=sys.stderr)
-
-
-def fail(text):
-    say(text)
-    sys.exit(1)
-
-
-def load(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
-
-
-def nodes(node):
-    yield node
-    for child in node.get("children") or []:
-        if isinstance(child, dict):
-            yield from nodes(child)
-
-
-def shows(node, ours_only):
-    content = node.get("content")
-    if not isinstance(content, dict) or content.get("mod") != MOD:
-        return False
-    return not ours_only or (content.get("props") or {}).get("panel") is True
-
-
-# Takes the blocks showing the mod out from under `node`; a stack showing one
-# shows its first child left instead. Returns their ids.
-def take(node, ours_only):
-    gone = []
-    children = node.get("children")
-    if isinstance(children, list):
-        kept = []
-        for child in children:
-            if isinstance(child, dict) and shows(child, ours_only):
-                gone.append(child.get("id", ""))
-                continue
-            if isinstance(child, dict):
-                gone += take(child, ours_only)
-            kept.append(child)
-        node["children"] = kept
-        if node.get("active") in gone:
-            first = next((c.get("id") for c in kept if isinstance(c, dict) and c.get("id")), None)
-            if first:
-                node["active"] = first
-            else:
-                node.pop("active", None)
-    return gone
-
-
-def write(path, layout):
-    temp = os.path.join(os.path.dirname(path), f".{os.path.basename(path)}.jenkins")
-    with open(temp, "w", encoding="utf-8") as f:
-        f.write(json.dumps(layout, indent=2, ensure_ascii=False) + "\n")
-    os.chmod(temp, os.stat(path).st_mode & 0o777)
-    os.replace(temp, path)
-
-
-folder = os.path.join(home, "layouts")
-installed = load(os.path.join(home, "installed.json"))
-
-
-def shipped(n):
-    if isinstance(installed, dict):
-        return f"layout:{n}" in installed
-    return n in ("main", "terminals", "win98")
-
-
-if not name and action != "all":
-    name = (load(os.path.join(home, "shared.json")) or {}).get("layout")
-    if not isinstance(name, str) or not name:
-        fail("which layout? Name it with --layout (layouts/<name>.json)")
-if name:
-    names = [name]
-else:
-    names = sorted(f[:-5] for f in os.listdir(folder) if f.endswith(".json") and not f.startswith(".")) if os.path.isdir(folder) else []
-
-for n in names:
-    path = os.path.join(folder, f"{n}.json")
-    if shipped(n):
-        if action == "all":
-            continue
-        fail(f"{n} is Herdr's own layout, which Herdr replaces on every start: clone it first "
-             f"(herdr-app do layout.clone '{{\"name\":\"{n}\",\"as\":\"mine\"}}') and name the clone with --layout")
-    if not os.path.isfile(path):
-        fail(f"no layout {n} in {folder}")
-    layout = load(path)
-    if not isinstance(layout, dict):
-        fail(f"{path} is not a layout's JSON: left alone")
-    if action == "add":
-        there = next((x for x in nodes(layout) if shows(x, False)), None)
-        if there is not None:
-            say(f"layout {n} shows Jenkins already (block {there.get('id', '?')}): left as it is")
-            continue
-        if layout.get("type") != "row" or not isinstance(layout.get("children"), list):
-            fail(f"layout {n} is not a row of columns, so it has no right side for a panel: left alone")
-        taken = {x.get("id") for x in nodes(layout)}
-        block, i = "jenkins", 2
-        while block in taken:
-            block, i = f"jenkins-{i}", i + 1
-        layout["children"].append({"id": block, **PANEL})
-        write(path, layout)
-        say(f"layout {n}: Jenkins is a panel on the right now (block {block}); drag its edge to size it")
-    else:
-        gone = take(layout, action == "off")
-        if gone:
-            write(path, layout)
-            say(f"layout {n}: took Jenkins out (block {', '.join(gone)})")
-        elif name:
-            say(f"layout {n} has no Jenkins panel: left as it is")
-PY
+  [ -f "$here/install-layout.py" ] || die "no install-layout.py beside this script"
+  python3 -I "$here/install-layout.py" "$1" "$home_dir" "$layout" "${2:-}"
 }
 
 if [ -n "$uninstall" ]; then
@@ -231,8 +120,8 @@ if [ -n "$uninstall" ]; then
     ours "$target" || die "$target is another mod: left alone"
   fi
   # The layouts first: a block left naming a mod that is gone shows an error.
-  # (python3 is needed only when one does.)
-  if grep -qs '"mod": *"jenkins"' "$home_dir/layouts"/*.json; then edit_layouts all || exit 1; fi
+  # (python3 is needed only when one does, or shows the tab bar this script made.)
+  if grep -qs -e '"mod": *"jenkins"' -e '"mod": *"tabs-jenkins"' "$home_dir/layouts"/*.json; then edit_layouts all || exit 1; fi
   if [ -d "$target" ]; then
     rm -rf "$target" || die "could not remove $target"
     say "removed $target"
@@ -292,7 +181,7 @@ install_mod() {
 
 install_mod
 if [ "$panel" = right ]; then
-  edit_layouts add || exit 1
+  edit_layouts add "${HERDR_APP_BIN:-$(command -v herdr-app 2>/dev/null || true)}" || exit 1
 else
   say "show it with: install.sh --panel right, herdr-app do mod.open --name jenkins, or herdr-app do tab.new --name Jenkins --mod jenkins"
 fi

@@ -1409,6 +1409,263 @@ test('install.sh --panel right puts it on the right of a layout, once, and --pan
   fs.rmSync(home, { recursive: true });
 });
 
+// Herdr's tab bar (`mods/tabs/main.js`) as far as the Jenkins button needs it:
+// what the button's code uses, the window buttons it goes before, and an asset
+// path of its own, which a clone rewrites.
+const STOCK_TABS = `import { View, div, svg, image } from "gpui-kit";
+import { h_flex } from "gpui-base";
+import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+
+function find(node, id) {
+  if (node?.id === id) return node;
+  for (const child of node?.children ?? []) {
+    const found = find(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+export default class Tabs extends View {
+  render() {
+    const t = theme();
+    const stop = (_e, cx) => cx.stop_propagation();
+    const button = (id, label, action) => div().id(id).size(26).on_mouse_down("left", stop).on_click(action).child(label);
+    const root = layout(), w = window();
+    return h_flex().size_full().min_w(0).px(10).gap(3).items_center().bg(t.chrome)
+      .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup" })))
+      .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
+        .child(button("close-window", w.platform === "windows" ? svg("mods/tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));
+  }
+}
+`;
+
+// The Jenkins button in a tab bar's main.js, run as the tab bar would: its
+// element in a layout whose panel (block `id`) is shown or hidden, and the
+// commands its click runs.
+function jenkinsButton(text, id, hidden) {
+  const marks = text.split('\n');
+  const from = marks.findIndex((l) => l.trim().startsWith('// >>> Jenkins button'));
+  const to = marks.findIndex((l) => l.trim().startsWith('// <<< Jenkins button'));
+  assert.ok(from >= 0 && to > from, 'the button is between its markers');
+  const code = marks.slice(from, to + 1).join('\n');
+  const find = (node, want) => (node?.id === want ? node : (node?.children ?? []).map((c) => find(c, want)).find(Boolean) ?? null);
+  const root = { id: 'root', children: [{ id: 'tabs' }, { id, hidden }] };
+  const ran = [];
+  const colors = new Proxy({}, { get: (_t, name) => (typeof name === 'string' ? `#${name}` : undefined) });
+  const bar = element('h_flex');
+  // eslint-disable-next-line no-new-func
+  new Function('find', 'root', 't', 'stop', 'h_flex', 'svg', 'run', 'el', `return el\n${code};`)(
+    find, root, colors, () => {}, kit.h_flex, kit.svg, (command, args) => ran.push([command, args]), bar);
+  const [made] = kept(bar).children.map(kept);
+  return { made, ran };
+}
+
+test('install.sh --panel right puts a Jenkins button into the layout\'s tab bar: a copy of Herdr\'s, or the copy it shows', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jenkins-button-'));
+  const app = path.join(home, 'app'), mods = path.join(app, 'mods');
+  const checker = path.join(home, 'herdr-app');
+  // Logs what it checks, refuses while `<checker>.refuse` is there, and writes what the app writes into a mod folder.
+  fs.writeFileSync(checker, '#!/bin/sh\necho "$@" >> "$0.log"\nif [ -e "$0.refuse" ]; then echo "SyntaxError: nope" >&2; exit 1; fi\n: > "$2/jsconfig.json"\n', { mode: 0o755 });
+  const run = (...args) => {
+    const r = spawnSync('sh', [path.join(MOD, 'install.sh'), ...args, '--home', app], { env: { ...process.env, HERDR_APP_BIN: checker, HERDR_APP_HOME: '' }, encoding: 'utf8' });
+    return { code: r.status, out: `${r.stdout}${r.stderr}` };
+  };
+  const mod = (name, file) => path.join(mods, name, file);
+  const text = (name, file = 'main.js') => fs.readFileSync(mod(name, file), 'utf8');
+  const layoutFile = (name) => path.join(app, 'layouts', `${name}.json`);
+  const read = (name) => JSON.parse(fs.readFileSync(layoutFile(name), 'utf8'));
+  const buttons = (s) => s.split('"panel-jenkins"').length - 1;
+  const stagesLeft = () => fs.readdirSync(mods).filter((f) => f.startsWith('.'));
+
+  // An app home with Herdr's tab bar (and what the app writes beside it), and
+  // a personal layout whose tabs block shows it, as a clone of main does.
+  fs.mkdirSync(path.join(mods, 'tabs'), { recursive: true });
+  fs.mkdirSync(path.join(app, 'layouts'));
+  fs.writeFileSync(mod('tabs', 'main.js'), STOCK_TABS);
+  fs.writeFileSync(mod('tabs', 'mod.json'), '{ "place": "none", "title": "Tabs" }');
+  fs.writeFileSync(mod('tabs', 'win-min.svg'), '<svg/>');
+  fs.writeFileSync(mod('tabs', 'jsconfig.json'), '{}');
+  fs.writeFileSync(mod('tabs', 'gpui-kit.d.ts'), '');
+  fs.writeFileSync(path.join(app, 'installed.json'), JSON.stringify({ 'layout:main': {}, 'layout:terminals': {}, tabs: {}, 'terminals-bar': {}, files: {} }));
+  fs.writeFileSync(path.join(app, 'update-notes.json'), JSON.stringify({ last_run: '0.1.14' }));
+  fs.writeFileSync(path.join(app, 'shared.json'), JSON.stringify({ layout: 'mine' }));
+  const mine = { id: 'root', type: 'row', children: [
+    { id: 'sidebar', type: 'column', size: { px: 240 }, children: [{ id: 'spaces', type: 'block', content: { mod: 'spaces' } }] },
+    { id: 'work', type: 'column', children: [
+      { id: 'tabs', type: 'block', size: { px: 30 }, content: { mod: 'tabs' } },
+      { id: 'main', type: 'block', content: { tab: 'active' } }] }],
+    cloned_from: { name: 'main', version: '0.1.14' } };
+  fs.writeFileSync(layoutFile('mine'), JSON.stringify(mine, null, 2));
+  const stock = fs.readdirSync(path.join(mods, 'tabs')).sort();
+  const panel = { id: 'jenkins', type: 'block', content: { mod: 'jenkins', props: { panel: true } }, size: { px: 320 }, min: 260, max: 640, background: 'chrome' };
+  const withTabs = (layout, bar) => ({ ...layout, children: [layout.children[0], { ...layout.children[1], children: [{ ...layout.children[1].children[0], content: { mod: bar } }, layout.children[1].children[1]] }] });
+
+  // Herdr's own tab bar: cloned to tabs-jenkins, with the button, and the layout shows the copy.
+  let r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /made mods\/tabs-jenkins/);
+  assert.match(r.out, /run install\.sh --panel right again to bring the button back/);
+  assert.deepEqual(read('mine'), { ...withTabs(mine, 'tabs-jenkins'), children: [...withTabs(mine, 'tabs-jenkins').children, panel] });
+  assert.deepEqual(fs.readdirSync(path.join(mods, 'tabs-jenkins')).sort(), ['main.js', 'mod.json', 'win-min.svg'], 'what the app writes is not copied');
+  assert.deepEqual(JSON.parse(text('tabs-jenkins', 'mod.json')), { place: 'none', title: 'Tabs', cloned_from: { name: 'tabs', version: '0.1.14' } });
+  const clone = text('tabs-jenkins');
+  assert.ok(!clone.includes('mods/tabs/') && clone.includes('mods/tabs-jenkins/win-min.svg'), 'its own asset paths');
+  assert.equal(buttons(clone), 1);
+  assert.equal(text('tabs'), STOCK_TABS, 'Herdr\'s own is never changed');
+  assert.deepEqual(fs.readdirSync(path.join(mods, 'tabs')).sort(), stock);
+  assert.match(fs.readFileSync(`${checker}.log`, 'utf8'), /check .*\.jenkins-tabs-check/, 'the copy was checked before it was put in place');
+  assert.deepEqual(stagesLeft(), [], 'no staging folder is left');
+  assert.ok(clone.indexOf('"panel-jenkins"') < clone.indexOf('.when(w?.buttons'), 'just before the window buttons');
+
+  // The button: Jenkins with its icon; it toggles the panel's block, and looks selected while the panel shows.
+  let b = jenkinsButton(clone, 'jenkins', false);
+  assert.equal(b.made.id, 'panel-jenkins');
+  assert.deepEqual(b.made.children.map((c) => kept(c).args?.[0] ?? c), ['mods/jenkins/icons/jenkins.svg', 'Jenkins']);
+  assert.deepEqual(b.made.calls.bg, ['#selected']);
+  b.made.handlers.on_click();
+  assert.deepEqual(b.ran, [['layout.toggle', { id: 'jenkins' }]]);
+  assert.deepEqual(jenkinsButton(clone, 'jenkins', true).made.calls.bg, ['#chrome'], 'not selected while it is hidden');
+
+  // Again: nothing changes.
+  let at = [fs.statSync(mod('tabs-jenkins', 'main.js')).mtimeMs, fs.readFileSync(layoutFile('mine'), 'utf8')];
+  r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /mods\/tabs-jenkins has the Jenkins button already/);
+  assert.deepEqual([fs.statSync(mod('tabs-jenkins', 'main.js')).mtimeMs, fs.readFileSync(layoutFile('mine'), 'utf8')], at);
+
+  // Herdr updated its tab bar: the copy, as cloned, is cloned again.
+  fs.writeFileSync(mod('tabs', 'main.js'), STOCK_TABS.replace('min_w(0)', 'min_w(0).pl(12)'));
+  r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /updated mods\/tabs-jenkins/);
+  assert.ok(text('tabs-jenkins').includes('.pl(12)') && buttons(text('tabs-jenkins')) === 1);
+
+  // Off: the panel and the button go, the layout shows Herdr's tab bar again, and the copy goes.
+  r = run('--panel', 'off');
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(read('mine'), mine);
+  assert.ok(!fs.existsSync(path.join(mods, 'tabs-jenkins')));
+  assert.ok(fs.existsSync(mod('jenkins', 'main.js')), 'the mod stays');
+
+  // A copy that was changed after it was made (another mod's install put its
+  // button in) is the layout's from then on: only the button comes and goes.
+  assert.equal(run('--panel', 'right').code, 0);
+  fs.writeFileSync(mod('tabs-jenkins', 'main.js'), text('tabs-jenkins').replace('.child(button("tab-new"', '.child("GitLab")\n      .child(button("tab-new"'));
+  r = run('--panel', 'off');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /mods\/tabs-jenkins was changed since this installer made it: the layout keeps it/);
+  assert.deepEqual(read('mine'), withTabs(mine, 'tabs-jenkins'));
+  assert.equal(buttons(text('tabs-jenkins')), 0);
+  assert.ok(text('tabs-jenkins').includes('"GitLab"'));
+  r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /put a Jenkins button into mods\/tabs-jenkins\/main\.js/);
+  assert.ok(buttons(text('tabs-jenkins')) === 1 && text('tabs-jenkins').includes('"GitLab"'));
+  r = run('--uninstall');
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(read('mine'), withTabs(mine, 'tabs-jenkins'));
+  assert.equal(buttons(text('tabs-jenkins')), 0);
+  fs.rmSync(path.join(mods, 'tabs-jenkins'), { recursive: true });
+
+  // Another mod named tabs-jenkins is never taken over.
+  fs.writeFileSync(layoutFile('mine'), JSON.stringify(mine, null, 2));
+  fs.mkdirSync(path.join(mods, 'tabs-jenkins'));
+  fs.writeFileSync(mod('tabs-jenkins', 'main.js'), '// somebody else\'s\n');
+  r = run('--panel', 'right');
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /tabs-jenkins is another mod/);
+  assert.deepEqual(read('mine'), mine, 'nothing was changed');
+  assert.equal(text('tabs-jenkins'), '// somebody else\'s\n');
+  fs.rmSync(path.join(mods, 'tabs-jenkins'), { recursive: true });
+  fs.rmSync(path.join(mods, 'jenkins'), { recursive: true });
+
+  // A copy the layout shows already (herdr-gitlab's tabs-gitlab): the button
+  // goes into it between markers, once, and comes out leaving it byte for byte as it was.
+  const gitlab = STOCK_TABS.replaceAll('mods/tabs/', 'mods/tabs-gitlab/')
+    .replace('.when(w?.buttons', '.when(true, el => el.child("GitLab"))\n      .when(w?.buttons');
+  fs.mkdirSync(path.join(mods, 'tabs-gitlab'));
+  fs.writeFileSync(mod('tabs-gitlab', 'main.js'), gitlab, { mode: 0o640 });
+  fs.writeFileSync(mod('tabs-gitlab', 'mod.json'), JSON.stringify({ place: 'none', cloned_from: { name: 'tabs', version: '0.1.14' } }));
+  fs.writeFileSync(layoutFile('mine'), JSON.stringify(withTabs(mine, 'tabs-gitlab'), null, 2));
+  r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /put a Jenkins button into mods\/tabs-gitlab\/main\.js/);
+  assert.deepEqual(read('mine').children.at(-1), panel);
+  assert.equal(read('mine').children[1].children[0].content.mod, 'tabs-gitlab', 'the layout keeps showing the copy');
+  assert.ok(!fs.existsSync(path.join(mods, 'tabs-jenkins')), 'no clone of its own');
+  const edited = text('tabs-gitlab');
+  assert.equal(buttons(edited), 1);
+  assert.ok(edited.indexOf('"GitLab"') < edited.indexOf('"panel-jenkins"'), 'after the other mod\'s button');
+  assert.equal(fs.statSync(mod('tabs-gitlab', 'main.js')).mode & 0o777, 0o640, 'its mode kept');
+  b = jenkinsButton(edited, 'jenkins', false);
+  b.made.handlers.on_click();
+  assert.deepEqual(b.ran, [['layout.toggle', { id: 'jenkins' }]]);
+  assert.deepEqual(stagesLeft(), []);
+  at = [fs.statSync(mod('tabs-gitlab', 'main.js')).mtimeMs, fs.readFileSync(layoutFile('mine'), 'utf8')];
+  r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual([fs.statSync(mod('tabs-gitlab', 'main.js')).mtimeMs, fs.readFileSync(layoutFile('mine'), 'utf8')], at, 'again: nothing changes');
+
+  // A second layout showing the same copy keeps the button while it has the panel.
+  fs.writeFileSync(layoutFile('other'), JSON.stringify(withTabs(mine, 'tabs-gitlab'), null, 2));
+  assert.equal(run('--panel', 'right', '--layout', 'other').code, 0);
+  r = run('--panel', 'off');
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(read('mine'), withTabs(mine, 'tabs-gitlab'));
+  assert.equal(text('tabs-gitlab'), edited, 'the other layout still has the panel');
+  r = run('--panel', 'off', '--layout', 'other');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(text('tabs-gitlab'), gitlab);
+  fs.rmSync(layoutFile('other'));
+
+  // A button put in by hand, not between the markers, is not doubled, and is left there.
+  const byHand = gitlab.replace('.when(w?.buttons', '.child(h_flex().id("panel-jenkins").child("Jenkins"))\n      .when(w?.buttons');
+  fs.writeFileSync(mod('tabs-gitlab', 'main.js'), byHand);
+  r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /mods\/tabs-gitlab\/main\.js has a Jenkins button already, not between this installer's markers: left as it is/);
+  assert.equal(text('tabs-gitlab'), byHand);
+  r = run('--panel', 'off');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /a Jenkins button that this installer did not put in: left as it is/);
+  assert.equal(text('tabs-gitlab'), byHand);
+
+  // Nowhere to put it, or a check that fails: nothing is written, and it says where the README shows it.
+  fs.writeFileSync(mod('tabs-gitlab', 'main.js'), gitlab.replace('.when(w?.buttons', '.when(w?.controls'));
+  const layoutBefore = fs.readFileSync(layoutFile('mine'), 'utf8');
+  r = run('--panel', 'right');
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /not like Herdr's tab bar.*README\.md.*Nothing was changed/);
+  assert.equal(fs.readFileSync(layoutFile('mine'), 'utf8'), layoutBefore);
+  assert.equal(text('tabs-gitlab'), gitlab.replace('.when(w?.buttons', '.when(w?.controls'));
+  fs.writeFileSync(mod('tabs-gitlab', 'main.js'), gitlab);
+  fs.writeFileSync(`${checker}.refuse`, '');
+  r = run('--panel', 'right');
+  assert.notEqual(r.code, 0);
+  assert.match(r.out, /herdr-app check refused mods\/tabs-gitlab\/main\.js.*SyntaxError: nope/);
+  assert.equal(fs.readFileSync(layoutFile('mine'), 'utf8'), layoutBefore);
+  assert.equal(text('tabs-gitlab'), gitlab);
+  assert.deepEqual(stagesLeft(), []);
+  fs.rmSync(`${checker}.refuse`);
+
+  // The uninstall takes the button out with the panel.
+  assert.equal(run('--panel', 'right').code, 0);
+  r = run('--uninstall');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(text('tabs-gitlab'), gitlab);
+  assert.deepEqual(read('mine'), withTabs(mine, 'tabs-gitlab'));
+  assert.ok(!fs.existsSync(path.join(mods, 'jenkins')));
+
+  // A tab bar of Herdr's other than tabs (the Terminals layout's): the panel, and no button.
+  fs.writeFileSync(layoutFile('mine'), JSON.stringify(withTabs(mine, 'terminals-bar'), null, 2));
+  r = run('--panel', 'right');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /Herdr's terminals-bar, which this installer cannot put a button into.*layout\.toggle --id jenkins/);
+  assert.deepEqual(read('mine').children.at(-1), panel);
+  assert.equal(read('mine').children[1].children[0].content.mod, 'terminals-bar');
+  fs.rmSync(home, { recursive: true });
+});
+
 let failed = 0;
 for (const { name, run } of cases) {
   skew = 0;

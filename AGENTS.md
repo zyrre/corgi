@@ -550,8 +550,21 @@ scripts/app-preview shot jenkins                             # or, without --pan
 `mod.json` says `"place": "right"` (tried there): a block at the end of the
 layout's root row, after `work`, so the Files and Changes `panel` inside
 `work-body` keeps its toggle. The installer edits the layout with
-`python3`, as it is a shell script with no JSON parser of its own; its test
-(`tests/test.mjs`) runs it on scratch layouts. A narrow panel is `do
+`python3`, as it is a shell script with no JSON parser of its own
+(`install-layout.py` beside it, not copied into the mod); its test
+(`tests/test.mjs`) runs it on scratch layouts. `--panel right` also puts a
+Jenkins button into the tab bar the layout's `tabs` block shows (decision
+2026-11-11): Herdr's `tabs` (read-only, no extension point) is cloned by
+hand to `mods/tabs-jenkins` (asset paths rewritten, `cloned_from`, and a
+first line with the hash of what was cloned, by which `--panel off` and
+`--uninstall` tell a copy still as cloned, which they point the layout
+back from and remove, from one another installer changed, which stays),
+and a copy (herdr-gitlab's `tabs-gitlab`) gets it between marker lines
+just before `.when(w?.buttons, …)`; an unmarked `panel-jenkins` there is
+left alone and not doubled. Every edit is worked out and `herdr-app check`ed
+before anything is written. The test's tab bar is a stand-in
+(`STOCK_TABS`), as CI has no app home: when Herdr's `tabs` changes, check
+a scratch home holding a copy of the real `mods/tabs`. A narrow panel is `do
 layout.resize --id jenkins --px 260`. The preview's app copy shows its own
 "Herdr … are ready" update toast over the bottom right corner, where the
 panel's footer is, and no command dismisses it.
