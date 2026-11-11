@@ -25,12 +25,24 @@ The **brand row** (`"view": "brand"`) draws the row at the top of the sidebar: H
 and "Herdr", a dim `+`, then Corgi's pixel corgi and "Corgi", so the window
 says it is Herdr with Corgi. Its search and sidebar buttons are Herdr's.
 
+The **Questions** panel (`"view": "questions"`) is in the right-hand panel,
+beside Files and Changes, with a "Questions" button in the tab bar that
+counts the open questions. It shows one project's supervisor's open
+questions to you, each a card with its options as buttons, the
+recommended one marked, a field for an answer of your own and a Send that
+sends that one answer, then the project's backlog, each entry with a Start
+that asks the supervisor to plan it. An answer waits until the supervisor
+is between turns and its box holds no draft, and is then typed into its
+box. A supervisor's row in the Projects list shows how many of its
+questions are open; a click shows them in the panel.
+
 A block with no view shows the Projects list; one naming a view this Corgi
 lacks says so in its block. The views' copies share what Corgi says: `corgi
 status` and `corgi usage` are read once for every block that shows the mod.
 They need the `corgi` command-line tool; `herdr-app/install.sh` in the
 Corgi repository installs the tool and the mod, and puts the Projects
-list and the brand row into the layout the window shows. A layout of your own gets it in
+list, the brand row and the Questions panel (with its tab bar button) into
+the layout the window shows. A layout of your own gets it in
 place; Herdr's own `main` is cloned to `corgi` first, which the window
 switches to (`"main"` shows Herdr's own again). Nothing else in the layout
 changes, so another mod's changes to it (a panel, a tab bar) stay. Corgi
@@ -53,6 +65,58 @@ shows the `corgi` mod's `projects` view, and the block that showed its
 height between the brand row and the footer. The brand row's block shows
 its `brand` view; the footer stays Herdr's. Everything else is as it was
 (see "The layout").
+
+### The Questions panel
+
+The `questions` view is a child of the layout's right-hand panel stack
+(`panel-body`, beside Files and Changes), the block `corgi-questions`, on
+`background` with radius 10 and a `border` border as theirs, under a 42 px
+header ("Questions", the open count as a pill in `accent`, the project's
+name at the right). The tab bar has a "Questions" button beside Files and
+Changes (Herdr's `panelButton`, the `question.svg` icon), with the count of
+open questions as an `accent` pill when there are any; it shows the panel,
+or hides it while it shows. The tab bar remembers per space whether the
+panel was open, as it does for Files and Changes.
+
+It shows one project, the current one: the project whose count was
+clicked (below), while the space shown then stays shown; else the project
+of the active space (a Corgi agent's project in it, or the project whose
+folder holds the space's group, its worktrees' spaces included). With none,
+it says "No project" and how to pick one. Then, in one scroll:
+
+- **Questions**, by number: each `questions/Q<n>.md` the supervisor keeps.
+  A card shows its id, title, what it blocks (a tag in `blocked`: `blocks
+  merge · <task>`, `blocks <plan>`, or a dim "no block"), the context, the
+  options as buttons (letter, choice, cost; the recommended one bordered
+  in `accent` with a RECOMMENDED tag on a line of its own), the
+  recommendation and what waits until it is answered, then an "Other
+  answer" field to type an answer of one's own, and the card's Send. A
+  click on an option picks it (filled in `accent`); typing in the field
+  picks the text instead; Send ("Send B", or "Send" for the text) runs
+  `corgi answer --project DIR --json Q7=B` (or `Q7=other: <text>`), one
+  card at a time. The answer then shows on the card: "Queued B: goes when
+  the supervisor is idle" in `accent`, then "✓ Sent B 2 min ago"; the card
+  goes once the supervisor deletes the question's file. A refusal shows on
+  the card in `blocked`. A question file that strays from the form shows
+  its text, with the field and Send.
+- Cards are closed (id, title, what it blocks, and the answer or `★` and
+  the recommended option) when answered, and all of them while more than
+  two are open; a click opens one, and an open card's `▾` closes it.
+- **Backlog**: each `## ` entry of `backlog.md`, its heading and the first
+  three lines of its text, with a Start button, which runs `corgi answer
+  --project DIR --json --start <heading>`: the supervisor is asked to plan
+  the entry and propose the plan; nothing is started. The button then
+  reads "Plan asked · queued", then "✓ Plan asked".
+
+The panel reads `corgi questions --json` and `corgi backlog --json` (on the
+project's machine) only while it is shown: when the project's questions
+or the items waiting in its inbox change in `corgi status`, after an answer,
+and every 30 seconds.
+
+A supervisor's row in the Projects list ends its first line with a blue
+pill, the question icon and N, while N of its questions have no answer
+from the app (`open_questions` in `corgi status`); a click shows the
+Questions panel on its project, and does not focus the supervisor.
 
 ### The brand row
 
@@ -504,8 +568,17 @@ The `projects` view fills its block on `chrome`, text 13 px:
   state_dir, base, supervisor, agents:
   [{name, role, state, task, model, harness, ctx_pct, cache: {state,
   minutes_left, tokens, estimated}, cwd, branch, worktree, tag, request_id,
-  terminal}], questions: [{id, title, blocks, file}], inbox_pending,
-  ledger: {needs_answer, ready_to_merge, dispatched}, backlog}]}`.
+  terminal}], questions: [{id, title, blocks, file}], open_questions,
+  inbox_pending, ledger: {needs_answer, ready_to_merge, dispatched},
+  backlog}]}`: `open_questions` counts the `questions/` files without an
+  answer from the app. `corgi questions --json [--project DIR]` prints
+  `{project, state_dir, open, questions: [{id, number, title, blocks:
+  {kind: merge | plan | none, what} | null, context, options: [{key,
+  choice, cost}], recommended, recommendation, until, parsed, raw, file,
+  answer: {answer, state: queued | sent, at} | null}]}`; `corgi backlog
+  --json` `{project, title, intro, entries: [{heading, body, start: {state,
+  at} | null}]}`; `corgi answer --json` `{result: queued | refused,
+  message}`.
   `corgi merge` prints `{result: merged | conflicts | push-failed | refused
   | asked, message, commit, reason, error}`: `reason` is why it was refused
   (`unavailable`, `behind`, `fetch-failed`, `failed`, `no-agent`,
@@ -556,6 +629,26 @@ The `projects` view fills its block on `chrome`, text 13 px:
 - A sidebar with no `spaces` block and no Projects list, or with more than
   one `spaces` block, is not guessed at: nothing is changed or cloned, and
   the command says why (`--json`: `refused`, exit 0).
+- The Questions panel: a block `corgi-questions` showing the `corgi`
+  mod's `questions` view goes last into the stack `panel-body` of the
+  column `panel`, when the layout has them and no such block yet. And a
+  Questions button goes into the tab bar the layout's block `tabs` names.
+  Herdr's own `tabs` is never edited: it is cloned to `mods/tabs-corgi`
+  (asset paths rewritten, `cloned_from` in its `mod.json`, and a first
+  line of `main.js` saying Corgi made it, with a hash of what it held),
+  checked with `herdr-app check`, and the block pointed at the clone. A
+  copy already there (herdr-gitlab's `tabs-gitlab`, the Jenkins mod's
+  `tabs-jenkins`, one's own) is edited in place. Either way two places
+  change, each between `// >>> Corgi questions …` and `// <<< Corgi
+  questions …` marker lines: just before the tab bar's `this.syncPanel(…)`
+  call (and before any comment lines just above it, such as another
+  installer's markers) a line adds `corgi-questions` to the panels it
+  remembers per space, while the stack has the panel; and just before the
+  window buttons (`.when(w?.buttons,`) the button, the tab bar's own
+  `panelButton("corgi-questions", "Questions", "mods/corgi/question.svg")`
+  with the count, `shared("corgi.questions.count")`, as a pill. A tab bar
+  unlike Herdr's, one `herdr-app check` refuses, or a `tabs-corgi` that is
+  not Corgi's gets no button, and the command says why; the panel stays.
 - `corgi app-layout remove` (run by `herdr-app/install.sh --uninstall`,
   before the mod goes) puts Spaces and Agents back in each of the
   person's layouts that shows the Projects list or the brand row, of the
@@ -564,7 +657,12 @@ The `projects` view fills its block on `chrome`, text 13 px:
   `main`) follows it when the layout has none, and the brand row's block
   shows `workspace-chrome` again (without the `view` prop, and without
   `props` when that was all). No layout is deleted (`corgi` stays, as the
-  person's own) and the window is not switched.
+  person's own) and the window is not switched. The Questions panel's
+  block goes too (a stack showing it shows its first child), and, once no
+  layout on that tab bar has the panel, Corgi's marked lines leave the tab
+  bar; a layout on `tabs-corgi` that is still as cloned goes back to
+  Herdr's `tabs`, and the clone goes once no layout names it. A clone
+  another installer changed stays, without Corgi's lines.
 
 ## Watch out
 

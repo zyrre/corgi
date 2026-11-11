@@ -322,6 +322,19 @@ fn question_number(handle: &str) -> Option<u32> {
         .flatten()
 }
 
+/// How many of the questions in the state directory `dir` have no answer
+/// from the Herdr app, queued or sent.
+fn open_questions(dir: &Path) -> usize {
+    let answered: Vec<String> = crate::questions::latest(dir, "answer")
+        .into_iter()
+        .map(|(record, _)| record.subject)
+        .collect();
+    crate::questions::read(dir)
+        .iter()
+        .filter(|question| !answered.contains(&question.id))
+        .count()
+}
+
 /// One project of `corgi status --json`.
 fn project_value(agents: &[Agent], inboxes: &Inboxes, root: &str, now: u64) -> Value {
     let rows: Vec<&Agent> = agents
@@ -368,6 +381,9 @@ fn project_value(agents: &[Agent], inboxes: &Inboxes, root: &str, now: u64) -> V
             .map(|agent| agent_value(agent, now)),
         "agents": rows.iter().map(|agent| agent_value(agent, now)).collect::<Vec<_>>(),
         "questions": questions,
+        // The questions/ files with no answer from the app yet: what the
+        // Questions panel and its count show.
+        "open_questions": state_dir.as_ref().map_or(0, |dir| open_questions(dir)),
         "inbox_pending": inboxes.undelivered(root),
         "ledger": {
             "needs_answer": count("needs-answer"),

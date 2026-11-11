@@ -207,17 +207,31 @@ and OpenCode plugin and links `~/.local/bin/corgi`. Use `--mod-only --home`
 view from `props()` (init's own argument is not the block's props) and
 hands it init and render; the views are modules of their own:
 `projects.js`, the Projects list in the layout's sidebar (the default, with
-no view), and `brand.js`, the "Herdr + Corgi" row at the sidebar's top;
-`ui.js` holds what they draw alike, and `data.js` what Corgi says (`corgi
-status`, `corgi usage`, `hc machine ls`), read once for every copy: the
-app runs a mod's modules once per source version and shares them by its
-copies, so `data.js`'s `store` is every block's, and the copies' timers
-take turns at reading. A later view (questions, in the right-hand
-`panel-body` stack) goes beside them as a module and an entry in `main.js`'s
-`VIEWS`. `herdr-app/RECIPE.md` describes the mod for people and agents,
+no view), `brand.js`, the "Herdr + Corgi" row at the sidebar's top, and
+`questions.js`, the Questions panel in the right-hand `panel-body` stack
+(decision 2026-11-11, "The Questions panel shows the selected project's
+questions and backlog, answered card by card"); `ui.js` holds what they
+draw alike, and `data.js` what Corgi says (`corgi status`, `corgi usage`,
+`hc machine ls`, and for the panel `corgi questions` and `corgi
+backlog`), read once for every copy: the app runs a mod's modules once
+per source version and shares them by its copies, so `data.js`'s `store`
+is every block's, and the copies' timers take turns at reading. The
+Projects list tells the panel and the tab bar's Questions button which
+project is current and its open count through shared state
+(`corgi.questions.current`, `corgi.questions.count`; `data.js` names
+them). A later view goes beside them as a module and an entry in
+`main.js`'s `VIEWS`. The app makes no `InputState` while a view draws
+("cannot run during render"): make one in `init`, a timer or a handler,
+never in `render` or what it calls (the panel's Other fields are made on
+its timer); neither `herdr-app check` nor the default view's first frame
+shows this, and the Node stand-in below throws for it. `herdr-app/RECIPE.md` describes the mod for people and agents,
 and `herdr-app/install.sh` installs it with the CLI and runs `corgi
-app-layout` (`src/app_layout.rs`). That changes one thing in the
-layout the window shows, in place, the left sidebar: its `spaces` block
+app-layout` (`src/app_layout.rs`). That changes the layout the window
+shows, in place, in two places: the Questions panel goes last into its
+`panel-body` stack, with a Questions button in its tab bar
+(`src/app_layout/panel.rs`: Herdr's `tabs` cloned to `tabs-corgi`, or a
+copy edited in place between marker lines, as the Jenkins mod's installer
+does; see RECIPE.md "The layout"), and the left sidebar: its `spaces` block
 shows the mod's `projects` view, its `agents` block goes, and its `brand`
 block shows the mod's `brand` view instead of `workspace-chrome` (the
 `sidebar-footer` block stays `workspace-chrome`'s; a layout without a
@@ -334,7 +348,17 @@ working supervisor and an agent started by hand, and `notes`, a folder in
 no repository. Each project has an upstream of its own
 (`fake/origins/*.git`): `alpha` is 3 commits behind it, so its `↓3`
 pulls (once; `stop` and `start` make it behind again), and `beta` has
-diverged (`↑1 ↓2`), so a pull fails. The agents are a script that reports a state to herdr-core
+diverged (`↑1 ↓2`), so a pull fails. Their supervisors ask questions:
+real files in the preview's state directory (`fake_questions`), read by
+the worktree's `corgi questions` and `corgi backlog`; `alpha` has Q7 to
+Q10 and a backlog, with Q8 answered (queued), Q9 answered and taken from
+the inbox (sent) and a backlog Start queued, and `beta` three open, so its
+cards start closed. No daemon delivers there: an answer given in the
+window stays queued (`corgi inbox <project> --take` with the preview's
+`XDG_STATE_HOME` makes it sent). `open_questions` in the canned status is
+fixed (2 and 3). A card's picked option or typed answer is reached by a
+preview-home copy of `questions.js` whose `makeCards` sets `c.choice` (and
+`c.input.set_value(…)`) for a question. The agents are a script that reports a state to herdr-core
 (OSC 7501) and sleeps; their tasks and roles come from a canned `corgi
 status --json` (`target/app-preview/fake/corgi`), which passes every other
 command to the worktree's `target/release/corgi` with the preview's state

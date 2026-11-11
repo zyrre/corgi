@@ -32,7 +32,7 @@ use crate::{
 /// The role, with `{{corgi}}` and `{{state}}` standing for the Corgi binary
 /// and the project's state directory, and the placeholders of [`STEERING`]
 /// for the `hc` commands that steer workers.
-const ROLE: &str = include_str!("../supervisor/ROLE.md");
+pub(crate) const ROLE: &str = include_str!("../supervisor/ROLE.md");
 
 /// How to hand over to a fresh session, which `corgi role handover` prints
 /// when the daemon asks for it rather than the role holding it all the

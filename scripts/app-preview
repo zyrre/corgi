@@ -293,15 +293,66 @@ status_agent() {
   printf '"cache":{"estimated":false,"minutes_left":55,"state":"warm","tokens":126636}}'
 }
 
-# One project of the canned status: name, folder, questions, ready to merge, its agents (the supervisor first).
+# One project of the canned status: name, folder, questions, open questions
+# (without an answer from the app), ready to merge, its agents (the
+# supervisor first).
 status_project() {
-  local name=$1 at=$2 questions=$3 ready=$4 first=$5 agents
-  shift 4
+  local name=$1 at=$2 questions=$3 open=$4 ready=$5 first=$6 agents
+  shift 5
   agents=$(printf '%s,' "$@")
-  printf '{"name":"%s","dir":"%s","base":"main","backlog":2,"inbox_pending":0,"state_dir":"%s/state/corgi/supervisors/%s",' "$name" "$at" "$dir" "$name"
+  printf '{"name":"%s","dir":"%s","base":"main","backlog":2,"inbox_pending":0,"open_questions":%s,"state_dir":"%s/state/corgi/supervisors/%s",' "$name" "$at" "$open" "$dir" "$name"
   printf '"ledger":{"dispatched":2,"needs_answer":%s,"ready_to_merge":%s},"questions":[' "$questions" "$ready"
   [[ "$questions" == 0 ]] || printf '{"id":"Q7","title":"Keep the old column names for one release?","blocks":"w-export-columns","file":"%s/Q7.md"}' "$fake"
   printf '],"supervisor":%s,"agents":[%s]}' "$first" "${agents%,}"
+}
+
+# A question file of the made-up project $1's supervisor: id, heading's
+# title and tag, context, options (one per line), recommendation.
+fake_question() {
+  local qdir="$state/corgi/supervisors/$1/questions"
+  mkdir -p "$qdir"
+  {
+    printf '### %s: %s   [%s]\n' "$2" "$3" "$4"
+    printf 'Context: %s\nOptions:\n' "$5"
+    printf '%s\n' "$6" | sed 's/^/  /'
+    printf 'Recommendation: %s\nUntil answered: %s\n' "$7" "${8:-Nothing else waits.}"
+  } >"$qdir/$2.md"
+}
+
+# Open questions and backlogs for the made-up projects' supervisors, and
+# answers given to some through this checkout's corgi: alpha's Q8 queued,
+# its Q9 sent (taken from the inbox, as a supervisor would), a backlog
+# Start queued; beta has three open, so its cards start closed.
+fake_questions() {
+  local a=$1 sup="$state/corgi/supervisors"
+  fake_question alpha Q7 "Keep the old column names for one release?" "blocks: Rename the export columns merge" \
+    "The export's columns get clearer names (cust_id becomes customer_id). Two scheduled reports read the CSV by column name." \
+    "$(printf '%s\n' "A. Write both names for one release: the reports keep working; the CSV is wider until 0.9" \
+      "B. Rename outright: simpler; both reports break until someone edits them" "C. Keep the old names: nothing breaks; the unclear names stay")" \
+    "A, because nothing breaks, and the old names have a date to go." "The worker waits at the merge."
+  fake_question alpha Q8 "Where should the parsed schedule be cached between runs?" "blocks: Cache the parsed schedule between runs merge" \
+    "Parsing takes 4 to 6 seconds on the large calendars. The import job rewrites files whose content did not change." \
+    "$(printf '%s\n' "A. A file beside the schedule, stale on modification time: simplest; imports make it stale needlessly" \
+      "B. The user cache folder, keyed by a hash of the sources: right after every edit; hashing costs 80 ms")" \
+    "B, because it is never wrong after an edit." "The worker waits at the merge."
+  fake_question alpha Q9 "Drop Node 20 from CI?" "no block" "Node 20 leaves maintenance next spring." \
+    "$(printf '%s\n' "A. Drop it now: CI is 4 minutes faster" "B. Drop it with the 0.9 release: one more release tested on it")" \
+    "B, because the release notes can say so."
+  fake_question alpha Q10 "Name of the new export command?" "blocks: export-v2" "The plan adds a command; the old one stays as an alias." \
+    "$(printf '%s\n' "A. export: short, but the old one is export too" "B. export-csv: says what it writes")" "B, because nothing clashes."
+  for q in Q3 Q4 Q5; do
+    fake_question beta "$q" "Retry failed imports automatically ($q)?" "blocks: importer-retries" \
+      "About one import in fifty fails on a timeout and works when run again." \
+      "$(printf '%s\n' "A. Retry three times: most failures go away" "B. Retry once, then alert: half the noise goes")" \
+      "B, because it halves the noise without hiding an outage."
+  done
+  printf '# Backlog\nThings to build later.\n\n## Export to Parquet\n- Asked for by the analytics team\n- Needs the column rename (Q7) first\n\n## Charts in the dark theme\n- Axis labels are unreadable on dark\n\n## A retry budget for the scheduler\n- Cap retries per hour, not per job\n\n## Split the settings page\n- Two pages: account and project\n- Keep the old URL as a redirect\n' >"$sup/alpha/backlog.md"
+  printf '## Import from the new CSV layout\n- The upstream adds two columns in March\n\n## A dry-run flag for the importer\n' >"$sup/beta/backlog.md"
+  local corgi_env=(env XDG_STATE_HOME="$state" HC_SOCKET=/nonexistent)
+  "${corgi_env[@]}" "$corgi" answer --project "$a" Q9=B >/dev/null || say "could not answer Q9 in the made-up alpha"
+  "${corgi_env[@]}" "$corgi" inbox "$a" --take >/dev/null 2>&1 || say "could not take alpha's inbox"
+  "${corgi_env[@]}" "$corgi" answer --project "$a" "Q8=other: the cache folder, but keyed by size and time" >/dev/null || say "could not answer Q8 in the made-up alpha"
+  "${corgi_env[@]}" "$corgi" answer --project "$a" --start "Charts in the dark theme" >/dev/null || say "could not start a backlog entry of alpha"
 }
 
 start_fakes() {
@@ -353,16 +404,18 @@ AGENT
     printf '{"generated":"__NOW__","daemon":{"installed":true,"pid":4242,"running":true%s},' "${build:+,\"build\":$build}"
     [[ -z "$build" ]] || printf '"corgi":%s,"newer":null},' "${build%\}}"
     printf '"hc":{"error":null,"running":true},"paused":{"any":false,"agents":[]},"projects":['
-    status_project alpha "$a" 1 1 \
+    status_project alpha "$a" 1 2 1 \
       "$(status_agent alpha-supervisor supervisor "done" Supervisor "$a_sup" "$a" '' '' claude 'Opus 5.5' 33)" \
       "$(status_agent w-export-columns worker working "Rename the export columns and keep the old names readable for one release" "$a_w1" "$trees/alpha/worktree-quiet-river-1a2b" "$trees/alpha/worktree-quiet-river-1a2b" '' claude 'Opus 5.5' 62)" \
       "$(status_agent w-login-test worker blocked "Fix the flaky login test" "$a_w2" "$trees/alpha/worktree-tall-pine-3c4d" "$trees/alpha/worktree-tall-pine-3c4d" '' codex 'GPT-5.6' 41)" \
       "$(status_agent w-docs worker idle "Docs" "$a_w3" "$trees/alpha/worktree-warm-hill-5e6f" "$trees/alpha/worktree-warm-hill-5e6f" '' opencode)" \
       "$(status_agent w-cache worker "done" "Cache the parsed schedule between runs" "$a_w4" "$trees/alpha/worktree-dry-lake-7a8b" "$trees/alpha/worktree-dry-lake-7a8b" merge claude 'Sonnet 5.5' 87)"
     printf ','
-    status_project beta "$b" 0 0 "$(status_agent beta-supervisor supervisor working Supervisor "$b_sup" "$b" '' '' claude 'Opus 5.5' 12)"
+    status_project beta "$b" 0 3 0 "$(status_agent beta-supervisor supervisor working Supervisor "$b_sup" "$b" '' '' claude 'Opus 5.5' 12)"
     printf ']}\n'
   } >"$fake/status.json"
+
+  fake_questions "$a"
 
   # Plan usage with a window in each of the cards' colors: green under 60%,
   # yellow under 85%, red above. Times are filled in when it is read.

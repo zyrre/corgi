@@ -48,7 +48,10 @@ function element(kind, args = []) {
 
 // The retained text of an input: `type` is the person typing.
 class InputState {
+  // The app makes no field while a view draws: "InputState.new(...) cannot
+  // run during render".
   static new(options = {}) {
+    if (globalThis.__rendering) throw new Error('InputState.new(...) cannot run during render; create state in init() or in an event handler');
     return new InputState(options);
   }
   constructor(options) {
@@ -249,7 +252,15 @@ async function start(w, props = {}, module = `copy-${copies++}`) {
     await settle();
   };
   await settle();
-  return { mod, view, cx, settle, tick, render: () => mod.render(cx) };
+  const render = () => {
+    globalThis.__rendering = true;
+    try {
+      return mod.render(cx);
+    } finally {
+      globalThis.__rendering = false;
+    }
+  };
+  return { mod, view, cx, settle, tick, render };
 }
 
 // --- reading a rendered view -----------------------------------------------------
@@ -2172,11 +2183,210 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   const brand = await start(w, { view: 'brand' });
   await brand.tick(5000);
   assert.deepEqual(texts(brand.render()), ['Herdr', '+', 'Corgi']);
-  const later = await start(w, { view: 'questions' });
+  const later = await start(w, { view: 'board' });
   await later.tick(5000);
-  assert.deepEqual(texts(later.render()), ['This Corgi has no view questions: update Corgi.']);
+  assert.deepEqual(texts(later.render()), ['This Corgi has no view board: update Corgi.']);
   assert.deepEqual(w.execs, []);
   assert.deepEqual(w.ran, []);
+}
+
+// --- the Questions panel ---------------------------------------------------------------
+
+// Q7 and Q8 as `corgi questions --json` gives them: Q8 strays from the
+// form, Q9 is answered and queued.
+const QUESTION = (id, extra = {}) => ({
+  id, number: Number(id.slice(1)), title: `Question ${id}?`, blocks: { kind: 'merge', what: 'Fix the cache' },
+  context: 'Why it matters.', options: [{ key: 'A', choice: 'Keep it', cost: 'nothing breaks' }, { key: 'B', choice: 'Drop it', cost: 'simpler' }],
+  recommended: 'A', recommendation: 'A, because nothing breaks.', until: 'The merge waits.', parsed: true, raw: `### ${id}`,
+  file: `${HOME}/.local/state/corgi/supervisors/weather/questions/${id}.md`, answer: null, ...extra,
+});
+const ASKED = {
+  project: REPO, open: 2,
+  questions: [
+    QUESTION('Q7'),
+    QUESTION('Q8', { parsed: false, title: '', options: [], recommended: null, blocks: null, raw: 'Should we drop Node 20?' }),
+    QUESTION('Q9', { answer: { answer: 'B', state: 'queued', at: '2026-11-10T07:00:00Z' } }),
+  ],
+};
+const BACKLOG = {
+  project: REPO, title: 'Later', intro: '',
+  entries: [
+    { heading: 'Export to Parquet', body: '- asked for\n- needs the rename', start: null },
+    { heading: 'Dark charts', body: '', start: { answer: '', state: 'sent', at: '2026-11-10T07:00:00Z' } },
+  ],
+};
+const ASKING = {
+  ...STATUS,
+  projects: [{ ...STATUS.projects[0], open_questions: 2, questions: [{ id: 'Q7', title: 'Question Q7?' }], backlog: 2 }],
+};
+// The layout with its right-hand panel showing the stack child `active`.
+const panelLayout = (w, active = 'corgi-questions', hidden = false) => {
+  w.api.layout = () => ({ id: 'root', children: [
+    { id: 'sidebar', size: { px: w.sidebar }, children: [] },
+    { id: 'panel', hidden, children: [{ id: 'panel-body', type: 'stack', active, children: [
+      { id: 'files', type: 'block', content: { mod: 'files' } },
+      { id: 'corgi-questions', type: 'block', content: { mod: 'corgi', props: { view: 'questions' } } },
+    ] }] },
+  ] });
+};
+const show = (w, id) => {
+  for (const s of w.spaces) s.active = s.id === id;
+};
+const answers = (w) => w.execs.filter((call) => call[1] === 'answer').map((call) => call.slice(2));
+const reads = (w, verb) => w.execs.filter((call) => call[1] === verb).length;
+// The list works out the current project as it draws, and tells the panel
+// on its next second.
+const publish = async (list) => {
+  list.render();
+  await list.tick(1000);
+};
+
+// A supervisor's open questions: a pill on its first line, which shows the
+// panel on its project; the list tells the panel the current project.
+{
+  const w = window({ status: ASKING });
+  show(w, 'sp-weather');
+  const list = await projects(w, {}, 'questions-pill');
+  await publish(list);
+  const root = list.render();
+  const pill = byId(root, 'questions-t2');
+  assert.ok(pill, 'the supervisor row has the count');
+  assert.deepEqual(texts(pill), ['2']);
+  assert.deepEqual(kept(pill.children[0]).args, ['mods/corgi/question.svg']);
+  // On the first line, after the task; the second keeps its state's badge.
+  const row = byId(root, 'agent-t2');
+  assert.ok(texts(kept(row.children[0])).includes('2'));
+  assert.equal(markOf(root, 'agent-t2'), 'IDLE');
+  // Workers have none.
+  assert.equal(byId(root, 'questions-t3'), null);
+  assert.deepEqual(w.shared['corgi.questions.current'], {
+    machine: null, dir: REPO, name: 'weather', open: 2, key: JSON.stringify([2, ['Q7'], 0, 2]),
+  });
+  assert.equal(w.shared['corgi.questions.count'], 2);
+  // Another space: no project, no count.
+  show(w, 'sp-home');
+  await publish(list);
+  assert.equal(w.shared['corgi.questions.current'], null);
+  assert.equal(w.shared['corgi.questions.count'], 0);
+  // The pill picks its project while that space shows, and shows the panel.
+  const stopped = list.cx.stopped;
+  click(list.render(), 'questions-t2', list.cx);
+  assert.ok(list.cx.stopped > stopped, 'the row does not take the click');
+  assert.deepEqual(w.ran.slice(-2), [['layout.select', { stack: 'panel-body', child: 'corgi-questions' }], ['layout.show', { id: 'panel' }]]);
+  assert.equal(w.shared['corgi.questions.current'].dir, REPO);
+  show(w, 'sp-corgi');
+  await publish(list);
+  assert.equal(w.shared['corgi.questions.current'], null, 'until another space shows');
+  // The count is the questions without an answer; none, no pill.
+  const none = window({ status: { ...ASKING, projects: [{ ...ASKING.projects[0], open_questions: 0 }] } });
+  assert.equal(byId((await projects(none)).render(), 'questions-t2'), null);
+}
+
+// The panel: read only while shown, the current project's questions then
+// its backlog; one answer per card, sent with the card's Send.
+{
+  const w = window({ status: ASKING, questions: ASKED, backlog: BACKLOG, answer: { result: 'queued', message: 'Queued' } });
+  show(w, 'sp-weather');
+  panelLayout(w, 'files');
+  const list = await projects(w, {}, 'questions-panel');
+  await publish(list);
+  const panel = await start(w, { view: 'questions' }, 'questions-panel');
+  await panel.tick(1000);
+  assert.equal(reads(w, 'questions'), 0, 'not read while Files shows');
+  panelLayout(w);
+  await panel.tick(1000);
+  assert.equal(reads(w, 'questions'), 1);
+  assert.equal(reads(w, 'backlog'), 1);
+  assert.deepEqual(w.calls.find((c) => c.args[0] === 'questions').args, ['questions', '--project', REPO, '--json']);
+  await panel.tick(1000);
+  assert.equal(reads(w, 'questions'), 1, 'not again while nothing changed');
+
+  let root = panel.render();
+  let drawn = texts(root);
+  assert.ok(drawn.includes('weather'), 'the project is named');
+  // Two open: Q7 and Q8 open, Q9 (answered) closed; then the backlog.
+  assert.ok(byId(root, 'card-Q7') && byId(root, 'card-Q8') && byId(root, 'closed-Q9'));
+  assert.ok(drawn.includes('RECOMMENDED'));
+  assert.ok(drawn.includes('Should we drop Node 20?'), 'a question off the form shows its text');
+  assert.ok(drawn.includes('Queued B: goes when the supervisor is idle'));
+  assert.ok(drawn.indexOf('Backlog') > drawn.indexOf('Question Q9?'));
+  assert.ok(drawn.includes('Export to Parquet') && drawn.includes('✓ Plan asked'));
+  assert.ok(byId(root, 'start-0') && !byId(root, 'start-1'));
+
+  // Send waits for a choice; an option picks it.
+  assert.equal(byId(root, 'send-Q7').handlers.on_click, undefined, 'nothing to send yet');
+  click(root, 'opt-Q7-B', panel.cx);
+  root = panel.render();
+  assert.deepEqual(texts(byId(root, 'send-Q7')), ['Send B']);
+  click(root, 'send-Q7', panel.cx);
+  await panel.settle();
+  assert.deepEqual(answers(w), [['--project', REPO, '--json', 'Q7=B']]);
+  assert.equal(reads(w, 'questions'), 2, 'read again after an answer');
+
+  // The Other field: what is typed there is the answer.
+  root = panel.render();
+  const field = [];
+  walk(byId(root, 'card-Q8'), (node) => { if (node.kind === 'input') field.push(node.args[0]); });
+  assert.equal(field.length, 1);
+  field[0].text = 'Keep it\nuntil March';
+  field[0].handlers.change(null, panel.cx);
+  click(panel.render(), 'send-Q8', panel.cx);
+  await panel.settle();
+  assert.deepEqual(answers(w).at(-1), ['--project', REPO, '--json', 'Q8=other: Keep it until March']);
+  assert.equal(field[0].text, '', 'the field is emptied once queued');
+
+  // A refusal stays on the card.
+  w.programs[1] = corgi({ status: ASKING, questions: ASKED, backlog: BACKLOG, answer: { result: 'refused', message: 'Q7 is not open' } });
+  click(panel.render(), 'opt-Q7-A', panel.cx);
+  click(panel.render(), 'send-Q7', panel.cx);
+  await panel.settle();
+  assert.ok(texts(byId(panel.render(), 'card-Q7')).includes('Q7 is not open'));
+
+  // A backlog Start asks for a plan.
+  w.programs[1] = corgi({ status: ASKING, questions: ASKED, backlog: BACKLOG, answer: { result: 'queued' } });
+  click(panel.render(), 'start-0', panel.cx);
+  await panel.settle();
+  assert.deepEqual(answers(w).at(-1), ['--project', REPO, '--json', '--start', 'Export to Parquet']);
+
+  // A closed card opens with a click, and an open one closes.
+  click(panel.render(), 'closed-Q9', panel.cx);
+  assert.ok(byId(panel.render(), 'card-Q9'));
+  click(panel.render(), 'fold-Q7', panel.cx);
+  assert.ok(byId(panel.render(), 'closed-Q7'));
+}
+
+// More than two open: every card starts closed. No project: says so. A
+// Corgi without the command: says to update.
+{
+  const many = { ...ASKED, questions: ['Q1', 'Q2', 'Q3'].map((id) => QUESTION(id)) };
+  const w = window({ status: ASKING, questions: many, backlog: { ...BACKLOG, entries: [] } });
+  show(w, 'sp-weather');
+  panelLayout(w);
+  const list = await projects(w, {}, 'questions-many');
+  await publish(list);
+  const panel = await start(w, { view: 'questions' }, 'questions-many');
+  await panel.tick(1000);
+  const root = panel.render();
+  assert.deepEqual(ids(root, 'closed-'), ['closed-Q1', 'closed-Q2', 'closed-Q3']);
+  assert.deepEqual(ids(root, 'card-'), []);
+  assert.ok(texts(root).includes('The backlog is empty'));
+
+  const away = window({ status: ASKING });
+  panelLayout(away);
+  const lone = await projects(away, {}, 'questions-none');
+  await publish(lone);
+  const empty = await start(away, { view: 'questions' }, 'questions-none');
+  await empty.tick(1000);
+  assert.ok(texts(empty.render()).includes('No project'));
+  assert.equal(reads(away, 'questions'), 0);
+
+  const old = window({ status: ASKING });
+  show(old, 'sp-weather');
+  panelLayout(old);
+  await publish(await projects(old, {}, 'questions-old'));
+  const older = await start(old, { view: 'questions' }, 'questions-old');
+  await older.tick(1000);
+  assert.ok(texts(older.render()).some((t) => /no questions command: update Corgi/.test(t)));
 }
 
 // Copies of the mod share what Corgi says: however many blocks show the

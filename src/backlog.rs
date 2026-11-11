@@ -1,7 +1,8 @@
 //! A supervisor's backlog: the things to build later it keeps in
 //! `backlog.md` in its state directory, beside `decisions.md`. The
 //! supervisor writes it; Corgi only reads it, to count its entries in
-//! `corgi status --json`.
+//! `corgi status --json` and to list them in `corgi backlog --json`, for
+//! the Herdr app's Questions panel.
 //!
 //! The file is an optional `# ` title and intro, then one entry per
 //! `## <heading>`, whose text runs to the next `## ` or the end. A missing
@@ -57,29 +58,62 @@ pub fn parse(text: &str) -> Vec<BacklogEntry> {
     entries
 }
 
-/// The backlog in the state directory `dir`: at most [`BACKLOG_BYTES`] of
-/// it, and none when the file is missing or unreadable. Only a plain file
-/// is read: a link is not followed, and a pipe would block.
-pub fn read(dir: &Path) -> Vec<BacklogEntry> {
+/// The text before a backlog's first entry: its `# ` title, when its first
+/// line that is not blank is one, and the rest, trimmed (the intro).
+pub fn head(text: &str) -> (Option<String>, String) {
+    let mut before = String::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+        } else if !fenced && line.starts_with("## ") {
+            break;
+        }
+        before.push_str(line);
+        before.push('\n');
+    }
+    let before = before.trim();
+    match before.split_once('\n').unwrap_or((before, "")) {
+        (first, rest) if first.starts_with("# ") => {
+            (Some(first[2..].trim().to_string()), rest.trim().to_string())
+        }
+        _ => (None, before.to_string()),
+    }
+}
+
+/// The backlog's text in the state directory `dir`: at most
+/// [`BACKLOG_BYTES`] of it, and whether it was cut there; none when the
+/// file is missing or unreadable. Only a plain file is read: a link is not
+/// followed, and a pipe would block.
+pub fn read_text(dir: &Path) -> Option<(String, bool)> {
     let path = dir.join(BACKLOG_FILE);
     if !fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
-        return Vec::new();
+        return None;
     }
     let mut bytes = Vec::new();
-    if File::open(&path)
+    File::open(&path)
         .and_then(|file| file.take(BACKLOG_BYTES + 1).read_to_end(&mut bytes))
-        .is_err()
-    {
-        return Vec::new();
-    }
+        .ok()?;
     let cut = bytes.len() as u64 > BACKLOG_BYTES;
     bytes.truncate(BACKLOG_BYTES as usize);
-    let mut entries = parse(&String::from_utf8_lossy(&bytes));
+    Some((String::from_utf8_lossy(&bytes).into_owned(), cut))
+}
+
+/// The entries of `text`, as [`read_text`] gave it: the last one ends with
+/// `…` when the file was `cut`.
+pub fn entries_of(text: &str, cut: bool) -> Vec<BacklogEntry> {
+    let mut entries = parse(text);
     if cut && let Some(last) = entries.last_mut() {
         // The cut can split a character.
         last.text = format!("{}…", last.text.trim_end_matches('\u{FFFD}').trim_end());
     }
     entries
+}
+
+/// The backlog's entries in the state directory `dir` ([`read_text`]);
+/// none when there is no file.
+pub fn read(dir: &Path) -> Vec<BacklogEntry> {
+    read_text(dir).map_or_else(Vec::new, |(text, cut)| entries_of(&text, cut))
 }
 
 #[cfg(test)]
@@ -92,6 +126,19 @@ mod tests {
             heading: heading.into(),
             text: text.into(),
         }
+    }
+
+    #[test]
+    fn the_head_is_the_title_and_the_intro_before_the_first_entry() {
+        assert_eq!(
+            head("# Backlog: later\nRaised 2026-10-30.\n\n## One\nText\n"),
+            (Some("Backlog: later".into()), "Raised 2026-10-30.".into())
+        );
+        assert_eq!(
+            head("Just an intro\n## One\n"),
+            (None, "Just an intro".into())
+        );
+        assert_eq!(head("## One\n"), (None, String::new()));
     }
 
     #[test]

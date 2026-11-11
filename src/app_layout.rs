@@ -33,6 +33,10 @@
 //! Projects list is there, and changes nothing when it is. A layout with no
 //! Spaces or Projects list to put it in is left alone, with why.
 //!
+//! The layout also gets Corgi's Questions panel, in its right-hand panel
+//! stack, and the tab bar a Questions button ([`panel`]); `remove` takes
+//! both out again.
+//!
 //! [`restore`] (`corgi app-layout remove`, which the uninstall runs) puts
 //! Herdr's Spaces and Agents lists back where Corgi's Projects list is, and
 //! Herdr's brand row where Corgi's is, so a layout does not go on naming a
@@ -49,6 +53,9 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use crate::herdr_app::HerdrApp;
+
+pub mod panel;
+pub use panel::Button;
 
 /// The layout Corgi clones a shipped one to: `layouts/corgi.json`, which
 /// the app lists as "Corgi".
@@ -379,6 +386,16 @@ fn put_brand(node: &mut Value) -> bool {
 /// lists as they are, whatever else it holds. `Err` says why there is
 /// nowhere to put the Projects list; the layout is then unchanged.
 pub fn put_projects(layout: &mut Value) -> Result<Change, String> {
+    let change = put_sidebar(layout)?;
+    let added = panel::put_questions(layout);
+    Ok(match change {
+        Change::Unchanged if added => Change::Edited,
+        change => change,
+    })
+}
+
+/// [`put_projects`]'s sidebar part.
+fn put_sidebar(layout: &mut Value) -> Result<Change, String> {
     let mut edited = layout.clone();
     let upgraded = upgrade(&mut edited);
     let has_sidebar = has_id(&edited, SIDEBAR);
@@ -470,6 +487,12 @@ fn insert_after(node: &mut Value, after: &str, block: Value) -> Option<Value> {
 /// block showing Corgi's brand row shows `workspace-chrome` again. Whether
 /// there was anything of Corgi's to take out.
 fn take_projects(layout: &mut Value, agents: impl FnOnce(&Value) -> Value) -> bool {
+    let questions = panel::take_questions(layout);
+    take_sidebar(layout, agents) || questions
+}
+
+/// [`take_projects`]'s sidebar part.
+fn take_sidebar(layout: &mut Value, agents: impl FnOnce(&Value) -> Value) -> bool {
     upgrade(layout);
     let brand = count_view(layout, View::Brand) > 0;
     view_to_mod(layout, View::Brand, CHROME_MOD);
@@ -693,11 +716,14 @@ fn personal_layouts(home: &Path, wanted: impl Fn(&Value) -> bool) -> Vec<String>
     names
 }
 
-/// The personal layouts in `home` that show Corgi's Projects list or its
-/// brand row.
+/// The personal layouts in `home` that show Corgi's Projects list, its
+/// brand row or its Questions panel.
 fn layouts_with_projects(home: &Path) -> Vec<String> {
     personal_layouts(home, |layout| {
-        count_view(layout, View::Projects) + count_view(layout, View::Brand) > 0
+        count_view(layout, View::Projects)
+            + count_view(layout, View::Brand)
+            + panel::count_questions(layout)
+            > 0
     })
 }
 
@@ -742,7 +768,38 @@ pub fn restore(home: &Path, name: Option<&str>) -> Result<Vec<String>> {
             restored.push(name);
         }
     }
+    for name in &restored {
+        panel::take_button(home, name)?;
+    }
     Ok(restored)
+}
+
+/// Puts the Questions button into the tab bar of the layout `name`
+/// ([`panel::put_button`]), checking an edited tab bar with the app's
+/// `herdr-app check` when there is one to run.
+pub fn put_tab_button(app: &HerdrApp, name: &str) -> Result<Button> {
+    let version = herdr_version(app);
+    let check = |dir: &Path| -> Result<(), String> {
+        let Ok(out) = std::process::Command::new(&app.bin)
+            .arg("check")
+            .arg(dir)
+            .output()
+        else {
+            // No app to check with: the mod tests and the app itself will say.
+            return Ok(());
+        };
+        if out.status.success() {
+            return Ok(());
+        }
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let tail: Vec<&str> = said.trim().lines().rev().take(3).collect();
+        Err(tail.into_iter().rev().collect::<Vec<_>>().join(" "))
+    };
+    panel::put_button(&app.home, name, version.as_deref(), &check)
 }
 
 #[cfg(test)]

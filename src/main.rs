@@ -27,6 +27,7 @@ mod model;
 mod paths;
 mod progress;
 mod projects;
+mod questions;
 mod rows;
 mod session;
 mod supervisor;
@@ -61,6 +62,9 @@ Commands:
   pause       Pause the working agents, before the network goes
   resume      Resume the agents corgi pause stopped
   status      Print every project's supervisor, agents and questions as JSON
+  questions   Print a supervisor's open questions, parsed, as JSON
+  backlog     Print a supervisor's backlog as JSON
+  answer      Send the user's answer to a question, or a backlog Start
   usage       Print each harness's plan usage (5-hour and weekly) as JSON
   projects    List the projects to offer for Open project, as JSON
   open        Open a project: name its supervisor's terminal, or start it
@@ -97,6 +101,12 @@ fn main() -> Result<()> {
         Some("inbox") => commands::inbox_command(&args[2..]),
         Some("status") if help() => usage(commands::STATUS_USAGE),
         Some("status") => commands::status_command(&args[2..]),
+        Some("questions") if help() => usage(commands::QUESTIONS_USAGE),
+        Some("questions") => commands::questions_command(&args[2..]),
+        Some("backlog") if help() => usage(commands::BACKLOG_USAGE),
+        Some("backlog") => commands::backlog_command(&args[2..]),
+        Some("answer") if help() => usage(commands::ANSWER_USAGE),
+        Some("answer") => commands::answer_command(&args[2..]),
         Some("usage") if help() => usage(commands::USAGE_USAGE),
         Some("usage") => commands::usage_command(&args[2..]),
         Some("merge") if help() => usage(commands::MERGE_USAGE),
