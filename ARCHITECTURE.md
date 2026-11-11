@@ -221,10 +221,8 @@ size.
 
 A supervisor's memory is plain files in `supervisors/<project>/`, outside
 the repository. `supervisor::prepare`, run before each launch, writes the
-role, moves a state directory left under an older name (`corgis/`,
-`handler/`, `steward/`) with a link at the old path, and compacts the
-ledger: lines a later line of the same id supersedes move to
-`ledger-archive.jsonl`.
+role and compacts the ledger: lines a later line of the same id supersedes
+move to `ledger-archive.jsonl`.
 
 ### Digest
 

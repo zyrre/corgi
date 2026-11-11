@@ -15,7 +15,7 @@ use crate::{
     inbox::{self, Inbox, Item, Kind},
     launch::CORGI_REQUEST_TOKEN,
     model::Agent,
-    supervisor::{OLD_WAKE_PREFIX, WAKE_PREFIX},
+    supervisor::WAKE_PREFIX,
 };
 
 use super::{fleet::seen, launch::read_task, print_inbox_footer, project_root};
@@ -291,9 +291,8 @@ reaches a supervisor. corgi daemon types it into the supervisor's input box
 once the supervisor is between turns and its box holds no draft, together
 with any other undelivered items, and records it delivered; it survives the
 daemon stopping or restarting meanwhile. The
-text is read from stdin, and gets a leading [Corgi] when it has none (a
-leading [corgi], as Corgi wrote it before, becomes [Corgi]). Prints the item's
-id and inbox as JSON.
+text is read from stdin, and gets a leading [Corgi] when it has none. Prints
+the item's id and inbox as JSON.
 
 Options:
   --agent NAME        The agent the item is about
@@ -358,14 +357,10 @@ pub fn notify_command(args: &[String]) -> Result<()> {
 }
 
 /// `text` as a line a supervisor tells from the user's: it starts with
-/// [`WAKE_PREFIX`], which replaces the `[corgi]` Corgi wrote before the
-/// supervisor was given its name, so that a script written for it still
-/// reads as Corgi's.
+/// [`WAKE_PREFIX`].
 fn notify_text(text: &str) -> String {
     if text.starts_with(WAKE_PREFIX) {
         text.to_string()
-    } else if let Some(rest) = text.strip_prefix(OLD_WAKE_PREFIX) {
-        format!("{WAKE_PREFIX}{rest}")
     } else {
         format!("{WAKE_PREFIX} {text}")
     }
@@ -435,8 +430,6 @@ mod tests {
     fn a_notified_line_is_marked_as_corgis() {
         assert_eq!(notify_text("deploy done"), "[Corgi] deploy done");
         assert_eq!(notify_text("[Corgi] deploy done"), "[Corgi] deploy done");
-        // A script that adds the prefix Corgi used before the rename.
-        assert_eq!(notify_text("[corgi] deploy done"), "[Corgi] deploy done");
     }
 
     #[test]
