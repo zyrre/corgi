@@ -37,6 +37,10 @@ use std alone.
 Clippy lints code under `#[cfg(target_os = ...)]` only on that OS, so a lint
 can pass on your machine and fail CI on the other (a `return` left at the end
 of a macOS-only block did). CI runs on both Linux and macOS; check both jobs.
+CI also runs `node scripts/test-app-mods.mjs`, the Jenkins mod's tests and
+`bash scripts/test-install` on both (on Node 26: the tests use
+`node:module`'s `registerHooks`); `herdr-app check` needs the app, which a
+runner lacks, so it stays a local check.
 
 On macOS the default `$TMPDIR` makes the fake `herdr-app` socket in
 `src/app_layout/tests.rs` exceed `SUN_LEN`, so
