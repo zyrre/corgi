@@ -1532,11 +1532,22 @@ export default class Tabs extends View {
 }
 `;
 
-// herdr-gitlab's copy of it, as its install.py edits one: GitLab joins `enabled` and gets a button after Changes.
-const GITLAB_TABS = STOCK_TABS.replaceAll('mods/tabs/', 'mods/tabs-gitlab/')
-  .replace('    const enabled = shared("workspace.panels") ?? ["files", "changes"];',
-    '    // The GitLab panel (mods/gitlab) sits in the same stack as Files and Changes.\n    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "gitlab"];')
-  .replace('mods/changes/changes.svg")))', 'mods/changes/changes.svg")))\n      .when(enabled.includes("gitlab"), el => el.child(panelButton("gitlab", "GitLab", "mods/gitlab/icons/gitlab.svg")))');
+// What herdr-gitlab's install.py (wire_tabs, read 2026-11-11) does to a copy
+// of the tab bar: GitLab joins `enabled` and gets a button after Changes. It
+// finds both lines by their text and replaces them with Python's
+// str.replace, which replaces every place the text is, hence replaceAll.
+function herdrGitlab(text) {
+  const ENABLED = 'const enabled = shared("workspace.panels") ?? ["files", "changes"];';
+  const CHANGES = '.when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))';
+  const GITLAB = '.when(enabled.includes("gitlab"), el => el.child(panelButton("gitlab", "GitLab", "mods/gitlab/icons/gitlab.svg")))';
+  if (text.includes(GITLAB)) return text;
+  assert.ok(text.includes(ENABLED) && text.includes(CHANGES), 'herdr-gitlab would refuse this tab bar');
+  return text.replaceAll(ENABLED, '// The GitLab panel (mods/gitlab) sits in the same stack as Files and Changes.\n    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "gitlab"];')
+    .replaceAll(CHANGES, `${CHANGES}\n      ${GITLAB}`);
+}
+
+// herdr-gitlab's copy of Herdr's tab bar.
+const GITLAB_TABS = herdrGitlab(STOCK_TABS.replaceAll('mods/tabs/', 'mods/tabs-gitlab/'));
 
 // The Jenkins button as the previous installer put it in (a block at the end of the top row it toggled).
 const OLD_BUTTON = `      // >>> Jenkins button: install.sh of mods/jenkins puts it here, and takes it out (--panel off)
@@ -1740,17 +1751,22 @@ test('install.sh --panel right puts a Jenkins button into the layout\'s tab bar:
   assert.deepEqual(read('mine'), mine);
   assert.ok(!fs.existsSync(path.join(mods, 'tabs-jenkins')));
 
-  // A copy that was changed after it was made (another mod's install put its
-  // button in) is the layout's from then on: only the button comes and goes.
+  // herdr-gitlab installed after it edits tabs-jenkins in place, as it edits
+  // any copy the layout shows: the two work side by side. The copy is the
+  // layout's from then on: only the Jenkins lines come and go.
   assert.equal(run('--panel', 'right').code, 0);
-  fs.writeFileSync(mod('tabs-jenkins', 'main.js'), text('tabs-jenkins').replace('.child(button("tab-new"', '.child("GitLab")\n      .child(button("tab-new"'));
+  const both = herdrGitlab(text('tabs-jenkins'));
+  assert.equal(both.split('const enabled =').length - 1, 1, 'one enabled list');
+  fs.writeFileSync(mod('tabs-jenkins', 'main.js'), both);
+  bar = tabBar(both, { hidden: false, active: 'gitlab', stack: ['files', 'changes', 'gitlab', 'jenkins-panel'] });
+  assert.deepEqual(bar.render().map((b) => b.id), ['panel-files', 'panel-changes', 'panel-gitlab', 'panel-jenkins-panel']);
+  bar.render()[3].handlers.on_click();
+  assert.deepEqual(bar.render().map((b) => b.calls.bg[0]), ['#chrome', '#chrome', '#chrome', '#selected']);
   r = run('--panel', 'off');
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /mods\/tabs-jenkins was changed since this installer made it: the layout keeps it/);
   assert.deepEqual(read('mine'), withTabs(mine, 'tabs-jenkins'));
-  assert.equal(buttons(text('tabs-jenkins')), 0);
-  assert.ok(!text('tabs-jenkins').includes('Jenkins panel'), 'its enabled line as it was');
-  assert.ok(text('tabs-jenkins').includes('"GitLab"'));
+  assert.equal(text('tabs-jenkins'), `${clone.split('\n')[0]}\n${herdrGitlab(STOCK_TABS.replaceAll('mods/tabs/', 'mods/tabs-jenkins/'))}`, 'herdr-gitlab\'s edit of the copy, nothing of Jenkins');
   r = run('--panel', 'right');
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /put a Jenkins button into mods\/tabs-jenkins\/main\.js/);
@@ -1853,7 +1869,7 @@ test('install.sh --panel right puts a Jenkins button into the layout\'s tab bar:
 
   // Nowhere to put it, or a check that fails: nothing is written, and it says where the README shows it.
   const layoutBefore = fs.readFileSync(layoutFile('mine'), 'utf8');
-  for (const unlike of [gitlab.replace('.when(w?.buttons', '.when(w?.controls'), gitlab.replace('const enabled =', 'const shown ='), gitlab.replace('panelButton = ', 'panelBtn = ')]) {
+  for (const unlike of [gitlab.replace('.when(w?.buttons', '.when(w?.controls'), gitlab.replace('this.syncPanel(space, panel, body, enabled);', ''), gitlab.replace('panelButton = ', 'panelBtn = ')]) {
     fs.writeFileSync(mod('tabs-gitlab', 'main.js'), unlike);
     r = run('--panel', 'right');
     assert.notEqual(r.code, 0);

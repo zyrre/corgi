@@ -25,8 +25,8 @@
 #                  bar (mods/tabs-jenkins, which the layout's tabs block
 #                  then shows) when the layout shows Herdr's own, or between
 #                  marker lines into the copy it shows (such as
-#                  herdr-gitlab's tabs-gitlab), with Jenkins in the copy's
-#                  list of panels (enabled), so it is remembered per space.
+#                  herdr-gitlab's tabs-gitlab), with Jenkins in the list
+#                  of panels its syncPanel remembers per space.
 #                  If another mod's install later replaces that copy, run
 #                  --panel right again to bring the button back
 #   --panel off    takes that panel and its button out of the layout again

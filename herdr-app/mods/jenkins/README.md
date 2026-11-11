@@ -92,9 +92,11 @@ layout's `tabs` block shows:
   [herdr-gitlab](https://github.com/rem-aster/herdr-gitlab) makes, or your
   own). The installer changes two places in that copy's `main.js`, each
   between two marker lines, and nothing else in it: the button, just
-  before the window buttons, and the `const enabled = …;` line (the panels
-  the tab bar has buttons for and remembers), which gets Jenkins added
-  while the stack has it. A copy that has a Jenkins button already, not
+  before the window buttons, and the tab bar's `this.syncPanel(…,
+  enabled);` line (which remembers per space which panel was open), whose
+  list gets Jenkins while the stack has it. It leaves the `enabled` line
+  alone, which herdr-gitlab's installer looks for, so herdr-gitlab can still
+  be installed after it. A copy that has a Jenkins button already, not
   between the markers (one put in by hand), is left as it is.
 - **Another of Herdr's** (the Terminals layout's `terminals-bar`), or no
   `tabs` block: no button. `herdr-app do layout.select --stack panel-body
@@ -102,7 +104,7 @@ layout's `tabs` block shows:
   it, from keys in `keys.json` as well.
 
 `--panel off` and `--uninstall` take the button out again, and put the
-`enabled` line back as it was. If the installer made `tabs-jenkins` and
+`syncPanel` line back as it was. If the installer made `tabs-jenkins` and
 nothing else in it was changed since, they point the layout back at Herdr's
 `tabs` and remove the copy (once no other layout shows it); a copy changed
 since (another mod's installer may put its own button in) stays the
@@ -117,19 +119,19 @@ leaves a layout that has its panel alone, and otherwise edits the copy the
 `tabs` block shows in place, `tabs-jenkins` included, so it keeps the
 button.)
 
-When the copy is not like Herdr's tab bar (no single `const enabled = …;`
-line, no `.when(w?.buttons, …)` for the window buttons, or not the names
-below), the installer changes nothing and says so. Make both changes by
-hand, with the marker lines, so the installer can update them and take them
-out; then run `--panel right` again. They use the tab bar's own `find`,
-`body` (the stack, `find(root, "panel-body")`) and `panelButton`;
-`jenkins-panel` is the stack child's id. The `enabled` line, its own line
-kept after `was:` (here Herdr's):
+When the copy is not like Herdr's tab bar (no single `this.syncPanel(…,
+enabled);` line, no `.when(w?.buttons, …)` for the window buttons, or not
+the names below), the installer changes nothing and says so. Make both
+changes by hand, with the marker lines, so the installer can update them
+and take them out; then run `--panel right` again. They use the tab bar's
+own `find`, `body` (the stack, `find(root, "panel-body")`), `enabled` and
+`panelButton`; `jenkins-panel` is the stack child's id. The `syncPanel`
+line, with the tab bar's own line kept after `was:`:
 
 ```js
-    // >>> Jenkins panel: install.sh of mods/jenkins adds it to the panels here; --panel off puts back the line after was:
-    // was: const enabled = shared("workspace.panels") ?? ["files", "changes"];
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), ...(find(body, "jenkins-panel") ? ["jenkins-panel"] : [])];
+    // >>> Jenkins panel: install.sh of mods/jenkins adds it to the panels remembered per space; --panel off puts back the line after was:
+    // was: this.syncPanel(space, panel, body, enabled);
+    this.syncPanel(space, panel, body, [...enabled, ...(find(body, "jenkins-panel") ? ["jenkins-panel"] : [])]);
     // <<< Jenkins panel
 ```
 
@@ -137,7 +139,7 @@ and the button, after the other panel buttons:
 
 ```js
       // >>> Jenkins button: install.sh of mods/jenkins puts it here, and takes it out (--panel off)
-      .when(enabled.includes("jenkins-panel"), el => el.child(panelButton("jenkins-panel", "Jenkins", "mods/jenkins/icons/jenkins.svg")))
+      .when(Boolean(find(body, "jenkins-panel")), el => el.child(panelButton("jenkins-panel", "Jenkins", "mods/jenkins/icons/jenkins.svg")))
       // <<< Jenkins button
 ```
 

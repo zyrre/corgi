@@ -571,13 +571,17 @@ with the hash of what was cloned, by which `--panel off` and `--uninstall`
 tell a copy still as cloned, which they point the layout back from and
 remove, from one another installer changed, which stays), and a copy
 (herdr-gitlab's `tabs-gitlab`) is edited in place. Either way two places
-change, each between marker lines: the tab bar's `const enabled = …;` line
-is replaced by one that adds `jenkins-panel` while the stack has it (so
-the stock `syncPanel` remembers it per space), with the line as it was kept
-after `// was: ` for `--panel off` to put back byte for byte, and a
-`panelButton("jenkins-panel", …)` goes just before `.when(w?.buttons, …)`,
-which gives the stock behaviour (select and show, or hide when it shows;
-lit only while it shows). An older install's button (a `layout.toggle` of
+change, each between marker lines: the tab bar's `this.syncPanel(…,
+enabled);` call is replaced by one whose list adds `jenkins-panel` while
+the stack has it (so the stock `syncPanel` remembers it per space), with
+the call as it was kept after `// was: ` for `--panel off` to put back
+byte for byte, and a `panelButton("jenkins-panel", …)` goes just before
+`.when(w?.buttons, …)`, which gives the stock behaviour (select and show,
+or hide when it shows; lit only while it shows). Not the `const enabled`
+line: herdr-gitlab's `install.py` finds that line by its exact text and
+`str.replace`s every copy of it, so one kept in a `was:` comment would be
+rewritten too and the tab bar left with two `const enabled` (the test's
+`herdrGitlab` does what it does, after the Jenkins install). An older install's button (a `layout.toggle` of
 the root-row block) is replaced between its markers; an unmarked Jenkins
 button is left alone and not doubled. Every edit is worked out and
 `herdr-app check`ed before anything is written. The test's tab bar is a

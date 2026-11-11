@@ -44,18 +44,20 @@ STOCK, CLONE = "tabs", "tabs-jenkins"
 # `off` can tell whether it is still as cloned.
 CLONED = "// Herdr's tabs, cloned by mods/jenkins/install.sh for its Jenkins button; --panel off and --uninstall put the layout back on tabs while the rest is as cloned. As cloned: "
 # Two marked places in a tab bar's main.js: the button, and the tab bar's
-# `enabled` line (the panels it has buttons for and remembers per space),
-# which gets Jenkins while the layout's stack has it. The tab bar's own line
-# is kept after WAS, which --panel off puts back.
+# call of syncPanel (which remembers per space which of the panels in its
+# list was open), whose list gets Jenkins while the layout's stack has it.
+# The tab bar's own call is kept after WAS, which --panel off puts back. Not
+# its `enabled` line: herdr-gitlab's installer finds that line by its text
+# and replaces it, so a copy of it kept in a comment would be replaced too.
 BEGIN_TAG, END = "// >>> Jenkins button", "// <<< Jenkins button"
 BEGIN = f"{BEGIN_TAG}: install.sh of mods/jenkins puts it here, and takes it out (--panel off)"
 LIST_TAG, LIST_END = "// >>> Jenkins panel", "// <<< Jenkins panel"
-LIST_BEGIN = f"{LIST_TAG}: install.sh of mods/jenkins adds it to the panels here; --panel off puts back the line after was:"
+LIST_BEGIN = f"{LIST_TAG}: install.sh of mods/jenkins adds it to the panels remembered per space; --panel off puts back the line after was:"
 WAS = "// was: "
 # The button goes just before the window buttons, after Files, Changes and any other panel's.
 ANCHOR = ".when(w?.buttons,"
-# The tab bar's list of the panels it has buttons for.
-ENABLED = re.compile(r"^([ \t]*)(const enabled = (.+);[ \t]*)$", re.M)
+# The tab bar's call that remembers the open panel per space, of the panels in `enabled`.
+SYNC = re.compile(r"^([ \t]*)(this\.syncPanel\((.*)\benabled\);[ \t]*)$", re.M)
 # What the button's code uses from the tab bar around it, as Herdr's has them.
 NEEDS = {
     "find": r"\bfunction\s+find\b|\bfind\s*=",
@@ -173,25 +175,26 @@ def write(path, layout):
 
 # The button: the tab bar's own panelButton, as Files', Changes' and GitLab's
 # are, so it shows Jenkins in the stack, switches to it from another child,
-# hides the panel while Jenkins shows, and looks selected only then.
+# hides the panel while Jenkins shows, and looks selected only then. It shows
+# while the layout's stack has Jenkins.
 def button(block, indent):
     lines = [
         BEGIN,
-        f'.when(enabled.includes("{block}"), el => el.child(panelButton("{block}", "Jenkins", "mods/jenkins/icons/jenkins.svg")))',
+        f'.when(Boolean(find(body, "{block}")), el => el.child(panelButton("{block}", "Jenkins", "mods/jenkins/icons/jenkins.svg")))',
         END,
     ]
     return "".join(f"{indent}{line}\n" for line in lines)
 
 
-# The tab bar's `enabled` line with Jenkins in it while the layout's stack has
-# the panel (the tab bar then remembers per space whether it was open), and
-# the line as it was kept to be put back.
+# The tab bar's syncPanel call with Jenkins in its list while the layout's
+# stack has the panel (the tab bar then remembers per space whether it was
+# open), and the call as it was, kept to be put back.
 def listed(block, indent, was):
-    rhs = ENABLED.match(was).group(3)
+    head = SYNC.match(was).group(3)
     lines = [
         LIST_BEGIN,
         f"{WAS}{was}",
-        f'const enabled = [...({rhs}), ...(find(body, "{block}") ? ["{block}"] : [])];',
+        f'this.syncPanel({head}[...enabled, ...(find(body, "{block}") ? ["{block}"] : [])]);',
         LIST_END,
     ]
     return "".join(f"{indent}{line}\n" for line in lines)
@@ -213,13 +216,13 @@ def marked(text, where, begin=BEGIN_TAG, end=END):
     return start, stop
 
 
-# The tab bar's own `enabled` line kept between the list's markers, with its
+# The tab bar's own syncPanel call kept between the list's markers, with its
 # indent: (indent, line).
 def kept_line(text, span, where):
     lines = text[span[0]:span[1]].splitlines()
     indent = re.match(r"[ \t]*", lines[0]).group(0)
     was = next((l.lstrip()[len(WAS):] for l in lines[1:] if l.lstrip().startswith(WAS)), None)
-    if was is None or not ENABLED.match(was):
+    if was is None or not SYNC.match(was):
         fail(f"{where} has Jenkins marker lines ({LIST_TAG}) without the line they replaced: fix them by hand ({BY_HAND}); left alone")
     return indent, was
 
@@ -247,9 +250,9 @@ def with_button(text, block, where):
         indent, was = kept_line(text, span, where)
         text = text[:span[0]] + listed(block, indent, was) + text[span[1]:]
     else:
-        found = list(ENABLED.finditer(text))
+        found = list(SYNC.finditer(text))
         if len(found) != 1 or not text.startswith("\n", found[0].end()):
-            fail(f"{where} is not like Herdr's tab bar: no single line const enabled = …; (the panels it has buttons for) "
+            fail(f"{where} is not like Herdr's tab bar: no single line this.syncPanel(…, enabled); (which remembers the open panel per space) "
                  f"to add Jenkins to; {BY_HAND}, then run this again. Nothing was changed")
         m = found[0]
         text = text[:m.start()] + listed(block, m.group(1), m.group(2)) + text[m.end() + 1:]
