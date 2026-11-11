@@ -3,13 +3,17 @@
 #
 #   python3 -I install-layout.py ACTION HOME LAYOUT APP
 #
-# ACTION `add` puts the panel into one layout and a Jenkins button that shows
-# and hides it into that layout's tab bar; `off` takes the panel this
-# installer put in, and the button, out of one; `all` takes every block
-# showing the mod, and every button, out of every layout of the person's (or
-# of LAYOUT's), for the uninstall. LAYOUT may be empty: the shown layout
-# (`add`, `off`) or all (`all`). APP is the herdr-app to check a changed tab
-# bar with, or empty.
+# ACTION `add` puts the panel into one layout, as a child of its right-hand
+# panel stack `panel-body` beside Files, Changes (and GitLab), and a Jenkins
+# button that shows it there into that layout's tab bar; `off` takes the
+# panel this installer put in, and the button, out of one; `all` takes every
+# block showing the mod, and every button, out of every layout of the
+# person's (or of LAYOUT's), for the uninstall. LAYOUT may be empty: the
+# shown layout (`add`, `off`) or all (`all`). APP is the herdr-app to check a
+# changed tab bar with, or empty.
+#
+# An earlier version put the panel in a block of its own at the end of the
+# layout's top row; `add` moves it into the stack.
 #
 # Herdr's own layouts and mods are never changed. When the tab bar is Herdr's
 # own `tabs` mod, `add` clones it to `tabs-jenkins` (as `herdr-app do
@@ -24,27 +28,41 @@ import hashlib, json, os, re, shutil, subprocess, sys
 
 action, home, name, app = sys.argv[1:5]
 MOD = "jenkins"
-# The block of the panel: full height at the right end of the top row, in the sidebar's colour.
-PANEL = {"type": "block", "content": {"mod": MOD, "props": {"panel": True}},
-         "size": {"px": 320}, "min": 260, "max": 640, "background": "chrome"}
+# The panel: a child of the stack panel-body, as GitLab's is. `panel` tells
+# the mod it is the panel, and this installer that the block is its own.
+PANEL = {"type": "block", "content": {"mod": MOD, "props": {"panel": True}}}
+# Its id: one no earlier version gave a block. The app keeps a block's state
+# (hidden, size) by id in layouts/.state/, also after the block left the
+# layout, and an earlier version's block `jenkins` (a block of its own the
+# tab bar hid and showed) left `hidden` there, which would hide a stack child
+# of that id, so the stack showed another child while its button was lit.
+BLOCK = "jenkins-panel"
+STACK, COLUMN = "panel-body", "panel"
 STOCK, CLONE = "tabs", "tabs-jenkins"
 # The line of the clone's main.js that says this installer made it, and what
-# its main.js held then (without this line and the button), so that `off`
-# can tell whether it is still as cloned.
+# its main.js held then (without this line and the marked lines), so that
+# `off` can tell whether it is still as cloned.
 CLONED = "// Herdr's tabs, cloned by mods/jenkins/install.sh for its Jenkins button; --panel off and --uninstall put the layout back on tabs while the rest is as cloned. As cloned: "
+# Two marked places in a tab bar's main.js: the button, and the tab bar's
+# call of syncPanel (which remembers per space which of the panels in its
+# list was open), whose list gets Jenkins while the layout's stack has it.
+# The tab bar's own call is kept after WAS, which --panel off puts back. Not
+# its `enabled` line: herdr-gitlab's installer finds that line by its text
+# and replaces it, so a copy of it kept in a comment would be replaced too.
 BEGIN_TAG, END = "// >>> Jenkins button", "// <<< Jenkins button"
 BEGIN = f"{BEGIN_TAG}: install.sh of mods/jenkins puts it here, and takes it out (--panel off)"
+LIST_TAG, LIST_END = "// >>> Jenkins panel", "// <<< Jenkins panel"
+LIST_BEGIN = f"{LIST_TAG}: install.sh of mods/jenkins adds it to the panels remembered per space; --panel off puts back the line after was:"
+WAS = "// was: "
 # The button goes just before the window buttons, after Files, Changes and any other panel's.
 ANCHOR = ".when(w?.buttons,"
+# The tab bar's call that remembers the open panel per space, of the panels in `enabled`.
+SYNC = re.compile(r"^([ \t]*)(this\.syncPanel\((.*)\benabled\);[ \t]*)$", re.M)
 # What the button's code uses from the tab bar around it, as Herdr's has them.
 NEEDS = {
     "find": r"\bfunction\s+find\b|\bfind\s*=",
-    "root": r"\broot\s*=",
-    "t": r"\bt\s*=\s*theme\(\)",
-    "stop": r"\bstop\s*=",
-    "h_flex": r"import\s*\{[^}]*\bh_flex\b",
-    "svg": r"import\s*\{[^}]*\bsvg\b",
-    "run": r"import\s*\{[^}]*\brun\b",
+    "body": r"\bbody\s*=\s*find\(",
+    "panelButton": r"\bpanelButton\s*=",
 }
 BY_HAND = "add the button by hand, between the marker lines, as the Jenkins mod's README.md shows (\"The Jenkins button\")"
 
@@ -98,19 +116,37 @@ def tab_block(layout):
     return None
 
 
-# Takes the blocks showing the mod out from under `node`; a stack showing one
-# shows its first child left instead. Returns their ids.
-def take(node, ours_only):
+def by_id(layout, id):
+    return next((x for x in nodes(layout) if x.get("id") == id), None)
+
+
+# The layout's right-hand panel stack (`panel-body` inside the column `panel`,
+# as in Herdr's layouts), or None.
+def stack_of(layout):
+    column = by_id(layout, COLUMN)
+    body = by_id(column, STACK) if column else None
+    if body is None or body.get("type") != "stack" or not isinstance(body.get("children"), list):
+        return None
+    return body
+
+
+# Takes the blocks showing the mod out from under `node` (not from under
+# `spare`); a stack showing one shows its first child left instead. Returns
+# their ids.
+def take(node, ours_only, spare=None):
     gone = []
     children = node.get("children")
     if isinstance(children, list):
         kept = []
         for child in children:
+            if child is spare:
+                kept.append(child)
+                continue
             if isinstance(child, dict) and shows(child, ours_only):
                 gone.append(child.get("id", ""))
                 continue
             if isinstance(child, dict):
-                gone += take(child, ours_only)
+                gone += take(child, ours_only, spare)
             kept.append(child)
         node["children"] = kept
         if node.get("active") in gone:
@@ -137,51 +173,89 @@ def write(path, layout):
 
 # --- the button ---------------------------------------------------------------
 
+# The button: the tab bar's own panelButton, as Files', Changes' and GitLab's
+# are, so it shows Jenkins in the stack, switches to it from another child,
+# hides the panel while Jenkins shows, and looks selected only then. It shows
+# while the layout's stack has Jenkins.
 def button(block, indent):
     lines = [
         BEGIN,
-        f'.when(Boolean(find(root, "{block}")), el => el.child((() => {{',
-        "  // Jenkins (mods/jenkins) is its own panel on the right: this button shows and hides it.",
-        f'  const on = !find(root, "{block}").hidden;',
-        '  return h_flex().id("panel-jenkins").h(26).px(8).gap(5).flex_none().items_center().rounded(6)',
-        "    .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)",
-        '    .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)',
-        f'    .on_click(() => run("layout.toggle", {{ id: "{block}" }}))',
-        '    .child(svg("mods/jenkins/icons/jenkins.svg").size(14)).child("Jenkins");',
-        "})()))",
+        f'.when(Boolean(find(body, "{block}")), el => el.child(panelButton("{block}", "Jenkins", "mods/jenkins/icons/jenkins.svg")))',
         END,
     ]
     return "".join(f"{indent}{line}\n" for line in lines)
 
 
-# Where the marked button is in a main.js: (start, end) of its lines, or None.
-# Marker lines without their pair are an error, which `fail` reports.
-def marked(text, where):
+# The tab bar's syncPanel call with Jenkins in its list while the layout's
+# stack has the panel (the tab bar then remembers per space whether it was
+# open), and the call as it was, kept to be put back.
+def listed(block, indent, was):
+    head = SYNC.match(was).group(3)
+    lines = [
+        LIST_BEGIN,
+        f"{WAS}{was}",
+        f'this.syncPanel({head}[...enabled, ...(find(body, "{block}") ? ["{block}"] : [])]);',
+        LIST_END,
+    ]
+    return "".join(f"{indent}{line}\n" for line in lines)
+
+
+# Where the lines marked by `begin` and `end` are in a main.js: (start, end)
+# of them, or None. Marker lines without their pair are an error, which
+# `fail` reports.
+def marked(text, where, begin=BEGIN_TAG, end=END):
     lines = text.splitlines(keepends=True)
-    begins = [i for i, l in enumerate(lines) if l.strip().startswith(BEGIN_TAG)]
-    ends = [i for i, l in enumerate(lines) if l.strip().startswith(END)]
+    begins = [i for i, l in enumerate(lines) if l.strip().startswith(begin)]
+    ends = [i for i, l in enumerate(lines) if l.strip().startswith(end)]
     if not begins and not ends:
         return None
     if len(begins) != 1 or len(ends) != 1 or ends[0] < begins[0]:
-        fail(f"{where} has Jenkins button marker lines that do not pair up: fix them by hand ({BY_HAND}); left alone")
+        fail(f"{where} has Jenkins marker lines ({begin}) that do not pair up: fix them by hand ({BY_HAND}); left alone")
     start = sum(len(l) for l in lines[:begins[0]])
-    end = sum(len(l) for l in lines[:ends[0] + 1])
-    return start, end
+    stop = sum(len(l) for l in lines[:ends[0] + 1])
+    return start, stop
+
+
+# The tab bar's own syncPanel call kept between the list's markers, with its
+# indent: (indent, line).
+def kept_line(text, span, where):
+    lines = text[span[0]:span[1]].splitlines()
+    indent = re.match(r"[ \t]*", lines[0]).group(0)
+    was = next((l.lstrip()[len(WAS):] for l in lines[1:] if l.lstrip().startswith(WAS)), None)
+    if was is None or not SYNC.match(was):
+        fail(f"{where} has Jenkins marker lines ({LIST_TAG}) without the line they replaced: fix them by hand ({BY_HAND}); left alone")
+    return indent, was
 
 
 def without_button(text, where):
+    span = marked(text, where, LIST_TAG, LIST_END)
+    if span is not None:
+        indent, was = kept_line(text, span, where)
+        text = text[:span[0]] + f"{indent}{was}\n" + text[span[1]:]
     span = marked(text, where)
     return text if span is None else text[:span[0]] + text[span[1]:]
 
 
 # A Jenkins button that is not between the markers (one put in by hand).
 def unmarked(text, where):
-    return '"panel-jenkins"' in without_button(text, where)
+    return re.search(r'"panel-jenkins|panelButton\(\s*"jenkins', without_button(text, where)) is not None
 
 
 # main.js with the button for `block` in it: the same text when it is there
 # already. Fails when there is nowhere to put it.
 def with_button(text, block, where):
+    # The list first; the button's place is found in what that leaves.
+    span = marked(text, where, LIST_TAG, LIST_END)
+    if span is not None:
+        indent, was = kept_line(text, span, where)
+        text = text[:span[0]] + listed(block, indent, was) + text[span[1]:]
+    else:
+        found = list(SYNC.finditer(text))
+        if len(found) != 1 or not text.startswith("\n", found[0].end()):
+            fail(f"{where} is not like Herdr's tab bar: no single line this.syncPanel(…, enabled); (which remembers the open panel per space) "
+                 f"to add Jenkins to; {BY_HAND}, then run this again. Nothing was changed")
+        m = found[0]
+        text = text[:m.start()] + listed(block, m.group(1), m.group(2)) + text[m.end() + 1:]
     span = marked(text, where)
     if span is not None:
         indent = re.match(r"[ \t]*", text[span[0]:]).group(0)
@@ -367,31 +441,41 @@ def open_layout(n):
     return path, layout
 
 
+def show_by_hand(block):
+    return (f"herdr-app do layout.select --stack {STACK} --child {block}, then herdr-app do layout.show --id {COLUMN}, "
+            f"shows it (layout.hide --id {COLUMN} hides it again)")
+
+
 def add(n):
     path, layout = open_layout(n)
     changed = False
-    # The panel, as before.
-    there = next((x for x in nodes(layout) if shows(x, False)), None)
-    if there is not None:
-        say(f"layout {n} shows Jenkins already (block {there.get('id', '?')}): left as it is")
-    else:
-        if layout.get("type") != "row" or not isinstance(layout.get("children"), list):
-            fail(f"layout {n} is not a row of columns, so it has no right side for a panel: left alone")
-        taken = {x.get("id") for x in nodes(layout)}
-        block, i = "jenkins", 2
-        while block in taken:
-            block, i = f"jenkins-{i}", i + 1
-        layout["children"].append({"id": block, **PANEL})
+    body = stack_of(layout)
+    if body is None:
+        fail(f"layout {n} has no right-hand panel like Herdr's layouts (a stack {STACK} in a column {COLUMN}, "
+             f"where Files and Changes are), so there is no place for Jenkins beside them: left alone")
+    # An earlier install's panel, a block of its own at the end of the top row, moves into the stack.
+    moved = take(layout, True, body)
+    if moved:
         changed = True
-    panel = panel_of(layout)
+    there = next((c for c in body["children"] if isinstance(c, dict) and shows(c, False)), None)
+    if there is not None:
+        say(f"layout {n} shows Jenkins in its right-hand panel already (block {there.get('id', '?')}): left as it is")
+    else:
+        taken = {x.get("id") for x in nodes(layout)}
+        block, i = BLOCK, 2
+        while block in taken:
+            block, i = f"{BLOCK}-{i}", i + 1
+        there = {"id": block, **PANEL}
+        body["children"].append(there)
+        changed = True
+    panel = there if shows(there, True) else None
     # The button, worked out whole before anything is written.
-    put = None  # ("clone", files) or ("main", path, text)
+    put = None  # ("clone", files) or ("main", path, text, whether it had the button)
     tabs = tab_block(layout)
     if panel is None:
-        say(f"layout {n}: no Jenkins button in its tab bar, which goes only with the panel install.sh --panel right puts in")
+        say(f"layout {n}: no Jenkins button in its tab bar, which goes only with the panel install.sh --panel right puts in (props panel)")
     elif tabs is None:
-        say(f"layout {n} has no tab bar (a block tabs): no Jenkins button; "
-            f"herdr-app do layout.toggle --id {panel['id']} shows and hides the panel")
+        say(f"layout {n} has no tab bar (a block tabs): no Jenkins button; {show_by_hand(panel['id'])}")
     else:
         bar = tabs["content"]["mod"]
         if bar == STOCK and shipped_mod(STOCK) or bar == CLONE:
@@ -421,14 +505,14 @@ def add(n):
                         files = mod_files(os.path.join(mods, CLONE))
                         files["main.js"] = new.encode("utf-8")
                         check(mods, files, where)
-                        put = ("main", main_path, new)
+                        put = ("main", main_path, new, marked(text, where) is not None)
             if bar != CLONE:
                 tabs["content"]["mod"] = CLONE
                 changed = True
             bar = CLONE
         elif shipped_mod(bar):
             say(f"layout {n}: its tab bar is Herdr's {bar}, which this installer cannot put a button into: no Jenkins button; "
-                f"herdr-app do layout.toggle --id {panel['id']} shows and hides the panel")
+                f"{show_by_hand(panel['id'])}")
             bar = None
         else:
             where = f"mods/{bar}/main.js"
@@ -447,7 +531,7 @@ def add(n):
                         files = mod_files(os.path.join(mods, bar))
                         files["main.js"] = new.encode("utf-8")
                         check(mods, files, where)
-                        put = ("main", main_path, new)
+                        put = ("main", main_path, new, marked(text, where) is not None)
         # The tab bar first: its button shows only while the layout has the panel.
         if put and put[0] == "clone":
             fresh = not os.path.isdir(os.path.join(mods, CLONE))
@@ -455,15 +539,18 @@ def add(n):
             say(f"{'made' if fresh else 'updated'} mods/{CLONE}, a copy of Herdr's tab bar as it is now, with a Jenkins button")
         elif put:
             write_text(put[1], put[2])
-            say(f"put a Jenkins button into mods/{bar}/main.js")
+            had = put[3]
+            say(f"{'updated the' if had else 'put a'} Jenkins button {'in' if had else 'into'} mods/{bar}/main.js")
         elif bar:
             say(f"mods/{bar} has the Jenkins button already")
         if bar:
-            say(f"the tab bar's Jenkins button shows and hides the panel; {AGAIN}")
+            say(f"the tab bar's Jenkins button shows Jenkins in the right-hand panel, as Files and Changes show theirs; {AGAIN}")
     if changed:
         write(path, layout)
-        if there is None:
-            say(f"layout {n}: Jenkins is a panel on the right now (block {panel['id']}); drag its edge to size it")
+        if moved:
+            say(f"layout {n}: took out the Jenkins panel of an earlier install at the end of its top row ({', '.join(moved)})")
+        if panel is not None:
+            say(f"layout {n}: Jenkins is in its right-hand panel (stack {STACK}, block {panel['id']}), beside Files and Changes")
         if tabs is not None and tabs["content"]["mod"] == CLONE:
             say(f"layout {n}: its tab bar is mods/{CLONE} now")
 

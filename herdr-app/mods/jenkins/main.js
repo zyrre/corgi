@@ -8,9 +8,10 @@
 // refuses shows as "This token may not …", and nothing works around it.
 // One view at a time, in a stack: the list, a folder, a job, a stage, a
 // build, the build form, the settings. Given `{ panel: true }` as its props
-// (a side panel of the layout, which install.sh --panel puts there), it paints
-// no background of its own, so the panel's shows, as in the sidebar. The app
-// gives a block's props through `props()`, not as init's argument. Standalone: no other mod and no CLI is needed.
+// (a child of the layout's right-hand panel stack, beside Files, Changes and
+// GitLab, where install.sh --panel puts it), it draws itself as they do: a
+// card with rounded corners and a border. The app gives a block's props
+// through `props()`, not as init's argument. Standalone: no other mod and no CLI is needed.
 // What it reads is read once for every copy of it (the panel, an overlay, a
 // tab) by data.js, which also backs off from a Jenkins that fails and keeps
 // a short failure quiet.
@@ -923,8 +924,8 @@ export default class Jenkins extends View {
             : view.kind === "build" || view.kind === "stage" ? this.renderBuild(view, t, now)
               : view.kind === "trigger" ? this.renderTrigger(view, t)
                 : this.renderList(t, now);
-    return v_flex().id("jenkins").track_focus(this.handle).size_full().min_h(0).overflow_hidden()
-      .when(!this.panel, (el) => el.bg(t.background)).text_color(t.foreground).text_size(13)
+    return v_flex().id("jenkins").track_focus(this.handle).size_full().min_h(0).overflow_hidden().bg(t.background)
+      .when(this.panel, (el) => el.rounded(10).border_1().border_color(t.border)).text_color(t.foreground).text_size(13)
       .on_key_down((e, cx) => this.key(e, cx))
       .children(parts);
   }
