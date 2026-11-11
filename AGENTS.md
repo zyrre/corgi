@@ -552,7 +552,13 @@ app's script engine has and lacks, found there: `fetch` gives a response's
 log is followed by counting the bytes read, not by `X-Text-Size`), follows
 a redirect after a POST, and rejects when the host does not answer; there
 is no `TextEncoder` (`util.js` encodes UTF-8 itself) and no `process.env`;
-`writeTextFile` replaces a file and keeps its mode. Which headings are
+`writeTextFile` replaces a file and keeps its mode. A block's `props`
+(the panel's `{ "panel": true }`) reach the mod through `props()` from
+`herdr`; `init`'s first argument is `null` (seen in the preview by drawing
+both into the header), so the test calls `init(null, …)` and its stand-in
+`props()` gives `w.props`. In the preview's dark theme `background`
+(#17191d) and `chrome` (#101114) are hard to tell apart by eye: compare a
+shot's pixels to see whether the panel paints its own. Which headings are
 folded is kept with `setShared("jenkins.collapsed", …)`; the test's
 stand-in for `herdr` keeps `shared` per world.
 

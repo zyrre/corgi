@@ -9,11 +9,12 @@
 // One view at a time, in a stack: the list, a folder, a job, a stage, a
 // build, the build form, the settings. Given `{ panel: true }` as its props
 // (a side panel of the layout, which install.sh --panel puts there), it paints
-// no background of its own, so the panel's shows, as in the sidebar. Standalone: no other mod and no CLI is needed.
+// no background of its own, so the panel's shows, as in the sidebar. The app
+// gives a block's props through `props()`, not as init's argument. Standalone: no other mod and no CLI is needed.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { theme, home, nextCommand, settings as look, shared, setShared } from "herdr";
+import { theme, home, nextCommand, settings as look, shared, setShared, props as given } from "herdr";
 import { Client, loadSettings, saveSettings, settingsPath, ready } from "./api.js";
 import {
   parsePlaces, childOf, leaf, hostOf, normalizeBase, isFolder, jobState, buildState, progress, ago, took, span,
@@ -32,8 +33,10 @@ const FOLDED = "jenkins.collapsed"; // the headings folded, kept by the app acro
 const active = (items) => (items ?? []).some((j) => ["running", "queued"].includes(jobState(j)));
 
 export default class Jenkins extends View {
-  init(props, cx) {
-    this.panel = Boolean(props?.panel);
+  init(initial, cx) {
+    let layout = null;
+    try { layout = given(); } catch { /* shown where it has no props */ }
+    this.panel = Boolean((layout ?? initial)?.panel);
     this.handle = cx.focus_handle();
     this.scroll = VirtualListScrollHandle.new();
     this.settings = null; // null until read

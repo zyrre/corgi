@@ -117,6 +117,7 @@ function world(overrides = {}) {
     opened: [], // URLs handed to the browser
     execs: [],
     shared: {}, // what the app keeps for every mod across restarts (shared, setShared)
+    props: null, // the props of the block showing the mod: props() gives them, init gets none
     ...overrides,
   };
   w.app = path.join(w.home, '.config', 'herdr-app');
@@ -135,6 +136,7 @@ function world(overrides = {}) {
         resolve(command);
       };
     }),
+    props: () => w.props,
     shared: (key) => w.shared[key],
     setShared: (key, value) => {
       w.shared[key] = JSON.parse(JSON.stringify(value));
@@ -164,7 +166,7 @@ function world(overrides = {}) {
 const sources = {
   'gpui-kit': 'const k = globalThis.__kit; export const View = k.View, div = k.div, svg = k.svg;',
   'gpui-base': 'const k = globalThis.__kit; export const v_flex = k.v_flex, h_flex = k.h_flex, InputState = k.InputState, Input = k.Input, v_virtual_list = k.v_virtual_list, Scrollbar = k.Scrollbar, VirtualListScrollHandle = k.VirtualListScrollHandle;',
-  herdr: ['theme', 'settings', 'home', 'appHome', 'nextCommand', 'shared', 'setShared', 'readTextFile', 'writeTextFile', 'exec']
+  herdr: ['theme', 'settings', 'home', 'appHome', 'nextCommand', 'props', 'shared', 'setShared', 'readTextFile', 'writeTextFile', 'exec']
     .map((name) => `export const ${name} = (...a) => globalThis.__world.api.${name}(...a);`).join('\n'),
 };
 globalThis.__kit = kit;
@@ -210,7 +212,7 @@ async function start(w) {
     open_url: (url) => w.opened.push(url),
   };
   const view = new module.default();
-  view.init({}, cx);
+  view.init(null, cx); // as the app: a block's props come from props()
   // Until no task is at work: the ones started meanwhile too.
   const settle = async () => {
     do await new Promise((resolve) => setImmediate(resolve)); while (w.pending > 0);
@@ -945,6 +947,16 @@ test('a Jenkins that does not answer: the list says so and keeps what it had', a
   assert.match(row(mod, item(['team-dev', 'api_master'])), /^api_master #128/, 'the rows stay');
   await mod.click(item(['team-dev', 'api_master']));
   assert.ok(mod.says('Could not reach Jenkins to read api_master: '));
+});
+
+test('in a side panel (props().panel) it paints no background, elsewhere its own', async () => {
+  const fake = await startFakeJenkins();
+  const bg = (mod) => kept(mod.render()).calls.bg?.[0];
+  assert.equal(bg(await start(configured(fake))), '#background', 'a tab or an overlay');
+  const w = configured(fake);
+  w.props = { panel: true };
+  assert.equal(bg(await start(w)), undefined, 'the panel\'s own colour shows');
+  await fake.close();
 });
 
 test('the refresh command reads again, and settings opens the settings', async () => {
