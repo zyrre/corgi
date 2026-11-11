@@ -131,6 +131,12 @@ export function ago(ms, now = Date.now()) {
   return `${Math.floor(s / (7 * 86400))}w`;
 }
 
+// How long ago data was read, for "Last read 40s ago": seconds under a minute.
+export function lastRead(ms, now = Date.now()) {
+  const s = Math.max(0, Math.floor((now - ms) / 1000));
+  return s < 60 ? `${s}s` : ago(ms, now);
+}
+
 // How long something took (ms): "42s", "6m 05s", "1h 12m".
 export function span(ms) {
   if (ms == null || ms < 0) return "";
@@ -310,7 +316,8 @@ export function explain(error, doing, user) {
     case "auth": return `Jenkins did not accept this user and token (401). Check them in the settings.`;
     case "forbidden": return `This token may not ${doing}: ${who} lacks the permission${detail}.`;
     case "missing": return `Jenkins has nothing there to ${doing} (404): it is gone, or this token may not see it.`;
-    case "network": return `Could not reach Jenkins to ${doing}: ${error.message}`;
+    case "network":
+    case "timeout": return `Could not reach Jenkins to ${doing}: ${error.message}`;
     default: return `Could not ${doing}: ${error?.message ?? error}`;
   }
 }

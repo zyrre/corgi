@@ -56,7 +56,7 @@ export const ready = (s) => Boolean(s?.url && s?.user && s?.token);
 export class JenkinsError extends Error {
   constructor(kind, message, status = 0, detail = "") {
     super(message);
-    this.kind = kind; // "auth" | "forbidden" | "missing" | "network" | "http" | "settings"
+    this.kind = kind; // "auth" | "forbidden" | "missing" | "network" | "http" | "settings" | "timeout" (data.js: no answer in time)
     this.status = status;
     this.detail = detail;
   }

@@ -182,13 +182,30 @@ registerHooks({
   },
 });
 
+// A mod's own modules (`./data.js`) come with the copy of main.js that
+// imports them, so each `start` has modules of its own, as an app start
+// does, and copies started with the same `module` share them (data.js's
+// store), as the copies of one mod in the app do.
+registerHooks({
+  resolve(specifier, context, next) {
+    const resolved = next(specifier, context);
+    const parent = context.parentURL ? new URL(context.parentURL) : null;
+    if (!parent?.pathname.includes('/mods/jenkins/') || !parent.search || !specifier.startsWith('.')) return resolved;
+    const url = new URL(resolved.url);
+    url.search = parent.search;
+    return { ...resolved, url: url.href };
+  },
+});
+
 const util = await import(new URL('../util.js', import.meta.url));
+const data = await import(new URL('../data.js', import.meta.url));
 
 let copies = 0;
-// The mod, started in the world `w`: its view, and what its tasks and timers are.
-async function start(w) {
+// The mod, started in the world `w`: its view, and what its tasks and timers
+// are. Copies given the same `module` (a name) share the mod's modules.
+async function start(w, module = `copy-${copies++}`) {
   globalThis.__world = w;
-  const module = await import(new URL(`../main.js?copy=${copies++}`, import.meta.url));
+  const module_ = await import(new URL(`../main.js?module=${module}`, import.meta.url));
   const cx = {
     notified: 0,
     timers: [],
@@ -211,7 +228,7 @@ async function start(w) {
     },
     open_url: (url) => w.opened.push(url),
   };
-  const view = new module.default();
+  const view = new module_.default();
   view.init(null, cx); // as the app: a block's props come from props()
   // Until no task is at work: the ones started meanwhile too.
   const settle = async () => {
@@ -228,6 +245,11 @@ async function start(w) {
     tick: async () => {
       for (const timer of cx.timers) timer.tick(cx);
       await settle();
+    },
+    // One round of it without waiting for what it starts (a read that stalls never ends).
+    poke: async () => {
+      for (const timer of cx.timers) timer.tick(cx);
+      for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
     },
     // A click on the element with this id, and what it started.
     click: async (id) => {
@@ -934,19 +956,300 @@ test('crumbs: none on a Jenkins without an issuer, a fresh one when the kept one
   await fake.close();
 });
 
-test('a Jenkins that does not answer: the list says so and keeps what it had', async () => {
+test('a Jenkins that stops answering: quiet at first, the error after a while, the rows kept', async () => {
   const fake = await startFakeJenkins();
   const mod = await start(configured(fake));
   assert.equal(row(mod, item(['team-dev', 'api_master'])), 'api_master #128 · 3h');
   await fake.close();
   skew += 61_000;
   await mod.tick();
+  assert.ok(!mod.says('Could not reach Jenkins'), 'one failed read shows no error');
+  assert.ok(mod.says('Last read 1m ago · no answer since'), mod.texts().join('|'));
+  assert.match(row(mod, item(['team-dev', 'api_master'])), /^api_master #128/, 'the rows stay');
+  for (let i = 0; i < 30; i++) { skew += 2_000; await mod.tick(); }
   const said = mod.texts().filter((line) => line.startsWith('Could not reach Jenkins to list the jobs of team-dev: '));
   assert.equal(said.length, 1, mod.texts().join('|'));
   assert.ok(!said[0].includes(TOKEN) && !said[0].includes('Basic'));
+  assert.ok(!mod.says('no answer since'), 'the error takes the quiet line\'s place');
   assert.match(row(mod, item(['team-dev', 'api_master'])), /^api_master #128/, 'the rows stay');
   await mod.click(item(['team-dev', 'api_master']));
-  assert.ok(mod.says('Could not reach Jenkins to read api_master: '));
+  assert.ok(mod.says('Reading the job…') && !mod.says('Could not reach Jenkins to read api_master'), 'no data yet, and only one failure: still reading');
+  await run([mod], 58_000);
+  assert.ok(!mod.says('Could not reach Jenkins to read api_master'), 'a job at rest is tried every thirty seconds: two failures');
+  await run([mod], 2_000);
+  assert.ok(mod.says('Could not reach Jenkins to read api_master: '), mod.texts().join('|'));
+});
+
+// Ticks every two seconds for `ms`, as the app's timer does, and calls `each` after every tick.
+const run = async (mods, ms, each = () => {}) => {
+  for (let at = 0; at < ms; at += 2_000) {
+    skew += 2_000;
+    for (const mod of mods) await mod.tick();
+    each(at + 2_000);
+  }
+};
+const listReads = (fake, place = 'team-dev') => fake.requests.filter((r) => r.path === `/job/${place}/api/json`);
+
+test('a blip of a failed read or two shows no error, only how old the rows are, and a good read clears that', async () => {
+  for (const blip of [{ mode: 'refuse' }, { mode: 'status', status: 503 }, { mode: 'status', status: 502 }]) {
+    skew = 0;
+    const fake = await startFakeJenkins();
+    const mod = await start(configured(fake));
+    fake.fail({ ...blip, path: '^/job/team-dev/api/json$' });
+    skew += 11_000; // a build runs in team-dev: its list is read every ten seconds
+    await mod.tick();
+    assert.equal(listReads(fake).at(-1).status, blip.mode === 'refuse' ? 'refused' : blip.status);
+    assert.ok(!mod.says('Could not') && !mod.says('Jenkins answered'), `${blip.mode} ${blip.status ?? ''}: ${mod.texts().join('|')}`);
+    assert.ok(mod.says('Last read 11s ago · no answer since'), mod.texts().join('|'));
+    assert.equal(byId(mod.render(), 'jk-stale-/job/team-dev').calls.tooltip[0], 'Jenkins did not answer the last read: trying again');
+    assert.equal(byId(mod.render(), 'jk-stale-/job/team-prod'), null, 'only the list that failed');
+    assert.match(row(mod, item(['team-dev', 'api_master'])), /^api_master #128/);
+    skew += 10_000;
+    await mod.tick();
+    assert.equal(listReads(fake).length, 3, 'tried again after ten seconds');
+    assert.ok(!mod.says('Could not') && !mod.says('Jenkins answered') && mod.says('Last read 21s ago · no answer since'), 'two failures: still quiet');
+    fake.recover();
+    skew += 10_000;
+    await mod.tick();
+    assert.equal(listReads(fake).length, 3, 'the second failure waits thirty seconds');
+    assert.ok(mod.says('Last read 31s ago'), 'the line counts on while it waits');
+    skew += 20_000;
+    await mod.tick();
+    assert.equal(listReads(fake).length, 4);
+    assert.ok(!mod.says('no answer since') && !mod.says('Could not'), 'a good read clears it');
+    skew += 10_000;
+    await mod.tick();
+    assert.equal(listReads(fake).length, 5, 'and the list is read every ten seconds again');
+    await fake.close();
+  }
+});
+
+test('a long outage: the error after three failures, reads that back off to a minute, and the next good read clears it', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake));
+  await mod.click(item(['team-dev', 'poller_master']));
+  await mod.click('jk-console'); // a running build's log, read every tick while all is well
+  // A read of the log asks for the build, then (when it answers) for the console from where it was.
+  const logReads = () => fake.requests.filter((r) => r.path === '/job/team-dev/job/poller_master/57/api/json').length;
+  // A tick's worth while all is well: the log on each tick, the lists every ten seconds.
+  const before = { log: logReads(), list: listReads(fake).length };
+  await run([mod], 20_000);
+  const well = { log: logReads() - before.log, list: listReads(fake).length - before.list };
+  assert.deepEqual(well, { log: 10, list: 2 }, 'twenty seconds at work');
+
+  fake.fail({ mode: 'refuse' });
+  const outageStart = fake.requests.length;
+  let loud = null;
+  const fails = [];
+  await run([mod], 5 * 60_000, (at) => {
+    if (loud === null && mod.says('Could not reach Jenkins to read this build\'s log: ')) loud = at;
+    if (logReads() > (fails.at(-1)?.n ?? before.log + well.log)) fails.push({ at, n: logReads() });
+  });
+  const during = { log: logReads() - before.log - well.log, list: listReads(fake).length - before.list - well.list, all: fake.requests.length - outageStart };
+  console.log(`      five minutes of no answer: ${during.log} log reads (${5 * 30} at a read a tick), ${during.list} reads of team-dev (30 at one every ten seconds), ${during.all} requests in all`);
+  assert.deepEqual(fails.map((f) => f.at), [2_000, 12_000, 42_000, 102_000, 162_000, 222_000, 282_000], 'waits of 10 s, 30 s, then a minute');
+  assert.equal(during.log, 7);
+  assert.equal(during.list, 7);
+  assert.equal(loud, 42_000, 'the error shows with the third failure');
+  assert.ok(!mod.says('no answer since'));
+
+  // Back: the next try reads it all again, and the error goes.
+  fake.recover();
+  await run([mod], 60_000);
+  assert.ok(!mod.says('Could not reach Jenkins') && !mod.says('no answer since'), mod.texts().join('|'));
+  assert.ok(mod.texts().some((line) => /^ok /.test(line)), 'the log shows');
+  await fake.close();
+});
+
+test('a list read only every minute shows its error once it has failed for a minute', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake, { folders: 'team-dev/tools' })); // nothing runs there: every minute
+  fake.fail({ mode: 'status', status: 503 });
+  skew += 60_000;
+  await mod.tick();
+  assert.ok(mod.says('Last read 1m ago · no answer since') && !mod.says('Could not'));
+  const reads = () => listReads(fake, 'team-dev/job/tools').length;
+  assert.equal(reads(), 2);
+  await run([mod], 58_000);
+  assert.equal(reads(), 2, 'the back-off never reads it more often than at rest');
+  skew += 2_000;
+  await mod.tick();
+  assert.equal(reads(), 3);
+  assert.ok(mod.says('Could not list the jobs of team-dev/tools: Jenkins answered 503'), mod.texts().join('|'));
+  await fake.close();
+});
+
+test('401 and 403 show at once, and back off too', async () => {
+  for (const [status, said] of [[401, 'Jenkins did not accept this user and token (401). Check them in the settings.'], [403, 'This token may not list the jobs of team-dev: Jenkins user jane lacks the permission (Forbidden).']]) {
+    skew = 0;
+    const fake = await startFakeJenkins();
+    const mod = await start(configured(fake));
+    fake.fail({ mode: 'status', status, path: '^/job/team-dev/api/json$' });
+    skew += 11_000;
+    await mod.tick();
+    assert.ok(mod.says(said), `${status}: ${mod.texts().join('|')}`);
+    assert.ok(!mod.says('no answer since'));
+    await run([mod], 8_000);
+    assert.equal(listReads(fake).length, 2, 'not read again before ten seconds');
+    await fake.close();
+  }
+});
+
+test('a read that never ends counts as failed after a while, and the next one is not held up by it', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake));
+  fake.fail({ mode: 'stall', path: '^/job/team-dev/api/json$' });
+  skew += 11_000;
+  await mod.poke();
+  assert.equal(listReads(fake).at(-1).status, 'stalled');
+  assert.ok(byId(mod.render(), 'jk-refresh').children.some((c) => 'frames' in kept(c).calls), 'it spins while it reads');
+  skew += 30_000;
+  await mod.poke();
+  assert.equal(listReads(fake).length, 2, 'one read at a time');
+  assert.ok(!mod.says('no answer since'));
+  skew += 16_000; // 46 s: given up on
+  await mod.poke();
+  assert.ok(mod.says('Last read 57s ago · no answer since'), mod.texts().join('|'));
+  assert.equal(listReads(fake).length, 2, 'the next waits for its back-off');
+  fake.recover();
+  skew += 10_000;
+  await mod.poke();
+  // The stalled read still holds a task, so wait for this one by real time.
+  for (let i = 0; i < 200 && mod.says('no answer since'); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(listReads(fake).length, 3);
+  assert.ok(!mod.says('no answer since'), mod.texts().join('|'));
+  // The stalled read's answer comes at last, and is dropped: the newer one stands.
+  const shown = mod.texts().join('|');
+  fake.release();
+  await mod.settle();
+  assert.equal(mod.texts().join('|'), shown);
+  await fake.close();
+});
+
+test('who the token is: a start with no answer is quiet and asked again, not left as an error', async () => {
+  const fake = await startFakeJenkins();
+  fake.fail({ mode: 'refuse', path: '^/whoAmI/' });
+  const mod = await start(configured(fake));
+  assert.ok(!mod.says('Could not reach Jenkins to ask who this token is'), mod.texts().join('|'));
+  assert.ok(mod.texts().includes(`127.0.0.1:${fake.port}`), 'the host alone until it answers');
+  fake.recover();
+  await run([mod], 10_000);
+  assert.ok(mod.texts().includes(`127.0.0.1:${fake.port} · jane`), mod.texts().join('|'));
+  const asked = fake.requests.filter((r) => r.path === '/whoAmI/api/json').length;
+  await run([mod], 120_000);
+  assert.equal(fake.requests.filter((r) => r.path === '/whoAmI/api/json').length, asked, 'once it has answered, never again');
+  await fake.close();
+});
+
+test('the refresh button reads at once, back-off or not', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake));
+  fake.fail({ mode: 'refuse' });
+  for (let i = 0; i < 3; i++) await mod.click('jk-refresh');
+  assert.ok(mod.says('Could not reach Jenkins to list the jobs of team-dev: '), 'three failures in a row');
+  fake.recover();
+  await mod.click('jk-refresh');
+  assert.ok(!mod.says('Could not reach Jenkins'));
+  assert.equal(listReads(fake).length, 5);
+  await fake.close();
+});
+
+// The requests of `copies` copies of the mod in one app, all showing a
+// running build's log after its job, the list behind them, for three minutes.
+async function copiesRun(copies, module) {
+  skew = 0;
+  const fake = await startFakeJenkins();
+  const w = configured(fake);
+  const mods = [];
+  for (let i = 0; i < copies; i++) mods.push(await start(w, module));
+  for (const mod of mods) {
+    await mod.click(item(['team-dev', 'poller_master']));
+    await mod.click('jk-console');
+  }
+  await run(mods, 3 * 60_000);
+  const shown = mods.map((mod) => texts(byId(mod.render(), 'jk-log-area')).length);
+  const n = fake.requests.length;
+  await fake.close();
+  return { n, shown };
+}
+
+test('copies of the mod read once for all, and each keeps its own view', async () => {
+  const one = await copiesRun(1, 'one');
+  const two = await copiesRun(2, 'two');
+  const three = await copiesRun(3, 'three');
+  console.log(`      requests in three minutes: one copy ${one.n}, two copies ${two.n}, three copies ${three.n}`);
+  assert.equal(two.n, one.n);
+  assert.equal(three.n, one.n);
+  assert.ok(two.shown.every((n) => n === two.shown[0] && n > 60), 'each shows the whole log');
+  const apart = await copiesRun(2, undefined); // copies of two apps (or two versions of the mod) share nothing
+  assert.ok(apart.n > 1.5 * one.n, `${apart.n}`);
+
+  // Each copy its own view: one goes back to the list, the other stays on the log.
+  skew = 0;
+  const fake = await startFakeJenkins();
+  const w = configured(fake);
+  const a = await start(w, 'views'), b = await start(w, 'views');
+  await a.click(item(['team-dev', 'poller_master']));
+  assert.ok(b.says('team-prod') && !b.says('Builds'), 'b still shows the list');
+  await a.click('jk-console');
+  kept(byId(a.render(), 'jk-log-area')).handlers.on_scroll_wheel({ delta: { x: 0, y: 30 } }, a.cx);
+  await b.click(item(['team-dev', 'poller_master']));
+  await b.click('jk-console');
+  assert.ok(byId(a.render(), 'jk-follow') && !byId(b.render(), 'jk-follow'), 'a stopped following, b follows');
+  await a.key('escape');
+  await a.key('escape');
+  await run([a, b], 10_000);
+  assert.ok(a.says('team-prod') && b.says('Following the log'));
+  await fake.close();
+});
+
+test('settings saved in one copy are taken up by the others', async () => {
+  const fake = await startFakeJenkins();
+  const w = configured(fake);
+  const a = await start(w, 'saved'), b = await start(w, 'saved');
+  assert.ok(b.says('team-prod'));
+  await a.click('jk-settings');
+  a.type(a.view.inputs.folders, 'team-dev/tools');
+  await a.click('jk-set-save');
+  await b.tick();
+  assert.ok(b.says('team-dev/tools') && !b.says('team-prod'), b.texts().join('|'));
+  await fake.close();
+});
+
+test('the store: back-off, quiet and loud failures', () => {
+  const e = new data.Entry();
+  assert.ok(e.due(60_000, 1_000), 'never read: due at once');
+  e.begin(1_000);
+  e.succeeded([], 1_500);
+  assert.ok(!e.due(10_000, 11_000) && e.due(10_000, 11_500));
+  const no = { kind: 'network', message: 'no answer' };
+  e.failed(no, 12_000);
+  assert.ok(e.stale(12_000) && !e.loud(12_000));
+  assert.ok(!e.due(2_000, 21_999) && e.due(2_000, 22_000), 'ten seconds after the first failure');
+  e.failed(no, 22_000);
+  assert.ok(!e.due(2_000, 51_999) && e.due(2_000, 52_000), 'thirty after the second');
+  assert.ok(!e.loud(51_999) && e.loud(72_000), 'a minute of failing is loud');
+  e.failed(no, 52_000);
+  assert.ok(e.loud(52_000), 'so is the third failure');
+  assert.ok(!e.due(2_000, 111_999) && e.due(2_000, 112_000), 'a minute after the third');
+  e.failed(no, 112_000);
+  assert.ok(e.due(2_000, 172_000), 'and no more than a minute after that');
+  e.succeeded([], 180_000);
+  assert.ok(!e.error && !e.failures && !e.stale(180_000) && e.due(2_000, 182_000));
+  for (const kind of ['auth', 'forbidden', 'missing', 'settings']) {
+    const f = new data.Entry();
+    f.failed({ kind }, 1_000);
+    assert.ok(f.loud(1_000), kind);
+  }
+  assert.ok(data.transient({ kind: 'http', status: 503 }) && data.transient({ kind: 'http', status: 429 }) && !data.transient({ kind: 'http', status: 400 }));
+  assert.ok(!data.transient({ kind: 'http', status: 0 }), 'not JSON: a wrong URL, not a blip');
+  const stuck = new data.Entry();
+  stuck.begin(1_000);
+  assert.ok(!stuck.due(0, 45_999) && stuck.loading);
+  assert.ok(!stuck.due(0, 46_000) && stuck.error.kind === 'timeout' && !stuck.loading && stuck.failures === 1, 'given up on: a failure');
+  assert.ok(stuck.due(0, 56_000), 'and tried again at its back-off');
+  assert.equal(util.lastRead(1_000, 41_900), '40s');
+  assert.equal(util.lastRead(1_000, 1_000 + 3 * 60_000), '3m');
 });
 
 test('in a side panel (props().panel) it paints no background, elsewhere its own', async () => {
@@ -989,7 +1292,9 @@ test('install.sh puts the mod\'s own files in an app home, and takes them out ag
   fs.mkdirSync(path.join(app, 'mods'), { recursive: true });
   assert.equal(run('--home', app).code, 0);
   const target = path.join(app, 'mods', 'jenkins');
-  assert.deepEqual(fs.readdirSync(target).sort(), ['api.js', 'icons', 'main.js', 'mod.json', 'ui.js', 'util.js'], 'no tests, no README, nothing the check wrote');
+  assert.deepEqual(fs.readdirSync(target).sort(), ['api.js', 'data.js', 'icons', 'main.js', 'mod.json', 'ui.js', 'util.js'], 'no tests, no README, nothing the check wrote');
+  const modules = fs.readdirSync(MOD).filter((f) => f.endsWith('.js'));
+  assert.deepEqual(modules.filter((f) => !fs.existsSync(path.join(target, f))), [], 'every module of the mod is installed');
   assert.equal(fs.readdirSync(path.join(target, 'icons')).length, fs.readdirSync(path.join(MOD, 'icons')).length);
   assert.ok(fs.readFileSync(`${checker}.log`, 'utf8').startsWith('check '), 'checked before it was put in place');
   assert.deepEqual(fs.readdirSync(path.join(app, 'mods')), ['jenkins'], 'no staging folder is left');

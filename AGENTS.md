@@ -582,6 +582,27 @@ shot's pixels to see whether the panel paints its own. Which headings are
 folded is kept with `setShared("jenkins.collapsed", …)`; the test's
 stand-in for `herdr` keeps `shared` per world.
 
+What the mod reads goes through `data.js`'s `store`, one for every copy (the
+app shares a mod's modules by its copies, as `mods/corgi/data.js` does):
+each thing read (a list, a job, a build's stages, a job's runs, who the
+token is, a build's log) is an `Entry` that knows when it was read and how
+its reads failed, and is read when it is due by its own times, so copies
+ticking on their own timers read it once. A copy's view (stack, folds,
+whether it follows a log) stays its own. A failure backs that read off (10,
+30, then 60 s, never sooner than its usual time); one that may pass (no
+answer, a 5xx, 408, 429, `READ_LIMIT` without an answer) stays quiet, a dim
+`Last read … ago` line, until `QUIET_FAILS` failures or `QUIET_MS` of
+failing; 401, 403, 404 and a wrong URL show at once. The app's `fetch` has
+no timeout and the mod no `setTimeout`, so a stalled read is given up on
+when a tick finds it older than `READ_LIMIT`, and its late answer dropped
+by its sequence number. In the test, `start(w, module)` with the same
+`module` name shares the store, as the app's copies do; any other start
+gets its own. `fake.fail({ mode: "refuse" | "stall" | "status", status,
+count, path })`, `recover()` and `release()` make the fake fail (`POST
+/__fake/fail?…` and `/__fake/recover` from outside); a test that stalls a
+read cannot `settle()` while it is held, so it fires the timers with
+`mod.poke()` instead.
+
 What the real Jenkins (`jenkins.int.tele2.com`, 2.479, read on
 2026-11-11) serves, for when the fake needs to follow it: Pipeline Stage
 View (`<build>/wfapi/describe`, `<job>/wfapi/runs`, ten runs) but no Blue

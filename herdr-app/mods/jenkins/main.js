@@ -11,22 +11,27 @@
 // (a side panel of the layout, which install.sh --panel puts there), it paints
 // no background of its own, so the panel's shows, as in the sidebar. The app
 // gives a block's props through `props()`, not as init's argument. Standalone: no other mod and no CLI is needed.
+// What it reads is read once for every copy of it (the panel, an overlay, a
+// tab) by data.js, which also backs off from a Jenkins that fails and keeps
+// a short failure quiet.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
 import { theme, home, nextCommand, settings as look, shared, setShared, props as given } from "herdr";
 import { Client, loadSettings, saveSettings, settingsPath, ready } from "./api.js";
 import {
-  parsePlaces, childOf, leaf, hostOf, normalizeBase, isFolder, jobState, buildState, progress, ago, took, span,
-  causeOf, buildParams, paramFields, formBody, emptyLog, appendLog, logLines, explain, oneLine, LABEL,
+  parsePlaces, childOf, leaf, hostOf, normalizeBase, isFolder, jobState, buildState, progress, ago, lastRead, took, span,
+  causeOf, buildParams, paramFields, formBody, logLines, explain, oneLine, LABEL,
   envOf, isPipeline, stagesOf, stageState, stageTook, stageProgress, stageRange, STAGE_LABEL,
 } from "./util.js";
 import { icon, spinner, look as stateLook, mark, bar, iconButton, pill } from "./ui.js";
+import { store } from "./data.js";
 
 const LIST_EVERY = 60000, LIST_BUSY = 10000; // the lists: at rest, and while a build runs or waits
 const JOB_EVERY = 30000, JOB_BUSY = 5000;
 const ROW = 18; // a console line's height
 
+const FRESH = 5000; // opening a view reads what it shows unless it was read this lately
 const RUNS_EVERY = 60000; // a job's last runs, for what each stage took last time
 const FOLDED = "jenkins.collapsed"; // the headings folded, kept by the app across restarts
 
@@ -40,25 +45,26 @@ export default class Jenkins extends View {
     this.handle = cx.focus_handle();
     this.scroll = VirtualListScrollHandle.new();
     this.settings = null; // null until read
-    this.client = null;
-    this.who = null; this.whoError = "";
+    // What Jenkins said under them, shared with every copy using the same
+    // (data.js): "list"/"job"/"runs" by path, "stages" by build, "who", and
+    // the logs. null while there are none to reach it with.
+    this.src = null;
+    this.saved = 0; // the store's settings this copy took up (`store.saved`)
+    this.drawn = -1; // the store's version this copy saw last
+    this.staleShown = false; // a "Last read … ago" line is drawn: it counts on
     this.places = [];
-    this.lists = new Map(); // place path → { items, error, loading, at }
-    this.jobs = new Map(); // job path → { data, error, loading, at }
-    this.stages = new Map(); // "<job path>/<number>" → { data, error, missing, loading, at }: wfapi/describe
-    this.runs = new Map(); // job path → { runs, loading, at }: wfapi/runs
     this.folded = new Set(); // the paths of the headings folded
     try { this.folded = new Set((shared(FOLDED) ?? []).filter((p) => typeof p === "string")); } catch { /* none kept */ }
     // The views over the list: { kind: "folder" | "job" | "stage" | "build" | "trigger" | "settings", place, number, stage }.
     // A job's `number` is the build picked (none: its newest); a stage's `stage` is { id, name, nth }.
     this.stack = [];
-    this.log = null; // the console of the stage or build view: { place, number, build, text, error, loading, done, follow }
+    this.log = null; // the console of the stage or build view, shared by the copies showing it (data.js `Log`)
+    this.follow = true; // this copy keeps to the log's end
     this.form = null; // the build form: { place, fields, values, inputs }
     this.confirm = null; // an abort being asked about: { place, number }
     this.notice = null; // what an action came to: { tone: "ok" | "error", text }
     this.busy = null; // "save" | "check" | "trigger" | "abort"
     this.check = null; // the settings' check: { ok, text }
-    this.gen = 0; // answers for settings that have since changed are dropped
     this.inputs = {
       url: InputState.new({ placeholder: "https://jenkins.example.com" }),
       user: InputState.new({ placeholder: "Your Jenkins user name" }),
@@ -81,7 +87,7 @@ export default class Jenkins extends View {
       for (;;) {
         let command;
         try { command = await nextCommand(); } catch { return; } // no more commands: the copy is going
-        if (command === "refresh") this.refresh(cx, true);
+        if (command === "refresh") this.refresh(cx);
         else if (command === "settings") this.show({ kind: "settings" }, cx);
         cx.notify();
       }
@@ -98,19 +104,22 @@ export default class Jenkins extends View {
 
   // --- settings ------------------------------------------------------------------
 
-  // Takes settings into use: a client for them, and nothing kept of the last ones'.
+  // Takes settings into use, for every copy (`store.use`): what Jenkins said
+  // under them, shared by the copies using them, and nothing of this copy's
+  // views over the last ones'.
   apply(s, cx) {
-    this.gen += 1;
+    store.use(s);
+    this.saved = store.saved;
     this.settings = s;
-    this.client = ready(s) ? new Client(s) : null;
+    this.src = ready(s) ? store.source(s) : null;
     this.places = parsePlaces(s.folders, normalizeBase(s.url));
-    this.who = null; this.whoError = "";
-    this.lists = new Map(); this.jobs = new Map(); this.stages = new Map(); this.runs = new Map();
     this.log = null; this.form = null; this.confirm = null;
     this.stack = this.stack.filter((v) => v.kind === "settings");
     for (const key of Object.keys(this.inputs)) this.inputs[key].set_value(s[key] ?? "");
-    if (this.client) this.refresh(cx, true);
+    if (this.src) this.poll(cx);
   }
+
+  get client() { return this.src?.client ?? null; }
 
   typed() {
     return {
@@ -160,182 +169,156 @@ export default class Jenkins extends View {
   save(cx) { this.verify(cx, true); }
 
   // --- reading -------------------------------------------------------------------
+  // Every read goes through the store (data.js), which every copy shares: it
+  // reads a thing when it is due by the thing's own times, so copies that
+  // show the same thing read it once.
 
   view() {
     if (this.settings && !this.client) return { kind: "settings" };
     return this.stack.at(-1) ?? { kind: "list" };
   }
 
+  entry(kind, key = "") { return this.src?.peek(kind, key) ?? null; }
+  listOf(place) { return this.entry("list", place.path); }
+  jobOf(place) { return this.entry("job", place.path); }
+  stagesKey(place, number) { return `${place.path}/${number}`; }
+
   // The Jenkins user the token belongs to: as Jenkins names it, else as typed.
+  get who() { return this.entry("who")?.data ?? null; }
   user() { return this.who?.id ?? this.settings?.user ?? ""; }
 
-  refresh(cx, all = false) {
-    if (!this.client) return;
-    const gen = this.gen, client = this.client;
-    if (!this.who && !this.checking) {
-      this.checking = true;
-      cx.spawn(async (cx) => {
-        try { const who = await client.whoAmI(); if (gen === this.gen) { this.who = who; this.whoError = ""; } }
-        catch (e) { if (gen === this.gen) this.whoError = explain(e, "ask who this token is", this.settings.user); }
-        this.checking = false;
-        cx.notify();
-      });
-    }
-    const view = this.view();
-    for (const place of this.places) this.loadList(place, cx);
-    for (const v of this.stack) if (v.kind === "folder") this.loadList(v.place, cx);
-    if (all && (view.kind === "job" || view.kind === "trigger")) this.loadJob(view.place, cx);
-    if (all && view.kind === "stage") this.loadStages(view.place, view.number, cx, true);
-    if (all && (view.kind === "build" || view.kind === "stage") && this.log) { this.log.done = false; this.pollLog(cx); }
+  // An entry's error as the view shows it: none while it fails quietly.
+  errorOf(entry, doing, user = this.user()) {
+    return entry?.loud() ? explain(entry.error, doing, user) : "";
   }
 
-  loadList(place, cx) {
-    const had = this.lists.get(place.path) ?? { items: null, error: "" };
-    if (had.loading || !this.client) return;
-    const gen = this.gen, client = this.client;
-    this.lists.set(place.path, { ...had, loading: true });
-    cx.spawn(async (cx) => {
-      let next;
-      try { next = { items: await client.list(place), error: "" }; }
-      catch (e) { next = { items: had.items, error: explain(e, `list the jobs of ${place.label || "Jenkins"}`, this.user()) }; }
-      if (gen === this.gen) this.lists.set(place.path, { ...next, loading: false, at: Date.now() });
-      cx.notify();
-    });
+  // The places whose jobs are listed: the settings' folders, and any opened from them.
+  listed() {
+    return [...this.places, ...this.stack.filter((v) => v.kind === "folder").map((v) => v.place)];
   }
 
-  loadJob(place, cx) {
-    const had = this.jobs.get(place.path) ?? { data: null, error: "" };
-    if (had.loading || !this.client) return;
-    const gen = this.gen, client = this.client;
-    this.jobs.set(place.path, { ...had, loading: true });
-    cx.spawn(async (cx) => {
-      let next;
-      try { next = { data: await client.job(place), error: "" }; }
-      catch (e) { next = { data: had.data, error: explain(e, `read ${leaf(place.label)}`, this.user()) }; }
-      if (gen !== this.gen) return;
-      this.jobs.set(place.path, { ...next, loading: false, at: Date.now() });
+  readWho(cx, opts = {}) {
+    // Once it has answered; until then at the back-off of its failures.
+    this.src?.read("who", "", (c) => c.whoAmI(), cx, { every: this.who ? Infinity : 0, ...opts });
+  }
+
+  readList(place, cx, opts = {}) {
+    this.src?.read("list", place.path, (c) => c.list(place), cx, opts);
+  }
+
+  readJob(place, cx, opts = {}) {
+    this.src?.read("job", place.path, (c) => c.job(place), cx, {
+      ...opts,
       // The stages of the build the job view shows, once the job says which that is.
-      const view = this.view();
-      if (view.kind === "job" && view.place.path === place.path) this.loadPicked(view, cx);
-      cx.notify();
+      then: (_e, cx) => {
+        const view = this.view();
+        if (view.kind === "job" && view.place.path === place.path) this.loadPicked(view, cx);
+      },
     });
+  }
+
+  // A build's stages; a freestyle build, or a Jenkins without Pipeline Stage
+  // View, has none (`missing`), which is kept and not asked again.
+  readStages(place, number, cx, opts = {}) {
+    this.src?.read("stages", this.stagesKey(place, number), async (c) => {
+      try { return await c.stages(place, number); } catch (e) { if (e.kind === "missing") return { missing: true }; throw e; }
+    }, cx, { ...opts, then: (e, cx) => { if (!e.data.missing) this.readRuns(place, cx); } });
+  }
+
+  // The job's last runs, for what each stage took last time: read now and
+  // then once a minute, while its stages are shown. Only an estimate: a
+  // failure shows nothing.
+  readRuns(place, cx) {
+    this.src?.read("runs", place.path, (c) => c.runs(place), cx, { every: RUNS_EVERY });
+  }
+
+  // How often a build's stages are read: every few seconds while it runs (or,
+  // read while it ran, has not been seen to end); a finished build's until
+  // read once.
+  stagesEvery(entry, building) {
+    if (entry?.data?.missing) return Infinity;
+    const live = building || ["IN_PROGRESS", "PAUSED_PENDING_INPUT", "QUEUED"].includes(entry?.data?.status);
+    return live ? JOB_BUSY : entry?.data ? Infinity : 0;
   }
 
   // The build a job view shows: the one picked from its builds, else its newest.
   picked(view) {
-    const builds = this.jobs.get(view.place.path)?.data?.builds ?? [];
+    const builds = this.jobOf(view.place)?.data?.builds ?? [];
     return builds.find((b) => b.number === view.number) ?? builds[0] ?? null;
   }
 
-  // Reads the stages of the build a job view shows when they are due: once
-  // for a finished build, every few seconds while it runs.
+  // Reads the stages of the build a job view shows when they are due.
   loadPicked(view, cx, force = false) {
-    const job = this.jobs.get(view.place.path)?.data, build = this.picked(view);
+    const job = this.jobOf(view.place)?.data, build = this.picked(view);
     if (!build || !isPipeline(job)) return;
-    const entry = this.stages.get(`${view.place.path}/${build.number}`);
-    if (force || this.stagesDue(entry, build.building)) this.loadStages(view.place, build.number, cx, force);
+    const entry = this.entry("stages", this.stagesKey(view.place, build.number));
+    this.readStages(view.place, build.number, cx, { force, every: this.stagesEvery(entry, build.building) });
   }
 
-  // Stages are read again while their build runs (or, read while it ran, has not been seen to end).
-  stagesDue(entry, building) {
-    if (!entry) return true;
-    if (entry.loading || entry.missing) return false;
-    const live = building || ["IN_PROGRESS", "PAUSED_PENDING_INPUT", "QUEUED"].includes(entry.data?.status);
-    return live ? Date.now() - (entry.at ?? 0) >= JOB_BUSY : !entry.data && !entry.error;
-  }
-
-  loadStages(place, number, cx, force = false) {
-    const key = `${place.path}/${number}`, had = this.stages.get(key) ?? { data: null, error: "" };
-    if (had.loading || !this.client || (had.missing && !force)) return;
-    const gen = this.gen, client = this.client;
-    this.stages.set(key, { ...had, loading: true });
-    cx.spawn(async (cx) => {
-      let next;
-      try { next = { data: await client.stages(place, number), error: "", missing: false }; }
-      catch (e) {
-        next = e.kind === "missing" ? { data: null, error: "", missing: true }
-          : { data: had.data, error: explain(e, `read the stages of #${number}`, this.user()), missing: false };
-      }
-      if (gen !== this.gen) return;
-      this.stages.set(key, { ...next, loading: false, at: Date.now() });
-      if (next.data) this.loadRuns(place, cx);
-      cx.notify();
-    });
-  }
-
-  // The job's last runs, for what each stage took last time: read now and
-  // then once a minute, while its stages are shown.
-  loadRuns(place, cx) {
-    const had = this.runs.get(place.path);
-    if (had?.loading || !this.client || (had && Date.now() - had.at < RUNS_EVERY)) return;
-    const gen = this.gen, client = this.client;
-    this.runs.set(place.path, { runs: had?.runs ?? [], loading: true, at: had?.at ?? 0 });
-    cx.spawn(async (cx) => {
-      let runs = had?.runs ?? [];
-      try { runs = await client.runs(place); } catch { /* only an estimate: none */ }
-      if (gen === this.gen) this.runs.set(place.path, { runs, loading: false, at: Date.now() });
-      cx.notify();
-    });
-  }
-
-  // Reads the build and what its console has written since the last read. A
-  // read starts at the byte the last one ended at, counted from the text
-  // itself (the app's fetch shows no headers); a log with bytes that are not
-  // UTF-8 can put that count off while it runs, so a build that was followed
-  // is read once more, whole, when it ends.
-  pollLog(cx) {
-    const log = this.log;
-    if (!log || log.loading || log.done || !this.client) return;
-    const client = this.client;
-    log.loading = true;
-    cx.spawn(async (cx) => {
-      try {
-        const build = await client.build(log.place, log.number);
-        const chunk = await client.logFrom(log.place, log.number, log.text.offset);
-        log.build = build;
-        log.text = appendLog(log.text, chunk);
-        if (build.building) log.followed = true;
-        else {
-          if (log.followed) log.text = appendLog(emptyLog(), await client.logFrom(log.place, log.number, 0));
-          log.done = true;
-        }
-        log.error = "";
-      } catch (e) {
-        log.error = explain(e, "read this build's log", this.user());
-        if (e.kind !== "network") log.done = true;
-      }
-      log.loading = false;
-      if (this.log === log && log.follow) this.toEnd(cx);
-      cx.notify();
-    });
+  // The log shown, read on from where it was (data.js has how); a copy that
+  // follows it keeps to its end.
+  pollLog(cx, force = false) {
+    if (!this.log || !this.src) return;
+    this.src.pollLog(this.log, cx, { force, then: (log, cx) => { if (this.log === log && this.follow) this.toEnd(cx); } });
   }
 
   // Shows the log's last line: now, and once more when the lines just added
   // have been laid out (the list scrolls to the end it knew of).
   toEnd(cx) {
     this.scroll.scroll_to_bottom();
-    cx.timer.after(80, (cx) => { if (this.log?.follow) { this.scroll.scroll_to_bottom(); cx.notify(); } });
+    cx.timer.after(80, (cx) => { if (this.follow) { this.scroll.scroll_to_bottom(); cx.notify(); } });
   }
 
-  // Every two seconds: reads again what is due. A list while a build runs or
-  // waits is read more often than one at rest; a followed log every time.
-  tick(cx) {
-    if (!this.client) return;
-    const now = Date.now(), view = this.view();
-    const due = (entry, rest, busy, isBusy) => !entry?.loading && now - (entry?.at ?? 0) >= (isBusy ? busy : rest);
-    for (const place of [...this.places, ...this.stack.filter((v) => v.kind === "folder").map((v) => v.place)]) {
-      const entry = this.lists.get(place.path);
-      if (due(entry, LIST_EVERY, LIST_BUSY, active(entry?.items))) this.loadList(place, cx);
+  // Reads everything the view shows now, also what fails and waits for its
+  // back-off: the refresh button, `jenkins.refresh`.
+  refresh(cx) {
+    if (!this.src) return;
+    const view = this.view();
+    if (!this.who) this.readWho(cx, { force: true });
+    for (const place of this.listed()) this.readList(place, cx, { force: true });
+    if (view.kind === "job" || view.kind === "trigger") this.readJob(view.place, cx, { force: true });
+    if (view.kind === "stage") this.readStages(view.place, view.number, cx, { force: true });
+    if ((view.kind === "build" || view.kind === "stage") && this.log) { this.log.done = false; this.pollLog(cx, true); }
+  }
+
+  // What is due of what the view shows. A list while a build runs or waits
+  // is read more often than one at rest; a followed log every time.
+  poll(cx) {
+    if (!this.src) return;
+    const view = this.view();
+    this.readWho(cx);
+    for (const place of this.listed()) {
+      this.readList(place, cx, { every: active(this.listOf(place)?.data) ? LIST_BUSY : LIST_EVERY });
     }
     if (view.kind === "job") {
-      const entry = this.jobs.get(view.place.path), job = entry?.data;
-      if (due(entry, JOB_EVERY, JOB_BUSY, Boolean(job?.inQueue || (job?.builds ?? []).some((b) => b.building)))) this.loadJob(view.place, cx);
+      const job = this.jobOf(view.place)?.data;
+      this.readJob(view.place, cx, { every: job?.inQueue || (job?.builds ?? []).some((b) => b.building) ? JOB_BUSY : JOB_EVERY });
       this.loadPicked(view, cx);
     }
-    if (view.kind === "stage" && this.stagesDue(this.stages.get(`${view.place.path}/${view.number}`), Boolean(this.log?.build?.building))) {
-      this.loadStages(view.place, view.number, cx);
+    if (view.kind === "stage") {
+      const entry = this.entry("stages", this.stagesKey(view.place, view.number));
+      this.readStages(view.place, view.number, cx, { every: this.stagesEvery(entry, Boolean(this.log?.build?.building)) });
     }
-    if (view.kind === "build" || view.kind === "stage") this.pollLog(cx);
+    if (view.kind === "build" || view.kind === "stage") {
+      if (this.log) this.log.shown = Date.now();
+      this.pollLog(cx);
+    }
+  }
+
+  // Every two seconds: takes up settings another copy saved, reads what is
+  // due, and draws again when another copy's read changed something (or a
+  // "Last read … ago" line counts on).
+  tick(cx) {
+    if (store.saved !== this.saved && store.settings && this.view().kind !== "settings") {
+      this.apply(store.settings, cx);
+      cx.notify();
+    }
+    this.poll(cx);
+    if (store.version !== this.drawn) {
+      this.drawn = store.version;
+      if (this.log && this.follow && (this.view().kind === "build" || this.view().kind === "stage")) this.toEnd(cx);
+      cx.notify();
+    } else if (this.staleShown) cx.notify();
   }
 
   // --- moving about --------------------------------------------------------------
@@ -345,15 +328,23 @@ export default class Jenkins extends View {
     this.stack.push(view);
     this.confirm = null;
     if (this.notice?.tone === "ok") this.notice = null;
-    if (view.kind === "folder") this.loadList(view.place, cx);
-    if (view.kind === "job") { this.loadJob(view.place, cx); this.loadPicked(view, cx); }
+    // What it shows is read unless another view or copy read it a moment ago.
+    if (view.kind === "folder") this.readList(view.place, cx, { every: FRESH });
+    if (view.kind === "job") { this.readJob(view.place, cx, { every: FRESH }); this.loadPicked(view, cx); }
     if (view.kind === "settings") { this.check = null; this.order = Object.values(this.inputs); }
     if (view.kind === "build" || view.kind === "stage") {
-      const known = (this.jobs.get(view.place.path)?.data?.builds ?? []).find((b) => b.number === view.number) ?? null;
-      this.log = { place: view.place, number: view.number, build: known, text: emptyLog(), error: "", loading: false, done: false, follow: true, followed: false };
+      const known = (this.jobOf(view.place)?.data?.builds ?? []).find((b) => b.number === view.number) ?? null;
+      // Read already, by this copy or another, it goes on from there; one that failed for good is tried again.
+      this.log = this.src?.log(view.place, view.number, known) ?? null;
+      if (this.log?.done && this.log.error) this.log.done = false;
+      this.follow = true;
       this.pollLog(cx);
+      if (this.log?.text.lines.length) this.toEnd(cx);
     }
-    if (view.kind === "stage") this.loadStages(view.place, view.number, cx);
+    if (view.kind === "stage") {
+      const entry = this.entry("stages", this.stagesKey(view.place, view.number));
+      this.readStages(view.place, view.number, cx, { every: this.stagesEvery(entry, Boolean(this.log?.build?.building)) });
+    }
     this.handle.focus();
     cx.notify();
   }
@@ -365,7 +356,7 @@ export default class Jenkins extends View {
     if (left.kind === "trigger") this.form = null;
     this.confirm = null;
     const now = this.view();
-    if (now.kind === "job") this.loadJob(now.place, cx);
+    if (now.kind === "job") this.readJob(now.place, cx, { every: FRESH });
     this.handle.focus();
     cx.notify();
     return true;
@@ -386,7 +377,7 @@ export default class Jenkins extends View {
     const view = this.view();
     if (view.kind !== "stage") return;
     this.stack[this.stack.length - 1] = { kind: "build", place: view.place, number: view.number };
-    if (this.log) { this.log.follow = true; this.toEnd(cx); }
+    if (this.log) { this.follow = true; this.toEnd(cx); }
     cx.notify();
   }
 
@@ -394,7 +385,7 @@ export default class Jenkins extends View {
 
   // The build form: the job's parameters, each preset to its default.
   askBuild(place, cx) {
-    const job = this.jobs.get(place.path)?.data;
+    const job = this.jobOf(place)?.data;
     if (!job) return;
     const fields = paramFields(job), values = {}, inputs = {};
     for (const f of fields) {
@@ -421,8 +412,8 @@ export default class Jenkins extends View {
         await client.trigger(form.place, form.fields.length ? formBody(form.fields, form.values) : null);
         this.notice = { tone: "ok", text: `Queued a build of ${name}.` };
         if (this.form === form) { this.stack.pop(); this.form = null; }
-        this.loadJob(form.place, cx);
-        for (const place of this.places) this.loadList(place, cx);
+        this.readJob(form.place, cx, { force: true });
+        for (const place of this.places) this.readList(place, cx, { force: true });
       } catch (e) {
         this.notice = { tone: "error", text: explain(e, `build ${name}`, this.user()) };
       }
@@ -446,8 +437,8 @@ export default class Jenkins extends View {
       try {
         await client.abort(asked.place, asked.number);
         this.notice = { tone: "ok", text: `Asked Jenkins to abort ${what}.` };
-        this.loadJob(asked.place, cx);
-        if (this.log) { this.log.done = false; this.pollLog(cx); }
+        this.readJob(asked.place, cx, { force: true });
+        if (this.log) { this.log.done = false; this.pollLog(cx, true); }
       } catch (e) {
         this.notice = { tone: "error", text: explain(e, `abort ${what}`, this.user()) };
       }
@@ -468,6 +459,19 @@ export default class Jenkins extends View {
     return div().px(10).py(6).text_size(12).text_color(color ?? t.dim).child(text);
   }
 
+  // What an entry's reading has come to, for the rows above its data: the
+  // error, once it is to be shown; while it fails quietly, a dim line that
+  // the data is from the last good read. Nothing while all is well.
+  status(entry, doing, t, now, id) {
+    const error = this.errorOf(entry, doing);
+    if (error) return [this.line(error, t, t.blocked)];
+    if (!entry?.stale(now) || !entry.at) return [];
+    this.staleShown = true;
+    return [div().id(`jk-stale-${id}`).px(10).py(4).text_size(11).text_color(t.dim)
+      .tooltip(`Jenkins did not answer the last ${entry.failures === 1 ? "read" : `${entry.failures} reads`}: trying again`)
+      .child(`Last read ${lastRead(entry.at, now)} ago · no answer since`)];
+  }
+
   header(t, parts) {
     return h_flex().h(42).flex_none().pl(8).pr(8).gap(6).items_center().border_b(1).border_color(t.border).children(parts.filter(Boolean));
   }
@@ -477,10 +481,10 @@ export default class Jenkins extends View {
   }
 
   refreshButton(t) {
-    const loading = [...this.lists.values(), ...this.jobs.values()].some((e) => e.loading) || Boolean(this.log?.loading && !this.log.build);
+    const loading = this.src?.busy(["list", "job"]) || Boolean(this.log?.running() && !this.log.build);
     return div().id("jk-refresh").size(24).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim)
       .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Refresh")
-      .on_click((_e, cx) => { this.refresh(cx, true); cx.notify(); })
+      .on_click((_e, cx) => { this.refresh(cx); cx.notify(); })
       .child(loading ? spinner(t, 13) : svg(icon("refresh")).size(14));
   }
 
@@ -573,18 +577,16 @@ export default class Jenkins extends View {
   // A place's header and its rows: a large heading that folds for the
   // folders of the list (`big`), a small one for a folder opened from it.
   section(place, t, now, title, big = false) {
-    const entry = this.lists.get(place.path), items = entry?.items;
+    const entry = this.listOf(place), items = entry?.data;
+    const state = this.status(entry, `list the jobs of ${place.label || "Jenkins"}`, t, now, place.path);
     const rows = [big ? this.heading(place, items, t, title) : h_flex().h(28).flex_none().pt(6).px(8).gap(6).items_center().text_size(11).font_medium().text_color(t.dim)
       .child(div().min_w(0).truncate().child(title))
       .when(Boolean(items), (el) => el.child(div().flex_none().child(String(items.length))))
       .child(div().flex_1())
       .child(iconButton(`jk-open-${place.path}`, "external", "Open in the browser", (cx) => this.open(this.client.page(place), cx), t, { size: 20 }))];
-    if (big && this.folded.has(place.path)) {
-      if (entry?.error) rows.push(this.line(entry.error, t, t.blocked));
-      return rows;
-    }
-    if (entry?.error) rows.push(this.line(entry.error, t, t.blocked));
-    if (!items) { if (!entry?.error) rows.push(this.line("Reading the jobs…", t)); }
+    rows.push(...state);
+    if (big && this.folded.has(place.path)) return rows;
+    if (!items) { if (!state.length) rows.push(this.line("Reading the jobs…", t)); }
     else if (!items.length) rows.push(this.line("No jobs here, or none this token may see.", t));
     else rows.push(...items.map((item) => this.jobRow(place, item, t, now)));
     return rows;
@@ -601,7 +603,8 @@ export default class Jenkins extends View {
     const host = hostOf(this.settings.url);
     const who = this.who ? (this.who.name === this.who.id ? this.who.id : `${this.who.name} (${this.who.id})`) : "";
     const rows = [...this.cards(t)];
-    if (this.whoError) rows.push(this.line(this.whoError, t, t.blocked));
+    const whoError = this.errorOf(this.entry("who"), "ask who this token is", this.settings.user);
+    if (whoError) rows.push(this.line(whoError, t, t.blocked));
     for (const place of this.places) rows.push(...this.section(place, t, now, place.label || host, true));
     return [
       this.header(t, [
@@ -676,22 +679,24 @@ export default class Jenkins extends View {
         .on_click((_e, cx) => this.show({ kind: "build", place, number: build.number }, cx))
         .child(svg(icon("console")).size(12)).child("Console log"));
     if (!isPipeline(job)) return [head, this.line("This job is not a Pipeline, so it has no stages: its console log has it all.", t)];
-    const entry = this.stages.get(`${place.path}/${build.number}`);
-    if (entry?.missing) return [head, this.line("Jenkins shows no stages for this build (no Pipeline Stage View): its console log has it all.", t)];
+    const entry = this.entry("stages", this.stagesKey(place, build.number));
+    if (entry?.data?.missing) return [head, this.line("Jenkins shows no stages for this build (no Pipeline Stage View): its console log has it all.", t)];
     const rows = [head];
-    if (entry?.error) rows.push(this.line(entry.error, t, t.blocked));
-    if (!entry?.data) { if (!entry?.error) rows.push(this.line("Reading the stages…", t)); return rows; }
-    const stages = stagesOf(entry.data, this.runs.get(place.path)?.runs, build.building);
+    const state = this.status(entry, `read the stages of #${build.number}`, t, now, `stages-${build.number}`);
+    rows.push(...state);
+    if (!entry?.data) { if (!state.length) rows.push(this.line("Reading the stages…", t)); return rows; }
+    const stages = stagesOf(entry.data, this.entry("runs", place.path)?.data, build.building);
     if (!stages.length) rows.push(this.line(build.building ? "No stage has started yet." : "This build ran no stages.", t));
     rows.push(...stages.map((s) => this.stageRow(place, build.number, s, t, now)));
     return rows;
   }
 
   renderJob(view, t, now) {
-    const entry = this.jobs.get(view.place.path), job = entry?.data, name = leaf(view.place.label);
+    const entry = this.jobOf(view.place), job = entry?.data, name = leaf(view.place.label);
     const rows = [...this.cards(t)];
-    if (entry?.error) rows.push(this.line(entry.error, t, t.blocked));
-    if (!job) { if (!entry?.error) rows.push(this.line("Reading the job…", t)); }
+    const state = this.status(entry, `read ${name}`, t, now, "job");
+    rows.push(...state);
+    if (!job) { if (!state.length) rows.push(this.line("Reading the job…", t)); }
     else {
       const builds = job.builds ?? [], picked = this.picked(view), pipeline = isPipeline(job);
       rows.push(v_flex().px(10).pt(10).pb(4).gap(3)
@@ -725,7 +730,7 @@ export default class Jenkins extends View {
 
   // The stage a stage view shows, as its build's stages were read last.
   stageOf(view) {
-    const stages = this.stages.get(`${view.place.path}/${view.number}`)?.data?.stages ?? [];
+    const stages = this.entry("stages", this.stagesKey(view.place, view.number))?.data?.stages ?? [];
     let nth = -1;
     const found = stages.find((s) => s.id === view.stage.id) ?? stages.find((s) => s.name === view.stage.name && ++nth === view.stage.nth);
     return found ? { ...found, state: stageState(found.status) } : null;
@@ -773,8 +778,8 @@ export default class Jenkins extends View {
           .when(part !== null, (el) => el.child(bar(part, t, 60)).child(div().flex_none().text_color(t.working).child(`${Math.round(part * 100)}%`))))
         .when(Boolean(params), (el) => el.child(div().truncate().child(params))));
     }
-    if (log?.error) parts.push(this.line(log.error, t, t.blocked));
-    const empty = log?.error ? ""
+    if (log) parts.push(...this.status(log, "read this build's log", t, now, "log"));
+    const empty = log?.loud(now) ? ""
       : !log?.done && !all.length ? "Reading the log…"
         : !isStage ? (log?.done ? "This build wrote nothing." : "Reading the log…")
           : range ? (range.open ? "Nothing yet." : "This stage wrote nothing.")
@@ -784,7 +789,7 @@ export default class Jenkins extends View {
     else {
       parts.push(div().id("jk-log-area").flex_1().min_h(0).relative().font_family(look().font_family ?? "JetBrains Mono").text_size(11.5)
         // Scrolling by hand stops the following; the footer's button takes it up again.
-        .on_scroll_wheel((e, cx) => { if (log.follow && (e?.delta?.y ?? 0) > 0) { log.follow = false; cx.notify(); } })
+        .on_scroll_wheel((e, cx) => { if (this.follow && (e?.delta?.y ?? 0) > 0) { this.follow = false; cx.notify(); } })
         .child(div().id("jk-log-x").size_full().overflow_x_scrollbar()
           .child(div().w_full().min_w(width).h_full().child(v_virtual_list(list, lines.length, ROW, (i) => String(i),
             (range) => lines.slice(range.start, range.end).map((line) => this.logRow(line, t))).track_scroll(this.scroll).size_full())))
@@ -800,8 +805,8 @@ export default class Jenkins extends View {
       ].filter(Boolean).join(" · ")))
       .when(isStage, (el) => el.child(div().id("jk-whole-log").flex_none().cursor_pointer().text_color(t.accent)
         .tooltip("The whole console log of this build").on_click((_e, cx) => this.wholeLog(cx)).child("Whole log")))
-      .when(Boolean(log) && !log.follow, (el) => el.child(div().id("jk-follow").flex_none().cursor_pointer().text_color(t.accent)
-        .on_click((_e, cx) => { log.follow = true; this.toEnd(cx); cx.notify(); }).child(live ? "Follow" : "To the end"))));
+      .when(Boolean(log) && !this.follow, (el) => el.child(div().id("jk-follow").flex_none().cursor_pointer().text_color(t.accent)
+        .on_click((_e, cx) => { this.follow = true; this.toEnd(cx); cx.notify(); }).child(live ? "Follow" : "To the end"))));
     return parts;
   }
 
@@ -910,6 +915,7 @@ export default class Jenkins extends View {
 
   render() {
     const t = theme(), now = Date.now(), view = this.view();
+    this.staleShown = false;
     const parts = !this.settings ? [this.line("Reading the settings…", t)]
       : view.kind === "settings" ? this.renderSettings(t)
         : view.kind === "folder" ? this.renderFolder(view, t, now)
