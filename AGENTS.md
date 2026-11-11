@@ -37,9 +37,13 @@ use std alone.
 Clippy lints code under `#[cfg(target_os = ...)]` only on that OS, so a lint
 can pass on your machine and fail CI on the other (a `return` left at the end
 of a macOS-only block did). CI runs on both Linux and macOS; check both jobs.
+CI also runs `node scripts/test-app-mods.mjs`, the Jenkins mod's tests and
+`bash scripts/test-install` on both (on Node 26: the tests use
+`node:module`'s `registerHooks`); `herdr-app check` needs the app, which a
+runner lacks, so it stays a local check.
 
 On macOS the default `$TMPDIR` makes the fake `herdr-app` socket in
-`src/app_layout/tests.rs` and `src/app_space/tests.rs` exceed `SUN_LEN`, so
+`src/app_layout/tests.rs` exceed `SUN_LEN`, so
 run `TMPDIR=/tmp cargo test` there.
 
 A test that polls a non-blocking listener's `accept()` must set the accepted
@@ -191,9 +195,8 @@ and OpenCode plugin and links `~/.local/bin/corgi`. Use `--mod-only --home`
 
 ## The Herdr app mod
 
-`herdr-app/mods/corgi/` is the Herdr app's Corgi mod,
-`herdr-app/mods/projects/` its Projects mod, the list in the layout's
-sidebar, and `herdr-app/mods/corgi-brand/` its brand row mod, the
+`herdr-app/mods/projects/` is the Herdr app's Projects mod, the list in
+the layout's sidebar, and `herdr-app/mods/corgi-brand/` its brand row mod, the
 "Herdr + Corgi" row at the sidebar's top; `herdr-app/RECIPE.md` describes
 them for people and agents, and `herdr-app/install.sh` installs them with
 the CLI and runs `corgi app-layout`
@@ -208,12 +211,12 @@ to; Corgi never rebuilds a layout from `main` and no mod touches the
 layout, so other mods' changes to it (herdr-gitlab's `gitlab` block in
 `panel-body`) stay. Test a change there against a scratch home holding
 real copies of the app's layouts and its `installed.json` (which names the
-shipped ones). The Corgi space, a space named
-`Corgi` showing the Corgi mod, is retired (the user closed theirs on
-purpose; Corgi's features in the app go into the Projects mod): neither the
-install nor `corgi daemon` makes it, and nothing may bring it back by
-itself. `corgi app-space` (`src/app_space.rs`) still
-makes it for a person who runs it, and `remove` closes it. Herdr's shipped
+shipped ones). The Corgi space and the Corgi mod it showed (an overview
+of every project) are retired (decision 2026-11-10: the user closed theirs
+on purpose; what Corgi needs in the app goes into the Projects mod), and
+`corgi app-space` with them. The install removes a `mods/corgi` an earlier
+install left in the app's home, when its `main.js` names
+`io.github.zyrre.corgi`. Herdr's shipped
 layouts and mods
 (`~/.config/herdr-app/layouts/main.json`, `mods/spaces`, `mods/agents`, …)
 are read-only: Herdr replaces them on every start and moves an edited one
@@ -224,20 +227,15 @@ is what the user asks for by installing). The Projects mod began as a copy of He
 `workspace-chrome` (with its own copies of the two icons it draws); both
 are Corgi's own and follow no later version of them.
 
-Test `corgi app-space` against a fake `herdr-app` (its tests do), never
-the user's app. The Corgi
-mod reads `corgi status --json` and runs `corgi merge`; both live in
-`src/commands/status.rs`. The
-Projects mod reads the same status, runs the same `corgi merge` from a
-tagged worker's MERGE mark (and `corgi merge … --ask-supervisor` for
+The Projects mod reads `corgi status --json` and runs `corgi merge`
+(both in `src/commands/status.rs`) from a tagged worker's MERGE mark (and `corgi merge … --ask-supervisor` for
 "Ask supervisor to fix"), and runs `corgi projects` and `corgi
 open` (`src/commands/open.rs`). Check every change with
-`herdr-app check herdr-app/mods/corgi`, `herdr-app check
-herdr-app/mods/projects` and `herdr-app check herdr-app/mods/corgi-brand`
-(it writes `jsconfig.json` and
+`herdr-app check herdr-app/mods/projects` and `herdr-app check
+herdr-app/mods/corgi-brand` (it writes `jsconfig.json` and
 `gpui-kit.d.ts` there, which Git ignores). `check` renders only the first
-frame (the "Reading Corgi's status…" line; the Projects list with its field
-closed and no agents), so a mistake in another view passes it. Two things
+frame (the Projects list with its field closed and no agents), so a
+mistake in another view passes it. Two things
 cover the rest. The first must pass before a mod change is handed off:
 
 ```bash
@@ -682,13 +680,12 @@ daemon's passes stops and starts a core, so it never uses the user's:
 
 No release is cut until the user asks for one (decision 2026-11-09).
 
-Bump `version` in `Cargo.toml` and `VERSION` in
-`herdr-app/mods/corgi/main.js` (and run `cargo build` so `Cargo.lock`
-follows), commit, and push a `vX.Y.Z` tag matching it. The Corgi mod
-installs exactly its `VERSION`, from that tag's `herdr-app/install.sh`, so
-the tag must hold the installer. `.github/workflows/release.yml` then builds
-the four binaries and publishes the GitHub release with them and their
-`SHA256SUMS`; it refuses a tag that does not match both versions.
+Bump `version` in `Cargo.toml` (and run `cargo build` so `Cargo.lock`
+follows), commit, and push a `vX.Y.Z` tag matching it. The piped install
+(`--version X.Y.Z`) runs that tag's `herdr-app/install.sh`, so the tag
+must hold the installer. `.github/workflows/release.yml` then builds the
+four binaries and publishes the GitHub release with them and their
+`SHA256SUMS`; it refuses a tag that does not match `Cargo.toml`.
 
 After the artifacts exist, independently download all four binaries and hash
 those bytes; compare with the published `SHA256SUMS`, GitHub asset digests and

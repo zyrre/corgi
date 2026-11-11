@@ -461,7 +461,7 @@ mod tests {
                 text(&supervisor),
                 text(&kept),
                 text(&gone),
-                text(&state.join("steward/corgi")),
+                text(&state.join("hc/corgi")),
                 text(&link.join("supervisors/weather")),
             ),
         )

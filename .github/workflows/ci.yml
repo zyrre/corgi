@@ -1,5 +1,6 @@
 # Checks formatting, lints and tests on every pull request and every push to
-# main, on Linux and macOS, the platforms Corgi supports.
+# main, on Linux and macOS, the platforms Corgi supports: the Rust crate, and
+# the scripts' and mods' own tests.
 name: CI
 
 on:
@@ -41,6 +42,33 @@ jobs:
         env:
           TMPDIR: /tmp
         run: cargo test --locked
+
+  # The mods under Node with stand-ins for the Herdr app, and the installers
+  # against a fake release, cargo and herdr-app: none needs Rust or the app.
+  # `herdr-app check` of each mod needs the Herdr app itself, which a runner
+  # does not have, so it is run by hand (AGENTS.md).
+  scripts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # The tests load the mods through node:module's registerHooks.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+
+      - name: Test the Projects and brand row mods
+        run: node scripts/test-app-mods.mjs
+
+      - name: Test the Jenkins mod
+        run: node herdr-app/mods/jenkins/tests/test.mjs
+
+      - name: Test the installers
+        run: bash scripts/test-install
 
   # The oldest Rust that builds Corgi (`rust-version` in Cargo.toml).
   msrv:

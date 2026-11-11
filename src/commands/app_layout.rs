@@ -9,7 +9,7 @@ use serde_json::json;
 
 use crate::{
     app_layout::{self, Change, Done, Installed, LAYOUT},
-    app_space::HerdrApp,
+    herdr_app::HerdrApp,
 };
 
 pub const APP_LAYOUT_USAGE: &str = "\

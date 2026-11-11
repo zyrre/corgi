@@ -15,7 +15,9 @@ works and why.
 Some rules in AGENTS.md belong to the maintainer's own agent workflow, such
 as the preview window, the step after a merge and the release steps. Follow
 them if they help; a pull request only needs the checks above to pass. CI
-runs the Rust checks on every pull request.
+runs them on every pull request, on Linux and macOS, with the Jenkins mod's
+tests (`node herdr-app/mods/jenkins/tests/test.mjs`); `herdr-app check` of
+the mods needs the Herdr app, so it is run by hand.
 
 By contributing you agree that your work is licensed under the
 [MIT license](LICENSE).

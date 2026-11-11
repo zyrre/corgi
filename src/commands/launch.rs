@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     git::git_output,
-    harness::{EFFORT_LEVELS, Harness, default_harness},
+    harness::{EFFORT_LEVELS, Harness, default_harness, record_chosen_harness},
     hc::{self, HcClient, launch::Launched},
     launch::{
         CORGI_REQUEST_TOKEN, Checkout, LaunchPlan, Role, SUPERVISOR_HOME_REFUSAL,
@@ -35,8 +35,8 @@ JSON. The task is read from stdin, or from --task-file, never from arguments.
 Options:
   --project PATH     Project directory (default: the current directory)
   --harness KIND     Agent CLI: claude, codex, opencode, … (default: the
-                     calling supervisor's own, else the last one recorded
-                     in last-harness.json, else CORGI_DEFAULT_AGENT, else
+                     calling supervisor's own, else the last one a person
+                     chose with --harness, else CORGI_DEFAULT_AGENT, else
                      the first one installed)
   --model MODEL      Model to start on (default: the harness's own setting)
   --effort LEVEL     low, medium, high, xhigh, or max (Codex and Claude Code)
@@ -267,6 +267,12 @@ fn spawn_worker(
         .iter()
         .find(|agent| agent.supervisor && Some(&agent.info.address) == caller.as_ref())
         .map(|agent| agent.info.harness());
+    // A harness a person asks for is the one they last chose; one a
+    // supervisor (or another of Corgi's agents) asks for is not.
+    let chosen = options.harness.is_some()
+        && !agents
+            .iter()
+            .any(|agent| Some(&agent.info.address) == caller.as_ref());
     let harness = spawn_harness(options.harness, supervisor_harness, default_harness);
     anyhow::ensure!(
         options.effort.is_empty() || harness.supports_effort(),
@@ -291,6 +297,9 @@ fn spawn_worker(
         request_id: options.request_id,
     };
     let launched = hc::launch::launch_worker(&client, &plan, &root, &mut Said)?;
+    if chosen {
+        record_chosen_harness(&plan.harness);
+    }
     Ok(launched_json(&plan, &launched))
 }
 
@@ -377,6 +386,9 @@ fn launch_supervisor(
         options.name.as_deref(),
         shell,
     )?;
+    if options.harness.is_some() {
+        record_chosen_harness(&plan.harness);
+    }
     Ok(launched_json(&plan, &launched))
 }
 

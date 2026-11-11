@@ -13,7 +13,6 @@ use crate::{
 };
 
 mod app_layout;
-mod app_space;
 mod daemon;
 mod fleet;
 mod launch;
@@ -24,7 +23,6 @@ mod status;
 mod usage;
 
 pub use app_layout::{APP_LAYOUT_USAGE, app_layout_command};
-pub use app_space::{APP_SPACE_USAGE, app_space_command};
 pub use daemon::{DAEMON_USAGE, daemon_command};
 pub use fleet::{FLEET_USAGE, REPORT_USAGE, TAG_USAGE, fleet_command, report_command, tag_command};
 pub use launch::{SPAWN_USAGE, SUPERVISOR_USAGE, spawn_command, supervisor_command};

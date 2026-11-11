@@ -91,7 +91,7 @@ const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // for this often, in repos the list shows, while the window is in front.
 const FALLBACK = 60000;
 // How often Corgi's status is read again besides when the live agents
-// change: as often as the Corgi mod reads it, never more.
+// change, and never more often.
 const POLL_MS = 5000;
 // Another machine's status is read as often, but no sooner than three
 // times its last read took: a slow machine is asked less often.
@@ -100,7 +100,9 @@ const SLOW_FACTOR = 3;
 const LOCATE_MS = 60000;
 // Where corgi is on another machine, run there in `sh` (exec takes no
 // login shell): the path that machine's own Corgi install recorded for its
-// app, `corgi` on PATH, on its login shell's PATH, then the usual places.
+// app (an older install there may have recorded it only for the retired
+// Corgi mod), `corgi` on PATH, on its login shell's PATH, then the usual
+// places.
 // Prints the first that is there, or exits 3.
 const LOCATE_CORGI = [
   'try() { case "$1" in /*) if [ -x "$1" ]; then printf \'%s\\n\' "$1"; exit 0; fi ;; esac; }',
@@ -294,17 +296,15 @@ const STATUS = { working: "working", blocked: "blocked", done: "done", idle: "id
 const buildName = (b) => [b.commit ? b.commit.slice(0, 7) : `Corgi ${b.version}`, ...(b.dirty ? ["modified"] : [])].join(" · ");
 const sameBuild = (a, b) => a.version === b.version && (a.commit ?? null) === (b.commit ?? null) && Boolean(a.dirty) === Boolean(b.dirty);
 
-// Where corgi may be, in order: what the installer wrote for this mod or the
-// Corgi mod, then the usual places.
+// Where corgi may be, in order: what the installer wrote for this mod, then
+// the usual places.
 async function corgiCandidates() {
   const list = [];
-  for (const mod of ["projects", "corgi"]) {
-    try {
-      const config = JSON.parse((await readTextFile(`${appHome()}/mods/${mod}/config.json`)) ?? "{}");
-      if (config.corgi) list.push(config.corgi);
-    } catch (_) {
-      // No config: the mod was added on its own.
-    }
+  try {
+    const config = JSON.parse((await readTextFile(`${appHome()}/mods/projects/config.json`)) ?? "{}");
+    if (config.corgi) list.push(config.corgi);
+  } catch (_) {
+    // No config: the mod was added on its own.
   }
   const h = home();
   list.push("corgi", `${h}/.local/bin/corgi`, `${h}/.local/share/corgi/target/release/corgi`, `${h}/.cargo/bin/corgi`);

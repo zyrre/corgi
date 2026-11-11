@@ -1,17 +1,6 @@
 # Corgi
 
-Three mods and a change to your layout. The **Corgi** mod is an overview: how
-each of your Corgi projects on herdr-core (`hc`), the Herdr app's backend,
-is doing: one block per project with its supervisor's state, its workers by
-state, the open questions waiting for you, the work ready to merge and the
-inbox items not yet delivered; projects that need you stand out. Above them,
-whether `corgi daemon`, which wakes the supervisors, is running. Click a
-project for its supervisor and workers (state, task, model, context, prompt
-cache, MERGE tag), its open questions with their full text, and a Merge
-button on each worker tagged ready to merge; click an agent to see its
-terminal.
-
-The **Projects** mod is a sidebar list that stands in your layout where
+Two mods and a change to your layout. The **Projects** mod is a sidebar list that stands in your layout where
 Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, two lines each
 (the agent's task; under it, smaller, its harness's icon, its model, how
 full its context is and, at the right, its state as a badge: `WORKING`,
@@ -41,63 +30,13 @@ list and the brand row into the layout the window shows. A layout of your own ge
 place; Herdr's own `main` is cloned to `corgi` first, which the window
 switches to (`"main"` shows Herdr's own again). Nothing else in the layout
 changes, so another mod's changes to it (a panel, a tab bar) stay. The
-Corgi mod is installed but shown
-nowhere: the space it used to have, the Corgi space, is retired, since
-Corgi's place in the app is the Projects list. `corgi app-space`, run by
-hand, still makes that space for whoever wants the overview.
+Corgi mod, an overview of every project that an earlier Corgi showed in a
+space of its own, is retired, since Corgi's place in the app is the
+Projects list: the install removes one an earlier install left.
 
 <!-- preview.png is still to be made, from a look at the running window. -->
 
 ## What you see
-
-### The Corgi mod's overview
-
-The Corgi mod docks nowhere by itself (`mod.json`: `"place": "none"`) and no
-layout Corgi changes shows it: it is drawn where a person puts it, which
-`corgi app-space` does as the only tab of a space named `Corgi`, first in
-the list of spaces (see "The Corgi space"). It fills the tab on the theme's
-`surface`, text 13 px; the views' content is a column at most 960 px wide,
-centred in a wider tab.
-
-- **Header** (one line, a `border` rule below): `Corgi` in 14 px semibold,
-  `herdr-core not running` in `blocked` when the core is not running (or
-  `herdr-core not answering` when `hc` failed), and the time of the last
-  reading (`HH:MM:SS`, UTC) in `dim` 11 px, or `…` while one is being read.
-- **Overview** (the main view): a scrolling column, 10 px apart, that starts
-  with the daemon: while it runs, a `dim` 12 px line `Corgi daemon running ·
-  pid 4242`; when it does not, a card with a `blocked` outline: `Corgi daemon
-  not running: supervisors on the Herdr app won't be woken or handed over`
-  (semibold, `blocked`), then `To start it, run:` (or, when its service is
-  installed, `Its service is installed but not running. To restart it, run:`)
-  in `muted`, and `corgi daemon install` in a monospace box. It always shows.
-  When `hc` failed, its error follows in `blocked`. Then the project blocks.
-  Each block is a card (radius 8, padding 10, `background`, a `border`
-  outline, or `blocked` when the project needs you):
-  - the project's name (15 px semibold), its base branch (`dim`), and on the
-    right, when it needs you, a `blocked` badge such as
-    `needs you · 2 questions, 1 blocked, 1 to merge`;
-  - `Supervisor` and its state: `working`, `resting` (done or idle),
-    `needs you` (blocked), or `not running` in `dim`; then its context
-    percentage and prompt cache (`warm 55m`, `cold 120k`);
-  - the number of workers, then a count per state, most urgent first, each
-    in its state's color (`working`, `blocked`, `done`, `idle`);
-  - up to three open questions, `Q71  How should…`, one line each, then
-    `+N more`;
-  - a `dim` 12 px line: ready to merge in the ledger, inbox items waiting,
-    dispatched work, backlog entries (only those that are not zero).
-- **Project view**: `← All projects` in the header, the project's folder and
-  base branch, then a card per agent, the supervisor first: a dot in the
-  state's color, the name (semibold), its role, its state, a `MERGE` badge
-  (`accent`) when tagged, and a `Merge` button (`solid`); below, the task on
-  one line, and `model · ctx 18% · cache warm 55m · branch` in `dim`; a card
-  takes `hover` under the pointer. Then
-  `Open questions (N)`, each with its id in `blocked`, its title, and the
-  worker it blocks; and a `dim` line with the ledger counts, inbox and
-  backlog.
-- **Setup**: while it installs or updates the `corgi` tool,
-  `Installing Corgi 0.2.3…` or `Updating Corgi 0.2.2 → 0.2.3…`; if that
-  fails, the error in `blocked`, the installer's last lines in a monospace
-  box, the command to run by hand, and `Retry`.
 
 ### The Projects list in the sidebar
 
@@ -209,7 +148,7 @@ The Projects mod fills its block on `chrome`, text 13 px:
   the header of a connected machine with no `corgi`, one line, 10.5 px in
   `dim`, cut with `…`: `Corgi isn't installed on <machine>`; its rows show
   as an agent started by hand shows, with no second-line data or `MERGE`.
-  - A space outside any repository (`~`, another folder, a Corgi space):
+  - A space outside any repository (`~`, another folder):
     30 px, a colored 18 px avatar with its initial, its name.
   - A project, a repository: the space on its primary checkout, drawn the
     same way, with its branch and ahead/behind after the name only when
@@ -304,48 +243,6 @@ The Projects mod fills its block on `chrome`, text 13 px:
 
 ## How it behaves
 
-The overview:
-
-- Agent states are Corgi's: `working`, `blocked`, `done`, `idle`, `unknown`
-  and `exited`, each in the theme color of that name (`unknown` for the
-  last two). A project needs you when its supervisor has open questions, an
-  agent is blocked, or a worker is tagged MERGE.
-- Agents are those Corgi started on herdr-core (`corgi supervisor`,
-  `corgi spawn` there); `terminal` is the hc terminal's address. A project stays listed from its
-  supervisor's state folder when none of its agents runs, and when the core
-  is not running.
-- It reads `corgi status --json` when it starts, every 5 seconds, when a file
-  under the supervisors' state folder changes, and when the app's live
-  agents change (compared once a second).
-- Clicking a project opens its view; `← All projects` goes back. Clicking an
-  agent's card runs `agent.focus` on its terminal, which shows it in its own
-  space and tab; its buttons (`Merge`, `Cancel`, `Merge + push`) only do
-  their own thing. Clicking a
-  question with a saved text shows its whole text below it; clicking again
-  hides it.
-- `Merge` asks inline, `Merge worktree/x into main and push?` with `Cancel`
-  and `Merge + push`, then shows `Merging…` and runs
-  `corgi merge NAME --project DIR --json`, on the worker's hc checkout and branch, which also tells the
-  supervisor and clears the worker's MERGE tag. With the core not running it
-  is refused, and nothing is started. The result shows in a card at
-  the top of the project view, green-ish (`working`) for merged, `done` for
-  a failed push, `blocked` otherwise. When the base branch's upstream has
-  new commits it offers `Pull, merge + push` (`--pull`); after a failed
-  fetch, `Merge + push without fetching` (`--skip-upstream`). A conflict is
-  aborted and handed to the project's supervisor when one runs.
-- When no `corgi` that knows `status --json` and is at least the mod's
-  version is found, it installs that version at once, without asking, then
-  shows the overview.
-- It never starts, wakes or types into an agent. Waking
-  supervisors, delivering their inboxes and handing them over is
-  `corgi daemon`'s, a service `herdr-app/install.sh` installs, so it goes on
-  with the window closed; `corgi status --json` says whether it runs
-  (`daemon.running`, `daemon.pid`) and whether its service is installed
-  (`daemon.installed`), and the overview shows it.
-- It never changes or switches a layout: only the installer does.
-
-The Projects list:
-
 - A project's agents are those the app lists in its spaces (`agents()`), and
   Corgi's that have reported no status yet or whose agent exited into its
   shell, found by the pane their terminal is in. An agent Corgi runs
@@ -358,8 +255,8 @@ The Projects list:
   a right-click on either opens the space's menu (Herdr's `menu` mod).
   `agent.next` and `agent.prev` follow the list's order.
 - It reads `corgi status --json` when it starts, every 5 seconds, and when
-  the app's live agents change (compared once a second): as often as the
-  Corgi mod, never more. Each space's git is read as Herdr's Spaces list
+  the app's live agents change (compared once a second), never more often.
+  Each space's git is read as Herdr's Spaces list
   reads it. Without a `corgi` it still lists every space and agent, by
   their own titles.
 - Another machine (added with Herdr's `Add machine`, reached by herdr-core
@@ -369,8 +266,8 @@ The Projects list:
   its last read took, so a slow machine is asked less often; a change in
   the live agents reads it again only once that time has come. Its
   `corgi` is found once, by a `sh -c` there: the path that machine's own
-  install wrote in its app's `mods/projects/config.json` (or
-  `mods/corgi/config.json`), `corgi` on the `PATH` exec has there, on its
+  install wrote in its app's `mods/projects/config.json` (or, by an older
+  install, `mods/corgi/config.json`), `corgi` on the `PATH` exec has there, on its
   login shell's `PATH` (`$SHELL -lc`), then `~/.local/bin/corgi`,
   `~/.local/share/corgi/target/release/corgi` and `~/.cargo/bin/corgi`.
   Found, it is kept until a read fails; with none, the header says so (see
@@ -540,14 +437,6 @@ The Projects list:
 
 ## Built from
 
-- The Corgi mod, `mods/corgi/` (`main.js`, `mod.json`: `"place": "none"`).
-  Imports: `View`, `div` from `gpui-kit`; `v_flex`, `h_flex` from
-  `gpui-base`; `agents`, `exec`, `home`, `appHome`, `readTextFile`,
-  `watchFolder`, `theme`, `run` from `herdr`. App commands:
-  `agent.focus`. No keys or overlays.
-- Programs: `corgi --version`, `corgi status --help`,
-  `corgi status --json`, `corgi merge … --json`, and, to install, `sh -c` running `curl` on the
-  release's `herdr-app/install.sh` with `--version <VERSION> --cli-only`.
 - The Projects mod, `mods/projects/` (`main.js`, `mod.json`: `"place":
   "none"`, `"title": "Projects"`). It began as a copy of Herdr's `spaces`
   mod (herdr-app 0.1.14) and is Corgi's own since: it follows no later
@@ -568,8 +457,8 @@ The Projects list:
   through `exec`'s `on`: `git`, the pull's `sh -c`, the `sh -c` that finds
   `corgi` there, and that `corgi`'s `status`, `merge`, `close`, `pause`
   and `resume`; `corgi projects`, `open` and `usage` run on this computer
-  only. Files: `mods/projects/
-  config.json` or `mods/corgi/config.json` (`{ "corgi": "<path>" }`).
+  only. Files: `mods/projects/config.json` (`{ "corgi": "<path>" }`,
+  written by `herdr-app/install.sh`).
 - The brand row mod, `mods/corgi-brand/` (`main.js`, `mod.json`:
   `"place": "none"`, `corgi.png`, and `search.svg` and `sidebar.svg`,
   copies of Herdr's). It began as a copy of the brand row of Herdr's
@@ -585,10 +474,6 @@ The Projects list:
   | running | failed, message, project, name, terminal, created, place: new
   | own | shell}`; `corgi app-layout --json` prints `{result: edited |
   cloned | unchanged | refused, layout, path, message}`.
-- Files: `mods/corgi/config.json` (`{ "corgi": "<path>" }`, written by
-  `herdr-app/install.sh`), each question's file (`questions/Q<n>.md` in the
-  supervisor's state folder, named by `corgi status`), and a watch on the
-  folder holding the supervisors' state folders.
 - `corgi status --json` prints `{version: 2, generated, hc: {running,
   error}, daemon: {running, pid, build: {version, commit, dirty} | null,
   installed}, corgi: {version, commit, dirty, source, newer: {branch,
@@ -648,67 +533,16 @@ The Projects list:
   `workspace-chrome` again. No layout is deleted (`corgi` stays, as the
   person's own) and the window is not switched.
 
-## The Corgi space
-
-Retired: the install does not make it, and neither does `corgi daemon`. It
-is a space named `Corgi` whose only tab shows the Corgi mod, for whoever
-wants the overview on screen.
-
-- `corgi app-space`, run by hand with the app's window open, makes it:
-  `space.new {name: "Corgi", folder: ~, machine: ""}` (the app has no
-  command that makes a space around a mod, so it starts with a shell),
-  `tab.new {space, mod: "corgi", name: "Corgi"}`, `tab.close` on the
-  shell's tab, and `space.move {index: 1}`. If the mod's tab cannot be
-  made, the new space is closed again. With the window closed it makes
-  nothing and says so.
-- A space named `Corgi` on this computer is the Corgi space (`herdr-app
-  ls`); with one there, nothing is made. A space nobody named is called
-  after its first terminal's repo, and Corgi's own repo space is `corgi`,
-  in lower case. A Corgi space that is there is left where it is, by the
-  install too.
-- An earlier Corgi noted a space still to be made (`app-space.json` in
-  Corgi's state folder) for its daemon to make once the window opened. The
-  daemon now deletes that note when it starts and makes nothing; so does
-  `corgi app-space`.
-- `herdr-app/install.sh --uninstall` runs `corgi app-space remove`, since
-  the mod the space shows is going: it closes the tabs named `Corgi` with
-  no terminals in Corgi spaces (the space goes with its last tab; terminals
-  the person opened there stay).
-
 ## Watch out
 
-- The Corgi mod is nothing without `corgi`, and copying the mod folder in does not
-  bring it. On start, and whenever no usable `corgi` is found, the mod looks
-  in `config.json`'s path, `corgi` on `PATH`, `~/.local/bin/corgi`,
-  `~/.local/share/corgi/target/release/corgi` and `~/.cargo/bin/corgi`, and
-  takes the first that knows `status --json` and is not older than its own
-  `VERSION`. If none is, it installs `VERSION` (or updates to it) by itself,
-  at once, from a fixed source: the `herdr-app/install.sh` of the release
-  tag `v<VERSION>` on GitHub, run with `--version <VERSION> --cli-only`.
-  That installer clones the repository into `~/.local/share/corgi`, checks
-  out the tag, takes the tag's reviewed checksum pins from the main branch,
-  and downloads the release binary only when it matches its pin, else
-  builds it with `cargo build --release --locked` (minutes; `exec` waits at
-  most 10 minutes). It never installs another version than the mod's own,
-  and it leaves the mod's folder alone (`--cli-only` does put the Projects
-  mod and the Projects list in the layout in place). A failed install shows the error,
-  the installer's last lines and the command to run by hand, and is tried
-  once per app start; `Retry` tries again.
-- `VERSION` in `main.js` is set by each Corgi release (the release refuses a
-  tag that does not match it); a tag older than the mod's first release has
-  no `herdr-app/install.sh`, so an unreleased mod's own install fails.
-- A `corgi` newer than the mod is used as it is, never downgraded.
 - `corgi status` reads herdr-core for running agents, and only when its
   socket accepts a connection: any `hc` call starts a stopped core, with the
   caller's environment, and the mod must never be the one that starts it.
   Without it the projects still show from the state folders, with no
-  agents. A `corgi` older than the mod's own version prints version 1, with
-  `herdr` in place of `hc` and no daemon fields; the mod reads both.
-- `herdr-app check` renders only the first frame ("Reading Corgi's
-  status…"), so it does not prove the overview or project view work. A
-  `.when()` callback must return the element it got, and text for one line
-  must have its newlines joined (tasks and question titles can hold them).
-- The mod runs only while the window is open, so it delivers nothing to
+  agents.
+- A `.when()` callback must return the element it got, and text for one
+  line must have its newlines joined (tasks can hold them).
+- The mods run only while the window is open, so they deliver nothing to
   supervisors: that stays with Corgi.
 - Never edit Herdr's shipped `layouts/main.json` or its `spaces` and
   `agents` mods: Herdr replaces them whole on every start and moves an
@@ -777,8 +611,8 @@ wants the overview on screen.
 
 ## Done when
 
-- `herdr-app check mods/corgi`, `herdr-app check mods/projects` and
-  `herdr-app check mods/corgi-brand` pass.
+- `herdr-app check mods/projects` and `herdr-app check mods/corgi-brand`
+  pass.
 - After `herdr-app/install.sh` on Herdr's `main`, `layouts/corgi.json` is
   there, records `cloned_from` and differs from `layouts/main.json` only in
   the sidebar's three blocks (`brand`, `spaces`, `agents`), and the window shows it: the sidebar is one
@@ -831,23 +665,6 @@ wants the overview on screen.
   home), the layout shows both the Projects list and the GitLab panel;
   `--uninstall` brings back Spaces and Agents and leaves the panel.
 - `herdr-app/install.sh` makes no space, and after it `corgi daemon` makes
-  none when the window opens, even with an old `app-space.json` in Corgi's
-  state folder, which is gone once the daemon has started. `corgi
-  app-space`, run by hand, puts a `Corgi` space first in the list with the
-  overview as its only tab, and run again leaves one.
-- Clicking an agent's card in a project's view shows that agent's
-  terminal.
-- The overview shows `Corgi daemon running · pid N` while `corgi daemon`
-  runs, and the warning with `corgi daemon install` when it does not.
-- With `corgi` installed and supervisors running on herdr-core, the overview
-  lists each project with its supervisor's state, worker counts by state, open
-  questions and counts, and a project with a question, a blocked agent or a
-  MERGE tag has the `needs you` badge and border.
-- Clicking a project shows its agents with state, task, model, ctx, cache
-  and branch; `← All projects` returns.
-- A tagged worker's `Merge` asks first, and `Merge + push` shows `merged`
-  with the message and the commit landing on the base branch's remote.
-- With no `corgi` on the machine, opening the mod shows
-  `Installing Corgi <VERSION>…`, then the overview; with the network off it
-  shows the error, the command to run by hand and `Retry`, and does not try
-  again on its own.
+  none when the window opens. Run over an earlier install, it removes the
+  retired Corgi mod (`mods/corgi`, when its `main.js` is Corgi's) and
+  leaves every other mod.

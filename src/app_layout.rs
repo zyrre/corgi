@@ -40,7 +40,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
-use crate::app_space::HerdrApp;
+use crate::herdr_app::HerdrApp;
 
 /// The layout Corgi clones a shipped one to: `layouts/corgi.json`, which
 /// the app lists as "Corgi".

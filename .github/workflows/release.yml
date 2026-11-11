@@ -2,8 +2,7 @@
 # publishes a GitHub release carrying the binaries and their SHA256SUMS.
 #
 # Runs when a `vX.Y.Z` tag is pushed. The tag must match `version` in
-# Cargo.toml and the Herdr app mod's VERSION (herdr-app/mods/corgi/main.js),
-# or nothing is built. Every asset below must be present before the release
+# Cargo.toml, or nothing is built. Every asset below must be present before the release
 # is created, so a partial release is never published.
 name: Release
 
@@ -23,11 +22,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Check the tag matches Cargo.toml and the mod
+      - name: Check the tag matches Cargo.toml
         run: |
           version="${TAG#v}"
           grep -qx "version = \"$version\"" Cargo.toml || { echo "::error::Cargo.toml version is not $version"; exit 1; }
-          grep -qx "const VERSION = \"$version\";" herdr-app/mods/corgi/main.js || { echo "::error::herdr-app/mods/corgi/main.js VERSION is not $version"; exit 1; }
 
   build:
     needs: check-version

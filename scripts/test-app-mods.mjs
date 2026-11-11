@@ -426,7 +426,7 @@ function window(answers = {}) {
       agent('sp-home', 't7', 'done', '~/notes'),
     ],
     focused: { space: 'sp-home', tab: 'tab-sp-home', pane: 'pane-t8', terminal: 't8' },
-    files: { [`${APP}/mods/corgi/config.json`]: JSON.stringify({ corgi: CORGI }) },
+    files: { [`${APP}/mods/projects/config.json`]: JSON.stringify({ corgi: CORGI }) },
   });
   w.programs = [git, corgi({ status: STATUS, ...answers })];
   return w;
@@ -550,7 +550,7 @@ async function projects(w) {
   click(root, 'agent-t3', mod.cx, 'on_mouse_down:right');
   assert.deepEqual(w.ran.at(-1)[1].props, { tab: 'space', target: { id: 'sp-calm' } });
 
-  // Corgi is read as often as the Corgi mod reads it, and no more; plan
+  // Corgi is read every 5 seconds, and no more often; plan
   // usage each minute, as often as its cache is renewed.
   assert.deepEqual(mod.cx.timers.map((timer) => timer.ms).sort((a, b) => a - b), [250, 1000, 5000, 15000, 60000]);
   const reads = () => w.execs.filter((call) => call[1] === 'status').length;
@@ -1112,7 +1112,7 @@ const opens = (w) => w.execs.filter((call) => call[1] === 'open').map((call) => 
   await mod.settle();
   const said = texts(mod.render()).find((text) => text.startsWith('This corgi is older than the Projects list'));
   assert.ok(said, 'says so');
-  // The Corgi space, which used to install and update corgi, is retired.
+  // It names the installer, not the retired Corgi space.
   assert.ok(said.includes('herdr-app/install.sh') && !said.includes('Corgi space'), said);
 }
 
@@ -2106,8 +2106,8 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
 
 // --- Corgi's layout: the installer changes it, never a mod ------------------------------
 
-// Neither mod runs `corgi app-layout` (it would clone and switch layouts),
-// switches the window's layout or says anything of the layout.
+// The Projects mod never runs `corgi app-layout` (it would clone and switch
+// layouts), switches the window's layout or says anything of the layout.
 {
   const w = window();
   const mod = await projects(w);
@@ -2115,18 +2115,6 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   assert.ok(!w.execs.some((call) => call[1] === 'app-layout'), JSON.stringify(w.execs));
   assert.ok(!w.ran.some(([name]) => name.startsWith('layout.')));
   assert.deepEqual(w.toasts, []);
-}
-{
-  const versions = { '--version': { stdout: 'corgi 9.9.9\n' }, status: (args) => (args[1] === '--help' ? { stdout: 'Usage: corgi status --json' } : STATUS) };
-  const w = window(versions);
-  const mod = await start('corgi', w);
-  await mod.tick(5000);
-  assert.ok(!w.execs.some((call) => call[1] === 'app-layout'), JSON.stringify(w.execs));
-  assert.ok(!w.ran.some(([name]) => name.startsWith('layout.')));
-  assert.deepEqual(w.toasts, []);
-  const drawn = texts(mod.render());
-  assert.ok(drawn.includes('weather'), drawn.join(' | '));
-  assert.ok(!drawn.some((text) => text.startsWith('Corgi layout')));
 }
 
 // No mod turns an svg for a spinner: every one is the braille frames of

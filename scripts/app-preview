@@ -18,8 +18,8 @@
 #
 # `start` installs this checkout's mods and layout into that home with
 # herdr-app/install.sh --mod-only and target/release/corgi (build it first),
-# names that corgi in the mods' config.json, switches the window to the
-# `corgi` layout and waits for a frame. The window opens in the bottom right
+# names that corgi in the Projects mod's config.json, switches the window to
+# the `corgi` layout and waits for a frame. The window opens in the bottom right
 # corner of the screen with one point of its edge showing, where it is in
 # nobody's way and still draws (see park_window), and takes no focus.
 # AeroSpace lists no window of an app that a worker under herdr-core starts
@@ -170,14 +170,11 @@ move_window() {
 # --- the mods and the layout --------------------------------------------------
 
 install_mods() {
-  local name
   XDG_STATE_HOME="$state" HERDR_APP_BIN="$exe" sh "$root/herdr-app/install.sh" --mod-only --home "$home" ||
     die "installing the mods into $home failed"
-  # --mod-only names no corgi, and the mods would find the person's: the
-  # canned one, which runs this checkout's.
-  for name in projects corgi; do
-    printf '{ "corgi": "%s" }\n' "$fake/corgi" >"$home/mods/$name/config.json"
-  done
+  # --mod-only names no corgi, and the Projects mod would find the person's:
+  # the canned one, which runs this checkout's.
+  printf '{ "corgi": "%s" }\n' "$fake/corgi" >"$home/mods/projects/config.json"
 }
 
 # --- a core of its own, with made-up projects ----------------------------------

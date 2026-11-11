@@ -11,7 +11,7 @@ parts:
   wakes supervisors when their workers stop, types their inboxes in, and
   hands them over to fresh sessions;
 - the mods in `herdr-app/mods/` (JavaScript, run by the app): the Projects
-  list of the sidebar, its brand row, and an overview of every project.
+  list of the sidebar and its brand row.
 
 Everything runs on **herdr-core** (`hc`), the app's backend: agents are
 programs in hc terminals, and Corgi finds its own among them by the labels
@@ -24,9 +24,7 @@ Herdr app window (herdr-app)
   └─ mods (herdr-app/mods/, JS)
        ├─ projects ──── the sidebar's list: runs corgi status/usage/projects/open/
        │                merge/close/pause/resume --json, here and on other machines
-       ├─ corgi-brand ─ the sidebar's top row
-       └─ corgi ─────── an overview of every project (shown only in a space made
-                        with corgi app-space); installs the CLI when it is missing
+       └─ corgi-brand ─ the sidebar's top row
 
 herdr-core (hc), one core per session
   ├─ <project>-supervisor ── a kept shell terminal with the supervisor typed into it
@@ -38,7 +36,7 @@ herdr-core (hc), one core per session
 corgi (target/release/corgi, linked as ~/.local/bin/corgi)
   ├─ what a supervisor runs: spawn, fleet, digest, report, inbox, tag, role
   ├─ what a person runs: supervisor, notify, daemon install|status|uninstall,
-  │                      app-layout, app-space
+  │                      app-layout
   ├─ what the mods run: status, usage, projects, open, merge, close, pause, resume
   └─ corgi daemon ── one per core (a LaunchAgent or a systemd user unit):
        follows the core's events on its socket; on each, and on a timer, one pass:
@@ -63,7 +61,7 @@ Corgi state ($XDG_STATE_HOME/corgi, else ~/.local/state/corgi)
   ├─ hc/spawn-<hash>.lock ─ held by a corgi spawn --request-id of one project
   ├─ usage/<provider>.json, .lock ─ the plan-usage reading every process shares
   ├─ opencode-plugin ───── the answer to the installer's OpenCode question
-  └─ last-harness.json ── read, never written (see "Open ends")
+  └─ last-harness.json ── the harness a person last chose with --harness
 
 Agent session files (read, never written)
   ├─ {$CLAUDE_CONFIG_DIR,~/.claude}/projects/<slug>/<session>.jsonl
@@ -84,7 +82,7 @@ every item. Code no command reaches fails `cargo clippy -- -D warnings`.
 
 | Module | What it is |
 | --- | --- |
-| `commands/` | One file per group of commands: argument parsing, the command, what it prints. `launch.rs` (spawn, supervisor), `fleet.rs` (fleet, tag, report), `memory.rs` (digest, inbox, notify, role), `status.rs` (status, merge, close), `open.rs` (projects, open), `pause.rs`, `daemon.rs`, `usage.rs`, `app_layout.rs`, `app_space.rs`. `mod.rs` has what they share: a project's root, the inbox footer. |
+| `commands/` | One file per group of commands: argument parsing, the command, what it prints. `launch.rs` (spawn, supervisor), `fleet.rs` (fleet, tag, report), `memory.rs` (digest, inbox, notify, role), `status.rs` (status, merge, close), `open.rs` (projects, open), `pause.rs`, `daemon.rs`, `usage.rs`, `app_layout.rs`. `mod.rs` has what they share: a project's root, the inbox footer. |
 | `hc/` | herdr-core. `mod.rs` is the client (`HcClient` shells out to `hc … --json`; `HcError` keeps hc's `kind`), the labels, and where the core's socket is. `agents.rs` turns labelled terminals into `Agent`s. `launch.rs` starts supervisors and workers. `close.rs` closes a worker. `pause.rs` is Pause and Resume. `daemon.rs` is the daemon's loop, `events.rs` the core's event stream, `observe.rs` a watch-only look at a terminal's screen. |
 | `waker.rs`, `waker/hc.rs` | `SupervisorWaker`: what one pass does (`observe` stops into inboxes, `hand_over`, `deliver`), its records, and the pass itself over a core (`tick`, the `Core` trait and `HcCore`). |
 | `supervisor.rs` | What makes a session a supervisor: the role, its state directory, the first prompt, every `[Corgi]` line, and the pure state machines behind waking (`Transitions`) and handover (`Handover`). |
@@ -97,7 +95,7 @@ every item. Code no command reaches fails `cargo clippy -- -D warnings`.
 | `model.rs`, `rows.rs` | `Agent` and `AgentInfo`; an agent's task summary. |
 | `projects.rs`, `choices.rs` | The projects Corgi knows and remembers; the filtered list behind `corgi projects`. |
 | `usage.rs`, `usage_cache.rs` | Plan usage per provider, and the cache every process shares. |
-| `app_layout.rs`, `app_space.rs` | The app's layout with Corgi's sidebar; the Corgi space. |
+| `app_layout.rs`, `herdr_app.rs` | The app's layout with Corgi's sidebar; the `herdr-app` it asks. |
 | `draft.rs`, `activity.rs` | Whether an input box holds a draft; redaction, and the folder-trust question. |
 | `backlog.rs`, `job.rs`, `paths.rs`, `progress.rs`, `time.rs`, `version.rs` | A supervisor's `backlog.md`; a background job; the state directory; progress lines; time without a date crate; `corgi --version`. |
 | `brand_tile.rs`, `test_support.rs` | Tests only: the brand row's logo generator; scratch directories and test repositories. |
@@ -199,6 +197,11 @@ for the project, a running worker with that id is printed with
 on its calling supervisor's harness, else the default
 (`harness::default_harness`: the one `last-harness.json` names, else
 `CORGI_DEFAULT_AGENT`, else the first installed of `Harness::KNOWN`).
+`last-harness.json` is written once a launch has started on a harness a
+person asked for with `--harness`: `corgi supervisor`, `corgi open`, and a
+`corgi spawn` run outside Corgi's agents (a supervisor's choice for its
+worker is not the person's). `corgi open` on a new project with no saved
+launch starts its supervisor on it.
 
 Claude Code's folder-trust question is the one question Corgi answers, and
 only for a project Corgi created (`created-projects`): the launch presses
@@ -218,10 +221,8 @@ size.
 
 A supervisor's memory is plain files in `supervisors/<project>/`, outside
 the repository. `supervisor::prepare`, run before each launch, writes the
-role, moves a state directory left under an older name (`corgis/`,
-`handler/`, `steward/`) with a link at the old path, and compacts the
-ledger: lines a later line of the same id supersedes move to
-`ledger-archive.jsonl`.
+role and compacts the ledger: lines a later line of the same id supersedes
+move to `ledger-archive.jsonl`.
 
 ### Digest
 
@@ -452,16 +453,3 @@ through `hc`, a first prompt through a file in the state directory, never
 in process arguments. The only network use is the plan usage, and Git's
 own fetch and push during a merge. The Claude Code token is sent to
 `api.anthropic.com` only, passed to `curl` on stdin, and never stored.
-
-## Open ends
-
-Kept as they were, each for a decision of its own:
-
-- `last-harness.json` is read for the default harness but nothing on hc
-  writes it, so it names whatever the last launch before herdr-core
-  recorded.
-- `corgi app-space` and the Corgi mod (the overview) are still installed,
-  though the Corgi space is retired and its features are moving into the
-  Projects list.
-- `supervisor/ROLE.md` still says "dashboard", "pane" and "Corgi workspace"
-  in places; the role's size is capped by a test and its wording pinned.
