@@ -16,10 +16,9 @@
 // (keys.json: "cmd-o": "projects.open").
 //
 // Each agent's row ends with its state's badge (WORKING, BLOCKED, DONE,
-// IDLE, PAUSED, EXITED), the words Corgi's dashboard and desktop window use.
+// IDLE, PAUSED, EXITED), the words `corgi fleet` uses for a state.
 // A worker Corgi tagged ready to merge has a MERGE badge in its place: a click
-// asks under the row, then runs `corgi merge`, the merge Corgi's dashboard
-// runs with m, and shows how it went, with "Ask supervisor to fix" when it
+// asks under the row, then runs `corgi merge`, and shows how it went, with "Ask supervisor to fix" when it
 // failed and the project's supervisor runs. Once merged and pushed, it asks
 // whether to close the worker and remove its worktree (`corgi close`, the
 // branch stays). A space's red ↓N (its checkout is N commits behind its
@@ -27,7 +26,7 @@
 // in that checkout, nothing else; only a pull that fails leaves a card,
 // under the row, saying why. At the top, above the header, a card counts the agents by
 // state (HERD) and shows each plan's 5-hour and weekly use (`corgi usage
-// --json`), as the dashboard's header does. Under the list, which Corgi
+// --json`). Under the list, which Corgi
 // answers (`Corgi 0.2.3 · 5b50895`), whether the checkout it was built in
 // has moved on since, and whether the daemon is down or runs another build.
 //
@@ -145,8 +144,7 @@ function spinner(t, size = 12) {
     .text_size(size + 6).line_height(`${size}px`).text_color(t.working).frames(SPIN, 90).child(SPIN[0]);
 }
 
-// An agent's state as a badge, the words Corgi's dashboard and desktop
-// window use. A worker tagged ready to merge shows MERGE in place of its
+// An agent's state as a badge. A worker tagged ready to merge shows MERGE in place of its
 // state (the mark that opens the merge question, `mergeMark`); a paused
 // one PAUSED; one whose agent exited EXITED. An agent in no state shows none.
 const BADGES = { working: "WORKING", blocked: "BLOCKED", merge: "MERGE", done: "DONE", idle: "IDLE", paused: "PAUSED", exited: "EXITED" };
@@ -262,10 +260,9 @@ const USAGE_POLL_MS = 60000;
 // The narrowest sidebar whose herd card shows the plans' reset times.
 const RESETS_FIT = 330;
 
-// A plan window's use in the dashboard's colors: green, then yellow from
-// 60%, red from 85%.
+// A plan window's use in color: green, then yellow from 60%, red from 85%.
 const usageColor = (t, pct) => (pct >= 85 ? t.ansi1 : pct >= 60 ? t.ansi3 : t.ansi2);
-// How long until a window resets, as the dashboard's cards say it.
+// How long until a window resets: `2h 05m`, `3d`.
 function countdown(resetsAt, now) {
   if (!resetsAt) return "—";
   const left = Math.max(0, resetsAt - now);
@@ -669,7 +666,7 @@ export default class Projects extends View {
     return this.corgiJson("merge", args, what, MERGE_TIMEOUT_MS, m.machine ?? null);
   }
 
-  // The merge the dashboard's m runs once confirmed, with its checks.
+  // The confirmed merge (`corgi merge`), with its checks.
   // `extra`: --pull, or --skip-upstream, after a result that offered it.
   runMerge(cx, extra) {
     const m = this.merge;
@@ -692,8 +689,8 @@ export default class Projects extends View {
     });
   }
 
-  // Closes the merged worker and removes its worktree (`corgi close`, as
-  // the dashboard's x does; the branch stays). `force`: after a refusal
+  // Closes the merged worker and removes its worktree (`corgi close`; the
+  // branch stays). `force`: after a refusal
   // for changes in the worktree, discarding them.
   closeWorker(cx, force) {
     const m = this.merge;
@@ -727,8 +724,8 @@ export default class Projects extends View {
     return Boolean(supervisor) && supervisor.state !== "exited";
   }
 
-  // Hands what failed the merge to the project's supervisor, as the
-  // dashboard's s does: a line in its inbox, which Corgi's daemon types in.
+  // Hands what failed the merge to the project's supervisor: a line in its
+  // inbox, which Corgi's daemon types in.
   askSupervisor(cx) {
     const m = this.merge;
     const o = m?.outcome;
@@ -1042,8 +1039,7 @@ export default class Projects extends View {
 
   // --- The herd and plan usage ---------------------------------------------------
 
-  // The agents by the badge their rows show, as the dashboard's HERD box
-  // counts them: a worker tagged ready to merge counts as MERGE, not as done
+  // The agents by the badge their rows show: a worker tagged ready to merge counts as MERGE, not as done
   // or idle, unless it is paused; an agent in no state counts as idle.
   herdCounts(by) {
     const n = { working: 0, blocked: 0, merge: 0, done: 0, idle: 0, paused: 0, exited: 0 };
@@ -1056,7 +1052,7 @@ export default class Projects extends View {
   // state as the rows' badges with a count (a state with none left out,
   // wrapping whole badges onto more lines beside the label), then a
   // line per harness with a plan: its 5-hour and 7-day windows, each a thin
-  // bar, the use in the dashboard's colors and the time to its reset. The
+  // bar, the use in color and the time to its reset. The
   // plan and how old the reading is are the line's tooltip. Nothing while
   // there are neither agents nor plans.
   herdCard(by, t) {

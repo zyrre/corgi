@@ -13,14 +13,7 @@ use std::{
 /// What of the checkout goes into the binary. A change to one of them runs
 /// this script again, and only changes to them make a build "modified": the
 /// docs, the scripts and the Herdr app's mods are not in the binary.
-const INPUTS: [&str; 6] = [
-    "build.rs",
-    "Cargo.toml",
-    "Cargo.lock",
-    "src",
-    "crates/corgi-core",
-    "supervisor",
-];
+const INPUTS: [&str; 5] = ["build.rs", "Cargo.toml", "Cargo.lock", "src", "supervisor"];
 
 /// What `git ARGS` prints in `dir`, when it succeeds.
 fn git(dir: &Path, args: &[&str]) -> Option<String> {

@@ -1,0 +1,660 @@
+//! The projects a supervisor can be started in, and how `corgi projects`
+//! lists them for the Herdr app's "Open project" field.
+//!
+//! A project is simply a directory, usually a repository's primary checkout,
+//! and it becomes known in one of three ways: an agent is running in it, a
+//! space of the Herdr app is open in it, or Corgi used it before and wrote it
+//! down. The written-down list lives in one plain text file, one absolute
+//! path per line, most recently used first.
+
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
+
+use crate::{
+    choices::Choice,
+    model::Agent,
+    paths::{corgi_state_dir, dir_name, home},
+};
+
+/// Most projects Corgi keeps in its file. Older, unused ones fall off the end.
+const REMEMBERED_LIMIT: usize = 50;
+
+/// Where a known project comes from, in the order the project list shows them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ProjectSource {
+    /// One or more agent sessions run in it right now.
+    Agents(usize),
+    /// A space of the Herdr app is open in it, without an agent.
+    Open,
+    /// A sibling directory of a project with agents or open in the app.
+    Nearby,
+    /// Corgi started an agent there before, or saw it open, and remembers it.
+    Remembered,
+}
+
+impl ProjectSource {
+    /// The short badge the project list shows after the path.
+    pub fn badge(self) -> String {
+        match self {
+            Self::Agents(1) => "1 agent".into(),
+            Self::Agents(count) => format!("{count} agents"),
+            Self::Open => "open in Herdr".into(),
+            Self::Nearby => "nearby".into(),
+            Self::Remembered => "recent".into(),
+        }
+    }
+}
+
+/// A directory a new agent can be created from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Project {
+    /// Absolute path: the repository's primary checkout, or a plain directory.
+    pub root: String,
+    /// The directory name, which is how the Projects list names projects.
+    pub name: String,
+    pub source: ProjectSource,
+}
+
+/// The projects Corgi has written down, in most-recently-used order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectMemory {
+    /// `None` keeps the list in memory only, which tests use.
+    path: Option<PathBuf>,
+    roots: Vec<String>,
+    /// Corgi's state directory, whose subdirectories, such as a
+    /// supervisor's, are never projects.
+    state_dir: Option<PathBuf>,
+}
+
+impl ProjectMemory {
+    /// Reads the list from its file. A missing or unreadable file is an
+    /// empty list, never an error: the projects on screen still work.
+    pub fn load() -> Self {
+        Self::load_from(memory_path(), corgi_state_dir())
+    }
+
+    /// The list in the file `path`, without what is inside `state_dir`.
+    fn load_from(path: Option<PathBuf>, state_dir: Option<PathBuf>) -> Self {
+        let mut roots = path
+            .as_deref()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .map(|text| parse_roots(&text))
+            .unwrap_or_default();
+        roots.retain(|root| !is_inside(root, state_dir.as_deref()));
+        Self {
+            path,
+            roots,
+            state_dir,
+        }
+    }
+
+    /// The remembered roots, most recently used first.
+    pub fn roots(&self) -> &[String] {
+        &self.roots
+    }
+
+    /// Records that an agent was just started in `root`, moving it to the
+    /// front of the list.
+    pub fn remember(&mut self, root: &str) {
+        let root = root.trim();
+        if root.is_empty() || is_inside(root, self.state_dir.as_deref()) {
+            return;
+        }
+        if self.roots.first().is_some_and(|first| first == root) {
+            return;
+        }
+        self.roots.retain(|known| known != root);
+        self.roots.insert(0, root.to_string());
+        self.roots.truncate(REMEMBERED_LIMIT);
+        self.save();
+    }
+
+    /// Writes the list to its file, without the directories that no longer
+    /// exist.
+    fn save(&mut self) {
+        let Some(path) = &self.path else { return };
+        self.roots.retain(|root| Path::new(root).is_dir());
+        if let Some(directory) = path.parent() {
+            let _ = fs::create_dir_all(directory);
+        }
+        let mut text = self.roots.join("\n");
+        text.push('\n');
+        let _ = fs::write(path, text);
+    }
+}
+
+/// Whether `root` is `dir` or inside it, as written or once symlinks are
+/// resolved.
+fn is_inside(root: &str, dir: Option<&Path>) -> bool {
+    let Some(dir) = dir else {
+        return false;
+    };
+    let root = Path::new(root);
+    root.starts_with(dir)
+        || matches!(
+            (root.canonicalize(), dir.canonicalize()),
+            (Ok(root), Ok(dir)) if root.starts_with(&dir)
+        )
+}
+
+/// The projects file: `$CORGI_PROJECTS_FILE`, else `corgi/projects` under
+/// `$XDG_STATE_HOME` or `~/.local/state`.
+fn memory_path() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("CORGI_PROJECTS_FILE").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    Some(corgi_state_dir()?.join("projects"))
+}
+
+/// The projects Corgi created itself, one canonical path per line, in
+/// `created-projects` beside the project list (`$CORGI_CREATED_PROJECTS_FILE`
+/// overrides it). Corgi made each of these as an empty directory for its
+/// supervisor, so it answers Claude Code's folder-trust question for them.
+fn created_projects_path() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("CORGI_CREATED_PROJECTS_FILE").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    Some(corgi_state_dir()?.join("created-projects"))
+}
+
+/// Records `project`, a directory Corgi has just created, as one of its own.
+pub fn record_created_project(project: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let Some(path) = created_projects_path() else {
+        return Ok(());
+    };
+    let project = fs::canonicalize(project)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    writeln!(file, "{}", project.display())
+}
+
+/// Whether Corgi created the project whose directory is `root`.
+pub fn is_created_project(root: &Path) -> bool {
+    let Ok(root) = fs::canonicalize(root) else {
+        return false;
+    };
+    created_projects_path()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .is_some_and(|text| lists_project(&text, &root))
+}
+
+fn lists_project(text: &str, root: &Path) -> bool {
+    text.lines()
+        .map(str::trim)
+        .any(|line| !line.is_empty() && Path::new(line) == root)
+}
+
+fn parse_roots(text: &str) -> Vec<String> {
+    let mut roots: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || roots.iter().any(|root| root == line) {
+            continue;
+        }
+        roots.push(line.to_string());
+    }
+    roots
+}
+
+/// Every project to offer, in the order the project list shows them:
+/// projects with agents first, then the folders `open` in the Herdr app,
+/// nearby directories beside those, then remembered ones most recently
+/// used first. A path appears once, under its most informative source, and a
+/// remembered directory that no longer exists is left out.
+pub fn known_projects(agents: &[Agent], open: &[String], memory: &ProjectMemory) -> Vec<Project> {
+    let mut projects: Vec<Project> = Vec::new();
+    for agent in agents {
+        let root = agent.project_root.trim();
+        // A scratch agent's home directory is never a project.
+        if root.is_empty() || agent.scratch {
+            continue;
+        }
+        match projects.iter_mut().find(|project| project.root == root) {
+            Some(Project {
+                source: ProjectSource::Agents(count),
+                ..
+            }) => *count += 1,
+            Some(_) => {}
+            None => projects.push(project(root, ProjectSource::Agents(1))),
+        }
+    }
+    projects.sort_by_key(|project| project.name.to_lowercase());
+    let mut opened: Vec<Project> = Vec::new();
+    for root in open.iter().filter(|root| !root.is_empty()) {
+        if projects
+            .iter()
+            .chain(&opened)
+            .all(|project| &project.root != root)
+        {
+            opened.push(project(root, ProjectSource::Open));
+        }
+    }
+    opened.sort_by_key(|project| project.name.to_lowercase());
+    projects.extend(opened);
+    let nearby_roots: Vec<String> = projects
+        .iter()
+        .map(|project| project.root.clone())
+        .collect();
+    let mut nearby = Vec::new();
+    for root in nearby_roots {
+        discover_siblings(&root, &projects, &mut nearby);
+    }
+    nearby.sort_by_key(|project| project.name.to_lowercase());
+    projects.extend(nearby);
+    for root in memory.roots() {
+        if projects.iter().all(|project| &project.root != root) && Path::new(root).is_dir() {
+            projects.push(project(root, ProjectSource::Remembered));
+        }
+    }
+    projects
+}
+
+/// Adds visible Git repositories beside `root` that Corgi does not know yet.
+/// Open repositories tend to be collected under one `projects` directory, so
+/// this makes the next repository available without first opening it.
+/// A plain folder there (a `worktrees` folder, notes) is no project to offer;
+/// one Corgi knows is listed under its own source, and a typed path still
+/// reaches any folder.
+fn discover_siblings(root: &str, known: &[Project], nearby: &mut Vec<Project>) {
+    let Some(parent) = Path::new(root).parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir()
+            || entry.file_name().to_string_lossy().starts_with('.')
+            || !is_git_repository(&path)
+        {
+            continue;
+        }
+        let root = path.to_string_lossy().into_owned();
+        if known
+            .iter()
+            .chain(nearby.iter())
+            .all(|project| project.root != root)
+        {
+            nearby.push(project(&root, ProjectSource::Nearby));
+        }
+    }
+}
+
+/// Whether `dir` is the top of a Git checkout: a `.git` directory, or the
+/// `.git` file of a linked worktree or submodule.
+fn is_git_repository(dir: &Path) -> bool {
+    dir.join(".git").exists()
+}
+
+fn project(root: &str, source: ProjectSource) -> Project {
+    Project {
+        root: root.to_string(),
+        name: dir_name(root).unwrap_or(root).to_string(),
+        source,
+    }
+}
+
+/// The known projects as selector rows: the directory name, its path, and
+/// where Corgi knows it from.
+pub fn project_choices(projects: &[Project]) -> Vec<Choice> {
+    projects
+        .iter()
+        .map(|project| {
+            Choice::labelled(project.root.clone(), project.name.clone())
+                .detail(project.root.clone())
+                .badge(project.source.badge())
+        })
+        .collect()
+}
+
+/// Where a project typed by name alone is created: the directory most known
+/// projects live in, so new repositories land beside the existing ones. Ties
+/// go to the parent of the project listed first; with no project known it is
+/// the home directory.
+pub fn new_project_parent(projects: &[Project]) -> Option<String> {
+    let mut parents: Vec<(String, usize)> = Vec::new();
+    for project in projects {
+        // Nearby directories are siblings of a listed project by definition
+        // and would only repeat its parent.
+        if project.source == ProjectSource::Nearby {
+            continue;
+        }
+        let Some(parent) = Path::new(&project.root).parent() else {
+            continue;
+        };
+        let parent = parent.to_string_lossy().into_owned();
+        if parent.is_empty() || parent == "/" {
+            continue;
+        }
+        match parents.iter_mut().find(|(known, _)| *known == parent) {
+            Some((_, count)) => *count += 1,
+            None => parents.push((parent, 1)),
+        }
+    }
+    let mut best: Option<(String, usize)> = None;
+    for (parent, count) in parents {
+        if best.as_ref().is_none_or(|(_, most)| count > *most) {
+            best = Some((parent, count));
+        }
+    }
+    best.map(|(parent, _)| parent)
+        .or_else(|| home().and_then(|home| home.into_os_string().into_string().ok()))
+}
+
+/// Direct child directories that complete the last component of an absolute
+/// path. Reading only one directory keeps suggestions fast and predictable.
+pub fn path_completions(typed: &str) -> Vec<String> {
+    let path = Path::new(typed);
+    if !path.is_absolute() {
+        return Vec::new();
+    }
+    let (parent, prefix) = if typed.ends_with(std::path::MAIN_SEPARATOR) {
+        (path, "")
+    } else {
+        (
+            path.parent().unwrap_or_else(|| Path::new("/")),
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default(),
+        )
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            (entry.path().is_dir() && name.starts_with(prefix))
+                .then(|| entry.path().to_string_lossy().into_owned())
+        })
+        .collect();
+    paths.sort_by_key(|path| path.to_lowercase());
+    paths
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{
+        Project, ProjectMemory, ProjectSource, known_projects, lists_project, new_project_parent,
+        parse_roots, path_completions, project_choices,
+    };
+    use crate::choices::Choice;
+    use crate::model::Agent;
+    use crate::paths::dir_name;
+    use crate::test_support::ScratchDir;
+
+    #[test]
+    fn only_a_listed_directory_counts_as_created_by_corgi() {
+        let list = "/repos/weather\n\n  /repos/test/hello  \n";
+        assert!(lists_project(list, std::path::Path::new("/repos/weather")));
+        assert!(lists_project(
+            list,
+            std::path::Path::new("/repos/test/hello")
+        ));
+        // Neither a parent, a child, nor a sibling of a listed project.
+        for other in ["/repos", "/repos/weather/sub", "/repos/weather-2", ""] {
+            assert!(!lists_project(list, std::path::Path::new(other)), "{other}");
+        }
+    }
+
+    fn agent_in(root: &str) -> Agent {
+        Agent {
+            project_root: root.into(),
+            ..Agent::default()
+        }
+    }
+
+    #[test]
+    fn the_memory_file_is_one_path_per_line_most_recent_first() {
+        let dir = ScratchDir::new("projects-memory");
+        let file = dir.join("projects");
+        let [a, b, c] = ["a", "b", "c"].map(|name| {
+            let root = dir.join("repos").join(name);
+            fs::create_dir_all(&root).expect("create project dir");
+            root.to_string_lossy().into_owned()
+        });
+        let mut memory = ProjectMemory::load_from(Some(file.clone()), None);
+
+        memory.remember(&a);
+        memory.remember(&b);
+        memory.remember(&c);
+        memory.remember(&b);
+        memory.remember(&c);
+
+        let text = fs::read_to_string(&file).expect("memory file written");
+        assert_eq!(text, format!("{c}\n{b}\n{a}\n"));
+        assert_eq!(parse_roots("# comment\n/x\n\n/x\n/y\n"), vec!["/x", "/y"]);
+    }
+
+    #[test]
+    fn the_memory_never_holds_corgis_own_state_or_a_directory_gone() {
+        let dir = ScratchDir::new("projects-memory-clean");
+        let file = dir.join("projects");
+        let state = dir.join("state/corgi");
+        let supervisor = state.join("supervisors/weather");
+        let [kept, gone, other] =
+            ["kept", "gone", "other"].map(|name| dir.join("repos").join(name));
+        for path in [&supervisor, &kept, &other] {
+            fs::create_dir_all(path).expect("create dir");
+        }
+        let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+        // The state directory as reached through a symlink.
+        let link = dir.join("state-link");
+        std::os::unix::fs::symlink(&state, &link).expect("symlink");
+        fs::write(
+            &file,
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n",
+                text(&supervisor),
+                text(&kept),
+                text(&gone),
+                text(&state.join("steward/corgi")),
+                text(&link.join("supervisors/weather")),
+            ),
+        )
+        .expect("write memory");
+
+        // What is inside the state directory is left out as the file is read.
+        let mut memory = ProjectMemory::load_from(Some(file.clone()), Some(state.clone()));
+        assert_eq!(memory.roots(), [text(&kept), text(&gone)]);
+        // ... and never remembered.
+        memory.remember(&text(&supervisor));
+        memory.remember(&text(&state));
+        assert_eq!(memory.roots(), [text(&kept), text(&gone)]);
+
+        // A save drops the directory that is gone.
+        memory.remember(&text(&other));
+        assert_eq!(memory.roots(), [text(&other), text(&kept)]);
+        assert_eq!(
+            fs::read_to_string(&file).expect("memory file"),
+            format!("{}\n{}\n", text(&other), text(&kept))
+        );
+    }
+
+    #[test]
+    fn known_projects_list_agents_then_open_workspaces_then_remembered_directories() {
+        let dir = ScratchDir::new("projects-known");
+        let remembered = dir.join("remembered");
+        fs::create_dir_all(&remembered).expect("create remembered dir");
+        let gone = dir.join("gone");
+        let memory = ProjectMemory {
+            path: None,
+            state_dir: None,
+            roots: vec![
+                remembered.to_string_lossy().into_owned(),
+                gone.to_string_lossy().into_owned(),
+                "/repos/corgi".into(),
+            ],
+        };
+
+        let projects = known_projects(
+            &[
+                agent_in("/repos/zeta"),
+                agent_in("/repos/corgi"),
+                agent_in("/repos/corgi"),
+            ],
+            &["/repos/corgi".to_string(), "/repos/open".to_string()],
+            &memory,
+        );
+
+        assert_eq!(
+            projects,
+            vec![
+                Project {
+                    root: "/repos/corgi".into(),
+                    name: "corgi".into(),
+                    source: ProjectSource::Agents(2),
+                },
+                Project {
+                    root: "/repos/zeta".into(),
+                    name: "zeta".into(),
+                    source: ProjectSource::Agents(1),
+                },
+                Project {
+                    root: "/repos/open".into(),
+                    name: "open".into(),
+                    source: ProjectSource::Open,
+                },
+                Project {
+                    root: remembered.to_string_lossy().into_owned(),
+                    name: "remembered".into(),
+                    source: ProjectSource::Remembered,
+                },
+            ]
+        );
+        assert_eq!(ProjectSource::Agents(2).badge(), "2 agents");
+        assert_eq!(ProjectSource::Agents(1).badge(), "1 agent");
+    }
+
+    #[test]
+    fn projects_become_rows_named_after_their_directory_with_a_source_badge() {
+        let choices = project_choices(&[
+            Project {
+                root: "/repos/corgi".into(),
+                name: "corgi".into(),
+                source: ProjectSource::Agents(1),
+            },
+            Project {
+                root: "/work/webshop-backend".into(),
+                name: "webshop-backend".into(),
+                source: ProjectSource::Open,
+            },
+        ]);
+        assert_eq!(
+            choices,
+            vec![
+                Choice::labelled("/repos/corgi", "corgi")
+                    .detail("/repos/corgi")
+                    .badge("1 agent"),
+                Choice::labelled("/work/webshop-backend", "webshop-backend")
+                    .detail("/work/webshop-backend")
+                    .badge("open in Herdr"),
+            ]
+        );
+    }
+
+    #[test]
+    fn new_projects_go_where_most_known_projects_live() {
+        let known = |root: &str, source| Project {
+            root: root.into(),
+            name: dir_name(root).unwrap_or(root).to_string(),
+            source,
+        };
+        assert_eq!(
+            new_project_parent(&[
+                known("/work/webshop", ProjectSource::Agents(3)),
+                known("/repos/corgi", ProjectSource::Open),
+                known("/repos/zeta", ProjectSource::Remembered),
+                known("/work/a", ProjectSource::Nearby),
+                known("/work/b", ProjectSource::Nearby),
+            ]),
+            Some("/repos".into())
+        );
+        assert_eq!(
+            new_project_parent(&[
+                known("/work/webshop", ProjectSource::Open),
+                known("/repos/corgi", ProjectSource::Open),
+            ]),
+            Some("/work".into())
+        );
+    }
+
+    #[test]
+    fn nearby_repositories_of_open_projects_are_suggested_but_not_plain_folders() {
+        let dir = ScratchDir::new("projects-nearby");
+        let supervisor = dir.join("corgi");
+        let other = dir.join("other-project");
+        let linked = dir.join("linked-worktree");
+        fs::create_dir_all(&supervisor).expect("create open project");
+        fs::create_dir_all(other.join(".git")).expect("create sibling repository");
+        fs::create_dir_all(&linked).expect("create linked worktree");
+        fs::write(linked.join(".git"), "gitdir: /elsewhere\n").expect("write .git file");
+        fs::create_dir_all(dir.join("worktrees")).expect("create a plain folder");
+
+        let projects = known_projects(
+            &[],
+            &[supervisor.to_string_lossy().into_owned()],
+            &ProjectMemory::default(),
+        );
+
+        assert_eq!(
+            projects,
+            vec![
+                Project {
+                    root: supervisor.to_string_lossy().into_owned(),
+                    name: "corgi".into(),
+                    source: ProjectSource::Open,
+                },
+                Project {
+                    root: linked.to_string_lossy().into_owned(),
+                    name: "linked-worktree".into(),
+                    source: ProjectSource::Nearby,
+                },
+                Project {
+                    root: other.to_string_lossy().into_owned(),
+                    name: "other-project".into(),
+                    source: ProjectSource::Nearby,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn absolute_path_prefixes_complete_to_their_sibling_directories() {
+        let dir = ScratchDir::new("projects-completion");
+        let alpha = dir.join("alpha");
+        let alpine = dir.join("alpine");
+        fs::create_dir_all(&alpha).expect("create alpha");
+        fs::create_dir_all(&alpine).expect("create alpine");
+        fs::write(dir.join("alpha.txt"), "").expect("create a file");
+
+        assert_eq!(
+            path_completions(&format!("{}/al", dir.display())),
+            [
+                alpha.to_string_lossy().into_owned(),
+                alpine.to_string_lossy().into_owned(),
+            ]
+        );
+        assert_eq!(
+            path_completions(&format!("{}/", dir.display())),
+            [
+                alpha.to_string_lossy().into_owned(),
+                alpine.to_string_lossy().into_owned(),
+            ]
+        );
+        assert!(path_completions("relative/al").is_empty());
+    }
+}

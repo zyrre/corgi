@@ -1,64 +1,30 @@
-[workspace]
-members = [".", "crates/corgi-core", "crates/corgi-gui"]
-# Plain `cargo build`, `cargo test` and `cargo clippy` at the root cover the
-# binary and the core, as the handoff commands in AGENTS.md expect. The
-# desktop GUI is left out: it needs a newer Rust and GPUI, which the `corgi`
-# binary must never build; build it with `-p corgi-gui`.
-default-members = [".", "crates/corgi-core"]
-resolver = "3"
-
-# What every crate shares. `version` is the release's: the release workflow
-# checks this line against the tag.
-[workspace.package]
+[package]
+name = "corgi"
 version = "0.2.3"
 edition = "2024"
 rust-version = "1.89"
+description = "A supervisor and its worker agents on herdr-core, for the Herdr app"
 license = "MIT"
 repository = "https://github.com/zyrre/corgi"
 homepage = "https://github.com/zyrre/corgi"
+readme = "README.md"
+keywords = ["herdr", "agents", "claude", "codex"]
+categories = ["command-line-utilities"]
 
-[workspace.dependencies]
+[dependencies]
 anyhow = "1.0"
-corgi-core = { path = "crates/corgi-core" }
-libc = "0.2"
 regex = "1.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 
-[package]
-name = "corgi"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-description = "A small, quick Herdr dashboard for coding agents"
-license.workspace = true
-repository.workspace = true
-homepage.workspace = true
-readme = "README.md"
-keywords = ["herdr", "tui", "agents", "claude", "codex"]
-categories = ["command-line-utilities"]
-
-[dependencies]
-anyhow.workspace = true
-corgi-core.workspace = true
-crossterm = "0.29"
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
-serde.workspace = true
-serde_json.workspace = true
-toml.workspace = true
-unicode-width = "0.2"
-
 [target.'cfg(unix)'.dependencies]
-libc.workspace = true
+libc = "0.2"
 
 [profile.release]
 lto = "thin"
 strip = true
 
 [dev-dependencies]
-color_quant = "1.1"
-corgi-core = { workspace = true, features = ["test-support"] }
-gif = "0.14.2"
 png = "0.18.1"
-resvg = { version = "0.48.1", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+resvg = { version = "0.48.1", default-features = false }

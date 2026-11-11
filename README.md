@@ -3,221 +3,108 @@
 </p>
 
 <p align="center">
-  <b>The dashboard for your Herdr agents, and a supervisor that runs them.</b>
+  <b>A supervisor for your coding agents, in the Herdr app.</b>
 </p>
 
-Corgi is a plugin for [Herdr](https://herdr.dev), a terminal workspace manager for AI coding agents such as Claude Code and Codex.
+Corgi is a tool for the [Herdr](https://herdr.dev) app, which runs AI coding agents such as Claude Code and Codex in terminals. It gives each project one long-lived agent, the **supervisor**, that you talk to about *what* to build and *why*; it briefs worker agents, runs each in its own Git worktree, follows them, and tells you when their work is ready to merge.
 
-![The Corgi dashboard, with one card per project summing up its supervisor and workers.](docs/images/dashboard.svg)
-
-- **One card per project with a supervisor**: the supervisor's latest message and command, and its workers summed up by state, with every blocked worker named. `→` expands a card into each worker's own rows, and Corgi remembers the choice per project.
-- **One row per agent** of any kind Herdr can start, such as Codex and Claude Code, for expanded cards, projects without a supervisor, and scratch sessions.
-- **What each agent is doing**: the newest thing said in its session and the command or tool it runs.
-- **What it costs**: its model and effort, how full its context is, how long its prompt cache stays warm, and in the header, each CLI's 5-hour and weekly plan usage.
-- **New agents in their own worktree** with `n`, and their work merged back with `m`, stamped with a check when it lands:
-
-<img src="docs/images/merge-outcomes.gif" width="757" alt="The merge popup confirming the merge of the order-history worker, its steps running, and the success stamped with a big green check">
+- **A Projects list in the app's sidebar**: each repository with its supervisor and workers under it, their state (`WORKING`, `BLOCKED`, `DONE`, `IDLE`), how full each one's context is, and each plan's 5-hour and weekly usage.
+- **A supervisor per project** that plans with you, dispatches workers, reviews their reports and keeps the project's decisions and history outside the repository.
+- **Woken with the window closed**: `corgi daemon` runs as a service of your session, tells a supervisor when one of its workers stops, and hands it over to a fresh session before its context fills up.
+- **Merge from the list**: a worker the supervisor tagged shows `MERGE`; a click merges its branch into the project's base branch and pushes it, then offers to close the worker and remove its worktree.
 
 Install on macOS or Linux:
 
 ```bash
-herdr plugin install zyrre/corgi && corgi setup
+curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh
 ```
 
-`corgi setup` binds a key that opens Corgi; [Install](#install) has the requirements and the details.
+[Install](#install) has the requirements and the details.
 
 ## The supervisor
 
-Each project can have one supervisor: a long-lived Claude Code or Codex session in the project's root tab, which you talk to about *what* to build and *why*. It turns that into briefs, runs worker agents in their own worktrees, reviews what they report, and keeps the project's decisions and history, so you deal with one agent instead of many. It never edits the checkout, merges or pushes itself. Its full role is [`supervisor/ROLE.md`](supervisor/ROLE.md).
+Each project can have one supervisor: a long-lived Claude Code or Codex session in the project's primary checkout. It turns what you ask for into briefs, runs worker agents in their own worktrees, reviews what they report, and keeps the project's decisions and history, so you deal with one agent instead of many. It never edits the checkout, merges or pushes itself. Its full role is [`supervisor/ROLE.md`](supervisor/ROLE.md).
 
-- **Start it** with `s` on any agent of the project, or `corgi supervisor ~/repos/webshop` from a shell. It greets you with the open work, anything blocked or ready to merge, and the questions it still has for you.
+- **Start it** with the `+` of the Projects list (type a project's name or path), or `corgi supervisor ~/repos/webshop` from a shell. It greets you with the open work, anything blocked or ready to merge, and the questions it still has for you.
 - **Plans, then briefs**: it proposes how the work splits and which model and effort each part gets, waits for your go, then saves a self-contained brief per worker and starts each with `corgi spawn` in a fresh worktree. Spawn refuses a project outside Git or in Corgi's state directory, so a worker never lands in the wrong place.
-- **Woken by its workers, with or without a window open**: when a worker stops, Corgi puts a `[Corgi]` line in the supervisor's inbox, with the worker's report quoted when it is short, and types it in once the supervisor is between turns. Herdr runs this through the plugin's hooks (`corgi hook`) as agents change state, so it goes on with no Corgi window open, and after a Herdr restart Corgi's marks are put back at once. An open dashboard does the same work too, taking turns with the hooks, so nothing is typed in twice. `corgi inbox` shows what has not been typed in yet, and scripts add lines with `corgi notify`.
+- **Woken by its workers**: when a worker stops, the daemon puts a `[Corgi]` line in the supervisor's inbox, with the worker's report quoted when it is short, and types it in once the supervisor is between turns and its input box is empty. Nothing is lost while the daemon or the app is down, and nothing is typed in twice. `corgi inbox` shows what has not been typed in yet, and scripts add lines with `corgi notify`.
 - **Questions you can answer at a glance**: anything that needs your judgement comes as a numbered question with options and a recommendation (`Q3: B` answers it), and a worker with an open question is not tagged for merge.
-- **MERGE when it is ready**: once a worker's report meets its brief and its branch merges cleanly, the supervisor runs `corgi tag NAME merge` and the dashboard shows it with a magenta `MERGE` badge instead of `DONE`. Your `m` merge tells the supervisor, which records it and re-checks its other tagged workers against the moved base branch; a conflicted merge is handed to it from the merge popup.
+- **MERGE when it is ready**: once a worker's report meets its brief and its branch merges cleanly, the supervisor runs `corgi tag NAME merge` and the list shows `MERGE` in place of the worker's state. Your merge tells the supervisor, which records it and re-checks its other tagged workers against the moved base branch. A merge that stops on conflicts, or fails, can be handed to the supervisor from the card under the worker's row.
 - **Memory that outlives its context**: a decision log, a ledger of every worker, and every brief, kept outside the repository. `corgi digest` gives it a bounded summary at the start of each session; `--search` finds older history, including the report of every worker it spawned, and `--show`, `--ledger` and `--brief` print what it finds in full.
-- **Handover to a fresh session**: when its context is past 50% (on Claude Code, or 200k tokens) and it has idled nearly until its prompt cache expires, Corgi has it write a handover note and starts a fresh supervisor that picks up from it. For Claude Code and Codex only an open dashboard asks for the note (it takes a timed rest, which Herdr's hooks cannot time); with a smaller context, it also does this once the supervisor has idled that long and its context has doubled.
+- **Handover to a fresh session**: when its context is past 50% (on Claude Code, or 200k tokens) and it has idled nearly until its prompt cache expires, Corgi has it write a handover note and starts a fresh supervisor in the same terminal that picks up from it. With a smaller context, it also does this once the supervisor has idled that long and its context has doubled.
 - **Lessons kept in the repo**: what a worker learned the hard way goes into `AGENTS.md` or `ARCHITECTURE.md` as a commit on that worker's branch, so the next worker knows it.
 - **Cost-aware**: `corgi fleet` lists its agents with their context use and prompt cache, warm with the minutes left or cold with the tokens a follow-up would re-read, so it can start a fresh worker instead.
 - **Out of your way**: agents you start or steer yourself are yours; it only notes significant decisions made there, silently.
 
 ```mermaid
 flowchart TD
-    you(["You"]) <-->|"what to build,<br/>numbered questions"| sup["Supervisor<br/>project root tab"]
+    you(["You"]) <-->|"what to build,<br/>numbered questions"| sup["Supervisor<br/>primary checkout"]
     sup <-->|"corgi digest"| memory[("Memory<br/>decisions, ledger,<br/>briefs, handover")]
     sup -->|"corgi spawn + brief,<br/>[supervisor] prompts"| workers["Workers<br/>one worktree each"]
-    workers -.->|"stop: done, idle, blocked"| dash["Corgi dashboard"]
-    dash -.-> inbox[("Inbox")]
+    workers -.->|"stop: done, idle, blocked"| daemon["corgi daemon"]
+    daemon -.-> inbox[("Inbox")]
     inbox -.->|"[Corgi] wake with<br/>the quoted report"| sup
-    sup -->|"corgi tag NAME merge"| badge["MERGE badge"]
-    badge --> merge(["Your merge with m"])
+    sup -->|"corgi tag NAME merge"| badge["MERGE in the<br/>Projects list"]
+    badge --> merge(["Your merge"])
     merge -.->|"[Corgi] merged line"| inbox
 ```
 
-## Using the dashboard
+## In the Herdr app
 
-### Keys
+The install puts three mods into the app and the Projects list into your layout's sidebar ([`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) describes them in full):
 
-| Key | Action |
+- **Projects**, in place of the sidebar's Spaces and Agents lists: each repository with its agents under it, and a `+` that opens a project by name or path and starts its supervisor. It also shows the projects of the other machines the window is connected to, and merges, closes and pauses there.
+- **`⏸ Agents`**, beside the `+`, is for leaving the network: it stops the agents working right then (each ends its turn and exits, its conversation saved), holds every wake and handover while they are paused, and reads `▶ Agents` until you bring them back. Nothing is killed.
+- **The last line** names the Corgi that answers (`Corgi 0.2.3 · 5b50895`), and says when its checkout has moved on or the daemon is down.
+
+A layout of your own gets the list in place, and nothing else in it changes, so other mods' changes stay; Herdr's own `main` is first cloned to a layout called `corgi`, which the window switches to (`herdr-app do layout.switch '{"name":"main"}'` goes back).
+
+## Commands
+
+`corgi --help` lists them, and `corgi COMMAND --help` documents each.
+
+| For | Commands |
 | --- | --- |
-| `j` / `k`, `↑` / `↓` | Select an agent, or a collapsed project card as its supervisor |
-| `→` / `←` | Expand the selected project's card into its workers' rows, or collapse it again |
-| `space`, then `u` / `d`, `PgUp` / `PgDn` | Expand the selected session into its transcript and scroll it; `space` collapses it |
-| `p` | Prompt the selected agent |
-| `n` | Start a new agent in its own worktree |
-| `t` | Start a scratch session in your home directory |
-| `s` | Start or focus the supervisor of the selected agent's project |
-| `S` | Save sessions, restore saved conversations, or continue held coordination |
-| `m` | Merge and push an agent's worktree branch (asks first) |
-| `f` or `Enter` | Focus the selected agent's pane |
-| `e` | Open the selected agent's checkout in your editor, in a new tab of its workspace |
-| `x` | Close the selected agent, and delete its worktree checkout (asks first) |
-| `o` | Find orphaned sessions: agents Corgi does not show, or shows without their role or under the wrong project, and leftover workspaces, each with its evidence and a choice to apply |
-| `R` | Resume the selected agent that exited to its shell |
-| `P` | Pause all: stop every agent in every project to its shell (asks first, naming those working); while agents are paused, `P` resumes them all |
-| `r` | Refresh now |
-| `Esc`, `q` | Collapse the transcript, or close Corgi; `q` always closes |
-
-For a compact popup instead of a tab, open the `quick` pane: `herdr plugin pane open --plugin io.github.zyrre.corgi --entrypoint quick`.
-
-Corgi draws in your terminal's own colors, light or dark: the active theme of the [Omarchy](https://omarchy.org) Linux desktop, or else the palette your terminal (through Herdr) reports, with Catppuccin standing in when it reports none. Set `CORGI_THEME=catppuccin-mocha` or `catppuccin-latte` to force Catppuccin's own colors, or `CORGI_THEME=terminal` to ask the terminal even on an Omarchy machine (say, when you view it over SSH from another one).
-
-### Review an agent's changes in your editor
-
-`e` opens the selected agent's checkout in a new tab of that agent's workspace, named after its branch: the top of its Git work tree as it is on disk, uncommitted changes and all, so your editor's diff gutter shows what the agent changed (outside Git, its working directory). The tab's shell runs `$VISUAL`, else `$EDITOR`, else `vim`, as your shell config sets them, and is left in the checkout when you quit the editor.
-
-The plugin's `edit` action does the same from anywhere in Herdr: for the agent in the focused pane, for the agent selected in Corgi when the dashboard is focused, and for a plain shell's directory. Herdr plugins cannot bind keys, so add one to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
-
-```toml
-[[keys.command]]
-key = "prefix+e"
-type = "plugin_action"
-command = "io.github.zyrre.corgi.edit"
-description = "Corgi: edit agent checkout"
-```
-
-### Reading a row
-
-In an expanded card, a project without a supervisor, and the scratch sessions, each agent has three rows:
-
-![One agent row, labelled: selection bar, state, last activity, task, model, effort, context used, prompt cache left, worktree, the newest thing said, and the command it runs](docs/images/row-anatomy.svg)
-
-### Read a session in place
-
-`space` grows the selected row into the session's latest turns, newest first, without leaving the list.
-
-![The finished order-history agent expanded: its closing summary in full, then the commands, edits, thinking and prompt before it](docs/images/expanded-session.svg)
-
-### Start an agent
-
-![The new-agent form: the task typed, and the harness, model, effort, project and checkout on their presets](docs/images/new-agent-form.svg)
-
-`n` opens the new-agent form with everything but the task preset: the selected agent's project, the default harness with its own model and effort, and a fresh worktree. Type the task and press `Enter`; `←` / `→` change a setting in place, and `Space` or typing opens its list. In a project with no agents yet, the first one is its supervisor. Each worker gets its own Git worktree on a fresh `worktree/<name>` branch; switch the Checkout row to work in the project directory as it is instead.
-
-### Restarts and Resume
-
-After a Herdr restart, a live handoff or a reboot, Corgi's agents come back by themselves with the options they were launched with: a supervisor with its role and access to its memory, a worker with its model, effort and extra arguments. Corgi gives Herdr each agent's resume command and keeps it on the agent's current session (after `/clear` too); Herdr 0.9.2 or later runs it, and older versions ignore it. An agent that exits or is killed while Herdr keeps running drops to its shell; its row then reads `EXITED`, and `R` (the window's Resume button, `⇧R`) starts it again in the same pane with its session and options. Corgi never restarts one on its own. An agent running without the options Corgi launched it with, as one an older Herdr resumed, shows `⚠ no role` or `⚠ no launch options`: exit it, then press `R`.
-
-Before you leave the network, or whenever every agent should stop, Pause all (`P`, or the window's Pause all button) stops every Claude and Codex agent Corgi shows, supervisors and workers in all projects, through its own `/exit` or `/quit`, so each conversation is saved. It asks first, saying how many stop in each project and which are working right now: those are interrupted with Esc and lose their current turn. Their rows read `PAUSED`; stopping them wakes no supervisor and starts no handover, and a Herdr restart in the meantime does not bring them back. Resume all (the same key and button) starts each one again in its own pane with its session and launch options. Agents that exited some other way are left to `R`. Nothing is ever killed: an agent that does not stop, or has your unsent text in its input box, keeps running and is named.
-
-### Save and restore sessions
-
-Press `S` to save supervisors, workers and scratch sessions, to restore them by
-hand later. Save records private recovery references while agents keep running;
-it lists missing IDs, unsupported harnesses and interrupted work.
-
-![Sessions menu with Save, Restore and held coordination actions](docs/images/session-recovery.svg)
-
-To restore, choose **Restore sessions**, browse a dated snapshot and select
-Codex or Claude Code conversations individually. Nothing is selected initially;
-launching requires a separate confirmation with Cancel focused. Corgi resumes
-inside the original Herdr-restored terminals, reuses matching running agents,
-and offers a new placement only when the original is missing or occupied and
-you explicitly select it. It sends no task. Restored supervisor coordination
-stays held until you choose **Continue held coordination**.
-
-Recovery needs the existing native conversation stores, repositories/worktrees
-and supervisor memory. It preserves recoverable setup, not running tools,
-unsent input or shell processes. Unknown settings and incomplete sessions stay
-visible. See the [recovery contract and verification](docs/session-recovery-design.md)
-for limits, retry behavior and the Claude documentation/fixture verification.
-
-### Merging
-
-`m` shows what the merge brings in, checks that both checkouts are clean, then runs `git merge --no-ff` and `git push` in the primary checkout, and offers to close the worktree. When the base branch has an upstream, it is fetched first: if it has commits the base lacks (pushed from another machine, say), the popup lists them and Enter pulls them into the base (a fast-forward when it can be, else a merge; a pull that conflicts is aborted for you to pull by hand) before merging, while Esc stops. A fetch that fails is shown, and Enter merges anyway. If the push still fails, the branch is merged all the same: the popup shows Git's error, and with a supervisor running, `s` asks it what the error means and what to run. If the merge stops on conflicts, the popup lists the files; with a supervisor running, `s` aborts the merge and asks the supervisor to have the agent merge the base branch into its own branch and resolve them there, after which you merge again. Esc leaves the primary checkout mid-merge to resolve by hand. Any other error, a failed fetch included, and a merge Git refuses before it starts (an uncommitted change in either checkout, both on one branch) shows its reason in the popup, and `s` asks the supervisor to fix it and report back; without a running supervisor the popup says why it cannot ask one. The desktop window offers the same as an "Ask supervisor to fix" button, also on `s` (rebindable under Hotkeys).
-
-## Desktop window (preview)
-
-`corgi-gui` is a native window, on macOS and on Linux (Wayland), that shows what the dashboard shows: project cards and agent rows, the plan-usage header, and a side panel with the project's numbered questions, each opening in full, as the supervisor asked it (its Markdown rendered), to be answered there, the open merge requests (GitLab) or pull requests (GitHub) from the project's worktree and ledger branches, as `glab` or `gh` lists them, each opening in the browser, and the supervisor's backlog of things to build later (its `backlog.md`), each entry opening in full with a field to write the supervisor about it. It prompts agents, answers questions, starts agents and supervisors, tags, merges and closes, keyboard first, with these keys by default: `j`/`k` select, `Space` expands the selected row, `↵` opens its terminal, `\` the side panel, `p` prompt, `n` new agent, `s` supervisor, `m` merge, `t` tag, `x` close, `1`–`9` answer a question. As in the dashboard, `Space` grows the selected row in place into its session's latest turns, down to the window's bottom (the newest in full, older ones two lines each); `Space` again or `Esc` collapses it, `j`/`k` take the expansion to the next row, and `u`/`d`, `PgUp`/`PgDn` and `Home`/`End` scroll it. The Hotkeys button under the header's right-end buttons lists every key and changes them: click a key, press the new one (a key another action has is swapped only when you confirm); the window keeps them, and its buttons and hints always show the keys as they are. The focus view's two keys (back to the overview, the side panel) must be a chord the terminal program does not read: `⌘` on macOS, `Super` or `Ctrl+Shift` on Linux. Select its text with the mouse (drag, double click for a word, triple click for a whole turn) and copy it with `⌘C` (`Ctrl+Shift+C` on Linux); a folded turn the selection covers is copied whole. Drag the edge of the side panel to resize it; the window keeps its sizes. It follows the system's light or dark scheme, or the Omarchy theme when there is one; the sun/moon button at the header's right end switches between light and dark until the window closes. The A− and A+ buttons beside it make all of the window's text, its terminal's included, a point smaller or larger, and the window keeps the size. The Sessions button under Hotkeys (or `o`) opens "Find sessions", which finds orphaned sessions, as the dashboard's `o` does, and the Pause all button under it (or `⇧P`) pauses every agent, then reads Resume all until they are back. It has no terminals yet.
-
-It runs `corgi serve` (the [protocol](docs/serve-protocol.md)) on this machine, and on the other machines you add over SSH, and reconnects to each by itself, showing the last state dimmed meanwhile. The status bar lists every machine with its connection's dot and its agent count (`● this machine · 12 agents │ ● omarchy · 3 agents │ +`); click one to switch the whole window to it, and back, each keeping its own selection and collapsed cards. `+` adds a machine: its SSH host (the hosts of `~/.ssh/config` are offered), the path to `corgi` there (`corgi` on its `PATH` by default) and the name the bar shows. A right click on a machine edits or removes it. SSH runs non-interactively, so the host must take your key without a prompt. Opening an agent on another machine shows its terminal live, as here: the window forwards that machine's Herdr sockets over SSH (`ssh -L`, so the host's `sshd` must allow socket forwarding, as it does by default) and needs a Herdr there with the client endpoint (`herdr-client.sock`).
-
-```bash
-corgi-gui                        # this machine's Herdr, and the machines added
-corgi-gui --session work         # a named Herdr session
-corgi-gui --ssh devbox           # show devbox for this run; --corgi names its path there
-```
-
-It never moves Herdr's focus, which would move every attached Herdr client. Build it from a checkout with Rust 1.96 or newer, and on Linux the Wayland, xkbcommon and fontconfig development packages (`libwayland-dev libxkbcommon-dev libfontconfig-dev` on Debian and Ubuntu; Arch has them already). `scripts/package-gui.sh` builds a Linux tarball or an unsigned macOS `Corgi.app` that carries its own `corgi`:
-
-```bash
-cargo build --release && cargo build --release -p corgi-gui
-./target/release/corgi-gui
-```
-
-On macOS the window has no title bar: the header is its top edge, and dragging the header moves it. Cmd+W closes it, Cmd+M minimizes it and Ctrl+Cmd+F switches full screen, which its title bar's buttons did; Cmd+Q quits. On Linux the window's Wayland app id, which compositor rules match, is `corgi-gui`. It uses CaskaydiaMono Nerd Font where installed, else the first of a few common monospace fonts, and Menlo on macOS; `CORGI_GUI_FONT` names another. `CORGI_GUI_APPEARANCE=light` or `dark` overrides the system's scheme.
+| You | `corgi supervisor [PROJECT]` starts a project's supervisor; `corgi daemon install`, `status` and `uninstall` manage the service; `corgi notify` adds a line to a supervisor's inbox |
+| A supervisor | `spawn`, `fleet`, `digest`, `report`, `inbox`, `tag`, `role` |
+| The app's mods | `status`, `usage`, `projects`, `open`, `merge`, `close`, `pause`, `resume`, each with `--json` |
+| The installer | `app-layout`, `app-space`, `daemon install` |
 
 ## Install
-
-Install on macOS or Linux:
-
-```bash
-herdr plugin install zyrre/corgi && corgi setup
-```
-
-For the Herdr app (herdr-app 0.1.14 or newer), this installs the `corgi` command, Corgi's mods, the Projects list in your layout's sidebar, and `corgi daemon`, a service of your session that wakes and hands over supervisors with the app's window closed, and updates them when run again ([`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) describes the mods). The Projects list takes the place of the sidebar's Spaces and Agents lists: each repository with its agents under it, a `+` that opens a project by name or path and starts its supervisor, and `⏸ Agents` beside it for leaving the network: it stops the agents working right then (each ends its turn and exits, its conversation saved), holds every wake and handover while they are paused, and reads `▶ Agents` until you bring them back. A layout of your own gets it in place, and nothing else in it changes, so other mods' changes stay; Herdr's own `main` is first cloned to a layout called `corgi`, which the window switches to (`herdr-app do layout.switch '{"name":"main"}'` goes back). `herdr-app/install.sh --uninstall` puts Spaces and Agents back. It makes no space in the app: for the Corgi mod's overview of every project in a space of its own, run `corgi app-space`. With OpenCode installed, it asks once whether to add a small status plugin to `~/.config/opencode/plugin/`, without which an OpenCode worker wakes no supervisor:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh
 ```
 
+It installs the `corgi` command (linked into `~/.local/bin`), `corgi daemon` as a service of your session (a LaunchAgent on macOS, a systemd user unit on Linux), Corgi's mods and the Projects list in your layout's sidebar, and updates them when run again. With OpenCode installed, it asks once whether to add a small status plugin to `~/.config/opencode/plugin/`, without which an OpenCode worker wakes no supervisor. `herdr-app/install.sh --uninstall` puts Spaces and Agents back and removes the mods and the daemon.
+
 Requirements:
 
-- [Herdr](https://herdr.dev) 0.8.2 or newer
+- The [Herdr](https://herdr.dev) app (herdr-app 0.1.14 or newer) with herdr-core (`hc`)
 - Git
 - Claude Code, Codex or both, for the agents
 - Rust 1.89 or newer, only when [building from source](#build-from-source)
 
-The install downloads the prebuilt binary of the plugin's version, verified before execution against version and platform checksum pins committed in [`checksums/`](checksums/), or builds local source with `cargo build --release --locked` when a pin or matching download is unavailable. Run from your own git checkout, `scripts/install.sh` and `herdr-app/install.sh` build from source unless HEAD is exactly the release tag, so they never replace your build with an older release; `CORGI_BUILD=source` always builds and `CORGI_BUILD=release` always downloads. It links the `corgi` command into `~/.local/bin` (if that is not on your `PATH`, run `~/.local/bin/corgi setup`). `corgi setup` asks which key should open the dashboard, or focus it when it is already open, `prefix+d` unless you type another; it appends that binding to Herdr's `config.toml`, reloads Herdr's config and opens Corgi, which confirms the key in a popup. It changes nothing when a key is bound already, and is safe to run again. Run the install again to update; `herdr plugin uninstall io.github.zyrre.corgi` removes it but leaves the link (`rm ~/.local/bin/corgi`).
-
-To bind the key by hand instead, add this to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
-
-```toml
-[[keys.command]]
-key = "prefix+d"
-type = "plugin_action"
-command = "io.github.zyrre.corgi.open"
-description = "Corgi (open or focus)"
-```
-
-## Data and privacy
-
-Corgi talks only to the Herdr socket and sends no telemetry. It runs no process of its own: besides its windows, only the short `corgi hook` runs Herdr starts on its own events (see `herdr plugin log list --plugin io.github.zyrre.corgi`). It keeps no terminal output or prompt history; what it stores, in `~/.local/state/corgi` (or `$XDG_STATE_HOME/corgi`), is its own bookkeeping, private session recovery metadata and each supervisor's memory and inbox, which holds the reports of workers that stopped. The only network use is the plan usage: `codex app-server` for Codex, and Claude Code's stored login sent to `api.anthropic.com` for Claude. Corgi reads that login from `.credentials.json` in Claude Code's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), or on macOS from the Keychain, which may ask you to allow it the first time. That Claude reading is unofficial and read-only, and may break if Anthropic changes the endpoint.
-
-## More
-
-- Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) has the socket and API boundaries, and every behaviour in detail.
-- Supervisor: [`supervisor/ROLE.md`](supervisor/ROLE.md) is the role every supervisor runs by, [`supervisor/HANDOVER.md`](supervisor/HANDOVER.md) the part `corgi role handover` prints when it hands over, and `corgi <command> --help` documents each command.
-- Omarchy companion: [`omarchy/`](omarchy/README.md) is a bar widget for the Omarchy desktop, with a compact dashboard of its own. Once Corgi is installed, `omarchy plugin add https://github.com/zyrre/omarchy-corgi.git --enable` adds it.
+The install downloads the prebuilt binary of its version, verified before execution against version and platform checksum pins committed in [`checksums/`](checksums/), or builds from source with `cargo build --release --locked` when a pin or matching download is unavailable. `CORGI_DOWNLOAD_URL=<url>` downloads from `<url>/v<version>/` instead of the GitHub release; mirrors must serve the same pinned bytes, and a remote `SHA256SUMS` never supplies trust.
 
 ## Build from source
 
 ```bash
 git clone https://github.com/zyrre/corgi && cd corgi
-cargo build --release && herdr plugin link "$PWD"
+CORGI_BUILD=source herdr-app/install.sh
 ```
 
-Uninstall the plugin before you link, since both use the same id. The installer builds from source when `CORGI_BUILD=source` is set, and `CORGI_DOWNLOAD_URL=<url>` downloads from `<url>/v<version>/` instead of the GitHub release; mirrors must serve the same pinned bytes. Remote `SHA256SUMS` never supplies trust. `CORGI_LINK=0` skips the `~/.local/bin` link, and `CORGI_BIN_DIR=<dir>` links into `<dir>` instead.
+Run from your own git checkout, the installer builds from source unless HEAD is exactly the release tag, so it never replaces your build with an older release; `CORGI_BUILD=source` always builds and `CORGI_BUILD=release` always downloads. Run it again after pulling: it rebuilds, restarts the daemon on the new binary and swaps in the mods that changed.
+
+## Data and privacy
+
+Corgi sends no telemetry. It keeps no terminal output or prompt history; what it stores, in `~/.local/state/corgi` (or `$XDG_STATE_HOME/corgi`), is its own bookkeeping and each supervisor's memory and inbox, which holds the reports of workers that stopped. The only network use is the plan usage: `codex app-server` for Codex, and Claude Code's stored login sent to `api.anthropic.com` for Claude. Corgi reads that login from `.credentials.json` in Claude Code's config directory (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), or on macOS from the Keychain, which may ask you to allow it the first time. That Claude reading is unofficial and read-only, and may break if Anthropic changes the endpoint.
+
+## More
+
+- Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) says how Corgi works on herdr-core, and why.
+- Supervisor: [`supervisor/ROLE.md`](supervisor/ROLE.md) is the role every supervisor runs by, and [`supervisor/HANDOVER.md`](supervisor/HANDOVER.md) the part `corgi role handover` prints when it hands over.
+- The mods: [`herdr-app/RECIPE.md`](herdr-app/RECIPE.md).
 
 ## Contributing
 

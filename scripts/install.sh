@@ -1,25 +1,21 @@
 #!/bin/sh
-# Puts the corgi binary at target/release/corgi, where the plugin's panes run it.
+# Puts the corgi binary at target/release/corgi, where the Herdr app's mods
+# and the daemon run it. herdr-app/install.sh runs this for the CLI.
 #
-# Herdr runs this as the plugin's build step on `herdr plugin install`. It
-# downloads the prebuilt binary of the release named by herdr-plugin.toml's
+# It downloads the prebuilt binary of the release named by Cargo.toml's
 # `version` for this machine, checks it against this checkout's committed
-# checksum pins, and falls back to `cargo build --release --locked` when there is no such binary
-# or it cannot be verified. A checkout with uncommitted changes to tracked
-# files is a developer's, so it always builds what it has.
+# checksum pins, and falls back to `cargo build --release --locked` when
+# there is no such binary or it cannot be verified. A checkout with
+# uncommitted changes to tracked files is a developer's, so it always builds
+# what it has.
 #
 # A git checkout is a developer's unless it is exactly the release: when HEAD
 # is not the commit of the tag v<version>, the CLI is built from source, so an
 # install never replaces a build of newer code with an older release binary.
-# Two installs are not a developer's and keep the pinned download whatever
-# their HEAD: the one Herdr runs in <plugins>/.tmp-install-*/checkout, and one
-# that sets CORGI_BUILD=release (herdr-app/install.sh does for its own checkout).
-# A folder that is not a git checkout (an unpacked release) downloads too.
-#
-# Either way it then links ~/.local/bin/corgi to the binary (see
-# scripts/link-command.sh), which only warns when it cannot, and, when the
-# Herdr app is installed (herdr-app on PATH), adds the app's Corgi mod with
-# herdr-app/install.sh --mod-only, which also only warns when it cannot.
+# An install that sets CORGI_BUILD=release keeps the pinned download whatever
+# its HEAD (herdr-app/install.sh does for the checkout a piped install
+# fetched). A folder that is not a git checkout (an unpacked release)
+# downloads too.
 #
 #   CORGI_BUILD=source         always build from source
 #   CORGI_BUILD=release        use the pinned download even when the checkout
@@ -27,29 +23,11 @@
 #                              a missing pin or a failed check still build)
 #   CORGI_DOWNLOAD_URL=<url>   download from <url>/v<version>/ instead of the
 #                              GitHub release of `origin`
-#   CORGI_LINK=0               do not link ~/.local/bin/corgi
-#   CORGI_BIN_DIR=<dir>        link <dir>/corgi instead
-#   CORGI_APP_MOD=0            do not add the Herdr app's mod (herdr-app/install.sh
-#                              sets it, as it installs the mod itself)
 set -u
 
 cd "$(dirname "$0")/.." || exit 1
 
 say() { printf 'corgi install: %s\n' "$*" >&2; }
-
-link_command() {
-  sh scripts/link-command.sh "$PWD" || say "could not link the corgi command"
-  install_app_mod
-}
-
-# The Herdr app's Corgi mod, when the app is installed.
-install_app_mod() {
-  [ "${CORGI_APP_MOD:-1}" != 0 ] || return 0
-  [ -f herdr-app/install.sh ] || return 0
-  command -v herdr-app >/dev/null 2>&1 || return 0
-  say "the Herdr app is installed: adding its Corgi mod"
-  sh herdr-app/install.sh --mod-only || say "could not add the Herdr app's Corgi mod"
-}
 
 tmp=
 build_from_source() {
@@ -64,7 +42,6 @@ build_from_source() {
     exit 1
   fi
   cargo build --release --locked || exit $?
-  link_command
   exit 0
 }
 
@@ -74,8 +51,8 @@ case "${CORGI_BUILD:-}" in
   *) say "ignoring CORGI_BUILD=$CORGI_BUILD (it is source or release)" ;;
 esac
 
-version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' herdr-plugin.toml | head -n 1)
-[ -n "$version" ] || build_from_source "herdr-plugin.toml has no version"
+version=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)
+[ -n "$version" ] || build_from_source "Cargo.toml has no version"
 tag="v$version"
 
 case "$(uname -s)" in
@@ -96,8 +73,8 @@ if [ -e .git ] && command -v git >/dev/null 2>&1; then
     build_from_source "this checkout has uncommitted changes"
   fi
   origin=$(git remote get-url origin 2>/dev/null)
-  case "${CORGI_BUILD:-}:$(pwd -P)" in
-    release:* | *:*/.tmp-install-*/checkout) ;;
+  case "${CORGI_BUILD:-}" in
+    release) ;;
     *)
       head=$(git rev-parse --verify -q HEAD 2>/dev/null)
       tagged=$(git rev-parse --verify -q "refs/tags/$tag^{commit}" 2>/dev/null)
@@ -169,4 +146,3 @@ esac
 mv -f "$tmp/$asset" target/release/corgi ||
   build_from_source "could not move the binary into target/release"
 say "installed the prebuilt $asset $tag"
-link_command

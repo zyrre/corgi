@@ -718,7 +718,7 @@ async function projects(w) {
     return found;
   };
   for (const title of ['HERD', 'CODEX', 'CLAUDE']) assert.equal(colorOf(card, title), '#dim', title);
-  // The windows in the dashboard's colors.
+  // The windows in color.
   assert.equal(colorOf(card, '31%'), '#ansi2');
   assert.equal(colorOf(card, '86%'), '#ansi1');
   // The plan and the reading's age are the line's tooltip; a failed reading's
@@ -1197,7 +1197,7 @@ async function merged(outcome, state) {
   assert.equal(panel(mod), null);
   assert.deepEqual(merges(w), []);
 
-  // Confirmed, it runs the merge the dashboard's m runs, and says so.
+  // Confirmed, it runs the merge, and says so.
   click(mod.render(), 'merge-t3', mod.cx);
   click(mod.render(), 'merge-confirm-t3', mod.cx);
   await new Promise((resolve) => setImmediate(resolve));
@@ -1429,7 +1429,7 @@ for (const outcome of [
     assert.deepEqual(texts(panel(mod)), ['w-cache: refused', outcome.message, ...(offered ? ['Ask supervisor to fix'] : []), 'Dismiss'], `supervisor ${state}`);
     assert.equal(byId(mod.render(), 'merge-ask-t3') !== null, offered);
     if (state !== 'idle') continue;
-    // Asked: the line the dashboard's s sends, with the failure alone.
+    // Asked: the line that hands it over, with the failure alone.
     let answer;
     w.programs[1] = corgi({ status: tagged(), merge: () => new Promise((resolve) => { answer = resolve; }) });
     click(mod.render(), 'merge-ask-t3', mod.cx);

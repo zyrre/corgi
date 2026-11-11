@@ -1,5 +1,11 @@
 # Porting Corgi to the Herdr app: what herdr-core (`hc`) gives us
 
+> The port is done: Corgi runs on herdr-core alone, and what "Removal"
+> lists at the end is gone. This stays as the record of what `hc` was found
+> to do, which `src/hc/` and `corgi daemon` rest on, and of the design that
+> was chosen (A). File names in it are from before the port (`herdr.rs`,
+> the plugin, the dashboard); ARCHITECTURE.md describes the code as it is.
+
 A spike run on 2026-11-09 on the user's Mac with `hc` 0.1.19 and
 `herdr-app` 0.1.14, before any production code for the port is written.
 The questions: can Corgi deliver wakes with `hc send` without damaging a
@@ -803,7 +809,7 @@ command); resume with the `-c` overrides; `draft.rs` on its observer paint.
 - Mind that the app turns `done` into `idle` once seen; the daemon, which
   reads the core, does not see that.
 
-### Removal (once the mod works)
+### Removal (once the mod works; done on 2026-11-10)
 
 The Herdr TUI plugin (`herdr-plugin.toml`, `corgi hook`, `scripts/install.sh`
 plugin parts), `corgi serve` and its protocol, `corgi-gui`, the ratatui

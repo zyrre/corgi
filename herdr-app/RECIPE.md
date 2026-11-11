@@ -15,17 +15,15 @@ The **Projects** mod is a sidebar list that stands in your layout where
 Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, two lines each
 (the agent's task; under it, smaller, its harness's icon, its model, how
 full its context is and, at the right, its state as a badge: `WORKING`,
-`BLOCKED`, `DONE`, `IDLE`, `PAUSED`, `EXITED`, the words Corgi's dashboard
-and desktop window use), and a `+` that opens a project: type a name or a path, and Enter shows
+`BLOCKED`, `DONE`, `IDLE`, `PAUSED`, `EXITED`), and a `+` that opens a project: type a name or a path, and Enter shows
 its supervisor or starts it. A worker Corgi tagged ready to merge has a
 `MERGE` badge in its row, in place of its state's: click it, confirm, and its branch is merged into
-the project's base branch and pushed, as `m` does in Corgi's dashboard;
+the project's base branch and pushed (`corgi merge`);
 then it offers to close the worker and remove its worktree, keeping the
-branch, as `x` does there. A red `↓3` after a space's name says its
+branch (`corgi close`). A red `↓3` after a space's name says its
 checkout is 3 commits behind its upstream: click it to pull them. At the
 top, above the list's header, a card counts your agents by state (HERD) and shows how much of
-each Claude and Codex plan's 5-hour and weekly windows is used, as the
-dashboard's header does. `⏸ Agents`, left of the `+`, is for leaving the
+each Claude and Codex plan's 5-hour and weekly windows is used. `⏸ Agents`, left of the `+`, is for leaving the
 Wi-Fi or VPN: it stops the agents that are working at that moment, each
 ending its turn and exiting with its conversation saved, and while any is
 paused Corgi types nothing into a supervisor and hands none over; it then
@@ -121,7 +119,7 @@ The `corgi-brand` mod fills the sidebar's `brand` block (46 px, on
   5: a finer pixel corgi, 32 by 32 cells of 5 px, alone on a transparent
   160 px canvas as Herdr's and centred, its jaw a smooth curve edged in
   warm grey `#b0aa9e` so the white face keeps the same outline on a light
-  sidebar as on a dark one; `cargo brand-tile` draws it again from `src/app_icon.rs`, and
+  sidebar as on a dark one; `cargo brand-tile` draws it again from `src/brand_tile.rs`, and
   a test fails while it lags the corgi) and
   "Corgi", the two names semibold in `foreground`, 5 px apart; then the
   search button (opens the `picker` mod) and the sidebar toggle, 26 px
@@ -155,7 +153,7 @@ The Projects mod fills its block on `chrome`, text 13 px:
     (`WORKING 3`, `BLOCKED 1`, `MERGE 1`, `DONE 1`, `IDLE 2`, `PAUSED 1`,
     `EXITED 1`, in that order, 4 px apart); a state with none left out,
     `no agents` in `dim` when none has any. Counted over the list's agents
-    by the badge each row shows, as the dashboard's HERD box counts: a
+    by the badge each row shows: a
     worker tagged ready to merge counts as MERGE alone (unless it is
     paused), an agent in no state as idle. The badges wrap whole onto more
     lines, 3 px apart, in the room right of the title, and the line grows
@@ -313,8 +311,7 @@ The overview:
   last two). A project needs you when its supervisor has open questions, an
   agent is blocked, or a worker is tagged MERGE.
 - Agents are those Corgi started on herdr-core (`corgi supervisor`,
-  `corgi spawn` there); `terminal` is the hc terminal's address. Agents on
-  the old Herdr TUI are not shown. A project stays listed from its
+  `corgi spawn` there); `terminal` is the hc terminal's address. A project stays listed from its
   supervisor's state folder when none of its agents runs, and when the core
   is not running.
 - It reads `corgi status --json` when it starts, every 5 seconds, when a file
@@ -328,8 +325,7 @@ The overview:
   hides it.
 - `Merge` asks inline, `Merge worktree/x into main and push?` with `Cancel`
   and `Merge + push`, then shows `Merging…` and runs
-  `corgi merge NAME --project DIR --json`: the merge Corgi's dashboard runs
-  with `m`, on the worker's hc checkout and branch, which also tells the
+  `corgi merge NAME --project DIR --json`, on the worker's hc checkout and branch, which also tells the
   supervisor and clears the worker's MERGE tag. With the core not running it
   is refused, and nothing is started. The result shows in a card at
   the top of the project view, green-ish (`working`) for merged, `done` for
@@ -459,7 +455,7 @@ The Projects list:
   the row (and is not also the row's click); `Cancel`, or the mark again,
   puts the question away. `Merge + push` runs `corgi merge <worker>
   --project <dir> --json`, on the worker's machine (its project and base
-  from that machine's status): the merge Corgi's dashboard runs with `m`, with
+  from that machine's status): the merge, with
   its checks, in the project's primary checkout, pushed, which also clears
   the tag and tells the supervisor in its inbox. One merge at a time: while
   one runs the marks are dimmed and do nothing. Then the status is read
@@ -475,7 +471,7 @@ The Projects list:
   failed push) the card asks whether to close the worker. `Close` is the
   default: it takes the keyboard as the question shows, so Enter closes and
   Escape keeps. `Close` runs `corgi close <worker> --project <dir> --json`
-  on the worker's machine, the close Corgi's dashboard runs with `x`: it ends the worker's hc
+  on the worker's machine: it ends the worker's hc
   terminal and removes it, by its address, then removes its worktree with
   `git worktree remove`; the branch stays. The app closes the worker's
   space once its last terminal is gone (a terminal of the person's in it
@@ -494,7 +490,7 @@ The Projects list:
   the worker's machine, not `exited`). It runs `corgi merge <worker>
   --project <dir> --json --ask-supervisor <error>` on that machine, with
   `--commit <commit>` after a failed push: a line in the supervisor's
-  inbox, as `s` sends from the dashboard's merge dialog, which that
+  inbox, which that
   machine's `corgi daemon` types in. The card then says who was asked;
   if nobody could be, why, with the button still there.
 - The herd card's counts come from the list's own agents; its plan lines
@@ -502,7 +498,7 @@ The Projects list:
   every minute. That command reads the plan-usage cache every Corgi process
   shares (`usage/<provider>.json` in Corgi's state directory), so the
   providers are asked at most once a minute on the machine however many
-  dashboards, windows and lists read it; a corgi too old to know `usage`
+  windows and lists read it; a corgi too old to know `usage`
   leaves the plan lines out.
 - The last line is read from the same status: `corgi` (`version`, `commit`,
   `dirty`, `source`, `newer`) and `daemon.build`. `newer` is Corgi's own
