@@ -162,9 +162,11 @@ check "every hc call names the preview's core" not_logged "hc[] "
 check "eight made-up terminals are started" test "$(count "hc[preview] run ")" = 8
 check "each in a space" test "$(count "--label herdr.space=preview-")" = 8
 check "the app is a copy" test -x "$preview/Herdr.app/Contents/MacOS/Herdr"
-check "the Projects mod is the checkout's" cmp "$checkout/herdr-app/mods/projects/main.js" "$preview/home/mods/projects/main.js"
-check "the brand row mod is the checkout's" cmp "$checkout/herdr-app/mods/corgi-brand/main.js" "$preview/home/mods/corgi-brand/main.js"
-check "the Projects mod runs the canned corgi" grep -qF "\"$preview/fake/corgi\"" "$preview/home/mods/projects/config.json"
+check "the Corgi mod is the checkout's" cmp "$checkout/herdr-app/mods/corgi/main.js" "$preview/home/mods/corgi/main.js"
+check "its Projects list too" cmp "$checkout/herdr-app/mods/corgi/projects.js" "$preview/home/mods/corgi/projects.js"
+check "and its brand row" cmp "$checkout/herdr-app/mods/corgi/brand.js" "$preview/home/mods/corgi/brand.js"
+check "no mod of the ones Corgi had before" test ! -e "$preview/home/mods/projects" -a ! -e "$preview/home/mods/corgi-brand"
+check "the Corgi mod runs the canned corgi" grep -qF "\"$preview/fake/corgi\"" "$preview/home/mods/corgi/config.json"
 check "the layout gets the Projects list from the checkout's corgi, asking the preview's window" logged "corgi app-layout --app $preview/Herdr.app/Contents/MacOS/Herdr --home $link/home"
 check "the window is switched to the corgi layout" logged "do layout.switch --name corgi"
 check "the canned status is JSON" python3 -m json.tool "$preview/fake/status.json"
@@ -205,7 +207,7 @@ check "but installs the mods again" test "$(count "corgi app-layout")" = 2
 shot=$(preview shot list)
 check "shot prints the picture's path" test "$shot" = "$preview/list.png"
 check "and writes it" test -s "$preview/list.png"
-check "do passes a command on" preview "do" projects.open
+check "do passes a command on" preview "do" corgi.open
 check "with its arguments" preview "do" layout.resize --id sidebar --px 200
 check "as given" logged "do layout.resize --id sidebar --px 200"
 for refused in app.quit window.close window.minimize app.update app.update_core app.check_updates app.hide_others; do

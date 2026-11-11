@@ -51,7 +51,7 @@ flowchart TD
 
 ## In the Herdr app
 
-The install puts three mods into the app and the Projects list into your layout's sidebar ([`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) describes them in full):
+The install puts Corgi's mod into the app, and its Projects list and brand row ("Herdr + Corgi") into your layout's sidebar ([`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) describes them in full):
 
 - **Projects**, in place of the sidebar's Spaces and Agents lists: each repository with its agents under it, and a `+` that opens a project by name or path and starts its supervisor. It also shows the projects of the other machines the window is connected to, and merges, closes and pauses there.
 - **`⏸ Agents`**, beside the `+`, is for leaving the network: it stops the agents working right then (each ends its turn and exits, its conversation saved), holds every wake and handover while they are paused, and reads `▶ Agents` until you bring them back. Nothing is killed.
@@ -76,7 +76,7 @@ A layout of your own gets the list in place, and nothing else in it changes, so 
 curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh
 ```
 
-It installs the `corgi` command (linked into `~/.local/bin`), `corgi daemon` as a service of your session (a LaunchAgent on macOS, a systemd user unit on Linux), Corgi's mods and the Projects list in your layout's sidebar, and updates them when run again. With OpenCode installed, it asks once whether to add a small status plugin to `~/.config/opencode/plugin/`, without which an OpenCode worker wakes no supervisor. `herdr-app/install.sh --uninstall` puts Spaces and Agents back and removes the mods and the daemon.
+It installs the `corgi` command (linked into `~/.local/bin`), `corgi daemon` as a service of your session (a LaunchAgent on macOS, a systemd user unit on Linux), Corgi's mod and its Projects list in your layout's sidebar, and updates them when run again. With OpenCode installed, it asks once whether to add a small status plugin to `~/.config/opencode/plugin/`, without which an OpenCode worker wakes no supervisor. `herdr-app/install.sh --uninstall` puts Spaces and Agents back and removes the mod and the daemon.
 
 Requirements:
 
@@ -94,7 +94,7 @@ git clone https://github.com/zyrre/corgi && cd corgi
 CORGI_BUILD=source herdr-app/install.sh
 ```
 
-Run from your own git checkout, the installer builds from source unless HEAD is exactly the release tag, so it never replaces your build with an older release; `CORGI_BUILD=source` always builds and `CORGI_BUILD=release` always downloads. Run it again after pulling: it rebuilds, restarts the daemon on the new binary and swaps in the mods that changed.
+Run from your own git checkout, the installer builds from source unless HEAD is exactly the release tag, so it never replaces your build with an older release; `CORGI_BUILD=source` always builds and `CORGI_BUILD=release` always downloads. Run it again after pulling: it rebuilds, restarts the daemon on the new binary and swaps in the mod when it changed.
 
 ## Data and privacy
 

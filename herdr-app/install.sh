@@ -1,6 +1,6 @@
 #!/bin/sh
-# Installs Corgi into the Herdr app: the corgi CLI, the Projects and brand
-# row mods, and the Projects list in the sidebar of the app's layout.
+# Installs Corgi into the Herdr app: the corgi CLI, Corgi's mod, and its
+# Projects list and brand row in the sidebar of the app's layout.
 #
 #   curl -fsSL https://raw.githubusercontent.com/zyrre/corgi/main/herdr-app/install.sh | sh
 #   herdr-app/install.sh [--version X.Y.Z] [--home DIR] [--mod-only] [--no-daemon]
@@ -38,19 +38,22 @@
 #     no supervisor), and remembers the answer; a run with no terminal to ask
 #     in skips it and says so, and one where OpenCode reports by itself
 #     removes Corgi's plugin
-#   - the mods: herdr-app/mods/projects (the Projects list of the
-#     sidebar) and herdr-app/mods/corgi-brand (the sidebar's top row, "Herdr
-#     + Corgi") are each put together in a hidden folder of the app home
-#     ($HERDR_APP_HOME, else ~/.config/herdr-app; --home DIR), with a
-#     config.json naming the CLI, checked with `herdr-app check`, and swapped
-#     in with one rename, only when it differs from the installed one: the
-#     app reloads a mod on every file it sees change. The retired Corgi mod
-#     (mods/corgi, an overview an earlier install put there) is removed
-#   - the layout: `corgi app-layout` puts the Projects mod in place of the
-#     sidebar's Spaces, takes out its Agents list and puts the brand mod in
-#     the sidebar's brand row, and changes nothing else: a layout of the person's own in place; Herdr's shipped main is
+#   - the mod: herdr-app/mods/corgi, whose views are the Projects list of the
+#     sidebar and the sidebar's top row, "Herdr + Corgi", is put together in
+#     a hidden folder of the app home ($HERDR_APP_HOME, else
+#     ~/.config/herdr-app; --home DIR), with a config.json naming the CLI,
+#     checked with `herdr-app check`, and swapped in with one rename, only
+#     when it differs from the installed one: the app reloads a mod on every
+#     file it sees change. The retired overview mod an earlier install put
+#     in mods/corgi is replaced
+#   - the layout: `corgi app-layout` puts the mod's Projects list in place of
+#     the sidebar's Spaces, takes out its Agents list and puts the mod's brand
+#     row in the sidebar's brand row, and changes nothing else: a layout of the person's own in place; Herdr's shipped main is
 #     first cloned to layouts/corgi.json, which an open window switches to.
-#     Run again, it changes nothing
+#     Blocks of the mods Corgi had before (mods/projects, mods/corgi-brand)
+#     become the one mod's in each of the person's layouts, and then those
+#     folders, when they are Corgi's, are removed. Run again, it changes
+#     nothing
 #
 # It makes no space in the app, and neither does the daemon.
 #
@@ -62,7 +65,8 @@
 #                    installs its window's mods this way)
 #   --no-daemon      leaves the daemon as it is
 #   --uninstall      puts Herdr's Spaces and Agents back where Projects is in
-#                    the layouts (no layout is deleted), removes the mods,
+#                    the layouts (no layout is deleted), removes the mod (and
+#                    the old ones Corgi had before, when they are there),
 #                    the daemon and Corgi's OpenCode plugin; with --cli
 #                    also the link to this checkout's
 #                    corgi (the checkout itself is left). With --home only
@@ -118,7 +122,7 @@ parse_args "$@"
 
 # --- without a checkout: fetch one, and run its copy ------------------------
 here=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P) || here=
-if [ ! -f "$0" ] || [ -z "$here" ] || [ ! -f "$here/../scripts/install.sh" ] || [ ! -d "$here/mods/projects" ]; then
+if [ ! -f "$0" ] || [ -z "$here" ] || [ ! -f "$here/../scripts/install.sh" ] || [ ! -d "$here/mods/corgi" ]; then
   command -v git >/dev/null 2>&1 || die "git is not installed (on macOS: xcode-select --install)"
   checkout=${CORGI_CHECKOUT:-${HOME:?}/.local/share/corgi}
   url=${CORGI_REPO_URL:-https://github.com/zyrre/corgi.git}
@@ -172,11 +176,20 @@ fi
 
 # Only ever replace or remove a folder that holds one of Corgi's mods.
 ours() { [ ! -e "$1" ] || grep -q 'io.github.zyrre.corgi' "$1/main.js" 2>/dev/null; }
+# Whether the folder holds the retired overview mod, which an earlier
+# install put in mods/corgi, where Corgi's one mod goes now: a mod of
+# Corgi's whose main.js sets up its own install of corgi (`const INSTALLER`,
+# the release's install.sh), which every version of the overview had, and
+# which Corgi's one mod never has.
+retired() { [ -f "$1/main.js" ] && ours "$1" && grep -q '^const INSTALLER = ' "$1/main.js"; }
+# The mods Corgi had before its one mod: the Projects list and the brand row.
+OLD_MODS='projects corgi-brand'
 # What a mod's folder is called to a person.
 mod_title() {
   case $1 in
-    projects) echo "Projects mod" ;;
-    *) echo "brand row mod" ;;
+    corgi) echo "Corgi mod" ;;
+    projects) echo "old Projects mod" ;;
+    *) echo "old brand row mod" ;;
   esac
 }
 
@@ -277,16 +290,37 @@ install_opencode_plugin() {
   fi
 }
 
-# Removes the retired Corgi mod (mods/corgi) that an earlier install put in
-# the app's home, when it is there and is Corgi's.
-remove_old_corgi_mod() {
+# Removes the retired overview mod that an earlier install put in
+# mods/corgi, and only that: Corgi's one mod, in the same folder, stays
+# (the install updates it), and so does someone else's mod of that name.
+remove_retired_corgi_mod() {
   old="$mods/corgi"
-  [ -d "$old" ] || return 0
-  if ours "$old"; then
-    rm -rf "$old" && say "removed the retired Corgi mod $old"
-  else
-    say "left $old alone: it is not Corgi's mod"
+  if [ -d "$old" ] && retired "$old"; then
+    rm -rf "$old" && say "removed the retired Corgi overview mod $old"
   fi
+}
+
+# Removes the mods Corgi had before its one mod (mods/projects,
+# mods/corgi-brand), each only when it is Corgi's; $1 is said after each.
+remove_old_mods() {
+  for name in $OLD_MODS; do
+    old="$mods/$name"
+    [ -d "$old" ] || continue
+    if ours "$old"; then
+      rm -rf "$old" && say "removed the $(mod_title "$name") $old$1"
+    else
+      say "left $old alone: it is not Corgi's mod"
+    fi
+  done
+}
+
+# Says that the mods Corgi had before stay, when there are any: a layout
+# may still show them until `corgi app-layout` has run.
+keep_old_mods() {
+  for name in $OLD_MODS; do
+    [ -d "$mods/$name" ] || continue
+    say "kept the $(mod_title "$name") $mods/$name, which a layout may still show; install again once corgi app-layout runs"
+  done
 }
 
 # Runs `corgi app-layout` with this app's home: puts the Projects list into
@@ -304,7 +338,7 @@ if [ -n "$uninstall" ]; then
     app_layout remove || say "could not put Spaces and Agents back in the layouts in $home_dir/layouts; run $bin app-layout remove"
     [ -n "$home_given" ] || "$bin" daemon uninstall || say "could not remove the corgi daemon; run $bin daemon uninstall"
   else
-    say "no $bin to put Spaces back with: in $home_dir/layouts/*.json make the \"projects\" block \"spaces\" and the \"corgi-brand\" block \"workspace-chrome\" again"
+    say "no $bin to put Spaces back with: in $home_dir/layouts/*.json make the \"corgi\" blocks (and any \"projects\" or \"corgi-brand\" one) \"spaces\" and \"workspace-chrome\" again, by their props' view"
     [ -n "$home_given" ] || say "and remove the daemon with: corgi daemon uninstall"
   fi
   # The daemon, OpenCode's plugin and the link are this machine's, not an
@@ -315,16 +349,15 @@ if [ -n "$uninstall" ]; then
     remove_oc_plugin "removed Corgi's OpenCode plugin $oc_plugin"
     rm -f "$oc_answer"
   fi
-  for name in projects corgi-brand; do
-    mod_dir="$mods/$name"
-    if [ -d "$mod_dir" ]; then
-      ours "$mod_dir" || die "$mod_dir is not Corgi's mod; leaving it"
-      rm -rf "$mod_dir" && say "removed $mod_dir"
-    else
-      say "no $(mod_title "$name") in $mods"
-    fi
-  done
-  remove_old_corgi_mod
+  # Corgi's mod, or the retired overview mod in its folder.
+  mod_dir="$mods/corgi"
+  if [ -d "$mod_dir" ]; then
+    ours "$mod_dir" || die "$mod_dir is not Corgi's mod; leaving it"
+    rm -rf "$mod_dir" && say "removed $mod_dir"
+  else
+    say "no Corgi mod in $mods"
+  fi
+  remove_old_mods ""
   if [ -n "$cli" ] && [ -z "$home_given" ]; then
     if [ -L "$link" ] && [ "$(readlink "$link")" = "$bin" ]; then
       rm -f "$link" && say "removed $link"
@@ -427,17 +460,25 @@ install_mod() {
   fi
 }
 
-# The Projects and brand row mods before the layout that shows them.
-install_mod projects
-install_mod corgi-brand
-remove_old_corgi_mod
+# The mod before the layout that shows it: in place of the retired
+# overview mod an earlier install left in its folder.
+remove_retired_corgi_mod
+install_mod corgi
 
 # --- the layout ------------------------------------------------------------------------
 # The Projects list in the sidebar of the layout the window shows: a shipped
 # one is cloned to corgi first, and an open window switched to the clone.
+# Each layout's blocks of Corgi's old mods become the one mod's, and only
+# then do the old mods' folders go, so no layout names a mod that is gone.
 # --mod-only has a corgi when the checkout was built before.
 if [ -x "$bin" ]; then
-  app_layout --app "$app" || say "could not put the Projects list into the layout; run $bin app-layout to try again"
+  if app_layout --app "$app"; then
+    remove_old_mods ": Corgi's mod has its view"
+  else
+    say "could not put the Projects list into the layout; run $bin app-layout to try again"
+    keep_old_mods
+  fi
 else
   say "no $bin to put the Projects list into the layout with; run corgi app-layout once it is installed"
+  keep_old_mods
 fi

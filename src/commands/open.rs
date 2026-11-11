@@ -1,4 +1,4 @@
-//! `corgi projects` and `corgi open`: what the Herdr app's Projects mod runs
+//! `corgi projects` and `corgi open`: what the Herdr app's Projects list runs
 //! for its "Open project" field. `projects` lists the projects Corgi knows,
 //! filtered by what is typed, with the directories that complete a typed
 //! path and where a new name would be created

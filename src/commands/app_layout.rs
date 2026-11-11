@@ -19,6 +19,8 @@ Usage: corgi app-layout [--layout NAME] [--app PATH] [--home DIR] [--json]
 Puts Corgi's Projects list into the Herdr app's sidebar, in place of Spaces,
 and takes out the Agents list, which Projects shows too; the brand row at
 the sidebar's top shows Corgi's (\"Herdr + Corgi\") in place of Herdr's.
+Both are views of Corgi's one mod, corgi: a block names its view in its
+props, {\"mod\": \"corgi\", \"props\": {\"view\": \"projects\"}}.
 Nothing else in the layout changes, so other mods' changes to it stay. The layout is the one the
 window shows (or showed last), or NAME:
 
@@ -31,19 +33,23 @@ window shows (or showed last), or NAME:
 Run again, it changes nothing: it only makes sure the Projects list is
 there, and does not follow Herdr's later changes to main. A layout with no
 Spaces or Projects list in its sidebar is left as it is, and why is printed.
+Blocks of the mods Corgi had before (projects, corgi-brand) are made the
+corgi mod's views in place, in each of your layouts.
 
   remove        puts Herdr's Spaces and Agents lists and its brand row back
-                in each of your layouts that shows Corgi's (or in NAME); no
-                layout is deleted and the window is not switched
+                in each of your layouts that shows Corgi's, of its one mod
+                or its old ones (or in NAME); no layout is deleted and the
+                window is not switched
 
   --layout NAME the layout to change, instead of the one the window shows
   --home DIR    the app's home (default: $HERDR_APP_HOME, else
                 ~/.config/herdr-app)
   --app PATH    the herdr-app that answers for the window (default:
                 herdr-app on PATH)
-  --json        print {\"result\", \"layout\", \"path\", \"message\"}: result is
-                edited, cloned, unchanged or refused (nothing changed); it
-                exits 0 either way";
+  --json        print {\"result\", \"layout\", \"path\", \"upgraded\",
+                \"message\"}: result is edited, cloned, unchanged or refused
+                (nothing changed); upgraded names the other layouts whose
+                old blocks were made the corgi mod's; it exits 0 either way";
 
 pub fn app_layout_command(args: &[String]) -> Result<()> {
     let (remove, rest) = match args.first().map(String::as_str) {
@@ -81,12 +87,23 @@ pub fn app_layout_command(args: &[String]) -> Result<()> {
     }
     let app = HerdrApp::new(bin.unwrap_or_else(|| PathBuf::from("herdr-app")), &home);
     let installed = app_layout::install(&app, layout.as_deref())?;
-    let message = message(&installed);
+    // The other layouts that still name Corgi's old mods, which the
+    // installer removes.
+    let upgraded = app_layout::upgrade_layouts(&home)?;
+    let mut message = message(&installed);
+    if !upgraded.is_empty() {
+        message.push_str(&format!(
+            "; Corgi's mod in place of its old ones in your layout{} {}",
+            if upgraded.len() == 1 { "" } else { "s" },
+            upgraded.join(", ")
+        ));
+    }
     if json_output {
         let value = json!({
             "result": installed.word(),
             "layout": installed.layout(),
             "path": app_layout::layout_path(&home, installed.layout()),
+            "upgraded": upgraded,
             "message": message,
         });
         println!("{}", serde_json::to_string(&value)?);
@@ -125,12 +142,20 @@ fn message(installed: &Installed) -> String {
             "{from} is Herdr's own layout, so Corgi put its Projects list in the sidebar of \
              your layout {layout}"
         ),
+        (Some(from), false, Change::Upgraded) => format!(
+            "{from} is Herdr's own layout; your layout {layout} shows Corgi's mod now, in \
+             place of its old Projects and brand row mods"
+        ),
         (Some(from), false, Change::Unchanged) => {
             format!("{from} is Herdr's own layout; your layout {layout} has Corgi's Projects list")
         }
         (None, _, Change::Edited) => format!(
             "put Corgi's Projects list in the sidebar of your layout {layout}, in place of \
              Spaces and Agents"
+        ),
+        (None, _, Change::Upgraded) => format!(
+            "your layout {layout} shows Corgi's mod now, in place of its old Projects and brand \
+             row mods"
         ),
         (None, _, Change::Unchanged) => {
             format!("your layout {layout} has Corgi's Projects list already")
@@ -220,6 +245,20 @@ mod tests {
                 false
             ))),
             "your layout mine has Corgi's Projects list already"
+        );
+        assert_eq!(
+            message(&Installed::Done(done(
+                "mine",
+                Change::Upgraded,
+                None,
+                false
+            ))),
+            "your layout mine shows Corgi's mod now, in place of its old Projects and brand row \
+             mods"
+        );
+        assert_eq!(
+            Installed::Done(done("mine", Change::Upgraded, None, false)).word(),
+            "edited"
         );
         assert_eq!(
             message(&Installed::Refused {

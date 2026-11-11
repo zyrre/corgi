@@ -1,4 +1,4 @@
 [alias]
 # Draws the Herdr app brand row's Corgi logo,
-# herdr-app/mods/corgi-brand/corgi.png. See src/brand_tile.rs.
+# herdr-app/mods/corgi/corgi.png. See src/brand_tile.rs.
 brand-tile = "test --bin corgi brand_tile::tests::brand_tile_png_file -- --ignored --exact"

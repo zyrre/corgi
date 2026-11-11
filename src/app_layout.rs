@@ -1,12 +1,20 @@
-//! Corgi's sidebar in the Herdr app's (herdr-app's) layout: Corgi's
-//! `projects` mod where Herdr's `spaces` mod was, and no `agents` mod, since
-//! the Projects list shows each project's agents; and the sidebar's `brand`
-//! block, the row at its top, showing Corgi's `corgi-brand` ("Herdr +
-//! Corgi") where Herdr's `workspace-chrome` showed "Herdr". That is the one
-//! change Corgi makes to a layout, all of it in the left sidebar (its
-//! footer stays `workspace-chrome`'s); everything else stays as it was
-//! found, so other mods (herdr-gitlab's panel in `panel-body`, a cloned tab
-//! bar) can change the same layout, before or after Corgi.
+//! Corgi's sidebar in the Herdr app's (herdr-app's) layout. Corgi's one
+//! mod, `corgi`, fills blocks of the layout, each showing the view its
+//! props name (`{ "mod": "corgi", "props": { "view": "projects" } }`):
+//! the `projects` view (the Projects list) where Herdr's `spaces` mod was,
+//! and no `agents` mod, since the Projects list shows each project's
+//! agents; and the `brand` view ("Herdr + Corgi") in the sidebar's `brand`
+//! block, the row at its top, where Herdr's `workspace-chrome` showed
+//! "Herdr". That is the one change Corgi makes to a layout, all of it in the
+//! left sidebar (its footer stays `workspace-chrome`'s); everything else
+//! stays as it was found, so other mods (herdr-gitlab's panel in
+//! `panel-body`, a cloned tab bar) can change the same layout, before or
+//! after Corgi.
+//!
+//! Corgi had a mod per block before (`projects` and `corgi-brand`): a
+//! layout with their blocks has them made the `corgi` mod's in place, by
+//! [`install`] and [`restore`] alike, so an update moves a layout to the one
+//! mod and an uninstall restores either.
 //!
 //! A layout is a person's own (personal) or one Herdr ships
 //! (`installed.json` lists them as `layout:<name>`). Herdr replaces a
@@ -47,12 +55,9 @@ use crate::herdr_app::HerdrApp;
 pub const LAYOUT: &str = "corgi";
 /// Herdr's default layout, the one shown when the app has no other.
 pub const DEFAULT: &str = "main";
-/// Corgi's mod that takes the place of Herdr's `spaces`:
-/// `herdr-app/mods/projects`.
-pub const PROJECTS_MOD: &str = "projects";
-/// Corgi's mod for the sidebar's brand row ("Herdr + Corgi"):
-/// `herdr-app/mods/corgi-brand`.
-pub const BRAND_MOD: &str = "corgi-brand";
+/// Corgi's mod, `herdr-app/mods/corgi`: a block shows one of its views,
+/// named by the block's `props.view`.
+pub const CORGI_MOD: &str = "corgi";
 /// The block of Herdr's layouts that holds the brand row, and the mod that
 /// draws it there (and the sidebar's footer, which Corgi leaves).
 const BRAND: &str = "brand";
@@ -74,6 +79,10 @@ pub enum Change {
     Unchanged,
     /// The Projects list was put in.
     Edited,
+    /// It had the Projects list of one of Corgi's old mods, and their
+    /// blocks show the `corgi` mod now (its brand row too, when it lacked
+    /// one); nothing else changed.
+    Upgraded,
 }
 
 /// A layout that has the Projects list now, and how it came to.
@@ -110,7 +119,7 @@ impl Installed {
         match self {
             Self::Done(Done { cloned: true, .. }) => "cloned",
             Self::Done(Done {
-                change: Change::Edited,
+                change: Change::Edited | Change::Upgraded,
                 ..
             }) => "edited",
             Self::Done(_) => "unchanged",
@@ -161,6 +170,77 @@ fn shown_mod(node: &Value) -> Option<&str> {
     node.get("content")?.get("mod")?.as_str()
 }
 
+/// A view of Corgi's mod that `corgi app-layout` puts in the sidebar. (The
+/// mod has room for more, such as a panel's, which are not the sidebar's.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    /// The Projects list, in place of Herdr's Spaces list.
+    Projects,
+    /// The brand row, "Herdr + Corgi", in place of Herdr's.
+    Brand,
+}
+
+impl View {
+    /// Its name in a block's `props.view`.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Projects => "projects",
+            Self::Brand => "brand",
+        }
+    }
+
+    /// The mod of its own Corgi had for it before the one `corgi` mod.
+    fn old_mod(self) -> &'static str {
+        match self {
+            Self::Projects => "projects",
+            Self::Brand => "corgi-brand",
+        }
+    }
+}
+
+/// The view of Corgi's a node shows, when it is a block showing one: the
+/// `corgi` mod's (its default view is the Projects list), or an old mod's.
+fn shown_view(node: &Value) -> Option<View> {
+    let content = node.get("content")?;
+    match content.get("mod")?.as_str()? {
+        CORGI_MOD => match content.get("props").and_then(|p| p.get("view")) {
+            None | Some(Value::Null) => Some(View::Projects),
+            Some(view) => [View::Projects, View::Brand]
+                .into_iter()
+                .find(|v| view.as_str() == Some(v.name())),
+        },
+        name => [View::Projects, View::Brand]
+            .into_iter()
+            .find(|v| v.old_mod() == name),
+    }
+}
+
+/// Makes the block `node` show Corgi's view `view`: `{ "mod": "corgi",
+/// "props": { "view": … } }`, with the props it had besides.
+fn show_view(node: &mut Value, view: View) {
+    let content = &mut node["content"];
+    content["mod"] = Value::String(CORGI_MOD.to_string());
+    if !content.get("props").is_some_and(Value::is_object) {
+        content["props"] = json!({});
+    }
+    content["props"]["view"] = Value::String(view.name().to_string());
+}
+
+/// Makes the block `node` show the mod `name`, without the `view` Corgi's
+/// mod took (and with no `props` when nothing else was in them).
+fn show_mod(node: &mut Value, name: &str) {
+    let content = &mut node["content"];
+    content["mod"] = Value::String(name.to_string());
+    if let Some(props) = content.get_mut("props").and_then(Value::as_object_mut) {
+        props.remove("view");
+        if props.is_empty()
+            && let Some(content) = content.as_object_mut()
+        {
+            content.remove("props");
+        }
+    }
+}
+
 fn children(node: &Value) -> &[Value] {
     node.get("children")
         .and_then(Value::as_array)
@@ -206,6 +286,15 @@ fn count(node: &Value, name: &str) -> usize {
             .sum::<usize>()
 }
 
+/// How many blocks under `node` show Corgi's view `view`.
+fn count_view(node: &Value, view: View) -> usize {
+    usize::from(shown_view(node) == Some(view))
+        + children(node)
+            .iter()
+            .map(|child| count_view(child, view))
+            .sum::<usize>()
+}
+
 /// Takes the blocks that show the mod `name` out of the tree under `node`.
 fn remove(node: &mut Value, name: &str) {
     if let Some(children) = children_mut(node) {
@@ -216,20 +305,56 @@ fn remove(node: &mut Value, name: &str) {
     }
 }
 
-/// Makes the blocks under `node` that show the mod `from` show `to`. The
-/// block keeps its id, size and everything else, so what names it (a key
-/// that toggles it, the person's sizes) still does.
-fn retarget(node: &mut Value, from: &str, to: &str) {
-    if shown_mod(node) == Some(from)
-        && let Some(content) = node.get_mut("content")
-    {
-        content["mod"] = Value::String(to.to_string());
+/// Takes the blocks that show Corgi's view `view` out of the tree under
+/// `node`.
+fn remove_view(node: &mut Value, view: View) {
+    if let Some(children) = children_mut(node) {
+        children.retain(|child| shown_view(child) != Some(view));
+        for child in children {
+            remove_view(child, view);
+        }
+    }
+}
+
+/// Makes the blocks under `node` that show the mod `from` show Corgi's view
+/// `to`. The block keeps its id, size and everything else, so what names it
+/// (a key that toggles it, the person's sizes) still does.
+fn mod_to_view(node: &mut Value, from: &str, to: View) {
+    if shown_mod(node) == Some(from) {
+        show_view(node, to);
     }
     if let Some(children) = children_mut(node) {
         for child in children {
-            retarget(child, from, to);
+            mod_to_view(child, from, to);
         }
     }
+}
+
+/// Makes the blocks under `node` that show Corgi's view `from` show the mod
+/// `to`, as [`mod_to_view`] keeping the rest of the block.
+fn view_to_mod(node: &mut Value, from: View, to: &str) {
+    if shown_view(node) == Some(from) {
+        show_mod(node, to);
+    }
+    if let Some(children) = children_mut(node) {
+        for child in children {
+            view_to_mod(child, from, to);
+        }
+    }
+}
+
+/// Makes the blocks under `node` that show one of Corgi's old mods
+/// (`projects`, `corgi-brand`) show the same view of the `corgi` mod:
+/// whether there was one.
+fn upgrade(node: &mut Value) -> bool {
+    let mut changed = false;
+    for view in [View::Projects, View::Brand] {
+        if count(node, view.old_mod()) > 0 {
+            mod_to_view(node, view.old_mod(), view);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Makes the `brand` block under `node` show Corgi's brand row when it
@@ -238,7 +363,7 @@ fn retarget(node: &mut Value, from: &str, to: &str) {
 fn put_brand(node: &mut Value) -> bool {
     match find_mut(node, BRAND) {
         Some(brand) if shown_mod(brand) == Some(CHROME_MOD) => {
-            brand["content"]["mod"] = Value::String(BRAND_MOD.to_string());
+            show_view(brand, View::Brand);
             true
         }
         _ => false,
@@ -247,24 +372,30 @@ fn put_brand(node: &mut Value) -> bool {
 
 /// Puts Corgi's sidebar into `layout`: the one `spaces` block of its
 /// sidebar (the node `sidebar`, or the whole layout when it has none) shows
-/// `projects` instead, the sidebar's `agents` blocks go, and its `brand`
-/// block shows `corgi-brand` (see [`put_brand`]). A sidebar that shows
-/// `projects` already keeps its lists as they are, whatever else it holds.
-/// `Err` says why there is nowhere to put the Projects list; the layout is
-/// then unchanged.
+/// Corgi's Projects list instead, the sidebar's `agents` blocks go, and its
+/// `brand` block shows Corgi's brand row (see [`put_brand`]). Blocks of
+/// Corgi's old mods, anywhere in it, become the `corgi` mod's first
+/// ([`upgrade`]). A sidebar that shows the Projects list already keeps its
+/// lists as they are, whatever else it holds. `Err` says why there is
+/// nowhere to put the Projects list; the layout is then unchanged.
 pub fn put_projects(layout: &mut Value) -> Result<Change, String> {
-    let has_sidebar = has_id(layout, SIDEBAR);
-    let sidebar = match find_mut(layout, SIDEBAR) {
+    let mut edited = layout.clone();
+    let upgraded = upgrade(&mut edited);
+    let has_sidebar = has_id(&edited, SIDEBAR);
+    let sidebar = match find_mut(&mut edited, SIDEBAR) {
         Some(sidebar) => sidebar,
-        None => layout,
+        None => &mut edited,
     };
-    if count(sidebar, PROJECTS_MOD) > 0 {
+    if count_view(sidebar, View::Projects) > 0 {
         // A layout from before Corgi had a brand row gets it now.
-        return Ok(if put_brand(sidebar) {
-            Change::Edited
-        } else {
-            Change::Unchanged
-        });
+        let branded = put_brand(sidebar);
+        let change = match (upgraded, branded) {
+            (false, false) => return Ok(Change::Unchanged),
+            (true, _) => Change::Upgraded,
+            (false, true) => Change::Edited,
+        };
+        *layout = edited;
+        return Ok(change);
     }
     let place = if has_sidebar {
         "its sidebar"
@@ -285,9 +416,10 @@ pub fn put_projects(layout: &mut Value) -> Result<Change, String> {
             ));
         }
     }
-    retarget(sidebar, SPACES_MOD, PROJECTS_MOD);
+    mod_to_view(sidebar, SPACES_MOD, View::Projects);
     remove(sidebar, AGENTS_MOD);
     put_brand(sidebar);
+    *layout = edited;
     Ok(Change::Edited)
 }
 
@@ -331,23 +463,24 @@ fn insert_after(node: &mut Value, after: &str, block: Value) -> Option<Value> {
         .try_fold(block, |block, child| insert_after(child, after, block))
 }
 
-/// Takes Corgi's sidebar out of `layout` again: the Projects list's block
-/// shows `spaces` again (or goes, when the layout has a Spaces list besides
-/// it), an `agents` block (`agents`) follows the Spaces list when the layout
-/// has none, and every block showing Corgi's brand row shows
-/// `workspace-chrome` again. Whether there was anything of Corgi's to take
-/// out.
+/// Takes Corgi's sidebar out of `layout` again, of the `corgi` mod or of
+/// Corgi's old mods: the Projects list's block shows `spaces` again (or
+/// goes, when the layout has a Spaces list besides it), an `agents` block
+/// (`agents`) follows the Spaces list when the layout has none, and every
+/// block showing Corgi's brand row shows `workspace-chrome` again. Whether
+/// there was anything of Corgi's to take out.
 fn take_projects(layout: &mut Value, agents: impl FnOnce(&Value) -> Value) -> bool {
-    let brand = count(layout, BRAND_MOD) > 0;
-    retarget(layout, BRAND_MOD, CHROME_MOD);
-    if count(layout, PROJECTS_MOD) == 0 {
+    upgrade(layout);
+    let brand = count_view(layout, View::Brand) > 0;
+    view_to_mod(layout, View::Brand, CHROME_MOD);
+    if count_view(layout, View::Projects) == 0 {
         return brand;
     }
     if count(layout, SPACES_MOD) == 0 {
         // The first goes back to Spaces; any other was a second list.
-        retarget_first(layout, PROJECTS_MOD, SPACES_MOD);
+        first_view_to_mod(layout, View::Projects, SPACES_MOD);
     }
-    remove(layout, PROJECTS_MOD);
+    remove_view(layout, View::Projects);
     if count(layout, AGENTS_MOD) == 0 {
         let block = agents(layout);
         insert_after(layout, SPACES_MOD, block);
@@ -355,17 +488,17 @@ fn take_projects(layout: &mut Value, agents: impl FnOnce(&Value) -> Value) -> bo
     true
 }
 
-/// Makes the first block under `node` that shows `from` show `to`: whether
-/// there was one.
-fn retarget_first(node: &mut Value, from: &str, to: &str) -> bool {
-    if shown_mod(node) == Some(from) {
-        node["content"]["mod"] = Value::String(to.to_string());
+/// Makes the first block under `node` that shows Corgi's view `from` show
+/// the mod `to`: whether there was one.
+fn first_view_to_mod(node: &mut Value, from: View, to: &str) -> bool {
+    if shown_view(node) == Some(from) {
+        show_mod(node, to);
         return true;
     }
     children_mut(node).is_some_and(|children| {
         children
             .iter_mut()
-            .any(|child| retarget_first(child, from, to))
+            .any(|child| first_view_to_mod(child, from, to))
     })
 }
 
@@ -399,7 +532,7 @@ fn edit(home: &Path, name: &str) -> Result<Result<Change, String>> {
         Ok(change) => change,
         Err(why) => return Ok(Err(why)),
     };
-    if change == Change::Edited {
+    if change != Change::Unchanged {
         write(&path, &layout).with_context(|| format!("write {}", path.display()))?;
     }
     Ok(Ok(change))
@@ -543,9 +676,8 @@ pub fn install(app: &HerdrApp, name: Option<&str>) -> Result<Installed> {
     Ok(Installed::Done(done))
 }
 
-/// The personal layouts in `home` that show Corgi's Projects list or its
-/// brand row.
-fn layouts_with_projects(home: &Path) -> Vec<String> {
+/// The personal layouts in `home` whose blocks `wanted` picks, by name.
+fn personal_layouts(home: &Path, wanted: impl Fn(&Value) -> bool) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(home.join("layouts"))
         .into_iter()
         .flatten()
@@ -554,12 +686,39 @@ fn layouts_with_projects(home: &Path) -> Vec<String> {
             let name = entry.file_name().to_string_lossy().into_owned();
             let name = name.strip_suffix(".json")?.to_string();
             let layout = read_json(&entry.path())?;
-            let corgis = count(&layout, PROJECTS_MOD) + count(&layout, BRAND_MOD);
-            (corgis > 0 && !is_shipped(home, &name)).then_some(name)
+            (wanted(&layout) && !is_shipped(home, &name)).then_some(name)
         })
         .collect();
     names.sort();
     names
+}
+
+/// The personal layouts in `home` that show Corgi's Projects list or its
+/// brand row.
+fn layouts_with_projects(home: &Path) -> Vec<String> {
+    personal_layouts(home, |layout| {
+        count_view(layout, View::Projects) + count_view(layout, View::Brand) > 0
+    })
+}
+
+/// Makes every personal layout in `home` that names one of Corgi's old mods
+/// (`projects`, `corgi-brand`) name the `corgi` mod's view in its place
+/// ([`upgrade`]), and changes nothing else in it: the layouts the window
+/// does not show, which [`install`] leaves, would otherwise go on naming
+/// folders the installer removes. The names of those it changed.
+pub fn upgrade_layouts(home: &Path) -> Result<Vec<String>> {
+    let names = personal_layouts(home, |layout| {
+        [View::Projects, View::Brand]
+            .iter()
+            .any(|view| count(layout, view.old_mod()) > 0)
+    });
+    for name in &names {
+        let path = layout_path(home, name);
+        let mut layout = read_layout(&path)?;
+        upgrade(&mut layout);
+        write(&path, &layout).with_context(|| format!("write {}", path.display()))?;
+    }
+    Ok(names)
 }
 
 /// Puts Herdr's Spaces and Agents lists and its brand row back in the
