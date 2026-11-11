@@ -2,7 +2,9 @@
 // a window: canned folders, jobs, builds and console logs behind the same
 // JSON API paths the mod asks a real Jenkins for (`api/json?tree=…`,
 // `consoleText`, `logText/progressiveText`, `build`, `buildWithParameters`,
-// `stop`, `crumbIssuer`, `whoAmI`, `me`). Nothing here reaches a real Jenkins.
+// `stop`, `crumbIssuer`, `whoAmI`, `me`), and Pipeline Stage View's
+// `wfapi/describe` and `wfapi/runs` in the shapes a real Jenkins
+// (2.479, read only) gave. Nothing here reaches a real Jenkins.
 //
 //   node fake-jenkins.mjs [port]     serves until stopped; prints its address
 //
@@ -34,35 +36,132 @@ const PARAMS = [
   { _class: 'hudson.model.FileParameterDefinition', name: 'bundle', type: 'FileParameterDefinition', description: 'A file to upload' },
 ];
 
-const LOG_HEAD = [
-  'Started by user Jane Doe',
-  '[Pipeline] Start of Pipeline',
-  '[Pipeline] node',
-  'Running on agent-7 in /var/jenkins/workspace/job',
-  '[Pipeline] stage (Checkout)',
-  ' > git fetch --tags --force --progress -- https://git.example.invalid/team/service.git',
-  'Checking out Revision 4f1c2aa (origin/master)',
-  '[Pipeline] stage (Build)',
-  '+ docker build -t registry.example.invalid/team/service:4f1c2aa .',
-  'Step 1/9 : FROM golang:1.25 AS build',
-  'Step 2/9 : COPY . /src',
-  'Step 3/9 : RUN go build ./cmd/service',
-];
-const LOG_TAIL = {
-  SUCCESS: ['[Pipeline] stage (Deploy)', '+ kubectl rollout status deployment/service-dev', 'deployment "service-dev" successfully rolled out', '[Pipeline] End of Pipeline', 'Finished: SUCCESS'],
-  FAILURE: ['--- FAIL: TestParseSchedule (0.02s)', '    schedule_test.go:41: got 3 rows, want 4 (räksmörgås)', 'FAIL\tteam/service/schedule\t0.412s', 'ERROR: script returned exit code 1', '[Pipeline] End of Pipeline', 'Finished: FAILURE'],
-  UNSTABLE: ['Recording test results', '2 tests failed, 318 passed', '[Pipeline] End of Pipeline', 'Finished: UNSTABLE'],
-  ABORTED: ['Aborted by Jane Doe', 'Sending interrupt signal to process', '[Pipeline] End of Pipeline', 'Finished: ABORTED'],
+// The stages of a Pipeline job, each with its share of a build's time: dev
+// builds and rolls out to dev; prod waits for a person's approval first.
+const DEV = [['Checkout', 0.05], ['Build', 0.25], ['Test', 0.45], ['Deploy to dev', 0.25]];
+const PROD = [['Build', 0.3], ['Deploy to staging', 0.2], ['Approve', 0.15], ['Deploy to prod', 0.35]];
+
+// What a stage writes first, by its name.
+const OPENING = {
+  Checkout: [' > git fetch --tags --force --progress -- https://git.example.invalid/team/service.git', 'Checking out Revision 4f1c2aa (origin/master)'],
+  Build: ['+ docker build -t registry.example.invalid/team/service:4f1c2aa .', 'Step 1/9 : FROM golang:1.25 AS build'],
+  Test: ['+ go test ./...'],
+  Approve: ['[Pipeline] input', 'Deploy to production?', 'Proceed or Abort'],
+};
+const deployOpening = (name) => [`+ kubectl apply -f deploy/${name.replace('Deploy to ', '')}/`, 'deployment.apps/service configured'];
+// What a stage that ends a build early writes last, by the build's result.
+const ENDING = {
+  FAILURE: ['--- FAIL: TestParseSchedule (0.02s)', '    schedule_test.go:41: got 3 rows, want 4 (räksmörgås)', 'FAIL\tteam/service/schedule\t0.412s'],
+  UNSTABLE: ['Recording test results', '2 tests failed, 318 passed'],
+  ABORTED: ['Aborted by Jane Doe', 'Sending interrupt signal to process'],
+};
+const STATUS = { SUCCESS: 'SUCCESS', FAILURE: 'FAILED', UNSTABLE: 'UNSTABLE', ABORTED: 'ABORTED' };
+const ERROR = {
+  FAILURE: { message: 'script returned exit code 1', type: 'hudson.AbortException' },
+  ABORTED: { message: 'Aborted by Jane Doe', type: 'org.jenkinsci.plugins.workflow.steps.FlowInterruptedException' },
 };
 
-// The lines a build has written `elapsed` ms after it started: the head, a
-// line every two seconds while it runs, and its result's tail once finished.
-function logLines(build, elapsed) {
-  const lines = [...LOG_HEAD];
-  const steps = Math.max(0, Math.floor(Math.min(elapsed, build.result ? build.duration : elapsed) / 2000));
-  for (let i = 1; i <= Math.min(steps, 4000); i++) lines.push(`ok  \tteam/service/pkg${String(i).padStart(4, '0')}\t0.${String((i * 37) % 1000).padStart(3, '0')}s`);
-  if (build.result) lines.push(...(LOG_TAIL[build.result] ?? LOG_TAIL.SUCCESS));
+// A build's stages as Pipeline has run them `now`: { name, node, start, end
+// (null while it runs), status, error, ticks (the ms its log lines tick
+// over) }, as many as have started. A running build follows its estimate; a
+// finished one fits its stages into its duration and stops at the stage it
+// ended in (`build.at`, else Test for a failure, the last stage else);
+// `build.paused` names the stage that waits for input; `build.skip` the ones
+// its `when` passed over.
+function timeline(job, build, now) {
+  const plan = job.stages ?? [];
+  if (!plan.length) return [];
+  const result = build.result, last = plan.length - 1;
+  const named = (name) => {
+    const i = plan.findIndex(([n]) => n === name);
+    return i < 0 ? last : i;
+  };
+  const endAt = !result || result === 'SUCCESS' ? last : named(build.at ?? (result === 'ABORTED' ? '' : 'Test'));
+  const through = result && result !== 'UNSTABLE' ? endAt : last; // an unstable build goes on
+  const total = result ? build.duration : build.estimated ?? job.typical ?? 10 * MIN;
+  const share = plan.slice(0, through + 1).reduce((sum, [, part]) => sum + part, 0);
+  const out = [];
+  let at = build.timestamp;
+  for (let i = 0; i <= through; i++) {
+    const [name, part] = plan[i];
+    const length = Math.round((total * part) / (result ? share : 1));
+    const stage = { name, node: String(4 + i * 25), start: at, end: at + length, status: 'SUCCESS', error: null, ticks: length };
+    if (build.skip?.includes(name)) Object.assign(stage, { end: at + 40, status: 'NOT_EXECUTED', ticks: 0 });
+    if (!result) {
+      if (stage.start > now) break;
+      if (build.paused === name) Object.assign(stage, { end: null, status: 'PAUSED_PENDING_INPUT', ticks: 0 });
+      else if (stage.end > now) Object.assign(stage, { end: null, status: 'IN_PROGRESS', ticks: now - stage.start });
+    } else if (i === endAt && result !== 'SUCCESS') {
+      Object.assign(stage, { status: STATUS[result], error: ERROR[result] ?? null });
+    }
+    if (name === 'Approve') stage.ticks = 0;
+    out.push(stage);
+    if (stage.end === null) break;
+    at = stage.end;
+  }
+  return out;
+}
+
+// The lines a build has written by `now`: a Pipeline's stages between the
+// markers Jenkins writes (`[Pipeline] { (Build)` … `[Pipeline] // stage`), a
+// line every two seconds of each, and the end once it has finished; a
+// freestyle job's steps, plainly.
+function logLines(job, build, now) {
+  const lines = [`Started by user ${USERS[build.by ?? 'jane'].fullName}`];
+  let tick = 0;
+  const ticks = (ms, line) => {
+    for (let i = Math.floor(Math.max(0, ms) / 2000); i > 0 && tick < 4000; i--) lines.push(line(++tick));
+  };
+  const elapsed = (build.result ? build.duration : now - build.timestamp);
+  if (!job.stages) {
+    lines.push('Running as SYSTEM', '[nightly-cleanup] $ /bin/sh -xe /tmp/jenkins7731.sh');
+    ticks(elapsed, (i) => `+ rm -rf /var/cache/build/${String(i).padStart(4, '0')}`);
+    if (build.result) lines.push(`Finished: ${build.result}`);
+    return lines;
+  }
+  lines.push('[Pipeline] Start of Pipeline', '[Pipeline] node', 'Running on agent-7 in /var/jenkins/workspace/job', '[Pipeline] {');
+  for (const stage of timeline(job, build, now)) {
+    lines.push('[Pipeline] stage', `[Pipeline] { (${stage.name})`);
+    if (stage.status === 'NOT_EXECUTED') lines.push(`Stage "${stage.name}" skipped due to when conditional`);
+    else {
+      lines.push(...(OPENING[stage.name] ?? deployOpening(stage.name)));
+      ticks(stage.ticks, stage.name === 'Test'
+        ? (i) => `ok  \tteam/service/pkg${String(i).padStart(4, '0')}\t0.${String((i * 37) % 1000).padStart(3, '0')}s`
+        : (i) => `${stage.name}: step ${i} done`);
+      if (stage.name === 'Approve' && stage.end !== null) lines.push('Approved by Jane Doe');
+      if (ENDING[build.result] && STATUS[build.result] === stage.status) lines.push(...ENDING[build.result]);
+      else if (stage.name.startsWith('Deploy') && stage.end !== null) lines.push('deployment "service" successfully rolled out');
+    }
+    if (stage.end === null) return lines; // still at it
+    lines.push('[Pipeline] }', '[Pipeline] // stage');
+  }
+  if (!build.result) return lines;
+  lines.push('[Pipeline] }', '[Pipeline] // node', '[Pipeline] End of Pipeline');
+  if (build.result === 'FAILURE') lines.push('ERROR: script returned exit code 1');
+  lines.push(`Finished: ${build.result}`);
   return lines;
+}
+
+// Pipeline Stage View's account of a build (`wfapi/describe`), as the real
+// plugin gives it: the build's status, and each stage that has started.
+function describe(job, build, now, href) {
+  const stages = timeline(job, build, now);
+  const status = build.result ? STATUS[build.result] ?? 'SUCCESS'
+    : stages.some((s) => s.status === 'PAUSED_PENDING_INPUT') ? 'PAUSED_PENDING_INPUT' : 'IN_PROGRESS';
+  const end = build.result ? build.timestamp + build.duration : now;
+  return {
+    _links: { self: { href: `${href}wfapi/describe` } },
+    id: String(build.number), name: `#${build.number}`, status,
+    startTimeMillis: build.timestamp, endTimeMillis: end, durationMillis: end - build.timestamp, queueDurationMillis: 2,
+    pauseDurationMillis: stages.filter((s) => s.status === 'PAUSED_PENDING_INPUT').reduce((sum, s) => sum + (now - s.start), 0),
+    stages: stages.map((s) => ({
+      _links: { self: { href: `${href}execution/node/${s.node}/wfapi/describe` } },
+      id: s.node, name: s.name, execNode: '', status: s.status,
+      ...(s.error ? { error: s.error } : {}),
+      startTimeMillis: s.start, durationMillis: (s.end ?? now) - s.start,
+      pauseDurationMillis: s.status === 'PAUSED_PENDING_INPUT' ? now - s.start : 0,
+    })),
+  };
 }
 
 // `a,b[c,d[e]]{0,10}` as Jenkins reads `tree`: the named fields alone, a
@@ -113,13 +212,14 @@ const finished = (number, result, agoMin, tookMin, extra = {}) => ({ number, res
 // The made-up server's jobs. A build's `ago` is when it started, before the
 // server did; a running one has no result.
 function seed() {
-  const job = (name, builds, extra = {}) => ({ kind: 'job', name, builds, parameters: [BRANCH], disabled: false, queued: null, ...extra });
+  const job = (name, builds, extra = {}) => ({ kind: 'job', name, builds, parameters: [BRANCH], disabled: false, queued: null, stages: DEV, ...extra });
+  const prod = (name, builds, extra = {}) => job(name, builds, { stages: PROD, ...extra });
   const folder = (name, children) => ({ kind: 'folder', name, children });
   return folder('', [
     folder('team-dev', [
-      job('api_master', [finished(128, 'SUCCESS', 185, 6, { parameters: { gitBranch: 'master' } }), finished(127, 'FAILURE', 1500, 4, { parameters: { gitBranch: 'feature/export-columns' } }), finished(126, 'SUCCESS', 3000, 6), finished(125, 'ABORTED', 4400, 1), finished(124, 'SUCCESS', 9000, 7)], { parameters: PARAMS, description: 'Builds the API agent and rolls it out to dev' }),
+      job('api_master', [finished(128, 'SUCCESS', 185, 6, { parameters: { gitBranch: 'master' } }), finished(127, 'FAILURE', 1500, 4, { parameters: { gitBranch: 'feature/export-columns' } }), finished(126, 'SUCCESS', 3000, 6, { skip: ['Test'] }), finished(125, 'ABORTED', 4400, 1), finished(124, 'SUCCESS', 9000, 7)], { parameters: PARAMS, description: 'Builds the API agent and rolls it out to dev' }),
       job('poller_master', [{ number: 57, result: null, ago: 2 * MIN, estimated: 6 * MIN, parameters: { gitBranch: 'worktree/lucky-pine' } }, finished(56, 'SUCCESS', 700, 6), finished(55, 'SUCCESS', 2100, 5)]),
-      job('parser_master', [finished(301, 'FAILURE', 42, 3), finished(300, 'SUCCESS', 1400, 5)]),
+      job('parser_master', [finished(301, 'FAILURE', 42, 3, { at: 'Build' }), finished(300, 'SUCCESS', 1400, 5)]),
       job('alarm-notify_master', [finished(88, 'UNSTABLE', 300, 9), finished(87, 'SUCCESS', 2000, 8)]),
       job('reports_master', [finished(19, 'ABORTED', 60 * 24 * 3, 2), finished(18, 'SUCCESS', 60 * 24 * 9, 12)]),
       job('a-job-with-a-rather-long-name-for-a-narrow-panel_master', [finished(4, 'SUCCESS', 60 * 24 * 20, 1)], { parameters: [] }),
@@ -128,10 +228,12 @@ function seed() {
       folder('tools', [job('rotate-certs', [finished(7, 'SUCCESS', 600, 1)], { parameters: [] })]),
     ]),
     folder('team-prod', [
-      job('api_master', [finished(64, 'SUCCESS', 60 * 26, 14)]),
-      job('poller_master', [finished(31, 'SUCCESS', 60 * 50, 13)]),
+      prod('api_master', [finished(64, 'SUCCESS', 60 * 26, 14)]),
+      prod('poller_master', [finished(31, 'SUCCESS', 60 * 50, 13)]),
+      // Waits for a person to approve the roll-out: it never ends by itself.
+      prod('alarm-notify_master', [{ number: 12, result: null, ago: 9 * MIN, paused: 'Approve', parameters: { gitBranch: 'master' } }, finished(11, 'SUCCESS', 60 * 30, 12)], { typical: 12 * MIN }),
     ]),
-    job('nightly-cleanup', [finished(2210, 'SUCCESS', 400, 2)], { parameters: [], kindClass: 'hudson.model.FreeStyleProject' }),
+    job('nightly-cleanup', [finished(2210, 'SUCCESS', 400, 2)], { parameters: [], kindClass: 'hudson.model.FreeStyleProject', stages: null }),
   ]);
 }
 
@@ -141,12 +243,14 @@ function seed() {
  *   clock      () => ms, the server's time (Date.now)
  *   crumbs     false: a Jenkins without CSRF protection (no crumb issuer, none asked)
  *   queueMs    how long a triggered build waits in the queue (1500)
+ *   stageView  false: a Jenkins without Pipeline Stage View (wfapi answers 404)
  * Resolves with { url, port, requests, root, find, setCrumb, close }.
  */
 export async function startFakeJenkins(options = {}) {
   const clock = options.clock ?? Date.now;
   const crumbs = options.crumbs ?? true;
   const queueMs = options.queueMs ?? 1500;
+  const stageView = options.stageView ?? true;
   const started = clock();
   const root = seed();
   const requests = []; // { method, path, query, user, body, status, crumb }
@@ -298,6 +402,7 @@ export async function startFakeJenkins(options = {}) {
         const build = node.builds.find((b) => String(b.number) === tail[0]);
         if (!build) return done(404, 'Not found');
         if (build.result === null) {
+          build.at = timeline(node, build, clock()).at(-1)?.name;
           build.result = 'ABORTED';
           build.duration = clock() - build.timestamp;
         }
@@ -307,6 +412,11 @@ export async function startFakeJenkins(options = {}) {
     }
 
     if (tail.join('/') === 'api/json') return json(itemJson(names, node));
+    // Pipeline Stage View: a Pipeline job's last ten runs; a freestyle job has none (404).
+    if (tail.join('/') === 'wfapi/runs') {
+      if (node.kind !== 'job' || !node.stages || !stageView) return done(404, 'Not found');
+      return done(200, node.builds.slice(0, 10).map((b) => describe(node, b, clock(), `/${jobPath(names)}${b.number}/`)));
+    }
     if (tail.length === 0) return done(200, `The page of ${names.join('/') || 'Jenkins'}`);
     if (node.kind !== 'job') return done(404, 'Not found');
     const build = tail[0] === 'lastBuild' ? node.builds[0] : node.builds.find((b) => String(b.number) === tail[0]);
@@ -314,7 +424,8 @@ export async function startFakeJenkins(options = {}) {
     const rest2 = tail.slice(1).join('/');
     if (rest2 === '') return done(200, `The page of ${names.join('/')} #${build.number}`);
     if (rest2 === 'api/json') return json(buildJson(names, node, build));
-    const bytes = Buffer.from(`${logLines(build, clock() - build.timestamp).join('\n')}\n`, 'utf8');
+    if (rest2 === 'wfapi/describe') return node.stages && stageView ? done(200, describe(node, build, clock(), `/${jobPath(names)}${build.number}/`)) : done(404, 'Not found');
+    const bytes = Buffer.from(`${logLines(node, build, clock()).join('\n')}\n`, 'utf8');
     if (rest2 === 'consoleText') return done(200, bytes.toString('utf8'));
     if (rest2 === 'logText/progressiveText') {
       let from = Number(url.searchParams.get('start') ?? 0);

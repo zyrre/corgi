@@ -26,6 +26,9 @@ export function look(state, t) {
     case "queued": return { icon: "queued", color: t.ansi3 };
     case "running": return { icon: null, color: t.working };
     case "disabled": return { icon: "disabled", color: t.dim };
+    case "paused": return { icon: "paused", color: t.ansi3 };
+    case "skipped": return { icon: "skipped", color: t.dim };
+    case "pending": return { icon: "notbuilt", color: t.dim };
     default: return { icon: "notbuilt", color: t.dim };
   }
 }

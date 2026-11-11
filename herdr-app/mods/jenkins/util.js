@@ -213,6 +213,92 @@ export function appendLog(log, text) {
 // The lines to draw: the kept ones and the one being written.
 export const logLines = (log) => (log.partial ? [...log.lines, clean(log.partial).slice(0, MAX_WIDTH)] : log.lines);
 
+// --- a folder's kind ---------------------------------------------------------------
+
+// "dev" or "prod" when a folder's name says so (instat-develop, team-dev;
+// instat-master, team-prod, live), else "": the tag beside its heading.
+export function envOf(label) {
+  const name = String(label ?? "").split("/").pop().toLowerCase();
+  const word = (re) => new RegExp(`(^|[-_. ])(${re})($|[-_. ])`).test(name);
+  if (word("prod|production|master|live")) return "prod";
+  if (word("dev|develop|development")) return "dev";
+  return "";
+}
+
+// --- pipeline stages -----------------------------------------------------------------
+
+// A Pipeline job (its builds have stages), as opposed to a freestyle one.
+export const isPipeline = (job) => /WorkflowJob/.test(job?._class ?? "");
+
+// A stage's state, from Pipeline Stage View's status (`wfapi/describe`).
+const STAGE = {
+  SUCCESS: "success", FAILED: "failed", UNSTABLE: "unstable", ABORTED: "aborted", IN_PROGRESS: "running",
+  PAUSED_PENDING_INPUT: "paused", NOT_EXECUTED: "skipped", NOT_BUILT: "skipped", QUEUED: "queued",
+};
+export const stageState = (status) => STAGE[status] ?? "notbuilt";
+export const STAGE_LABEL = { ...LABEL, paused: "waiting for input", skipped: "skipped", pending: "not started" };
+
+// How long a stage took, or for how long it has run: a running one is
+// counted from its start, since the answer was read some seconds ago.
+export function stageTook(stage, now = Date.now()) {
+  if (!stage) return "";
+  const state = stageState(stage.status);
+  if ((state === "running" || state === "paused") && stage.startTimeMillis) return span(now - stage.startTimeMillis);
+  return span(stage.durationMillis);
+}
+
+// The stages of a build as the view lists them: those that have started, in
+// order, each with `nth` (how many before it bear its name, to find its part
+// of the console), then, while the build runs, the ones still to come by the
+// last finished run of the job (`runs`, newest first), as "pending". Each
+// gets `expected`, that run's time for the stage of its name, when there is one.
+export function stagesOf(describe, runs = [], building = false) {
+  const seen = new Map();
+  const started = (describe?.stages ?? []).filter((s) => s?.name).map((s) => {
+    const nth = seen.get(s.name) ?? 0;
+    seen.set(s.name, nth + 1);
+    return { ...s, nth, state: stageState(s.status) };
+  });
+  const last = (runs ?? []).find((r) => r && r.id !== describe?.id && ["SUCCESS", "UNSTABLE"].includes(r.status));
+  const before = new Map((last?.stages ?? []).map((s) => [s.name, s.durationMillis]));
+  for (const s of started) if (before.has(s.name)) s.expected = before.get(s.name);
+  if (!building || !last) return started;
+  const names = new Set(started.map((s) => s.name));
+  const pending = (last.stages ?? []).filter((s) => s?.name && !names.has(s.name))
+    .map((s) => ({ id: null, name: s.name, nth: 0, state: "pending", status: "", expected: s.durationMillis }));
+  return [...started, ...pending];
+}
+
+// How far a running stage is, 0..1, by the time it took last time; null without one.
+export function stageProgress(stage, now = Date.now()) {
+  if (stage?.state !== "running" || !(stage.expected > 0) || !stage.startTimeMillis) return null;
+  return Math.max(0, Math.min(0.99, (now - stage.startTimeMillis) / stage.expected));
+}
+
+// Where a stage is in the console's lines: Pipeline writes `[Pipeline] { (Name)`
+// where a stage starts and `[Pipeline] }`, `[Pipeline] // stage` where it ends,
+// with every block inside it opened and closed the same way. `nth`: which
+// stage of that name (0: the first). { from, to, open }: its lines are
+// `lines.slice(from, to)`, `open` while it has not ended yet; null when the
+// console has no such stage (a freestyle job, or a start no longer kept).
+// The lines of parallel branches run together in the console, so a stage
+// with parallel branches inside shows them all.
+const OPEN = /^\[Pipeline\] (\[[^\]]*\] )?\{/, CLOSE = /^\[Pipeline\] (\[[^\]]*\] )?\}/;
+const START = /^\[Pipeline\] (?:\[[^\]]*\] )?\{ \((.*)\)$/;
+export function stageRange(lines, name, nth = 0) {
+  let seen = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (START.exec(lines[i])?.[1] !== name || seen++ < nth) continue;
+    let depth = 1;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (OPEN.test(lines[j])) depth += 1;
+      else if (CLOSE.test(lines[j]) && --depth === 0) return { from: i + 1, to: j, open: false };
+    }
+    return { from: i + 1, to: lines.length, open: true };
+  }
+  return null;
+}
+
 // --- what went wrong ---------------------------------------------------------------
 
 // A failed request in a person's words. `doing`: what was tried ("build

@@ -105,7 +105,10 @@ export class Client {
   }
 
   async getJson(path, tree) {
-    const body = await this.getText(`${path}/api/json${tree ? `?tree=${tree}` : ""}`);
+    return this.parse(await this.getText(`${path}/api/json${tree ? `?tree=${tree}` : ""}`));
+  }
+
+  parse(body) {
     try { return JSON.parse(body); } catch { throw new JenkinsError("http", "Jenkins answered something that is not JSON: is this its base URL?"); }
   }
 
@@ -165,6 +168,26 @@ export class Client {
 
   build(place, number) {
     return this.getJson(`${place.path}/${number}`, "number,result,building,timestamp,duration,estimatedDuration,actions[causes[shortDescription],parameters[name,value]]");
+  }
+
+  // A Pipeline build's stages, from the Pipeline Stage View plugin:
+  // { id, status, startTimeMillis, durationMillis, stages: [{ id, name,
+  // status, startTimeMillis, durationMillis, pauseDurationMillis, error? }] }.
+  // A freestyle build, or a Jenkins without the plugin, answers 404 ("missing").
+  async stages(place, number) {
+    return this.parse(await this.getText(`${place.path}/${number}/wfapi/describe`));
+  }
+
+  // The job's last ten runs with their stages, newest first: what each stage
+  // took last time.
+  async runs(place) {
+    const runs = this.parse(await this.getText(`${place.path}/wfapi/runs`));
+    return Array.isArray(runs) ? runs : [];
+  }
+
+  // The page of a stage's log, for the browser.
+  stagePage(place, number, node) {
+    return `${this.base}${place.path}/${number}/execution/node/${encodeURIComponent(node)}/log/`;
   }
 
   // The console text from byte `start` on (0: all of it).

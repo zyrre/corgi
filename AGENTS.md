@@ -519,26 +519,53 @@ screenshot would show its settings):
 node herdr-app/mods/jenkins/tests/fake-jenkins.mjs 48765 &   # stop it by its pid afterwards
 scripts/app-preview start
 home=$(ls -d /tmp/corgi-ap-*/home)
-HERDR_APP_BIN=target/app-preview/Herdr.app/Contents/MacOS/Herdr herdr-app/mods/jenkins/install.sh --home "$home"
+HERDR_APP_BIN=target/app-preview/Herdr.app/Contents/MacOS/Herdr herdr-app/mods/jenkins/install.sh --home "$home" --panel right --layout corgi
 mkdir -p "$home/jenkins"
 printf '{"url":"http://127.0.0.1:48765","user":"jane","token":"fake-token","folders":"team-dev, team-prod"}\n' >"$home/jenkins/settings.json"
 sleep 1                                                      # the app sees a new mod folder a moment later
-scripts/app-preview do tab.new --name Jenkins --mod jenkins  # or: do mod.open --name jenkins
+scripts/app-preview shot jenkins                             # or, without --panel: do tab.new --name Jenkins --mod jenkins
 ```
+
+`--panel right` puts the mod where the app itself docks a mod whose
+`mod.json` says `"place": "right"` (tried there): a block at the end of the
+layout's root row, after `work`, so the Files and Changes `panel` inside
+`work-body` keeps its toggle. The installer edits the layout with
+`python3`, as it is a shell script with no JSON parser of its own; its test
+(`tests/test.mjs`) runs it on scratch layouts. A narrow panel is `do
+layout.resize --id jenkins --px 260`. The preview's app copy shows its own
+"Herdr … are ready" update toast over the bottom right corner, where the
+panel's footer is, and no command dismisses it.
 
 The window takes no clicks, so a view behind one (a job, a log, the build
 form, the abort question) is reached as for the Projects mod: in the
 preview home's copy of `main.js`, add commands to the `nextCommand` loop
 that call what the click calls (`this.show({ kind: "job", place })`,
-`this.askBuild(place, cx)`, `this.build(cx)`, `this.askAbort(place, n,
-cx)`, `this.abort(cx)`; a place is `{ path: "/job/team-dev/job/api_master",
-label: "team-dev/api_master" }`), then `do jenkins.<command>`. What the
+`this.pick(place, n, cx)` (a build's stages), `this.show({ kind: "stage",
+place, number, stage: { id, name, nth } }, cx)`, `this.wholeLog(cx)`,
+`this.fold(place, cx)` (a heading), `this.askBuild(place, cx)`,
+`this.build(cx)`, `this.askAbort(place, n, cx)`, `this.abort(cx)`; a place
+is `{ path: "/job/team-dev/job/api_master", label: "team-dev/api_master" }`;
+the fake's stage ids are `4`, `29`, `54`, `79`), then `do
+jenkins.<command>`. Installing again replaces that copy. What the
 app's script engine has and lacks, found there: `fetch` gives a response's
 `status`, `ok`, `url`, `text()` and `json()` but no headers (so a console
 log is followed by counting the bytes read, not by `X-Text-Size`), follows
 a redirect after a POST, and rejects when the host does not answer; there
 is no `TextEncoder` (`util.js` encodes UTF-8 itself) and no `process.env`;
-`writeTextFile` replaces a file and keeps its mode.
+`writeTextFile` replaces a file and keeps its mode. Which headings are
+folded is kept with `setShared("jenkins.collapsed", …)`; the test's
+stand-in for `herdr` keeps `shared` per world.
+
+What the real Jenkins (`jenkins.int.tele2.com`, 2.479, read on
+2026-11-11) serves, for when the fake needs to follow it: Pipeline Stage
+View (`<build>/wfapi/describe`, `<job>/wfapi/runs`, ten runs) but no Blue
+Ocean (`/blue/rest/…` is 404). A stage's status is `SUCCESS`, `FAILED`,
+`ABORTED`, `IN_PROGRESS`, `PAUSED_PENDING_INPUT` (the prod jobs' approval
+stage) or `NOT_EXECUTED`, with `error.message` when it failed or was
+aborted; stages not started yet are not listed, and a failed build lists
+none after the one that failed. A stage node's own `wfapi/log` is empty and
+a step's is HTML, so the mod cuts a stage's log out of the console. With
+`curl`, pass `-g`: a `tree=…[…]` query is otherwise taken as a glob.
 
 ### After a merge
 
