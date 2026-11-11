@@ -168,6 +168,12 @@ ships, run the real CLI as `claude --bare` with a dummy
 the machine. Kill a process only by PID, once, after checking it is one you
 started.
 
+The repository is public: fixtures, examples, tests and docs name made-up
+hosts, folders, jobs and users (`jenkins.example.com`, `team-prod/app_master`,
+`jane`), also when what they hold was recorded from a real server, whose
+ids, times and structure they keep. Before committing such data, `git grep`
+for the real names.
+
 ## The installers
 
 Before handing off changes to `scripts/install.sh` or

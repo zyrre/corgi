@@ -1085,6 +1085,33 @@ test('Abort at an input asks first, from the stages, the stage\'s view or the fo
   await fake.close();
 });
 
+test('while a build waits at an input step, its view\'s header has no Abort: the step\'s own is the one', async () => {
+  const fake = await startFakeJenkins();
+  const mod = await start(configured(fake));
+  await mod.click(item(['team-prod', 'alarm-notify_master']));
+  const card = `jk-input-${APPROVE}`;
+  await mod.click('jk-stage-54');
+  assert.equal(byId(mod.render(), 'jk-abort'), null, 'not in the waiting stage\'s view');
+  assert.ok(enabled(mod, `${card}-abort`) && enabled(mod, `${card}-proceed`));
+  await mod.click('jk-whole-log');
+  assert.equal(byId(mod.render(), 'jk-abort'), null, 'nor in the whole log\'s');
+  assert.ok(byId(mod.render(), `${card}-abort`));
+
+  // Answered, it runs on: the header's Abort is back.
+  await mod.click(`${card}-proceed`);
+  assert.equal(byId(mod.render(), card), null);
+  assert.ok(enabled(mod, 'jk-abort'), 'a running build that does not wait');
+  await mod.key('escape');
+
+  // A build that runs and never waited has it all along.
+  await mod.key('escape');
+  await mod.click(item(['team-dev', 'poller_master']));
+  await mod.click('jk-console');
+  assert.ok(enabled(mod, 'jk-abort'));
+  assert.equal(ids(mod.render(), 'jk-input-').length, 0);
+  await fake.close();
+});
+
 test('a failed answer says why and leaves the view as it was: a token that may only read, an input answered elsewhere', async () => {
   const fake = await startFakeJenkins();
   let mod = await start(configured(fake, { user: 'viewer', token: 'viewer-token' }));

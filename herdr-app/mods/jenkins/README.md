@@ -228,7 +228,8 @@ which an app started from the Dock usually has not.
   says which, and its button (`Release…`) opens a form with them, each
   preset to its default, as the build form does; its button there (or
   Enter) answers, `Cancel` or Esc does not. `Abort…` asks `Abort #12 of …
-  at its input?` first, then Jenkins ends the build as aborted. What
+  at its input?` first, then Jenkins ends the build as aborted; while the
+  build waits, it is the build view's only Abort. What
   Jenkins refuses, or an input answered meanwhile in the browser, shows as
   an error, and the view reads the build again. The token's user must be
   one the step accepts (its `submitter`).

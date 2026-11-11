@@ -955,7 +955,8 @@ export default class Jenkins extends View {
         div().flex_none().max_w(260).truncate().font_semibold().child(isStage ? view.stage.name : `${leaf(view.place.label)} #${view.number}`),
         div().flex_1().min_w(0).truncate().text_size(11).text_color(sl?.color ?? t.dim)
           .child(isStage ? (shown ? STAGE_LABEL[shown] ?? "" : "") : state ? LABEL[state] : ""),
-        build?.building ? pill("jk-abort", "Abort…", t, { tone: "danger", icon: "stop", tip: "Abort this build: asks first", onClick: (cx) => this.askAbort(view.place, view.number, cx) }) : null,
+        // While it waits at an input step, the step's own Abort (beside its proceed button) is the one.
+        build?.building && !this.waiting(view.place, view.number) ? pill("jk-abort", "Abort…", t, { tone: "danger", icon: "stop", tip: "Abort this build: asks first", onClick: (cx) => this.askAbort(view.place, view.number, cx) }) : null,
         this.refreshButton(t),
         iconButton("jk-build-open", "external", "Open in the browser", (cx) => this.open(isStage && stage?.id ? this.client.stagePage(view.place, view.number, stage.id) : this.client.page(view.place, view.number), cx), t),
       ]),
