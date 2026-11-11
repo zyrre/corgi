@@ -1393,9 +1393,29 @@ mod tests {
     fn the_role_says_what_the_backlog_is() {
         assert!(ROLE.contains(
             "- `backlog.md`: things to build later: an optional `# ` title and intro,\n  \
-             then one `## <heading>` per entry, running to the next `## `. The window\n  \
-             lists them; a `[Corgi]` line passes on what the user writes about one."
+             then one `## <heading>` per entry, running to the next `## `. `corgi status`\n  \
+             counts them; a `[Corgi]` line passes on what the user writes about one."
         ));
+    }
+
+    #[test]
+    fn the_role_and_the_handover_speak_of_the_herdr_app_not_the_dashboard() {
+        // The TUI's dashboard, panes, workspaces and `m` key are gone; the
+        // Herdr app has spaces, terminals and the Projects list.
+        for text in [ROLE, HANDOVER] {
+            for word in [
+                "dashboard",
+                "pane",
+                "workspace",
+                "`m`",
+                "window lists",
+                "user's window",
+            ] {
+                assert!(!text.contains(word), "{word}");
+            }
+        }
+        assert!(ROLE.contains("You run in the project's space in the Herdr app"));
+        assert!(ROLE.contains("Gives the agent's row in the Projects list a MERGE badge"));
     }
 
     #[test]

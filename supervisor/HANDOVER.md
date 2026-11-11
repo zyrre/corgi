@@ -1,7 +1,7 @@
 # Handing over
 
-The Corgi dashboard replaces you with a fresh session of yourself, in the
-same place, once your context is half full (on Claude Code, or 200k tokens)
+Corgi replaces you with a fresh session of yourself, in the same place,
+once your context is half full (on Claude Code, or 200k tokens)
 and you have been idle for nearly as long as your prompt cache lasts, so
 compaction never loses what only your
 conversation holds and the handover finds the cache about to go cold, not

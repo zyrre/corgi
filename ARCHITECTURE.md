@@ -453,10 +453,3 @@ through `hc`, a first prompt through a file in the state directory, never
 in process arguments. The only network use is the plan usage, and Git's
 own fetch and push during a merge. The Claude Code token is sent to
 `api.anthropic.com` only, passed to `curl` on stdin, and never stored.
-
-## Open ends
-
-Kept as they were, each for a decision of its own:
-
-- `supervisor/ROLE.md` still says "dashboard", "pane" and "Corgi workspace"
-  in places; the role's size is capped by a test and its wording pinned.
