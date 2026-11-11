@@ -3,12 +3,15 @@
 //
 //   { "mod": "corgi", "props": { "view": "projects" } }   the Projects list
 //   { "mod": "corgi", "props": { "view": "brand" } }      "Herdr + Corgi" at the sidebar's top
+//   { "mod": "corgi", "props": { "view": "questions" } }  the Questions panel, in the right-hand panel stack
 //
 // A block with no view shows the Projects list. `corgi app-layout` puts
-// both into the sidebar of the layout, in place of Herdr's Spaces and
-// Agents lists and brand row, and `corgi app-layout remove` puts those back.
+// the first two into the sidebar of the layout, in place of Herdr's Spaces
+// and Agents lists and brand row, and the Questions panel into its
+// `panel-body` stack with a button in the tab bar; `corgi app-layout
+// remove` puts Herdr's back and takes the panel out.
 //
-// Each view is a module of its own (projects.js, brand.js) with what they
+// Each view is a module of its own (projects.js, brand.js, questions.js) with what they
 // draw alike in ui.js. What Corgi says (`corgi status`, plan usage, the
 // machines) is read in data.js once for every copy of the mod, however
 // many blocks show it.
@@ -16,7 +19,6 @@ import { View, div } from "gpui-kit";
 import { theme, props as blockProps } from "herdr";
 import Brand from "./brand.js";
 import Projects from "./projects.js";
-// MOCKUP ONLY (questions round): canned data, see mock.js.
 import Questions from "./questions.js";
 
 const VIEWS = new Map([["projects", Projects], ["brand", Brand], ["questions", Questions]]);

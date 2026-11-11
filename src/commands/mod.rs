@@ -19,6 +19,7 @@ mod launch;
 mod memory;
 mod open;
 mod pause;
+mod questions;
 mod status;
 mod usage;
 
@@ -32,6 +33,10 @@ pub use memory::{
 };
 pub use open::{OPEN_USAGE, PROJECTS_USAGE, open_command, projects_command};
 pub use pause::{PAUSE_USAGE, RESUME_USAGE, pause_command, resume_command};
+pub use questions::{
+    ANSWER_USAGE, BACKLOG_USAGE, QUESTIONS_USAGE, answer_command, backlog_command,
+    questions_command,
+};
 pub use status::{
     CLOSE_USAGE, MERGE_USAGE, STATUS_USAGE, close_command, merge_command, status_command,
 };

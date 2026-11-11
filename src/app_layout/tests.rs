@@ -4,7 +4,7 @@ use super::*;
 use crate::test_support::ScratchDir;
 
 /// The sidebar and a little of the rest of the `main` Herdr 0.1.14 ships.
-fn main_layout() -> Value {
+pub(super) fn main_layout() -> Value {
     json!({
         "id": "root", "type": "row", "titlebar": "none",
         "children": [
@@ -162,9 +162,20 @@ fn corgi(view: &str) -> Value {
     json!({ "mod": "corgi", "props": { "view": view } })
 }
 
-/// `main` with Corgi's one change: Projects for Spaces, no Agents, and
+/// `main` with Corgi's changes: Projects for Spaces, no Agents, Corgi's
+/// brand row, and the Questions panel last in `panel-body`.
+fn with_projects(layout: Value) -> Value {
+    let mut layout = with_sidebar(layout);
+    find_mut(&mut layout, "panel-body").unwrap()["children"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "id": "corgi-questions", "type": "block", "content": corgi("questions") }));
+    layout
+}
+
+/// `main` with Corgi's sidebar alone: Projects for Spaces, no Agents, and
 /// Corgi's brand row.
-fn with_projects(mut layout: Value) -> Value {
+fn with_sidebar(mut layout: Value) -> Value {
     *find_mut(&mut layout, "sidebar-lists").unwrap() = json!({
         "id": "sidebar-lists", "type": "column", "children": [
             { "id": "spaces", "type": "block", "size": { "weight": 1 }, "min": 90,
@@ -208,17 +219,19 @@ fn the_brand_row_is_corgis_once_and_the_footer_and_other_mods_stay() {
     );
     assert_eq!(mod_of(&mut layout, "tabs"), "tabs-gitlab");
     assert_eq!(mod_of(&mut layout, "gitlab"), "gitlab");
-    let mut expected = with_projects(main_layout());
+    let mut expected = main_layout();
     add_gitlab(&mut expected);
+    let expected = with_projects(expected);
     assert_eq!(layout, expected);
     // Again: nothing to do.
     assert_eq!(put_projects(&mut layout), Ok(Change::Unchanged));
     assert_eq!(layout, expected);
 
     // A layout Corgi changed before it had a brand row gets it, once.
-    let mut older = with_projects(main_layout());
-    find_mut(&mut older, "brand").unwrap()["content"] = json!({ "mod": "workspace-chrome" });
+    let mut older = main_layout();
     add_gitlab(&mut older);
+    let mut older = with_projects(older);
+    find_mut(&mut older, "brand").unwrap()["content"] = json!({ "mod": "workspace-chrome" });
     assert_eq!(put_projects(&mut older), Ok(Change::Edited));
     assert_eq!(older, expected);
     assert_eq!(put_projects(&mut older), Ok(Change::Unchanged));
@@ -239,7 +252,11 @@ fn a_layout_without_a_brand_block_gets_the_projects_list_alone() {
     assert_eq!(put_projects(&mut layout), Ok(Change::Edited));
     assert_eq!(count_view(&layout, View::Brand), 0);
     assert_eq!(count_view(&layout, View::Projects), 1);
-    assert_eq!(count(&layout, "corgi"), 1);
+    assert_eq!(
+        count(&layout, "corgi"),
+        2,
+        "the Projects list and the Questions panel"
+    );
     assert_eq!(count(&layout, "workspace-chrome"), 1, "the footer");
     assert_eq!(put_projects(&mut layout), Ok(Change::Unchanged));
     // And remove puts back what it had, no brand row added.
@@ -376,8 +393,9 @@ fn a_corgi_layout_that_is_there_is_used_and_switched_to() {
         (false, Change::Edited, true)
     );
     assert_eq!(fake.calls(), [r#"do layout.switch {"name":"corgi"}"#]);
-    let mut expected = with_projects(main_layout());
+    let mut expected = main_layout();
     add_gitlab(&mut expected);
+    let expected = with_projects(expected);
     assert_eq!(fake.get("corgi"), expected);
 }
 
@@ -580,8 +598,9 @@ fn a_layout_with_corgis_old_mods_gets_the_one_mod_in_their_blocks() {
     let mut old = with_old_mods(main_layout());
     add_gitlab(&mut old);
     old["children"][0]["size"]["px"] = 300.into();
-    let mut expected = with_projects(main_layout());
+    let mut expected = main_layout();
     add_gitlab(&mut expected);
+    let mut expected = with_projects(expected);
     expected["children"][0]["size"]["px"] = 300.into();
     assert_eq!(put_projects(&mut old), Ok(Change::Upgraded));
     assert_eq!(
@@ -687,7 +706,8 @@ fn every_personal_layout_naming_the_old_mods_gets_the_one_mod_and_nothing_else()
         upgrade_layouts(fake.home()).unwrap(),
         ["brand-only", "other"]
     );
-    let mut expected = with_projects(main_layout());
+    // Only the blocks change: no Questions panel joins.
+    let mut expected = with_sidebar(main_layout());
     add_gitlab(&mut expected);
     expected["children"][0]["size"]["px"] = 300.into();
     assert_eq!(fake.get("other"), expected);

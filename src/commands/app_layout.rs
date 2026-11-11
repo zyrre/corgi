@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::json;
 
 use crate::{
-    app_layout::{self, Change, Done, Installed, LAYOUT},
+    app_layout::{self, Button, Change, Done, Installed, LAYOUT},
     herdr_app::HerdrApp,
 };
 
@@ -21,6 +21,10 @@ and takes out the Agents list, which Projects shows too; the brand row at
 the sidebar's top shows Corgi's (\"Herdr + Corgi\") in place of Herdr's.
 Both are views of Corgi's one mod, corgi: a block names its view in its
 props, {\"mod\": \"corgi\", \"props\": {\"view\": \"projects\"}}.
+It also puts Corgi's Questions panel (the view questions) last into the
+layout's right-hand panel stack, panel-body, and a Questions button into
+its tab bar: Herdr's own tabs mod is cloned to tabs-corgi for it, and a copy
+already there (tabs-gitlab, tabs-jenkins) gets it between marker lines.
 Nothing else in the layout changes, so other mods' changes to it stay. The layout is the one the
 window shows (or showed last), or NAME:
 
@@ -38,8 +42,9 @@ corgi mod's views in place, in each of your layouts.
 
   remove        puts Herdr's Spaces and Agents lists and its brand row back
                 in each of your layouts that shows Corgi's, of its one mod
-                or its old ones (or in NAME); no layout is deleted and the
-                window is not switched
+                or its old ones (or in NAME), and takes the Questions panel
+                and its button out; no layout is deleted and the window is
+                not switched
 
   --layout NAME the layout to change, instead of the one the window shows
   --home DIR    the app's home (default: $HERDR_APP_HOME, else
@@ -87,6 +92,10 @@ pub fn app_layout_command(args: &[String]) -> Result<()> {
     }
     let app = HerdrApp::new(bin.unwrap_or_else(|| PathBuf::from("herdr-app")), &home);
     let installed = app_layout::install(&app, layout.as_deref())?;
+    let button = match &installed {
+        Installed::Done(done) => Some(app_layout::put_tab_button(&app, &done.layout)?),
+        Installed::Refused { .. } => None,
+    };
     // The other layouts that still name Corgi's old mods, which the
     // installer removes.
     let upgraded = app_layout::upgrade_layouts(&home)?;
@@ -97,6 +106,21 @@ pub fn app_layout_command(args: &[String]) -> Result<()> {
             if upgraded.len() == 1 { "" } else { "s" },
             upgraded.join(", ")
         ));
+    }
+    match &button {
+        Some(Button::Added {
+            tab_bar,
+            cloned: true,
+        }) => message.push_str(&format!(
+            "; the Questions panel is in its right-hand panel, with a Questions button in a \
+             copy of Herdr's tab bar, {tab_bar}"
+        )),
+        Some(Button::Added { tab_bar, .. }) => message.push_str(&format!(
+            "; the Questions panel is in its right-hand panel, with a Questions button in the \
+             tab bar {tab_bar}"
+        )),
+        Some(Button::Refused(why)) => message.push_str(&format!("; {why}")),
+        Some(Button::Unchanged | Button::NoPanel) | None => {}
     }
     if json_output {
         let value = json!({

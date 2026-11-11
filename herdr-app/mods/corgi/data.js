@@ -1,6 +1,8 @@
 // Corgi's data, read once for every copy of the mod: what `corgi status
 // --json` says here and on each other machine the window shows, plan usage
-// (`corgi usage --json`) and the machines (`hc machine ls`).
+// (`corgi usage --json`), the machines (`hc machine ls`), and for the
+// Questions panel a project's questions and backlog (`corgi questions
+// --json`, `corgi backlog --json`), read only while the panel shows them.
 //
 // The app runs a mod's modules once per source version and shares them by
 // every copy (each block showing the mod), so the one `store` below is
@@ -27,6 +29,20 @@ const LOCATE_MS = 60000;
 export const USAGE_POLL_MS = 60000;
 // How often the machines are listed.
 export const MACHINES_MS = 15000;
+// What the Projects list tells the Questions panel and the tab bar's
+// Questions button (shared state, which every mod sees): the current
+// project, { machine, dir, name, open, key }, and how many of its questions
+// are open; and the project whose count on a supervisor's row was clicked,
+// { machine, dir, space }, current while that space is shown. The panel is
+// the layout block QUESTIONS_BLOCK (`corgi app-layout` puts it there).
+export const CURRENT = "corgi.questions.current";
+export const COUNT = "corgi.questions.count";
+export const PICK = "corgi.questions.pick";
+export const QUESTIONS_BLOCK = "corgi-questions";
+// How often the Questions panel reads its project's questions and backlog
+// while it shows them, besides whenever the project's questions, or what
+// waits in its inbox, change in `corgi status`.
+export const PANEL_MS = 30000;
 // Longer than any read may take (exec's timeouts are 20 and 30 seconds): a
 // read still marked running after this was taken away with its copy.
 const STUCK_MS = 45000;
@@ -46,6 +62,9 @@ const LOCATE_CORGI = [
   'for c in "$HOME/.local/bin/corgi" "$HOME/.local/share/corgi/target/release/corgi" "$HOME/.cargo/bin/corgi"; do try "$c"; done',
   "exit 3",
 ].join("\n");
+
+// What the Questions panel says when Corgi knows no `questions` command.
+const OLD_CORGI = "This Corgi has no questions command: update Corgi (herdr-app/install.sh).";
 
 // What the field says with no corgi to ask.
 export const NO_CORGI = "The corgi command was not found. Install Corgi: run herdr-app/install.sh from its repository.";
@@ -134,6 +153,9 @@ class CorgiData {
     this.usageTurns = new Turns("usage");
     this.machinesTurns = new Turns("machines");
     this.agentKey = "";
+    // The Questions panel's projects, by projectKey: { questions, backlog,
+    // error, key (what the status said of them when read), at, loading }.
+    this.panel = new Map();
   }
 
   changed(cx) {
@@ -381,6 +403,58 @@ class CorgiData {
       r.loading = false;
       this.changed(cx);
     });
+  }
+
+  // --- the Questions panel ----------------------------------------------------------
+
+  // What was read for the panel of the project `dir` on `machine`, if anything.
+  panelOf(machine, dir) {
+    return this.panel.get(projectKey(machine, dir)) ?? null;
+  }
+
+  // Reads the project's questions and backlog when `key` (what `corgi
+  // status` says of them) changed since the last read, PANEL_MS after it,
+  // or now (`force`, after an answer). Every copy showing the panel asks;
+  // one read runs at a time.
+  refreshPanel(cx, machine, dir, key, force = false) {
+    const k = projectKey(machine, dir);
+    const e = this.panel.get(k) ?? { questions: null, backlog: null, error: null, key: null, at: 0, ...reading(), again: false };
+    this.panel.set(k, e);
+    if (running(e)) {
+      if (force) e.again = true;
+      return;
+    }
+    if (!force && e.key === key && Date.now() - e.at < PANEL_MS) return;
+    e.loading = true;
+    e.started = Date.now();
+    cx.spawn(async (cx) => {
+      const args = ["--project", dir, "--json"];
+      const questions = await this.corgiJson("questions", args, "Corgi", 20000, machine);
+      const backlog = await this.corgiJson("backlog", args, "Corgi", 20000, machine);
+      const refused = (r) => r?.result === "refused";
+      if (!refused(questions)) e.questions = questions;
+      if (!refused(backlog)) e.backlog = backlog;
+      e.error = refused(questions) ? (/unknown command/.test(questions.message) ? OLD_CORGI : questions.message) : null;
+      e.key = key;
+      e.at = Date.now();
+      e.loading = false;
+      this.changed(cx);
+      if (e.again) {
+        e.again = false;
+        this.refreshPanel(cx, machine, dir, key, true);
+      }
+    });
+  }
+
+  // Sends an answer or a backlog Start (`args` of `corgi answer`) to the
+  // project's supervisor: its answer, { result: "queued" | "refused",
+  // message }. The panel and the status are read again after it.
+  async answer(cx, machine, dir, args) {
+    const r = await this.corgiJson("answer", ["--project", dir, "--json", ...args], "Corgi", 20000, machine);
+    const key = this.panelOf(machine, dir)?.key ?? null;
+    this.refreshPanel(cx, machine, dir, key, true);
+    this.refreshOn(machine, cx);
+    return r;
   }
 
   // --- acting -------------------------------------------------------------------------

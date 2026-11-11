@@ -97,7 +97,8 @@ every item. Code no command reaches fails `cargo clippy -- -D warnings`.
 | `model.rs`, `rows.rs` | `Agent` and `AgentInfo`; an agent's task summary. |
 | `projects.rs`, `choices.rs` | The projects Corgi knows and remembers; the filtered list behind `corgi projects`. |
 | `usage.rs`, `usage_cache.rs` | Plan usage per provider, and the cache every process shares. |
-| `app_layout.rs`, `herdr_app.rs` | The app's layout with Corgi's sidebar; the `herdr-app` it asks. |
+| `app_layout.rs`, `app_layout/panel.rs`, `herdr_app.rs` | The app's layout with Corgi's sidebar; its Questions panel and the tab bar's button; the `herdr-app` it asks. |
+| `questions.rs` | A supervisor's open questions parsed, and the user's answers from the app: their inbox lines and records. |
 | `draft.rs`, `activity.rs` | Whether an input box holds a draft; redaction, and the folder-trust question. |
 | `backlog.rs`, `job.rs`, `paths.rs`, `progress.rs`, `time.rs`, `version.rs` | A supervisor's `backlog.md`; a background job; the state directory; progress lines; time without a date crate; `corgi --version`. |
 | `brand_tile.rs`, `test_support.rs` | Tests only: the brand row's logo generator; scratch directories and test repositories. |
@@ -362,6 +363,17 @@ agents; this is what the binary does for them.
   open questions and counts from its supervisor's ledger, the inbox items
   waiting, `hc`, `daemon`, `corgi` (the build) and `paused`. It changes
   nothing and may run on the user's real state.
+- **Questions.** `corgi questions --json` parses the supervisor's
+  `questions/Q<n>.md` files (`src/questions.rs`; one that strays from the
+  role's form is listed with its Markdown), and `corgi backlog --json`
+  its `backlog.md`. `corgi answer --project DIR Q7=B` (or `Q7="other: …"`,
+  or `--start HEADING` for a backlog entry) puts one `[Corgi]` line saying
+  it is the user's answer into the supervisor's inbox, keyed by the
+  question, so a newer answer replaces one not typed in yet, and records
+  it in `answers.jsonl`; the daemon types it as any inbox item, once the
+  supervisor is between turns and its box holds no draft. An answer is
+  queued while its item is undelivered and sent after, which the panel
+  shows; `open_questions` in `corgi status` counts the files without one.
 - **Merge.** `corgi merge NAME --project DIR --json` merges a worker's
   clean worktree branch into the branch checked out in the primary
   checkout and pushes it. The base branch's upstream is fetched first:

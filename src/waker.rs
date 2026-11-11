@@ -1535,6 +1535,41 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_from_the_app_waits_for_the_supervisors_turn_and_its_empty_box() {
+        use crate::questions::{self, AnswerState};
+        use AgentState::{Idle, Working};
+        let scratch = ScratchDir::new("waker-answer");
+        let dir = scratch.join("weather");
+        let mut waker = SupervisorWaker::in_dir(&scratch);
+        let send = |answer: &str| {
+            questions::queue(
+                &dir,
+                "/repos/weather",
+                "answer",
+                "Q7",
+                answer,
+                questions::answer_key("Q7"),
+                format!("[Corgi] The user's answer: \"Q7: {answer}\"."),
+            )
+            .unwrap();
+        };
+        let state = || questions::latest(&dir, "answer")[0].1;
+        send("A");
+        // Mid-turn, and with a draft in its box, it waits.
+        assert!(wake_pass(&mut waker, &[weather_supervisor(Working)], None, false).is_empty());
+        assert!(wake_pass(&mut waker, &[weather_supervisor(Idle)], None, true).is_empty());
+        assert_eq!(state(), AnswerState::Queued);
+        // A newer answer replaces the one not sent; only it goes out.
+        send("B");
+        assert_eq!(
+            wake_pass(&mut waker, &[weather_supervisor(Idle)], None, false),
+            ["supervisor-weather: [Corgi] The user's answer: \"Q7: B\"."]
+        );
+        assert_eq!(state(), AnswerState::Sent);
+        assert!(wake_pass(&mut waker, &[weather_supervisor(Idle)], None, false).is_empty());
+    }
+
+    #[test]
     fn a_notified_item_is_delivered_with_the_wakes() {
         use AgentState::Idle;
         let scratch = ScratchDir::new("waker-notify");
