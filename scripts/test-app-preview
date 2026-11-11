@@ -57,6 +57,19 @@ cp "$script_dir/app-preview" "$script_dir/install.sh" "$checkout/scripts/"
 cp "$script_dir/../herdr-app/install.sh" "$checkout/herdr-app/"
 cp -R "$script_dir/../herdr-app/mods" "$checkout/herdr-app/mods"
 cp "$script_dir/../Cargo.toml" "$checkout/"
+cat >"$work/Herdr.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key><string>Herdr</string>
+  <key>CFBundleExecutable</key><string>Herdr</string>
+  <key>CFBundleIdentifier</key><string>dev.herdr.app</string>
+  <key>CFBundleName</key><string>Herdr</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+</dict>
+</plist>
+PLIST
 printf '{\n  "state": "windowed",\n  "display": "display-of-the-person"\n}\n' >"$work/home/.config/herdr-app/window.json"
 : >"$log"
 
@@ -121,6 +134,11 @@ case "\$1 \${2:-}" in
 esac
 FAKE_HC
 
+cat >"$work/bin/lsregister" <<FAKE_LSREGISTER
+#!/bin/sh
+echo "lsregister \$*" >>"$log"
+FAKE_LSREGISTER
+
 cat >"$work/bin/aerospace" <<FAKE_AEROSPACE
 #!/bin/sh
 echo "aerospace \$*" >>"$log"
@@ -136,19 +154,25 @@ echo "corgi \$*" >>"$log"
 [ "\$1" != app-layout ] || echo "Herdr replaces its own main layout on its updates, so Corgi cloned it to corgi and put its Projects list in the sidebar; the window shows it"
 [ "\$*" != "--version --json" ] || echo '{"commit":"9505b68c","dirty":false,"source":"/checkout","version":"9.9.9"}'
 FAKE_CORGI
-chmod 755 "$work/Herdr.app/Contents/MacOS/Herdr" "$work/bin/hc" "$work/bin/aerospace" "$checkout/target/release/corgi"
+chmod 755 "$work/Herdr.app/Contents/MacOS/Herdr" "$work/bin/hc" "$work/bin/aerospace" "$work/bin/lsregister" "$checkout/target/release/corgi"
 
 # The script, with the fakes, a scratch HOME, and a worker's own variables,
 # which must not reach the window.
 preview() {
   HOME="$work/home" APP_PREVIEW_APP="$work/Herdr.app" APP_PREVIEW_HC="$work/bin/hc" \
-    APP_PREVIEW_AEROSPACE="$work/bin/aerospace" HC_TERMINAL_ID=t9 HC_TERMINAL_SOCKET=/the/persons/core.sock \
+    APP_PREVIEW_AEROSPACE="$work/bin/aerospace" APP_PREVIEW_LSREGISTER="$work/bin/lsregister" HC_TERMINAL_ID=t9 HC_TERMINAL_SOCKET=/the/persons/core.sock \
     "$checkout/scripts/app-preview" "$@"
 }
 link="/tmp/corgi-ap-$(id -u)-$(printf '%s' "$checkout" | cksum | cut -d ' ' -f 1)"
 
+copy="$preview/app.noindex/Herdr Preview.app"
+plist_value() { plutil -extract "$1" raw "$copy/Contents/Info.plist"; }
+
 # --- start ------------------------------------------------------------------
 
+# A copy an older script made, as Herdr itself, beside the new one's place.
+mkdir -p "$preview"
+cp -R "$work/Herdr.app" "$preview/Herdr.app"
 check "start succeeds" preview start
 window=$(cat "$preview/pid" 2>/dev/null) || window=
 check "the window runs" kill -0 "$window"
@@ -157,17 +181,27 @@ check "the link leads to target/app-preview" test "$(readlink "$link")" = "$prev
 check "it is on a core of its own" logged "window HC_SESSION=preview"
 check "with its state under target/app-preview" logged "window XDG_STATE_HOME=$link/state"
 check "it sends no telemetry" logged "window HERDR_TELEMETRY=0"
+check "and finds no update" logged "window HERDR_RELEASES_URL=https://releases.invalid"
 check "the worker's terminal is not passed on" not_logged "window HC_TERMINAL"
 check "every hc call names the preview's core" not_logged "hc[] "
 check "eight made-up terminals are started" test "$(count "hc[preview] run ")" = 8
 check "each in a space" test "$(count "--label herdr.space=preview-")" = 8
-check "the app is a copy" test -x "$preview/Herdr.app/Contents/MacOS/Herdr"
+check "the app is a copy" test -x "$copy/Contents/MacOS/Herdr"
+check "in a folder Spotlight skips" test -d "$preview/app.noindex"
+check "with an identifier of its own" test "$(plist_value CFBundleIdentifier)" = dev.herdr.app.corgi-preview
+check "and a name of its own" test "$(plist_value CFBundleName)" = "Herdr Preview"
+check "shown as such" test "$(plist_value CFBundleDisplayName)" = "Herdr Preview"
+check "signed again, ad hoc" codesign --verify --deep --strict "$copy"
+check "the installed app is untouched" test "$(plutil -extract CFBundleIdentifier raw "$work/Herdr.app/Contents/Info.plist")" = dev.herdr.app
+check "the older copy is unregistered" logged "lsregister -u $preview/Herdr.app"
+check "and gone" test ! -e "$preview/Herdr.app"
+check "the installed app is never unregistered" not_logged "lsregister -u $work/Herdr.app"
 check "the Corgi mod is the checkout's" cmp "$checkout/herdr-app/mods/corgi/main.js" "$preview/home/mods/corgi/main.js"
 check "its Projects list too" cmp "$checkout/herdr-app/mods/corgi/projects.js" "$preview/home/mods/corgi/projects.js"
 check "and its brand row" cmp "$checkout/herdr-app/mods/corgi/brand.js" "$preview/home/mods/corgi/brand.js"
 check "no mod of the ones Corgi had before" test ! -e "$preview/home/mods/projects" -a ! -e "$preview/home/mods/corgi-brand"
 check "the Corgi mod runs the canned corgi" grep -qF "\"$preview/fake/corgi\"" "$preview/home/mods/corgi/config.json"
-check "the layout gets the Projects list from the checkout's corgi, asking the preview's window" logged "corgi app-layout --app $preview/Herdr.app/Contents/MacOS/Herdr --home $link/home"
+check "the layout gets the Projects list from the checkout's corgi, asking the preview's window" logged "corgi app-layout --app $copy/Contents/MacOS/Herdr --home $link/home"
 check "the window is switched to the corgi layout" logged "do layout.switch --name corgi"
 check "the canned status is JSON" python3 -m json.tool "$preview/fake/status.json"
 check "it names the terminals started" grep -q '"terminal":"t2"' "$preview/fake/status.json"
@@ -198,7 +232,10 @@ else
 fi
 check "a window AeroSpace does not list is not moved" not_logged "move-node-to-workspace"
 
+: >"$work/signed"
+touch -r "$copy/Contents/Info.plist" "$work/signed"
 check "a second start succeeds" preview start
+check "and keeps the copy, of the same version" test ! "$copy/Contents/Info.plist" -nt "$work/signed"
 check "and opens no second window" test "$(count "window HERDR_APP_HOME=")" = 1
 check "but installs the mods again" test "$(count "corgi app-layout")" = 2
 
@@ -226,16 +263,22 @@ for n in 1 2 3 4 5 6 7 8; do
   check "and removed" logged "hc[preview] rm t$n"
 done
 check "the core is stopped" logged "hc[preview] server stop"
+check "the copy is unregistered" logged "lsregister -u $copy"
 check "the link is gone" bash -c "! test -e '$link' && ! test -L '$link'"
 check "the made-up projects are gone" bash -c "! test -e '$preview/fake' && ! test -e '$preview/state' && ! test -e '$link.files'"
 check "the home and the pictures stay" test -d "$preview/home" -a -s "$preview/list.png"
+check "and the copy" codesign --verify --deep --strict "$copy"
 check "a second stop is harmless" preview stop
 check "shot without a window fails" bash -c "! \"\$0\" shot x" "$checkout/scripts/app-preview"
 
 # --- a window AeroSpace lists -------------------------------------------------
 
+# A copy that is Herdr again (made by hand, or an edit undone) is made anew.
+plutil -replace CFBundleIdentifier -string dev.herdr.app "$copy/Contents/Info.plist"
 : >"$log"
 check "start with a listed window succeeds" env FAKE_LISTED=1 FAKE_FOCUSED=2 "$BASH" -c "$(declare -f preview); work='$work' checkout='$checkout' preview start"
+check "a copy that is Herdr again is unregistered" logged "lsregister -u $copy"
+check "and made anew, as Herdr Preview" test "$(plist_value CFBundleIdentifier)" = dev.herdr.app.corgi-preview
 check "it is floated" logged "aerospace layout --window-id 77 floating"
 check "and moved to workspace 4" logged "aerospace move-node-to-workspace --window-id 77 4"
 check "without following it" not_logged "focus-follows-window"

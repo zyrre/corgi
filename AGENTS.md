@@ -371,17 +371,38 @@ the script. What its choices rest on:
   is seeded with `update-notes.json` naming the app's version, since a
   first start after an update also updates herdr-core, and with
   `"frame.welcomed": "skipped"` in `shared.json`.
+- The copy is an app of its own to macOS (decision 2026-11-11): `Herdr
+  Preview`, `dev.herdr.app.corgi-preview`, at
+  `target/app-preview/app.noindex/Herdr Preview.app`. Its `Info.plist` is
+  edited and the bundle signed again ad hoc (`codesign --force --deep
+  --sign -`; the edit breaks Herdr's signature), Spotlight skips a folder
+  named `*.noindex`, and `stop` (and a new copy replacing it) unregisters
+  it with `lsregister -u`. Copies that kept `dev.herdr.app` were each
+  registered with LaunchServices when they ran, and Spotlight launched the
+  user's Herdr from one of them; its worktree was removed, the running
+  app's bundle went with it, and Herdr's restart to update failed. The
+  script runs `lsregister -u` only on paths under its own
+  `target/app-preview/`, never on the installed app.
+- The copy looks for updates whatever its identity: started against a fake
+  release server offering a newer version, it fetched `app/latest.json`,
+  then the app's tarball and `core/latest.json`, within 30 seconds. So it
+  is started with `HERDR_RELEASES_URL=https://releases.invalid`
+  (`APP_PREVIEW_RELEASES_URL` sets another, for such a test): it can
+  neither stage an update into itself nor install a newer herdr-core into
+  the user's `~/.local/share/herdr-core`.
 - The app serves its commands on `<home>/herdr-app.sock`, and a home under
   a worktree's `target/` is longer than a socket path may be (the app then
   runs with no socket: `no Herdr window … path must be shorter than
   SUN_LEN`). The home is given through a link in `/tmp`; so is the core's
   state (`XDG_STATE_HOME`).
-- AeroSpace lists no window of an app started from a worker's shell under
-  herdr-core, whether run directly, with `open`, or as a launchd job in the
-  user's `gui/` domain: `NSWorkspace` does not count that process as a
-  running app, although its window is on screen. So the window cannot be
-  moved to workspace 4, as the user's rule for headed windows asks. It is
-  kept off their screen by its place instead: the app opens where
+- While the copy was `dev.herdr.app`, AeroSpace listed no window of it
+  (started from a worker's shell under herdr-core, whether run directly,
+  with `open`, or as a launchd job in the user's `gui/` domain), so it
+  could not be moved to workspace 4, as the user's rule for headed windows
+  asks. As `Herdr Preview` AeroSpace lists it, and the script floats it
+  and moves it there (to a workspace named `preview` while the user looks
+  at 4). It is also kept off their screen by its place, should AeroSpace
+  not list it: the app opens where
   `window.json` says it was, so the script writes the bottom right corner
   of the screen there, one point of the window showing, which is where
   AeroSpace itself keeps a hidden workspace's windows. The app takes the
@@ -549,7 +570,7 @@ screenshot would show its settings):
 node herdr-app/mods/jenkins/tests/fake-jenkins.mjs 48765 &   # stop it by its pid afterwards
 scripts/app-preview start
 home=$(ls -d /tmp/corgi-ap-*/home)
-HERDR_APP_BIN=target/app-preview/Herdr.app/Contents/MacOS/Herdr herdr-app/mods/jenkins/install.sh --home "$home" --panel right --layout corgi
+HERDR_APP_BIN="target/app-preview/app.noindex/Herdr Preview.app/Contents/MacOS/Herdr" herdr-app/mods/jenkins/install.sh --home "$home" --panel right --layout corgi
 mkdir -p "$home/jenkins"
 printf '{"url":"http://127.0.0.1:48765","user":"jane","token":"fake-token","folders":"team-dev, team-prod"}\n' >"$home/jenkins/settings.json"
 sleep 1                                                      # the app sees a new mod folder a moment later
