@@ -128,6 +128,29 @@ which an app started from the Dock usually has not.
 - Esc goes back a view. `jenkins.refresh` and `jenkins.settings` are its
   commands for `keys.json`.
 
+## When Jenkins does not answer
+
+A VPN that drops for a moment, or a Jenkins that is slow or restarting,
+shows quietly: what was read last stays, with a dim `Last read 40s ago · no
+answer since` above it. The error (`Could not reach Jenkins to …`) shows
+only after three failed reads in a row, or a minute of failing, and goes
+with the next good read. With nothing read yet it says `Reading…` until
+then. What will not pass by itself shows at once: a token Jenkins does not
+accept (401), one that may not see a folder (403), a folder that is not
+there (404).
+
+A read that failed waits before it is tried again: 10 seconds, then 30,
+then a minute for as long as it fails (never sooner than it would be read
+anyway), so a Jenkins that is down gets a request a minute for each list,
+job or log shown. A good read puts it back to its usual pace. The
+header's arrows read everything now, waiting or not. A read with no answer
+in 45 seconds counts as failed.
+
+The panel, an overlay and a tab of the mod share what they read: a list,
+job, build's stages or log shown in all of them is read once, as often as
+one of them would. Each keeps its own view. Settings saved in one are taken
+up by the others.
+
 ## How it talks to Jenkins
 
 Plain HTTP with the app's `fetch`, HTTP Basic auth `<user>:<token>`:
@@ -151,8 +174,10 @@ a stage with branches inside shows all of them.
 
 ## Develop
 
-`main.js` (the views), `api.js` (Jenkins and the settings), `util.js` (pure
-helpers), `ui.js` (marks and buttons), `icons/`. After a change:
+`main.js` (the views), `data.js` (what is read, shared by every copy of
+the mod, with the back-off and when an error shows), `api.js` (Jenkins and
+the settings), `util.js` (pure helpers), `ui.js` (marks and buttons),
+`icons/`. After a change:
 
 ```sh
 herdr-app check herdr-app/mods/jenkins
@@ -168,7 +193,10 @@ a failed one, an aborted one, an unstable one and one with a stage skipped;
 in `team-prod` one that waits for approval; `nightly-cleanup` is freestyle.
 `node tests/fake-jenkins.mjs
 48765` serves it for a look at the mod in a window: point the settings at
-`http://127.0.0.1:48765`. Never try Build or Abort against a real Jenkins
+`http://127.0.0.1:48765`. It fails on demand: `curl -X POST
+'http://127.0.0.1:48765/__fake/fail?mode=status&status=503'` (or
+`mode=refuse`, `mode=stall`; `&count=2` for the next two requests,
+`&path=<regex>` for some paths), and `/__fake/recover` ends it. Never try Build or Abort against a real Jenkins
 from a test.
 
 The icons are drawn after [Lucide](https://lucide.dev) (ISC license).

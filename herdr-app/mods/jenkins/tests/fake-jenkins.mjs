@@ -13,6 +13,14 @@
 //   viewer:viewer-token  may only read: build and abort answer 403
 // Anything else is 401. A POST without the crumb the issuer hands out is 403,
 // as on a Jenkins with CSRF protection.
+//
+// It fails on demand, as a Jenkins behind a flaky VPN does: `fail({ mode,
+// status, count, path })` makes the next `count` requests (all, by default)
+// whose path matches `path` (a RegExp; any by default) be dropped without an
+// answer (`refuse`: the client's fetch rejects), held until `release()`
+// (`stall`), or answered with `status` (`status`: 503, 401, …); `recover()`
+// ends it. Run as a program, `POST /__fake/fail?mode=…&status=…&count=…&path=…`
+// and `POST /__fake/recover` do the same (no auth; never counted as requests).
 
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
@@ -244,7 +252,7 @@ function seed() {
  *   crumbs     false: a Jenkins without CSRF protection (no crumb issuer, none asked)
  *   queueMs    how long a triggered build waits in the queue (1500)
  *   stageView  false: a Jenkins without Pipeline Stage View (wfapi answers 404)
- * Resolves with { url, port, requests, root, find, setCrumb, close }.
+ * Resolves with { url, port, requests, root, find, setCrumb, fail, recover, release, close }.
  */
 export async function startFakeJenkins(options = {}) {
   const clock = options.clock ?? Date.now;
@@ -253,7 +261,9 @@ export async function startFakeJenkins(options = {}) {
   const stageView = options.stageView ?? true;
   const started = clock();
   const root = seed();
-  const requests = []; // { method, path, query, user, body, status, crumb }
+  const requests = []; // { method, path, query, user, body, status, crumb }; status "refused" or "stalled" in an outage
+  let outage = null; // { mode, status, left, path }
+  let held = []; // the stalled requests' ways on: release() takes them
   let crumb = CRUMB.crumb; // setCrumb: the issuer hands out another, and the old one is refused
   let base = '';
 
@@ -348,10 +358,47 @@ export async function startFakeJenkins(options = {}) {
     return status;
   };
 
-  const handle = (req, res, body) => {
+  const fail = ({ mode = 'refuse', status = 503, count = Infinity, path = null } = {}) => {
+    outage = { mode, status: Number(status), left: Number(count), path: path ? new RegExp(path) : null };
+  };
+  const recover = () => {
+    outage = null;
+  };
+  // The stalled requests are answered now, as if Jenkins had come back.
+  const release = () => {
+    const ways = held;
+    held = [];
+    for (const go of ways) go();
+  };
+
+  const handle = (req, res, body, stalled = false) => {
     const url = new URL(req.url, base);
+    if (url.pathname.startsWith('/__fake/')) {
+      if (url.pathname === '/__fake/fail') fail(Object.fromEntries(url.searchParams));
+      else if (url.pathname === '/__fake/recover') recover();
+      else if (url.pathname === '/__fake/release') release();
+      else return send(res, 404, 'Not found');
+      return send(res, 200, 'ok');
+    }
     const entry = { method: req.method, path: decodeURIComponent(url.pathname), query: Object.fromEntries(url.searchParams), user: null, body, status: 0 };
-    requests.push(entry);
+    if (!stalled) requests.push(entry);
+    if (!stalled && outage && outage.left > 0 && (!outage.path || outage.path.test(entry.path))) {
+      outage.left -= 1;
+      if (outage.mode === 'refuse') {
+        entry.status = 'refused';
+        req.socket.destroy();
+        return;
+      }
+      if (outage.mode === 'stall') {
+        entry.status = 'stalled';
+        held.push(() => {
+          if (!res.writableEnded && !res.destroyed) handle(req, res, body, true);
+        });
+        return;
+      }
+      entry.status = send(res, outage.status, outage.status === 401 ? 'Unauthorized' : outage.status === 403 ? 'Forbidden' : 'Service Unavailable');
+      return;
+    }
     const done = (status, payload, headers) => {
       entry.status = send(res, status, payload, headers);
     };
@@ -461,6 +508,9 @@ export async function startFakeJenkins(options = {}) {
     setCrumb: (next) => {
       crumb = next;
     },
+    fail,
+    recover,
+    release,
     close: () => new Promise((resolve) => {
       server.closeAllConnections?.();
       server.close(resolve);
