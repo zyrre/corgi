@@ -61,7 +61,7 @@ const dec = (name) => {
 // A place whose jobs are listed: { path, label }. `path` is its address under
 // the base URL ("" for the top, "/job/a/job/b" for a folder, "/view/Deploys"
 // for a view), `label` what a person calls it ("a/b").
-// Typed as a folder's names ("instat-develop", "team/tools"), as the path
+// Typed as a folder's names ("acme-develop", "team/tools"), as the path
 // Jenkins shows ("job/team/job/tools", "view/Deploys"), or as its whole URL.
 export function parsePlace(text, base = "") {
   let entry = String(text ?? "").trim();
@@ -94,7 +94,7 @@ export const leaf = (label) => String(label ?? "").split("/").pop() || "Jenkins"
 
 const RESULT = { SUCCESS: "success", FAILURE: "failed", UNSTABLE: "unstable", ABORTED: "aborted", NOT_BUILT: "notbuilt" };
 const COLOR = { blue: "success", green: "success", red: "failed", yellow: "unstable", aborted: "aborted", notbuilt: "notbuilt", nobuilt: "notbuilt", grey: "notbuilt", disabled: "disabled" };
-export const LABEL = { success: "success", failed: "failed", unstable: "unstable", aborted: "aborted", notbuilt: "not built", disabled: "disabled", running: "running", queued: "queued" };
+export const LABEL = { success: "success", failed: "failed", unstable: "unstable", aborted: "aborted", notbuilt: "not built", disabled: "disabled", running: "running", queued: "queued", paused: "waiting for input" };
 
 // A build's state: running, or how it ended.
 export const buildState = (build) => (!build ? "notbuilt" : build.building ? "running" : RESULT[build.result] ?? "notbuilt");
@@ -186,6 +186,36 @@ export function formBody(fields, values) {
     .map((f) => `${enc(f.name)}=${enc(String(values[f.name] ?? ""))}`).join("&");
 }
 
+// --- input steps --------------------------------------------------------------------
+
+// Whether a Pipeline build waits at an input step, by its stages (`wfapi/describe`).
+export const isPaused = (describe) => describe?.status === "PAUSED_PENDING_INPUT"
+  || (describe?.stages ?? []).some((s) => s?.status === "PAUSED_PENDING_INPUT");
+
+// What an input step a build waits at asks for (one of Pipeline Stage View's
+// `pendingInputActions`: { id, message, proceedText, inputs }), as fields of
+// the form `paramFields` makes. Each of its `inputs` is { type, name,
+// description, definition }, the definition being the parameter's own
+// (`defaultParameterValue`, `choices`); a default is also taken from
+// `defaultValue` or `defaultVal`, which some versions give instead.
+export function inputFields(input) {
+  const defs = (input?.inputs ?? []).filter((p) => p && typeof p === "object").map((p) => {
+    const d = p.definition && typeof p.definition === "object" ? p.definition : {};
+    const preset = d.defaultParameterValue?.value ?? p.defaultParameterValue?.value ?? d.defaultValue ?? d.defaultVal ?? p.defaultValue;
+    return {
+      name: p.name ?? d.name, type: p.type ?? d.type ?? d._class ?? "", description: p.description ?? d.description ?? "",
+      choices: d.choices ?? p.choices, defaultParameterValue: { value: preset },
+    };
+  });
+  return paramFields({ property: [{ parameterDefinitions: defs }] });
+}
+
+// The form's values as an input step's `submit` takes them, in its `json`
+// field's `parameter` list: [{ name, value }], a yes or no as a boolean. A
+// kind this form cannot give is left out.
+export const inputParams = (fields, values) => fields.filter((f) => f.kind !== "other")
+  .map((f) => ({ name: f.name, value: f.kind === "boolean" ? Boolean(values[f.name]) : String(values[f.name] ?? "") }));
+
 // --- console text -----------------------------------------------------------------
 
 export const MAX_LINES = 5000;
@@ -221,8 +251,8 @@ export const logLines = (log) => (log.partial ? [...log.lines, clean(log.partial
 
 // --- a folder's kind ---------------------------------------------------------------
 
-// "dev" or "prod" when a folder's name says so (instat-develop, team-dev;
-// instat-master, team-prod, live), else "": the tag beside its heading.
+// "dev" or "prod" when a folder's name says so (acme-develop, team-dev;
+// acme-master, team-prod, live), else "": the tag beside its heading.
 export function envOf(label) {
   const name = String(label ?? "").split("/").pop().toLowerCase();
   const word = (re) => new RegExp(`(^|[-_. ])(${re})($|[-_. ])`).test(name);

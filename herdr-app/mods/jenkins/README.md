@@ -5,9 +5,11 @@ builds and lets you act on them: the jobs of the folders you name under
 large headings that fold away, with their last build's state; a Pipeline
 job's stages (the one at work, the ones that failed and why) and each
 stage's part of the console log; a job's recent builds; a build's whole
-console log (followed while it runs); and Build (with a form for the job's
-parameters) and Abort, each asked about first. It can live in the window's
-right-hand panel, beside Files and Changes.
+console log (followed while it runs); Build (with a form for the job's
+parameters) and Abort, each asked about first; and the answer to a
+Pipeline `input` step a build waits at (a release notes step, an
+approval): its proceed button, with the values it asks for, or Abort. It
+can live in the window's right-hand panel, beside Files and Changes.
 
 It reaches Jenkins with **an API token alone**: no password, no SSO, no
 `jenkins-cli`. **The token's Jenkins user decides what the mod may do.** Give
@@ -187,15 +189,18 @@ which an app started from the Dock usually has not.
 
 - The list: each folder of the settings under a large heading, tagged `DEV`
   or `PROD` when its name says so (`dev`, `develop`, `development`; `prod`,
-  `production`, `master`, `live`, as a word of the name: `instat-develop`,
-  `instat-master`), with how many of its jobs run and failed and how many
+  `production`, `master`, `live`, as a word of the name: `acme-develop`,
+  `acme-master`), with how many of its jobs run and failed and how many
   there are. A click on the heading folds the folder away, or shows it
   again; the app remembers which are folded. Under it, each job with a mark
   for the last build (success, failed, unstable, aborted, never built,
   disabled), its number and age; a running build shows how far it is by
-  Jenkins' estimate. A folder inside opens as a list of its own. Read again
-  every minute, every ten seconds while a build runs or waits; the header's
-  arrows read it now.
+  Jenkins' estimate, and one that waits at an input step says
+  `#41 · waiting for input` instead (the heading counts those apart from
+  the ones that run). A folder inside opens as a list of its own. Read
+  again every minute, every ten seconds while a build runs or waits; the
+  header's arrows read it now. Whether a running Pipeline build waits is
+  read from its stages every half minute.
 - Click a job for the stages of its newest build, and its last 20 builds
   under them; click a build there for its stages instead. Each stage shows
   its state (passed, failed, unstable, aborted, running, waiting for input,
@@ -215,6 +220,19 @@ which an app started from the Dock usually has not.
   does not. A file or credential parameter cannot be given: Jenkins uses its
   default.
 - The square on a running build asks `Abort #57 of …?` before it stops it.
+- A build that waits at an input step shows the step under the stage that
+  waits, in the job's stages and in that stage's (or the build's) log: its
+  message and two buttons named as the step names them. One that asks for
+  nothing proceeds at once with its button (`Proceed`, or the step's own
+  `ok` text): the step is the question already. One that asks for values
+  says which, and its button (`Release…`) opens a form with them, each
+  preset to its default, as the build form does; its button there (or
+  Enter) answers, `Cancel` or Esc does not. `Abort…` asks `Abort #12 of …
+  at its input?` first, then Jenkins ends the build as aborted; while the
+  build waits, it is the build view's only Abort. What
+  Jenkins refuses, or an input answered meanwhile in the browser, shows as
+  an error, and the view reads the build again. The token's user must be
+  one the step accepts (its `submitter`).
 - The arrow-out buttons open the folder, job or build in the browser.
 - Esc goes back a view. `jenkins.refresh` and `jenkins.settings` are its
   commands for `keys.json`.
@@ -248,11 +266,14 @@ Plain HTTP with the app's `fetch`, HTTP Basic auth `<user>:<token>`:
 `whoAmI/api/json` and `me/api/json`, `<folder>/api/json?tree=jobs[…]`,
 `<job>/api/json?tree=…builds[…]{0,20}`, `<build>/api/json`,
 `<build>/logText/progressiveText?start=<byte>`, Pipeline Stage View's
-`<build>/wfapi/describe` (a build's stages) and `<job>/wfapi/runs` (what
-they took last time), and, only from the two
-buttons, `POST <job>/build` or `<job>/buildWithParameters` and
-`POST <build>/stop`, with the crumb from `crumbIssuer/api/json` when the
-Jenkins has one.
+`<build>/wfapi/describe` (a build's stages), `<job>/wfapi/runs` (what
+they took last time) and `<build>/wfapi/pendingInputActions` (the input
+steps a build waits at, asked only of a build whose stages say it waits,
+while it is shown), and, only from the buttons, `POST <job>/build` or
+`<job>/buildWithParameters`, `POST <build>/stop`, and an input step's
+`POST <build>/input/<id>/proceedEmpty`, `…/submit` (`json` with the values
+and `proceed`, the button) or `…/abort`, with the crumb from
+`crumbIssuer/api/json` when the Jenkins has one.
 
 A stage's log is cut out of the console log, between the lines Pipeline
 writes where a stage starts and ends (`[Pipeline] { (Build)` …
@@ -276,18 +297,22 @@ node herdr-app/mods/jenkins/tests/test.mjs
 ```
 
 The tests run the mod under Node against `tests/fake-jenkins.mjs`, a made-up
-Jenkins with canned jobs and two users (`jane:fake-token` may build and
-abort, `viewer:viewer-token` may only read). Its Pipeline jobs have stages,
+Jenkins with canned jobs and two users (`jane:fake-token` may build, abort
+and answer an input, `viewer:viewer-token` may only read). Its Pipeline jobs have stages,
 with Pipeline Stage View's `wfapi` in the shapes a real Jenkins gives and a
 console with the markers a real one writes: in `team-dev` a running build,
 a failed one, an aborted one, an unstable one and one with a stage skipped;
-in `team-prod` one that waits for approval; `nightly-cleanup` is freestyle.
+in `team-prod` two that wait at an input step, `alarm-notify_master` at one
+that asks nothing and `exporter_master` at release notes that ask for three
+values, with `wfapi/pendingInputActions` and the step's answers;
+`nightly-cleanup` is freestyle. `tests/fixtures/real-input.json` is what a
+real Jenkins served for an answered release notes input (read only).
 `node tests/fake-jenkins.mjs
 48765` serves it for a look at the mod in a window: point the settings at
 `http://127.0.0.1:48765`. It fails on demand: `curl -X POST
 'http://127.0.0.1:48765/__fake/fail?mode=status&status=503'` (or
 `mode=refuse`, `mode=stall`; `&count=2` for the next two requests,
-`&path=<regex>` for some paths), and `/__fake/recover` ends it. Never try Build or Abort against a real Jenkins
-from a test.
+`&path=<regex>` for some paths), and `/__fake/recover` ends it. Never try
+Build, Abort or an input's answer against a real Jenkins from a test.
 
 The icons are drawn after [Lucide](https://lucide.dev) (ISC license).

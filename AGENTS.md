@@ -168,6 +168,12 @@ ships, run the real CLI as `claude --bare` with a dummy
 the machine. Kill a process only by PID, once, after checking it is one you
 started.
 
+The repository is public: fixtures, examples, tests and docs name made-up
+hosts, folders, jobs and users (`jenkins.example.com`, `team-prod/app_master`,
+`jane`), also when what they hold was recorded from a real server, whose
+ids, times and structure they keep. Before committing such data, `git grep`
+for the real names.
+
 ## The installers
 
 Before handing off changes to `scripts/install.sh` or
@@ -529,8 +535,12 @@ shellcheck herdr-app/mods/jenkins/install.sh
 The test runs the mod under Node, with stand-ins of its own as
 `scripts/test-app-mods.mjs` has, against `tests/fake-jenkins.mjs`: a
 made-up Jenkins on a local port with canned jobs, logs that grow, a crumb
-issuer and two users (`jane:fake-token` may build and abort,
-`viewer:viewer-token` only reads). **Never trigger, abort or change
+issuer and two users (`jane:fake-token` may build, abort and answer an
+input step, `viewer:viewer-token` only reads). Two `team-prod` builds wait
+at an input step (`alarm-notify_master` #12 asks nothing, `exporter_master`
+#41 asks three values), with `wfapi/pendingInputActions` and the step's
+`proceedEmpty`, `submit` and `abort`; a step's id is as Jenkins makes one
+for a step that names none, the MD5 of its message with a capital first. **Never trigger, abort or change
 anything on a real Jenkins**; a real one is only ever read. To look at the
 mod, use the preview window with the fake server, never a real token (a
 screenshot would show its settings):
@@ -604,7 +614,11 @@ that call what the click calls (`this.show({ kind: "job", place })`,
 `this.pick(place, n, cx)` (a build's stages), `this.show({ kind: "stage",
 place, number, stage: { id, name, nth } }, cx)`, `this.wholeLog(cx)`,
 `this.fold(place, cx)` (a heading), `this.askBuild(place, cx)`,
-`this.build(cx)`, `this.askAbort(place, n, cx)`, `this.abort(cx)`; a place
+`this.build(cx)`, `this.askAbort(place, n, cx)`, `this.abort(cx)`; for an
+input step, `p = this.pendingOf(place, n)` once the job view has read it,
+then `this.proceed(place, n, p[0], cx)` (its form, when it asks for
+values), `this.submitInput(cx)` and `this.askAbortInput(place, n, p[0],
+cx)`; a place
 is `{ path: "/job/team-dev/job/api_master", label: "team-dev/api_master" }`;
 the fake's stage ids are `4`, `29`, `54`, `79`), then `do
 jenkins.<command>`. Installing again replaces that copy. What the
@@ -645,14 +659,22 @@ count, path })`, `recover()` and `release()` make the fake fail (`POST
 read cannot `settle()` while it is held, so it fires the timers with
 `mod.poke()` instead.
 
-What the real Jenkins (`jenkins.int.tele2.com`, 2.479, read on
+What the real Jenkins (2.479, read on
 2026-11-11) serves, for when the fake needs to follow it: Pipeline Stage
 View (`<build>/wfapi/describe`, `<job>/wfapi/runs`, ten runs) but no Blue
 Ocean (`/blue/rest/…` is 404). A stage's status is `SUCCESS`, `FAILED`,
 `ABORTED`, `IN_PROGRESS`, `PAUSED_PENDING_INPUT` (the prod jobs' approval
 stage) or `NOT_EXECUTED`, with `error.message` when it failed or was
 aborted; stages not started yet are not listed, and a failed build lists
-none after the one that failed. A stage node's own `wfapi/log` is empty and
+none after the one that failed. An input step aborted shows as its stage
+`ABORTED` with `Rejected by <name>`. Whether a list's running builds wait
+at an input is read from their `wfapi/describe` (every half minute), never
+from the list, and `<build>/wfapi/pendingInputActions` (`[]` once
+answered) only for a shown build that waits;
+`herdr-app/mods/jenkins/tests/fixtures/real-input.json` holds a real
+answered Release Notes input, read when none was waiting, so the waiting
+shapes (and an input's parameters) follow the plugin's documented ones,
+not a real server's. A stage node's own `wfapi/log` is empty and
 a step's is HTML, so the mod cuts a stage's log out of the console. With
 `curl`, pass `-g`: a `tree=…[…]` query is otherwise taken as a glob.
 

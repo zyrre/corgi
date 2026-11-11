@@ -1,0 +1,230 @@
+{
+  "about": [
+    "What a real Jenkins (2.479) served on 2026-11-11 for a prod Pipeline build",
+    "that waited at its Release Notes input step and was answered (read only: GET requests alone).",
+    "No build was waiting at the time, so the waiting form (a stage PAUSED_PENDING_INPUT and a",
+    "non-empty pendingInputActions) is not here: the fake follows the Pipeline Stage View plugin's",
+    "documented shape for it. User names are replaced by jane / Jane Doe.",
+    "Its host, folder and job names are replaced by made-up ones (team-prod/app_master, team-prod/notify_master); ids, times and structure are as served."
+  ],
+  "answered": {
+    "describe": {
+      "_links": {
+        "self": {
+          "href": "/job/team-prod/job/app_master/30/wfapi/describe"
+        },
+        "changesets": {
+          "href": "/job/team-prod/job/app_master/30/wfapi/changesets"
+        }
+      },
+      "id": "30",
+      "name": "v1.4.1264",
+      "status": "SUCCESS",
+      "startTimeMillis": 1794401069521,
+      "endTimeMillis": 1794401843261,
+      "durationMillis": 773740,
+      "queueDurationMillis": 1,
+      "pauseDurationMillis": 0,
+      "stages": [
+        {
+          "_links": {
+            "self": {
+              "href": "/job/team-prod/job/app_master/30/execution/node/4/wfapi/describe"
+            }
+          },
+          "id": "4",
+          "name": "Build",
+          "execNode": "",
+          "status": "SUCCESS",
+          "startTimeMillis": 1794401070506,
+          "durationMillis": 210471,
+          "pauseDurationMillis": 1
+        },
+        {
+          "_links": {
+            "self": {
+              "href": "/job/team-prod/job/app_master/30/execution/node/79/wfapi/describe"
+            }
+          },
+          "id": "79",
+          "name": "Deploy to dummy",
+          "execNode": "",
+          "status": "SUCCESS",
+          "startTimeMillis": 1794401280984,
+          "durationMillis": 47251,
+          "pauseDurationMillis": 1
+        },
+        {
+          "_links": {
+            "self": {
+              "href": "/job/team-prod/job/app_master/30/execution/node/241/wfapi/describe"
+            }
+          },
+          "id": "241",
+          "name": "Release Notes",
+          "execNode": "",
+          "status": "SUCCESS",
+          "startTimeMillis": 1794401328273,
+          "durationMillis": 445951,
+          "pauseDurationMillis": 430896
+        },
+        {
+          "_links": {
+            "self": {
+              "href": "/job/team-prod/job/app_master/30/execution/node/412/wfapi/describe"
+            }
+          },
+          "id": "412",
+          "name": "Deploy to PROD",
+          "execNode": "",
+          "status": "SUCCESS",
+          "startTimeMillis": 1794401774238,
+          "durationMillis": 68977,
+          "pauseDurationMillis": 2
+        }
+      ]
+    },
+    "stage": {
+      "_links": {
+        "self": {
+          "href": "/job/team-prod/job/app_master/30/execution/node/241/wfapi/describe"
+        }
+      },
+      "id": "241",
+      "name": "Release Notes",
+      "execNode": "",
+      "status": "SUCCESS",
+      "startTimeMillis": 1794401328273,
+      "durationMillis": 445951,
+      "pauseDurationMillis": 430896,
+      "stageFlowNodes": [
+        {
+          "_links": {
+            "self": {
+              "href": "/job/team-prod/job/app_master/30/execution/node/244/wfapi/describe"
+            },
+            "log": {
+              "href": "/job/team-prod/job/app_master/30/execution/node/244/wfapi/log"
+            },
+            "console": {
+              "href": "/job/team-prod/job/app_master/30/execution/node/244/log"
+            }
+          },
+          "id": "244",
+          "name": "Wait for interactive input",
+          "execNode": "",
+          "status": "SUCCESS",
+          "startTimeMillis": 1794401328297,
+          "durationMillis": 430910,
+          "pauseDurationMillis": 430896,
+          "parentNodes": [
+            "243"
+          ]
+        }
+      ]
+    },
+    "inputNode": {
+      "_links": {
+        "self": {
+          "href": "/job/team-prod/job/app_master/30/execution/node/244/wfapi/describe"
+        },
+        "log": {
+          "href": "/job/team-prod/job/app_master/30/execution/node/244/wfapi/log"
+        }
+      },
+      "id": "244",
+      "name": "Wait for interactive input",
+      "execNode": "",
+      "status": "SUCCESS",
+      "startTimeMillis": 1794401328297,
+      "durationMillis": 430910,
+      "pauseDurationMillis": 430896,
+      "parentNodes": [
+        "243"
+      ]
+    },
+    "pendingInputActions": [],
+    "console": [
+      "[Pipeline] { (Release Notes)",
+      "[Pipeline] timeout",
+      "Timeout set to expire in 8 days 0 hr",
+      "[Pipeline] {",
+      "[Pipeline] input",
+      "Proceeding will generate release notes and auto deploy to production.",
+      "Proceed or Abort",
+      "Approved by Jane Doe"
+    ],
+    "consoleLinks": {
+      "proceed": "/job/team-prod/job/app_master/30/input/Faf07b7bb8539aeb2d643328e8f89389/proceedEmpty",
+      "abort": "/job/team-prod/job/app_master/30/input/Faf07b7bb8539aeb2d643328e8f89389/abort"
+    }
+  },
+  "abortedAtInput": {
+    "describe": {
+      "_links": {
+        "self": {
+          "href": "/job/team-prod/job/notify_master/7/wfapi/describe"
+        },
+        "changesets": {
+          "href": "/job/team-prod/job/notify_master/7/wfapi/changesets"
+        }
+      },
+      "id": "7",
+      "name": "v1.4.1164",
+      "status": "ABORTED",
+      "startTimeMillis": 1783930580983,
+      "endTimeMillis": 1783930767006,
+      "durationMillis": 186023,
+      "queueDurationMillis": 5,
+      "pauseDurationMillis": 0,
+      "stages": [
+        {
+          "_links": {
+            "self": {
+              "href": "/job/team-prod/job/notify_master/7/execution/node/4/wfapi/describe"
+            }
+          },
+          "id": "4",
+          "name": "Build",
+          "execNode": "",
+          "status": "SUCCESS",
+          "startTimeMillis": 1783930582095,
+          "durationMillis": 114529,
+          "pauseDurationMillis": 2
+        },
+        {
+          "_links": {
+            "self": {
+              "href": "/job/team-prod/job/notify_master/7/execution/node/79/wfapi/describe"
+            }
+          },
+          "id": "79",
+          "name": "Deploy to dummy",
+          "execNode": "",
+          "status": "SUCCESS",
+          "startTimeMillis": 1783930696632,
+          "durationMillis": 50922,
+          "pauseDurationMillis": 1
+        },
+        {
+          "_links": {
+            "self": {
+              "href": "/job/team-prod/job/notify_master/7/execution/node/246/wfapi/describe"
+            }
+          },
+          "id": "246",
+          "name": "Release Notes",
+          "execNode": "",
+          "status": "ABORTED",
+          "error": {
+            "message": "Rejected by Jane Doe",
+            "type": "org.jenkinsci.plugins.workflow.steps.FlowInterruptedException"
+          },
+          "startTimeMillis": 1783930747562,
+          "durationMillis": 19410,
+          "pauseDurationMillis": 19358
+        }
+      ]
+    }
+  }
+}
