@@ -12,8 +12,13 @@
 # Everything is kept under target/app-preview/ of the checkout: a copy of the
 # installed Herdr.app (the app updates itself in place when it quits, and
 # must never do that to the person's running one), the app home `home/`,
-# and the pictures. The app's control socket needs a path shorter than a
-# worktree's, so the window is given the home through a link,
+# and the pictures. The copy is an app of its own to macOS, "Herdr Preview"
+# (dev.herdr.app.corgi-preview, signed ad hoc), in a folder Spotlight skips
+# (app.noindex), and is unregistered from LaunchServices on `stop` and when
+# a new copy replaces it: a copy that kept Herdr's identity was once what
+# Spotlight launched as the person's Herdr, and vanished with its worktree.
+# The app's control socket needs a path shorter than a worktree's, so the
+# window is given the home through a link,
 # /tmp/corgi-ap-<uid>-<checksum of the checkout>.
 #
 # `start` installs this checkout's mods and layout into that home with
@@ -22,9 +27,8 @@
 # the `corgi` layout and waits for a frame. The window opens in the bottom right
 # corner of the screen with one point of its edge showing, where it is in
 # nobody's way and still draws (see park_window), and takes no focus.
-# AeroSpace lists no window of an app that a worker under herdr-core starts
-# (run directly, with `open`, or as a launchd job), so it cannot be moved to
-# a workspace; should AeroSpace list it, it is floated and moved to
+# AeroSpace lists the window of the copy, which is an app of its own (it
+# listed none while the copy was Herdr), so it is floated and moved to
 # workspace 4 ($APP_PREVIEW_WORKSPACE), or to one named `preview`
 # ($APP_PREVIEW_FALLBACK_WORKSPACE) while the person is looking at 4.
 #
@@ -46,13 +50,15 @@
 #
 # `stop` quits the window with app.quit (its own pid is killed, once, only
 # if that does nothing), ends each terminal of its core by address, stops
-# that core and removes the link. The home, the app copy and the pictures
-# stay.
+# that core, unregisters the app copy from LaunchServices and removes the
+# link. The home, the app copy and the pictures stay.
 #
 #   APP_PREVIEW_APP=<Herdr.app>       the app to copy, instead of the one herdr-app on PATH is in
 #   APP_PREVIEW_HC=<hc>               the herdr-core command
 #   APP_PREVIEW_AEROSPACE=<aerospace> AeroSpace's command (/opt/homebrew/bin/aerospace)
 #   APP_PREVIEW_SIZE=<w>x<h>          the window's size in points (1280x800)
+#   APP_PREVIEW_LSREGISTER=<lsregister> LaunchServices' lsregister, which forgets the copy
+#   APP_PREVIEW_RELEASES_URL=<url>    where the copy looks for updates (none: https://releases.invalid)
 set -euo pipefail
 
 say() { printf 'app-preview: %s\n' "$*" >&2; }
@@ -63,8 +69,11 @@ die() {
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 dir="$root/target/app-preview"
-bundle="$dir/Herdr.app"
+bundle="$dir/app.noindex/Herdr Preview.app"
 exe="$bundle/Contents/MacOS/Herdr"
+legacy="$dir/Herdr.app" # where the copy was before it had an identity of its own
+preview_id=dev.herdr.app.corgi-preview
+preview_name="Herdr Preview"
 corgi="$root/target/release/corgi"
 link="/tmp/corgi-ap-$(id -u)-$(printf '%s' "$root" | cksum | cut -d ' ' -f 1)"
 home="$link/home"
@@ -76,14 +85,21 @@ aerospace=${APP_PREVIEW_AEROSPACE:-/opt/homebrew/bin/aerospace}
 workspace=${APP_PREVIEW_WORKSPACE:-4}
 fallback_workspace=${APP_PREVIEW_FALLBACK_WORKSPACE:-preview}
 window_size=${APP_PREVIEW_SIZE:-1280x800}
+# Where the copy looks for updates of the app and of herdr-core: nowhere. It
+# looks whatever its identity, and would download one into itself and
+# install a newer herdr-core into the person's ~/.local/share/herdr-core.
+releases=${APP_PREVIEW_RELEASES_URL:-https://releases.invalid}
+lsregister=${APP_PREVIEW_LSREGISTER:-/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister}
 person_home="$HOME/.config/herdr-app" # read, never written
 base_path="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # --- the window -------------------------------------------------------------
 
-# herdr-app as a client of the preview window.
-app() { HERDR_APP_HOME="$home" "$exe" "$@"; }
-running() { [[ -x "$exe" && -L "$link" ]] && app status >/dev/null 2>&1; }
+# herdr-app as a client of the preview window (a window an older script
+# started runs from the copy's old place).
+client() { if [[ -x "$exe" ]]; then echo "$exe"; else echo "$legacy/Contents/MacOS/Herdr"; fi; }
+app() { HERDR_APP_HOME="$home" "$(client)" "$@"; }
+running() { [[ -x "$(client)" && -L "$link" ]] && app status >/dev/null 2>&1; }
 alive() { [[ -n "$1" ]] && kill -0 "$1" 2>/dev/null; }
 
 # Waits until "$@" succeeds, for $1 quarter seconds at the most.
@@ -97,6 +113,41 @@ wait_for() {
   done
 }
 
+# Unregisters a copy of the app from LaunchServices, and only a copy under
+# target/app-preview: never the installed app.
+forget_app() {
+  [[ -e "$1" && "$1" == "$dir"/* ]] || return 0
+  "$lsregister" -u "$1" >/dev/null 2>&1 || say "could not unregister $1 from LaunchServices"
+}
+
+# The copy an older script made, as Herdr itself, once no window runs it.
+remove_legacy() {
+  [[ -e "$legacy" ]] || return 0
+  forget_app "$legacy"
+  rm -rf "$legacy"
+}
+
+# Gives the copy an identity of its own and signs it again, ad hoc, since
+# its Info.plist no longer matches the signature it came with.
+rename_app() {
+  local plist="$bundle/Contents/Info.plist"
+  local key value
+  for key in CFBundleIdentifier CFBundleName CFBundleDisplayName; do
+    value=$preview_name
+    [[ $key != CFBundleIdentifier ]] || value=$preview_id
+    plutil -replace "$key" -string "$value" "$plist" || die "could not rename the copy in $plist"
+  done
+  codesign --force --deep --sign - "$bundle" >/dev/null 2>&1 || die "could not sign $bundle ad hoc"
+  codesign --verify --deep --strict "$bundle" || die "the copy's signature does not verify: $bundle"
+}
+
+# The copy is this version of the app, as Herdr Preview, and signed.
+copy_current() {
+  [[ -x "$exe" && "$("$exe" --version 2>/dev/null)" == "$1" ]] &&
+    [[ "$(plutil -extract CFBundleIdentifier raw "$bundle/Contents/Info.plist" 2>/dev/null)" == "$preview_id" ]] &&
+    codesign --verify --deep --strict "$bundle" >/dev/null 2>&1
+}
+
 # Copies the installed app, once per version of it.
 copy_app() {
   local source=${APP_PREVIEW_APP:-} found
@@ -105,13 +156,17 @@ copy_app() {
     source=$(cd "$(dirname "$(readlink -f "$found")")/../.." && pwd -P)
   fi
   [[ -x "$source/Contents/MacOS/Herdr" ]] || die "$source is not a Herdr app bundle"
-  local want have=
+  [[ "$source" != "$dir"/* ]] || die "$source is the preview's own copy; set APP_PREVIEW_APP to the installed Herdr.app"
+  remove_legacy
+  local want
   want=$("$source/Contents/MacOS/Herdr" --version)
-  [[ ! -x "$exe" ]] || have=$("$exe" --version 2>/dev/null) || have=
-  [[ "$want" != "$have" ]] || return 0
+  ! copy_current "$want" || return 0
+  forget_app "$bundle"
   rm -rf "$bundle"
+  mkdir -p "${bundle%/*}"
   cp -R "$source" "$bundle"
-  say "copied $want from $source"
+  rename_app
+  say "copied $want from $source as $preview_name ($preview_id)"
 }
 
 # A home the app takes for one it has run before: no welcome, and no "first
@@ -408,7 +463,7 @@ cmd_start() {
   # shell's (HC_TERMINAL_ID and the like name the person's core).
   env -i HOME="$HOME" USER="${USER:-}" LOGNAME="${USER:-}" SHELL="${SHELL:-/bin/sh}" LANG=en_US.UTF-8 \
     TMPDIR="${TMPDIR:-/tmp}" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-    HERDR_APP_HOME="$home" HERDR_TELEMETRY=0 HC_SESSION=preview XDG_STATE_HOME="$state" \
+    HERDR_APP_HOME="$home" HERDR_TELEMETRY=0 HERDR_RELEASES_URL="$releases" HC_SESSION=preview XDG_STATE_HOME="$state" \
     nohup "$exe" >"$dir/app.log" 2>&1 </dev/null &
   local pid=$!
   echo "$pid" >"$dir/pid"
@@ -458,7 +513,7 @@ cmd_stop() {
   fi
   if alive "$pid" && ! wait_for 40 not_alive "$pid"; then
     # Its own pid, once, and only while that pid still runs the preview's copy.
-    if lsof -a -p "$pid" -d txt 2>/dev/null | grep -qF "$exe"; then
+    if lsof -a -p "$pid" -d txt 2>/dev/null | grep -F "$dir/" | grep -qF /Contents/MacOS/Herdr; then
       kill "$pid" 2>/dev/null || true
       wait_for 40 not_alive "$pid" || say "the window (pid $pid) did not close"
     else
@@ -466,6 +521,8 @@ cmd_stop() {
     fi
   fi
   if [[ -d "$dir" ]]; then
+    forget_app "$bundle"
+    alive "$pid" || remove_legacy
     stop_fakes
     rm -rf "$dir/state" "$fake" "$link.files"
     rm -f "$link"
@@ -493,7 +550,7 @@ case ${1:-} in
     ;;
   stop) cmd_stop ;;
   -h | --help | '')
-    sed -n '2,53p' "$0"
+    sed -n '2,61p' "$0"
     ;;
   *) die "unknown command $1 (see --help)" ;;
 esac
