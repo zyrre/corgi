@@ -37,8 +37,8 @@ use std alone.
 Clippy lints code under `#[cfg(target_os = ...)]` only on that OS, so a lint
 can pass on your machine and fail CI on the other (a `return` left at the end
 of a macOS-only block did). CI runs on both Linux and macOS; check both jobs.
-CI also runs `node scripts/test-app-mods.mjs`, the Jenkins mod's tests and
-`bash scripts/test-install` on both (on Node 26: the tests use
+CI also runs `node scripts/test-app-mods.mjs`, the Jenkins and Media mods'
+tests and `bash scripts/test-install` on both (on Node 26: the tests use
 `node:module`'s `registerHooks`); `herdr-app check` needs the app, which a
 runner lacks, so it stays a local check.
 
@@ -728,6 +728,62 @@ shapes (and an input's parameters) follow the plugin's documented ones,
 not a real server's. A stage node's own `wfapi/log` is empty and
 a step's is HTML, so the mod cuts a stage's log out of the console. With
 `curl`, pass `-g`: a `tree=…[…]` query is otherwise taken as a glob.
+
+### The media mod
+
+`herdr-app/mods/media/` is a mod of its own as the Jenkins mod is (decision
+2026-11-12): no `corgi`, its own `install.sh` (`--home`, `--folder`,
+`--panel right`, `--layout`, `--panel off`, `--uninstall`), a `README.md`
+for its users with the text they paste into their agents' instructions,
+and nothing of Corgi's. Agents copy a file into a drop folder
+(`~/.local/share/herdr-media`, `media/settings.json` of the app's home
+names another) and the mod shows it; `items.js` is what it decides,
+`store.js` the drop folder, the history and the toasts, one for every copy.
+Before handing off a change to it:
+
+```bash
+herdr-app check herdr-app/mods/media
+node herdr-app/mods/media/tests/test.mjs
+shellcheck herdr-app/mods/media/install.sh
+```
+
+The test runs the item logic alone, the mod with stand-ins whose `exec`
+runs the real `sh`, `cp`, `mkdir`, `rm`, `head`, `mv` and `test` on scratch
+folders (`ffmpeg`, `qlmanage` and `open` are fakes), and `install.sh` on
+scratch homes, the Jenkins mod's installer and Corgi's tab bar lines beside
+it. What the app does, found in the preview window: `image()` draws only a
+path relative to the app's home (an absolute one, even inside it, draws
+nothing), so each picture is copied into `media/items/`; `fs/promises`
+reads only under the home folder and writes only under the app's home
+(`exec` is not limited), and agents may not write into the app's home, so
+the drop folder is outside it; an animated GIF, WebP or PNG is drawn as its
+first frame (two shots of the window a few hundred milliseconds apart: a
+`.frames` text changed, the picture did not); a stack's child that was
+never shown never starts, so `--panel right` also puts a floating block
+`media-watch` (`props.watch`, it draws nothing) on the layout's root, which
+watches the folder and gets `media.show` from the toast's click (a mod
+command reaches shown copies only, and a hidden panel is not one; a mod's
+`run("media.show")` reaches it); `layout.show` of a stack's child does not
+show its column, so `media.show` runs `layout.select` and `layout.show
+--id panel`; `on_size_change` gives the size on screen while `w()` and
+`h()` are scaled by `settings().zoom` (1.1 in the preview). The tab bar's
+lines go in as Corgi's do: the list line above `this.syncPanel(` and above
+any comment lines and other installers' marked lines over it, its end
+marker on the code line itself so that Corgi's walk up over comments stops
+there, and the button before `.when(w?.buttons,`; when both are there
+already they are replaced in place. To look at it, install it into the
+preview's home with a drop folder of the preview's own, never the real one:
+
+```bash
+scripts/app-preview start
+home=$(ls -d /tmp/corgi-ap-*/home)
+HERDR_APP_BIN="target/app-preview/app.noindex/Herdr Preview.app/Contents/MacOS/Herdr" herdr-app/mods/media/install.sh --home "$home" --folder "${home%/home}/drop" --panel right --layout corgi
+cp shot.png "${home%/home}/drop/" && printf 'A caption\n' > "${home%/home}/drop/shot.txt"
+scripts/app-preview do media.show                            # what the toast's click runs
+```
+
+The window takes no clicks: Clear all, behind its question, is reached by
+a preview-home copy of `main.js` whose command loop calls `store.clear()`.
 
 ### After a merge
 
