@@ -486,12 +486,17 @@ test('a picture dropped with a caption: a toast that shows the panel, the count,
   assert.equal(w.toasts.length, 1);
   assert.equal(w.shared['media.unseen'], 0);
   assert.ok(byId(panel.render(), `media-item-${item.id}`), 'the first is listed');
-  assert.ok(panel.says('EARLIER'));
+  assert.ok(panel.says('ALL'));
+  const order = () => ids(panel.render(), 'media-item-');
+  const before = order();
+  assert.deepEqual(before, panel.store.items.map((i) => `media-item-${i.id}`), 'every item, newest first');
   const big = images(byId(panel.render(), 'media-big'))[0];
   assert.equal(big.file, `media/items/${panel.store.items[0].id}.png`);
   // Clicking the earlier one shows it large.
   await panel.click(`media-item-${item.id}`);
   assert.equal(images(byId(panel.render(), 'media-big'))[0].file, `media/items/${item.id}.png`);
+  assert.deepEqual(order(), before, 'clicking does not reorder the list');
+  assert.ok('bg' in kept(byId(panel.render(), `media-item-${item.id}`)).calls, 'the shown one is marked');
 });
 
 test('the picture fits the panel at the app\'s zoom; several at once make one toast', async () => {
