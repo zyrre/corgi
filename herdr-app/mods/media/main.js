@@ -3,7 +3,7 @@
 // (~/.local/share/herdr-media by default; media/settings.json of the app's
 // home names another). The newest is shown large, scaled to fit, with its
 // caption (the first line of a `<same name>.txt` beside it), file name and
-// time; earlier ones are listed below it, to click. It keeps the last 50.
+// time; every item is listed below it in arrival order, the one shown marked, to click. It keeps the last 50.
 // A new one posts a toast whose click shows the panel, and the tab bar's
 // Media button counts what came since the panel was last seen.
 //
@@ -165,10 +165,10 @@ export default class Media extends View {
         } })));
   }
 
-  row(item, t, now) {
+  row(item, t, now, on = false) {
     const thumb = item.file ? fit(item.width, item.height, 56, 40, { grow: true }) : { w: 56, h: 40 };
     return h_flex().id(`media-item-${item.id}`).flex_none().mx(6).px(6).py(4).gap(10).items_center().rounded(7)
-      .cursor_pointer().hover((s) => s.bg(t.hover))
+      .cursor_pointer().when(on, (el) => el.bg(t.selected)).hover((s) => s.bg(on ? t.selected : t.hover))
       .on_click((_e, cx) => { this.selected = item.id; cx.notify(); })
       .child(h_flex().w(56).h(40).flex_none().items_center().justify_center().rounded(4).bg(t.surface)
         .child(this.picture(item, thumb.w, thumb.h, t, true)))
@@ -188,13 +188,12 @@ export default class Media extends View {
     const items = store.items;
     if (items[0]?.id !== this.newest) { this.newest = items[0]?.id ?? null; this.selected = null; }
     const shown = items.find((i) => i.id === this.selected) ?? items[0] ?? null;
-    const rest = items.filter((i) => i !== shown);
     const body = !store.loaded ? [div().p(12).text_color(t.dim).child("Reading…")]
       : !shown ? [this.empty(t)]
         : [
           this.big(shown, t, now),
-          ...(rest.length ? [div().flex_none().px(12).pt(10).pb(4).text_size(11).font_semibold().text_color(t.dim).child("EARLIER")] : []),
-          ...rest.map((i) => this.row(i, t, now)),
+          ...(items.length > 1 ? [div().flex_none().px(12).pt(10).pb(4).text_size(11).font_semibold().text_color(t.dim).child("ALL")] : []),
+          ...(items.length > 1 ? items.map((i) => this.row(i, t, now, i === shown)) : []),
           div().flex_none().h(8),
         ];
     return v_flex().id("media").size_full().min_h(0).overflow_hidden().bg(t.background)
