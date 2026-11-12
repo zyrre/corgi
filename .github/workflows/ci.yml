@@ -67,6 +67,9 @@ jobs:
       - name: Test the Jenkins mod
         run: node herdr-app/mods/jenkins/tests/test.mjs
 
+      - name: Test the Media mod
+        run: node herdr-app/mods/media/tests/test.mjs
+
       - name: Test the installers
         run: bash scripts/test-install
 
