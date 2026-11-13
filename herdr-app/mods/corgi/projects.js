@@ -7,10 +7,13 @@
 // spaces on its worktrees grouped under it by git. Under a project, one row
 // per agent in it, its supervisor first: Corgi's agents with their task and
 // role from `corgi status --json`, and agents started by hand with their own
-// title. A row is two lines: the task, then the harness, model and context
-// fill with the state's badge at the right. A worktree's space with no agent keeps its plain row. Spaces outside
+// title. Each agent is a shaded card with its state's color down its left
+// edge, on two lines: the task, then the harness, model and context
+// fill with the state's badge at the right. A project's row counts its
+// agents by state. A worktree's space with no agent keeps its plain row. Spaces outside
 // any repository (~, other folders) show as spaces, with
-// their agents under them. Click a space to show it and an agent to show its
+// their agents under them. Click a project's row to fold it to its
+// supervisor (or unfold it), another space to show it and an agent to show its
 // terminal; right-click for the space's menu; drag a space to reorder. The
 // command `corgi.open` does what the + does, for a key of the person's
 // (keys.json: "cmd-o": "corgi.open").
@@ -57,7 +60,7 @@ import {
   spaces, machines, panes, agents, focused, run, openOverlay, exec, hc, theme, shared, setShared, setAgentOrder,
   watchFolder, window, home, nextCommand, notify,
 } from "herdr";
-import { narrow, toggleSidebar, sidebarPx, oneLine, tildePaths, spinner, BADGES, badgeKey, badge } from "./ui.js";
+import { narrow, toggleSidebar, sidebarPx, oneLine, tildePaths, spinner, BADGES, badgeKey, badge, STATES, stateCounts, stateColor } from "./ui.js";
 import { store, POLL_MS, USAGE_POLL_MS, MACHINES_MS, NO_CORGI, CURRENT, COUNT, PICK, QUESTIONS_BLOCK } from "./data.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
@@ -69,6 +72,12 @@ function place(s, ps) {
 const SPACE_ROW = 30;
 const TREE_ROW = 28;
 const AGENT_ROW = 38;
+// An agent's card (`agent`): its corners' rounding, and the bar in its
+// state's color that stands just past them.
+const CARD_RADIUS = 6;
+const CARD_EDGE = 3;
+// The narrowest sidebar whose cards keep their full margins.
+const CARD_ROOMY = 230;
 const RAIL_CELL = 32;
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
@@ -248,6 +257,9 @@ export default class Projects {
     this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
     for (const state of Object.values(this.reconnecting)) state.busy = false;
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
+    // The projects folded to their supervisor, by their repository (a
+    // project's row's `g.repo`), kept across restarts as the machines are.
+    this.foldedProjects = new Set(JSON.parse(localStorage.getItem("projects.folded") ?? "[]"));
 
     // The store's version this copy drew last, and how many answers each
     // machine's Corgi had given then (see `sync`).
@@ -759,14 +771,6 @@ export default class Projects {
 
   // --- The herd and plan usage ---------------------------------------------------
 
-  // The agents by the badge their rows show: a worker tagged ready to merge counts as MERGE, not as done
-  // or idle, unless it is paused; an agent in no state counts as idle.
-  herdCounts(by) {
-    const n = { working: 0, blocked: 0, merge: 0, done: 0, idle: 0, paused: 0, exited: 0 };
-    for (const a of Object.values(by).flat()) n[badgeKey(a) ?? "idle"]++;
-    return n;
-  }
-
   // At the top of the list, above its header, one card of a line each, in the theme's
   // border and dim alone, whatever the agents' states: HERD, the agents by
   // state as the rows' badges with a count (a state with none left out,
@@ -776,18 +780,10 @@ export default class Projects {
   // plan and how old the reading is are the line's tooltip. Nothing while
   // there are neither agents nor plans.
   herdCard(by, t) {
-    const n = this.herdCounts(by);
+    const n = stateCounts(Object.values(by).flat());
     const providers = this.usage?.providers ?? [];
     const now = Date.now() / 1000;
-    const states = [
-      ["working", "working"],
-      ["blocked", "blocked"],
-      ["merge", "to merge"],
-      ["done", "done"],
-      ["idle", "idle"],
-      ["paused", "paused"],
-      ["exited", "exited"],
-    ].filter(([k]) => n[k] > 0);
+    const states = STATES.filter(([k]) => n[k] > 0);
     if (!states.length && !providers.length) return null;
     const label = (text) => div().w(50).flex_none().text_size(10).font_semibold().text_color(t.dim).child(text);
     // At least a line high, and taller as the badges wrap.
@@ -1373,7 +1369,11 @@ export default class Projects {
 
   // What the list shows for `rows`, the spaces of one machine in order: each
   // space outside a worktree, then the agents of it and of its worktrees'
-  // spaces, the supervisor first, then the worktrees' spaces with no agent.
+  // spaces, the supervisor first, then the worktrees' spaces with no agent,
+  // and some room before the next. A project folded (a click on its row,
+  // `foldProject`) shows its supervisor alone: its other agents, its
+  // worktrees' rows and their cards are not drawn, and agent.next and
+  // agent.prev pass them by.
   listed(rows, by, t) {
     const out = [];
     const order = [];
@@ -1381,22 +1381,32 @@ export default class Projects {
       const head = rows[n];
       const kids = [];
       while (rows[n + 1]?.tree) kids.push(rows[++n]);
-      // Only the agent with the focus is lit, never a project's row with it:
-      // a project's row (a repository's space) is not lit at all, for now; a
-      // space outside any repository is, while none of its agents has the focus.
-      out.push(this.row(head, t, !head.g && head.w.active && !(by[head.w.id] ?? []).some((a) => a.focused)));
-      const card = this.pullCard(rowKey(head), t);
-      if (card) out.push(card);
       const members = [head, ...kids].flatMap((r) => (by[r.w.id] ?? []).map((a) => ({ a, r })));
       // The supervisor first; the rest stay in the app's order.
       members.sort((x, y) => Number(y.a.supervisor) - Number(x.a.supervisor));
+      // A project (a repository's space) folds; a space outside any does not.
+      const folded = Boolean(head.g) && this.foldedProjects.has(head.g.repo);
+      const shown = folded ? members.filter(({ a }) => a.supervisor) : members;
+      const fold = head.g && {
+        folded,
+        // Something to fold away: a chevron says which way it is.
+        more: folded || kids.length > 0 || members.some(({ a }) => !a.supervisor),
+        counts: stateCounts(members.map(({ a }) => a)),
+      };
+      // Only the agent with the focus is lit, never a project's row with it:
+      // a project's row (a repository's space) is not lit at all, a click on
+      // it folds it; a space outside any repository is lit while none of its
+      // agents has the focus.
+      out.push(this.row(head, t, !head.g && head.w.active && !(by[head.w.id] ?? []).some((a) => a.focused), fold));
+      const card = this.pullCard(rowKey(head), t);
+      if (card) out.push(card);
       let panel = false;
-      for (const { a, r } of members) {
+      for (const [i, { a, r }] of shown.entries()) {
         // A worktree's space has no row of its own while agents stand for it:
         // shown, its first agent is lit unless another of its agents has the focus.
         const mine = by[r.w.id] ?? [];
         const lit = a.focused || (r.tree && r.w.active && mine[0] === a && !mine.some((x) => x.focused));
-        out.push(this.agent(a, r, lit, t));
+        out.push(this.agent(a, r, lit, t, i === 0));
         if (this.merge?.terminal === a.address) {
           out.push(this.mergePanel(this.merge, t));
           panel = true;
@@ -1409,15 +1419,26 @@ export default class Projects {
       const m = this.merge;
       const closing = m?.phase === "closing" || m?.phase === "closed";
       const here = (head.w.machine ?? null) === (m?.machine ?? null);
-      if (!panel && closing && here && (head.at === m.dir || members.some(({ a }) => a.corgi?.project === m.dir))) out.push(this.mergePanel(m, t));
-      for (const k of kids) {
+      if (!folded && !panel && closing && here && (head.at === m.dir || members.some(({ a }) => a.corgi?.project === m.dir))) out.push(this.mergePanel(m, t));
+      for (const k of folded ? [] : kids) {
         if ((by[k.w.id] ?? []).length) continue;
         out.push(this.row(k, t));
         const card = this.pullCard(rowKey(k), t);
         if (card) out.push(card);
       }
+      // Room after a group of agents, before the next project.
+      if (shown.length) out.push(div().flex_none().h(8));
     }
     return { out, order };
+  }
+
+  // Folds the project whose repository is `repo` to its supervisor, or
+  // unfolds it, and remembers which are folded.
+  foldProject(repo, cx) {
+    if (this.foldedProjects.has(repo)) this.foldedProjects.delete(repo);
+    else this.foldedProjects.add(repo);
+    localStorage.setItem("projects.folded", JSON.stringify([...this.foldedProjects]));
+    cx.notify();
   }
 
   // The rows, under a header per machine once one isn't this computer.
@@ -1498,8 +1519,9 @@ export default class Projects {
 
   // Only what's unusual, after the name: "herdr · spike ↑2 ↓1". The repo or
   // branch goes when the name already says it (a worktree is named after its branch),
-  // and master/main go: nearly every space is on one.
-  gitTail(g, tree, name, t, key) {
+  // and master/main go: nearly every space is on one. A project's agents
+  // by state (`counts`, its swatches) stand before the arrows.
+  gitTail(g, tree, name, t, key, counts = null) {
     const raw = g.branch ?? "detached";
     const same = (a) => a.toLowerCase() === name.toLowerCase();
     const branch = same(raw) || raw === "master" || raw === "main" ? "" : raw;
@@ -1507,13 +1529,13 @@ export default class Projects {
     const where = [repo, branch].filter(Boolean).join(" · ");
     return h_flex()
       .flex_1()
-      .min_w(0)
       .gap(5)
       .justify_end()
       .items_center()
       .text_size(11.5)
       .text_color(t.dim)
       .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().child(where)))
+      .when(Boolean(counts), (el) => el.child(counts))
       .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`↑${g.ahead}`)))
       .when(g.behind > 0, (el) => el.child(this.pullMark(g, key, t)));
   }
@@ -1620,8 +1642,12 @@ export default class Projects {
   }
 
   // A space: a project's own, one outside any repository, or a worktree's
-  // with no agent in it. `on`: lit (by default while it is shown).
-  row({ w, i, g, tree, at }, t, on = w.active) {
+  // with no agent in it. `on`: lit (by default while it is shown). A
+  // click shows the space, but on a project's row (`fold`: whether it is
+  // `folded`, has `more` than its supervisor to fold, and its agents'
+  // `counts` by state) it folds the project or unfolds it, and the row
+  // says how many of its agents are in each state, folded or not.
+  row({ w, i, g, tree, at }, t, on = w.active, fold = null) {
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex((s) => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
@@ -1662,7 +1688,10 @@ export default class Projects {
         if (from !== null && over === w.id && from !== w.id) {
           const index = spaces().findIndex((s) => s.id === w.id);
           if (index !== -1) run("space.move", { id: from, index: index + 1 });
-        } else if (from === w.id) run("space.select", { id: w.id });
+        } else if (from === w.id) {
+          if (fold) this.foldProject(g.repo, cx);
+          else run("space.select", { id: w.id });
+        }
         cx.notify();
       })
       .on_mouse_down("right", () => this.menu(w))
@@ -1672,9 +1701,25 @@ export default class Projects {
           .items_center()
           .when(tree, (el) => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, (el) => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
-          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(g ? this.gitTail(g, tree, w.name, t, rowKey({ w, at })) : div().flex_1()),
-      );
+          // The name gives way first: the counts and arrows after it stay whole.
+          .child(h_flex().flex_shrink(1).max_w(150).gap(3).items_center()
+            .child(div().min_w(0).truncate().text_color(t.foreground).child(w.name))
+            .when(Boolean(fold?.more), (el) => el.child(svg(`mods/workspace-chrome/chevron-${fold.folded ? "right" : "down"}.svg`)
+              .id(`fold-${w.id}`).size(10).flex_none().text_color(t.dim))))
+          .child(g ? this.gitTail(g, tree, w.name, t, rowKey({ w, at }), fold && this.stateSwatches(w, fold.counts, t)) : div().flex_1()),
+      )
+      .when(Boolean(fold), (el) => el.cursor_pointer().tooltip(fold.folded ? "Show its agents" : "Fold to its supervisor"));
+  }
+
+  // On a project's row, its agents by state: a count in the color of each
+  // state's badge, in the HERD card's order, a state with none left out.
+  stateSwatches(w, n, t) {
+    const states = STATES.filter(([k]) => n[k] > 0);
+    if (!states.length) return null;
+    // Narrower than a badge, so that the name keeps its room in a narrow sidebar.
+    return h_flex().id(`counts-${w.id}`).flex_none().gap(2).items_center()
+      .children(states.map(([k, word]) => badge(t, k, String(n[k])).px(3).min_w(13).flex().justify_center()
+        .id(`count-${w.id}-${k}`).tooltip(`${n[k]} ${word}`)));
   }
 
   // One agent, on two lines. The first: its task, the whole width, cut with
@@ -1683,8 +1728,15 @@ export default class Projects {
   // state's badge (`badge`; for a worker tagged ready to merge, the MERGE
   // mark that opens the merge question). The worktree it works in is the
   // row's tooltip.
-  // `on`: lit, as the agent with the focus or for its space, which is shown.
-  agent(a, { w, g, at, tree }, on, t) {
+  // Each is a faintly shaded card with its state's color as a full-height
+  // bar at its left: the card reaches past the bar by its rounding, so its
+  // corners round beside the bar and never cut into it. Cards stand 4 px
+  // apart (2 under the project's row: `first`); a narrow sidebar takes in
+  // the card's margins, so the second line keeps its room.
+  // `on`: lit, as the agent with the focus or for its space, which is shown:
+  // the selection's fill, with an outline every card has, unseen until lit,
+  // so that lighting it moves nothing.
+  agent(a, { w, g, at, tree }, on, t, first = false) {
     const worktree = a.corgi?.worktree ? base(a.corgi.worktree) : tree && g?.linked && at ? base(at) : "";
     const pic = icon(a.program, 12, a.supervisor ? t.foreground : t.muted);
     const model = oneLine(a.corgi?.model);
@@ -1692,19 +1744,25 @@ export default class Projects {
     const key = badgeKey(a);
     // A supervisor's open questions, as a pill at the right of its first line.
     const asked = a.supervisor ? this.openQuestions(a) : 0;
+    const tight = sidebarPx() < CARD_ROOMY;
     return v_flex()
       .id(`agent-${a.address}`)
-      .pl(22)
-      .pr(8)
-      .h(AGENT_ROW)
+      .relative()
+      .ml(tight ? 2 : 10)
+      .mt(first ? 2 : 4)
+      .pl(CARD_RADIUS + CARD_EDGE + (tight ? 6 : 8))
+      .pr(tight ? 6 : 8)
+      .h(AGENT_ROW + 2)
       .flex_none()
       .justify_center()
-      .rounded(8)
+      .rounded(CARD_RADIUS)
+      .border_1()
+      .border_color(on ? t.muted : t.foreground + "00")
+      .bg(on ? t.selected : t.foreground + "0d")
       .text_size(12.5)
       .cursor_pointer()
       .when(Boolean(worktree), (el) => el.tooltip(worktree))
-      .when(on, (el) => el.bg(t.selected))
-      .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+      .when(!on, (el) => el.hover((s) => s.bg(t.foreground + "1a")))
       .on_click(() => run("agent.focus", { terminal: a.address }))
       .on_mouse_down("right", () => this.menu(w))
       .child(h_flex().h(18).items_center()
@@ -1715,7 +1773,9 @@ export default class Projects {
         .when(Boolean(model), (el) => el.child(div().flex_shrink(1).min_w(0).truncate().child(model)))
         .when(Boolean(model && ctx), (el) => el.child(div().flex_none().child("·")))
         .when(Boolean(ctx), (el) => el.child(div().flex_none().child(ctx)))
-        .when(Boolean(key), (el) => el.child(div().flex_1()).child(key === "merge" ? this.mergeMark(a, t) : badge(t, key).id(`badge-${a.address}`))));
+        .when(Boolean(key), (el) => el.child(div().flex_1()).child(key === "merge" ? this.mergeMark(a, t) : badge(t, key).id(`badge-${a.address}`))))
+      // Inside the border, past the corners' rounding: whole from top to bottom.
+      .child(div().id(`edge-${a.address}`).absolute().left(CARD_RADIUS - 1).top(0).bottom(0).w(CARD_EDGE).bg(stateColor(t, key ?? "idle")));
   }
 
   // --- the Questions panel -----------------------------------------------------------

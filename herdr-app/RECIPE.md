@@ -2,11 +2,14 @@
 
 One mod, `corgi`, and a change to your layout. Each block of the layout that shows the mod shows one of its
 views, named in the block's props (`{"mod": "corgi", "props": {"view": "projects"}}`). The **Projects** list is a sidebar list that stands in your layout where
-Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, two lines each
+Herdr has its Spaces and Agents lists: your spaces, each repository with its agents under it, each agent a
+shaded card of two lines with its state's color down its left edge
 (the agent's task; under it, smaller, its harness's icon, its model, how
 full its context is and, at the right, its state as a badge: `WORKING`,
 `BLOCKED`, `DONE`, `IDLE`, `PAUSED`, `EXITED`), and a `+` that opens a project: type a name or a path, and Enter shows
-its supervisor or starts it. A worker Corgi tagged ready to merge has a
+its supervisor or starts it. A project's row counts its agents by state in
+small colored numbers, and a click on it folds the project to its
+supervisor, or unfolds it. A worker Corgi tagged ready to merge has a
 `MERGE` badge in its row, in place of its state's: click it, confirm, and its branch is merged into
 the project's base branch and pushed (`corgi merge`);
 then it offers to close the worker and remove its worktree, keeping the
@@ -221,14 +224,38 @@ The `projects` view fills its block on `chrome`, text 13 px:
   - A space outside any repository (`~`, another folder):
     30 px, a colored 18 px avatar with its initial, its name.
   - A project, a repository: the space on its primary checkout, drawn the
-    same way, with its branch and ahead/behind after the name only when
-    unusual: `↑N` in `ansi2`, `↓N` in `ansi1`. The `↓N` is a button
+    same way, with a 10 px chevron in `dim` 3 px after its name (down while
+    unfolded, right while folded; none while it has nothing but its
+    supervisor to fold), and its branch and ahead/behind at the right only
+    when unusual: `↑N` in `ansi2`, `↓N` in `ansi1`. Before them, its agents
+    by state, its supervisor's too: per state with agents, the count alone
+    in that state's badge (`2` on `working`, `1` on `blocked`; 3 px
+    padding, at least 13 px wide, 2 px apart), in the herd card's order, a
+    state with none left out, each count's tooltip saying it (`2 working`);
+    folded or not. The name is cut with `…` before the counts, the arrows
+    or the chevron are. A click on the row (pointer, `hover`, tooltip `Fold
+    to its supervisor` or `Show its agents`) folds the project: its
+    supervisor's card stays, and its other agents, its worktrees' rows and
+    their cards are not drawn; `agent.next` and `agent.prev` pass them by.
+    Another click unfolds it. Which projects are folded is kept across
+    restarts (the mod's `localStorage`, `projects.folded`, by repository).
+    The row is never lit, and a click on it does not show its space. The `↓N` is a button
     (pointer, a faint `ansi1` tint on hover, radius 4, tooltip `Pull 3
     commits from origin/main`); while it pulls it is dimmed with a 10 px
     spinner before it, and so is every other `↓N`. A pull that failed
     puts a card under the row, indented 22 px (`surface`, a `blocked`
-    border, radius 7): git's reason in plain words and `Dismiss`. Under it, indented 22 px, one 38 px row per agent in it and in
-    the spaces on its worktrees, on two lines. The first (18 px): the task
+    border, radius 7): git's reason in plain words and `Dismiss`. Under it,
+    one card per agent in it and in the spaces on its worktrees: 40 px
+    high, 10 px in from the list's padding (2 px in a sidebar under 230
+    px), 2 px under the project's row and 4 px apart, radius 6, shaded
+    with `foreground` at 5 % (10 % on hover) inside a 1 px outline that is
+    unseen until the card is lit; 6 px in from its left side, past the
+    corners' rounding, a 3 px bar from its top to its bottom in its state's
+    badge color (`muted` for `IDLE`, `PAUSED` and an agent in no state,
+    `blocked` for `EXITED`), so the corners round beside the bar and never
+    cut into it. The text starts 9 px after the bar (7 under 230 px), 8 px
+    (6) before the right edge. 8 px of room follow a group of cards. Each card
+    has two lines. The first (18 px): the task
     in 12.5 px (medium weight for `Supervisor`), the line's whole width,
     cut with `…`. The second (16 px), in `dim` 11 px, 5 px apart from
     the left: the harness's icon (12 px; Claude's now, Codex's or
@@ -285,7 +312,8 @@ The `projects` view fills its block on `chrome`, text 13 px:
     under its project: a branch glyph and the space's name.
   - A space outside a repository with agents in it has their rows under it
     the same way.
-  - One row at most is on `selected`: the agent with the focus, alone. A
+  - One row at most is on `selected`: the agent with the focus, alone, its
+    card with a `muted` outline. A
     project's own row (a repository's space) is never lit, not even with
     the focus on its supervisor or on a shell in its space (then nothing
     is). A space outside any repository is lit while it is shown and none
@@ -763,9 +791,13 @@ The `projects` view fills its block on `chrome`, text 13 px:
   narrowed, the word "Corgi" goes first, then "Herdr", and the logos and
   `+` stay whole; the rail shows what Herdr's row shows
   there; the footer is Herdr's.
-- Projects shows each repository with its agents in two-line rows (the
+- Projects shows each repository with its agents in two-line cards (the
   task with its state at the right edge; then the icon, model and context
-  fill, dim), the supervisor first; in a narrow sidebar the task is cut
+  fill, dim), each with its state's color as a bar down its left side whose
+  ends the card's rounded corners never cut, the supervisor first; the
+  project's row counts its agents by state in small colored numbers, and a
+  click on it folds the project to its supervisor (the chevron after its
+  name turns right) and another unfolds it, also after the app restarts; in a narrow sidebar the task is cut
   with `…` and the state keeps its place, and an agent without a model or
   fill shows neither, with no placeholder; a click on a row shows that
   agent's terminal and lights that row alone, never the project's row with

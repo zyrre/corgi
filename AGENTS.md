@@ -328,6 +328,10 @@ the preview's copy of the layout state (`"theme": {"light", "dark"}` in
 its home's `layouts/.state/corgi.json`), then
 `do layout.switch --name corgi`: the layout follows the system, so
 `do app.theme` and a `theme` in `settings.json` leave the window dark.
+A fresh home has no such file until the layout's state changes: write
+`{"theme": {...}}` alone, and copy a theme of the user's
+(`~/.config/herdr-app/themes/gruvbox-*.json`) into the home's `themes/`
+first. The switch resets the sidebar's width: `layout.resize` after it.
 A change that is visual
 (what a view draws: a row, a width, a color, an element, where text is cut,
 a state's mark) attaches screenshots to its report: each one's path under
@@ -374,8 +378,13 @@ so a state behind one (the question under a MERGE mark, a card's button)
 is reached by saving a copy of the mod into the preview's home
 (`/tmp/corgi-ap-…/home/mods/corgi/projects.js`; the app reloads it) whose
 command loop calls the handler the click calls (`this.askMerge`,
-`this.runMerge`, `this.closeWorker`), then `do corgi.<command>`; `start` again puts the
-worktree's own mod back. Take a shot a second after a reload: until each
+`this.runMerge`, `this.closeWorker`, `this.foldProject(g.repo, cx)` for a
+click on a project's row), then `do corgi.<command>` (any name reaches the
+loop, undeclared); `start` again puts the
+worktree's own mod back. The mod's `localStorage` (folded projects and machines) is a file in
+the home (`data/corgi/store-*.json`), which `stop` keeps, and the made-up
+projects come back at the same paths, so a fold outlasts `stop` and
+`start`. Take a shot a second after a reload: until each
 space's git is read, the worktrees' spaces show as rows of their own.
 On a fresh home's first start the Projects list can stay empty of
 Corgi's tasks and marks for 10 seconds and more, although the mod reads
