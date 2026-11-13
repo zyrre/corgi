@@ -32,10 +32,16 @@
 //! Resume types the resume line into a supervisor's kept shell (or a
 //! worker's, when a core restart replaced its agent with one), or starts a
 //! worker again in a new terminal with its old one's name and labels, then
-//! removes the old, finished one. Each agent's mark then waits for the
-//! daemon's next pass ([`settle`]), which follows it back without a wake. An
-//! agent that does not come back is reported and its mark goes, so it holds
-//! no one's wakes.
+//! removes the old, finished one. Every agent it starts so gets
+//! [`CARRY_ON`] as its next prompt, so it finishes the turn the pause cut
+//! off without anyone typing to it: on the resume line itself
+//! ([`launch::resume_prompt_args`]: Claude Code, Codex), or typed once the
+//! agent has started (OpenCode). One already running again, brought back by
+//! hand, gets nothing; nor does the daemon's own resume after a core
+//! restart, whose agents were not stopped mid-turn by a pause. Each agent's
+//! mark then waits for the daemon's next pass ([`settle`]), which follows it
+//! back without a wake. An agent that does not come back is reported and its
+//! mark goes, so it holds no one's wakes.
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -54,6 +60,7 @@ use super::{
     HcClient, PID_LABEL, PROJECT_LABEL, RESUME_LABEL, ROLE_LABEL, RunSpec, SESSION_LABEL,
     SUPERVISOR_ROLE, Terminal,
     agents::{agent_state, corgi_terminals, shell_in_front},
+    launch::{self, shell_line},
 };
 use crate::{
     draft, harness::Harness, model::Agent, model::AgentState, paths::socket_state_file,
@@ -72,6 +79,16 @@ const POLL: Duration = Duration::from_millis(250);
 const INTERRUPT_POLLS: usize = 40;
 const EXIT_POLLS: usize = 80;
 const BACK_POLLS: usize = 80;
+/// How many looks a resumed agent that takes [`CARRY_ON`] typed (OpenCode)
+/// is given to report a status (Corgi's OpenCode plugin says `idle` once it
+/// has loaded), and how many more it gets to draw its input box before the
+/// message goes: a message typed while it boots is dropped.
+const REPORT_POLLS: usize = 80;
+const SETTLE_POLLS: usize = 12;
+
+/// What Resume tells each agent it starts again, as its next prompt.
+pub const CARRY_ON: &str = "[Corgi] You were stopped by Pause Agents mid-turn and are resumed now. \
+                            Carry on where you left off.";
 
 /// Where the pause of the core at `socket` is kept, in Corgi's state
 /// directory: `pause/<socket>.json`.
@@ -138,6 +155,13 @@ impl PausedAgent {
             phase: Phase::Stopping,
             at: now,
         }
+    }
+
+    /// Its resume line with [`CARRY_ON`] as the first prompt, when its
+    /// harness takes one there; `None` when the message is typed instead.
+    fn resume_carrying_on(&self) -> Option<String> {
+        let words = launch::resume_prompt_args(&Harness::from_kind(&self.harness), CARRY_ON)?;
+        Some(format!("{} {}", self.resume, shell_line(&words)))
     }
 
     /// Whether it holds: stopping or stopped, not on its way back.
@@ -675,7 +699,7 @@ pub fn resume_with(
                 return;
             };
             match &back {
-                Ok(address) => {
+                Ok(Back { address, .. }) => {
                     let marked = &mut record.agents[position];
                     marked.address = address.clone();
                     marked.phase = Phase::Resuming;
@@ -688,6 +712,18 @@ pub fn resume_with(
             }
         })?;
         match back {
+            Ok(Back {
+                address,
+                started: true,
+            }) if agent.resume_carrying_on().is_none() => {
+                outcome.done.push(agent.name.clone());
+                if let Err(error) = tell_to_carry_on(core, &address) {
+                    outcome.left.push((
+                        agent.name.clone(),
+                        format!("was not told to carry on ({error:#}); tell it to"),
+                    ));
+                }
+            }
             Ok(_) => outcome.done.push(agent.name.clone()),
             Err(error) => outcome
                 .failed
@@ -697,20 +733,35 @@ pub fn resume_with(
     Ok(outcome)
 }
 
-/// Starts `agent` again on its conversation and returns the terminal it runs
-/// in once its agent is in front.
-fn bring_back(core: &dyn Core, agent: &PausedAgent) -> Result<String> {
+/// Where an agent Resume brought back runs.
+struct Back {
+    /// The terminal it runs in.
+    address: String,
+    /// Whether Resume started it, rather than finding it running.
+    started: bool,
+}
+
+/// Starts `agent` again on its conversation, with [`CARRY_ON`] when its
+/// resume line takes it, and returns the terminal it runs in once its agent
+/// is in front.
+fn bring_back(core: &dyn Core, agent: &PausedAgent) -> Result<Back> {
     let current = core
         .get(&agent.address)?
         .filter(|terminal| agent.owns(terminal));
+    let line = agent
+        .resume_carrying_on()
+        .unwrap_or_else(|| agent.resume.clone());
     let address = match current {
-        // Running already: brought back by hand.
+        // Running already: brought back by hand, and told nothing.
         Some(terminal) if terminal.is_live() && !shell_in_front(&terminal) => {
-            return Ok(terminal.address);
+            return Ok(Back {
+                address: terminal.address,
+                started: false,
+            });
         }
         // A supervisor's kept shell, or a worker's after a core restart.
         Some(terminal) if terminal.is_live() => {
-            core.send(&terminal.address, &agent.resume)
+            core.send(&terminal.address, &line)
                 .context("type its resume line")?;
             // The shell is the program Corgi started there now, so the
             // daemon does not type the line again.
@@ -738,11 +789,7 @@ fn bring_back(core: &dyn Core, agent: &PausedAgent) -> Result<String> {
                     cwd: PathBuf::from(&agent.cwd),
                     labels,
                     keep: true,
-                    argv: vec![
-                        "/bin/sh".into(),
-                        "-c".into(),
-                        format!("exec {}", agent.resume),
-                    ],
+                    argv: vec!["/bin/sh".into(), "-c".into(), format!("exec {line}")],
                 })
                 .context("start its terminal again")?;
             if let Some(old) = finished.filter(|old| !old.is_live()) {
@@ -760,13 +807,36 @@ fn bring_back(core: &dyn Core, agent: &PausedAgent) -> Result<String> {
                 if !agent.supervisor {
                     mark_pid_of(core, &terminal);
                 }
-                return Ok(address);
+                return Ok(Back {
+                    address,
+                    started: true,
+                });
             }
             None => anyhow::bail!("its terminal {address} is gone"),
             _ => core.wait(),
         }
     }
     anyhow::bail!("its agent did not start in {address}")
+}
+
+/// Types [`CARRY_ON`] into the agent just started in `address`, whose
+/// harness takes no first prompt with its resume option (OpenCode): once it
+/// reports a status, or has had the time to, and has then had a moment to
+/// draw its input box. hc's send waits for a person's typing there and
+/// refuses a dialog.
+fn tell_to_carry_on(core: &dyn Core, address: &str) -> Result<()> {
+    for _ in 0..REPORT_POLLS {
+        match core.get(address)? {
+            Some(terminal) if !terminal.is_live() => anyhow::bail!("its agent exited"),
+            Some(terminal) if terminal.status.is_some() => break,
+            None => anyhow::bail!("its terminal {address} is gone"),
+            Some(_) => core.wait(),
+        }
+    }
+    for _ in 0..SETTLE_POLLS {
+        core.wait();
+    }
+    core.send(address, CARRY_ON)
 }
 
 /// Labels a worker's new terminal with its program's pid, as a launch does

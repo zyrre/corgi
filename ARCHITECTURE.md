@@ -404,7 +404,13 @@ agents; this is what the binary does for them.
   the daemon resumes no paused terminal, follows the paused agents' stops
   without a wake, types nothing into any supervisor and moves no handover
   on. `corgi resume` brings back exactly the paused ones, each on its own
-  conversation.
+  conversation and told to carry on with the turn the pause cut off: its
+  first prompt (`[Corgi] You were stopped by Pause Agents mid-turn…`) goes
+  on the resume line after `--` (Claude Code `--resume <id>`, Codex
+  `resume <id>`), or is typed once the agent has started (OpenCode, whose
+  `--prompt` is lost on the session `--session` opens). One already
+  running again gets nothing, and so does the daemon's resume after a core
+  restart: the `corgi.resume` label keeps the plain line.
 - **Projects and Open.** `corgi projects --json` lists the projects to
   offer: those with agents, the folders the app's spaces are in, Git
   repositories beside those, then the remembered ones; with `--query` the

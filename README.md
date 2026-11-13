@@ -54,7 +54,7 @@ flowchart TD
 The install puts Corgi's mod into the app, and its Projects list and brand row ("Herdr + Corgi") into your layout's sidebar ([`herdr-app/RECIPE.md`](herdr-app/RECIPE.md) describes them in full):
 
 - **Projects**, in place of the sidebar's Spaces and Agents lists: each repository with its agents under it, and a `+` that opens a project by name or path and starts its supervisor. It also shows the projects of the other machines the window is connected to, and merges, closes and pauses there.
-- **`⏸ Agents`**, beside the `+`, is for leaving the network: it stops the agents working right then (each ends its turn and exits, its conversation saved), holds every wake and handover while they are paused, and reads `▶ Agents` until you bring them back. Nothing is killed.
+- **`⏸ Agents`**, beside the `+`, is for leaving the network: it stops the agents working right then (each ends its turn and exits, its conversation saved), holds every wake and handover while they are paused, and reads `▶ Agents` until you bring them back, each carrying on with the turn it was stopped in. Nothing is killed.
 - **The last line** names the Corgi that answers (`Corgi 0.2.3 · 5b50895`), and says when its checkout has moved on or the daemon is down.
 
 A layout of your own gets the list in place, and nothing else in it changes, so other mods' changes stay; Herdr's own `main` is first cloned to a layout called `corgi`, which the window switches to (`herdr-app do layout.switch '{"name":"main"}'` goes back).

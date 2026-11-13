@@ -675,6 +675,17 @@ pub fn harness_command(
     command
 }
 
+/// The words that give a resumed session of `harness` its next prompt,
+/// appended to its resume command ([`Start::Resume`]): after `--`, as a new
+/// session's first prompt is, for Claude Code (`--resume <id> -- <prompt>`)
+/// and Codex (`resume <id> -- <prompt>`). `None` for OpenCode, whose
+/// `--prompt` is submitted only from its home screen, not in the session
+/// `--session` opens (1.18.33), and for any other harness: the prompt is
+/// typed once it is in front instead.
+pub fn resume_prompt_args(harness: &Harness, prompt: &str) -> Option<[String; 2]> {
+    matches!(harness, Harness::Claude | Harness::Codex).then(|| ["--".into(), prompt.into()])
+}
+
 /// The argv that runs `command` through [`agent_script`] in `dir`, with the
 /// text of `prompt_file` as its last argument when there is one.
 pub fn agent_argv(dir: &Path, prompt_file: Option<&Path>, command: &[String]) -> Vec<String> {

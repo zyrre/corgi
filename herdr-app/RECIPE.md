@@ -420,8 +420,11 @@ The `projects` view fills its block on `chrome`, text 13 px:
 - `▶ Agents` runs `corgi resume --json`, on each machine with an agent
   paused: each paused agent comes back on its
   own conversation, a supervisor in its shell, a worker in a new terminal
-  with its name, labels and space (its ended one removed). One that does
-  not come back is listed in the card, and holds nothing back any more.
+  with its name, labels and space (its ended one removed). Each one Resume
+  starts is told to carry on with the turn the pause cut off, so none
+  waits at its prompt for you (one already started again by hand is told
+  nothing). One that does not come back is listed in the card, and holds
+  nothing back any more.
   The status is read again after either.
 - `MERGE` is on a worker whose `tag` in `corgi status --json` is `merge`:
   Corgi's supervisor tags a worker whose branch is ready to merge straight

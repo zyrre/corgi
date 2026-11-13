@@ -518,6 +518,11 @@ The Projects list's `⏸ Agents` runs `corgi pause --json` and `▶ Agents`
 `corgi resume --json` (`src/commands/pause.rs`, `src/hc/pause.rs`).
 Never run either on the user's core: a pause stops their working agents,
 and while it holds any agent their daemon types nothing into a supervisor.
+Resume gives each agent it starts `pause::CARRY_ON` as its next prompt,
+appended to the stored resume line (Claude Code, Codex) or typed once the
+agent is up (OpenCode); the `corgi.resume` label itself stays the plain
+line, since the daemon types it after a core restart and those agents were
+not stopped mid-turn.
 `hc/pause/tests.rs` drives both against a fake core that acts as hc does,
 `tests/open.rs` the real binary against the fake `hc` script, and
 `waker/hc/tests.rs` the daemon's holds; a live try uses a private core
