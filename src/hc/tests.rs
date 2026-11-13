@@ -14,8 +14,8 @@ use super::{
     launch::{
         Place, SESSION_VARIABLES, Start, adoption_refusal, agent_argv, agent_script,
         answer_folder_trust, create_worktree_in, current_project_space, harness_command,
-        harness_refusal, launch_worker, new_session_id, project_space, shell_line,
-        start_supervisor_with, task_title, worker_space,
+        harness_refusal, launch_worker, new_session_id, project_space, resume_prompt_args,
+        shell_line, start_supervisor_with, task_title, worker_space,
     },
     *,
 };
@@ -512,6 +512,15 @@ fn each_harness_starts_with_its_first_prompt_and_resumes_by_its_session() {
     );
     let opencode = harness_command(&plan(Harness::OpenCode), None, &[], Start::Task("Do it"));
     assert_eq!(opencode[1..], ["--model", "haiku", "--prompt", "Do it"]);
+    // A resumed session's next prompt follows its resume command after
+    // `--`; OpenCode's is typed instead.
+    for harness in [Harness::Claude, Harness::Codex] {
+        assert_eq!(
+            resume_prompt_args(&harness, "Go on"),
+            Some(["--".to_string(), "Go on".to_string()])
+        );
+    }
+    assert_eq!(resume_prompt_args(&Harness::OpenCode, "Go on"), None);
     assert!(harness_refusal(&Harness::Claude).is_none());
     assert!(harness_refusal(&Harness::Gemini).is_some());
 }

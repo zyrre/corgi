@@ -874,8 +874,17 @@ fn pause_stops_a_working_worker_and_resume_starts_it_again_on_its_session() {
     assert_eq!(run.len(), 1);
     assert!(run[0].contains("--name|w-radar"), "{run:?}");
     assert!(run[0].contains("--label|herdr.space=sp-radar"), "{run:?}");
+    // Told to carry on with the turn the pause cut off; its label keeps the
+    // plain line, which the daemon types after a core restart.
     assert!(
-        run[0].ends_with(&format!("--|/bin/sh|-c|exec {resume}")),
+        run[0].ends_with(&format!(
+            "--|/bin/sh|-c|exec {resume} -- '[Corgi] You were stopped by Pause Agents \
+             mid-turn and are resumed now. Carry on where you left off.'"
+        )),
+        "{run:?}"
+    );
+    assert!(
+        run[0].contains(&format!("--label|corgi.resume={resume}|")),
         "{run:?}"
     );
     assert_eq!(called(&calls, "rm"), ["rm|t5|--json"]);

@@ -135,6 +135,41 @@ impl FakeCore {
     }
 }
 
+/// The program a resume line brings back in `terminal`: its harness.
+fn harness_of(terminal: &Terminal) -> String {
+    terminal.label(HARNESS_LABEL).unwrap_or("agent").to_string()
+}
+
+/// `terminal` running `kind` (`codex`, `opencode`), with the resume line
+/// Corgi gives that harness.
+fn on(kind: &str, mut terminal: Terminal) -> Terminal {
+    let session = terminal.label(SESSION_LABEL).unwrap().to_string();
+    let resume = match kind {
+        "codex" => format!("codex --no-daemon resume {session}"),
+        "opencode" => format!("opencode --session {session}"),
+        _ => format!("claude --resume {session}"),
+    };
+    for (key, value) in [
+        (HARNESS_LABEL, kind.to_string()),
+        (
+            RESUME_LABEL,
+            format!("/bin/sh -c 'agent' corgi-agent /w '' {resume}"),
+        ),
+    ] {
+        terminal.labels.insert(key.to_string(), value);
+    }
+    terminal.foreground = Some(crate::hc::Foreground {
+        name: kind.into(),
+        ..Default::default()
+    });
+    terminal
+}
+
+/// [`CARRY_ON`] as a resume line ends with it.
+fn carry_on_words() -> String {
+    format!("-- '{CARRY_ON}'")
+}
+
 fn set_status(terminal: &mut Terminal, status: &str) {
     terminal.status = Some(Status {
         state: status.into(),
@@ -196,9 +231,9 @@ impl Core for FakeCore {
                 terminal.pid = None;
                 terminal.status = None;
             }
-        } else if shell_in_front(terminal) && text.contains("--resume") {
+        } else if shell_in_front(terminal) && text.starts_with("/bin/sh -c ") {
             terminal.foreground = Some(crate::hc::Foreground {
-                name: "claude".into(),
+                name: harness_of(terminal),
                 ..Default::default()
             });
             set_status(terminal, "idle");
@@ -232,13 +267,16 @@ impl Core for FakeCore {
             }),
             labels: spec.labels.iter().cloned().collect(),
             cwd: spec.cwd.to_string_lossy().into_owned(),
+            ..Terminal::default()
+        };
+        let terminal = Terminal {
             foreground: Some(crate::hc::Foreground {
-                name: "claude".into(),
+                name: harness_of(&terminal),
                 ..Default::default()
             }),
             pid: Some(u64::from(state.next) * 10),
             keep: spec.keep,
-            ..Terminal::default()
+            ..terminal
         };
         state
             .terminals
@@ -458,14 +496,21 @@ fn resume_brings_back_exactly_the_paused_agents_on_their_own_sessions() {
     assert!(outcome.failed.is_empty());
     let calls = core.calls()[before..].to_vec();
     assert_eq!(
-        calls[0], "send t1 /bin/sh -c 'agent' corgi-agent /w '' claude --resume session-supervisor",
-        "the supervisor's resume line, typed into its kept shell"
+        calls[0],
+        format!(
+            "send t1 /bin/sh -c 'agent' corgi-agent /w '' claude --resume session-supervisor {}",
+            carry_on_words()
+        ),
+        "the supervisor's resume line, typed into its kept shell, told to carry on"
     );
     assert_eq!(
         calls[2],
-        "run t51 w-radar /w/w-radar /bin/sh -c exec /bin/sh -c 'agent' corgi-agent /w '' claude \
-         --resume session-w-radar",
-        "the worker, in a new terminal of its name, on its session"
+        format!(
+            "run t51 w-radar /w/w-radar /bin/sh -c exec /bin/sh -c 'agent' corgi-agent /w '' \
+             claude --resume session-w-radar {}",
+            carry_on_words()
+        ),
+        "the worker, in a new terminal of its name, on its session, told to carry on"
     );
     assert_eq!(calls[3], "rm t2", "its finished terminal is removed");
     assert!(!calls.iter().any(|call| call.contains("t3")), "{calls:?}");
@@ -607,4 +652,220 @@ fn the_json_names_what_was_done_and_what_was_not() {
         value["message"],
         "Paused 1 agent. Not paused: w-stays did not exit; left running"
     );
+}
+
+/// Pauses the one worker `w-radar` of `kind` in `t2` and returns the core
+/// and the pause file's path.
+fn paused_worker(scratch: &ScratchDir, kind: &str) -> (FakeCore, PathBuf) {
+    let path = scratch.join("pause.json");
+    let core = FakeCore::with(vec![(
+        on(kind, terminal("t2", "w-radar", false, "working")),
+        Acts::Well,
+    )]);
+    pause_with(&core, &path, None, 1_000, &mut Silent).unwrap();
+    (core, path)
+}
+
+#[test]
+fn resume_starts_a_finished_worker_of_each_harness_telling_it_to_carry_on() {
+    for kind in ["claude", "codex", "opencode"] {
+        let scratch = ScratchDir::new("hc-resume-harness");
+        let (core, path) = paused_worker(&scratch, kind);
+        let before = core.calls().len();
+        let outcome = resume_with(&core, &path, 2_000, &mut Silent).unwrap();
+        assert_eq!(outcome.done, ["w-radar"], "{kind}");
+        assert!(outcome.left.is_empty(), "{kind}: {outcome:?}");
+        let calls = core.calls()[before..].to_vec();
+        let run = calls.iter().find(|call| call.starts_with("run ")).unwrap();
+        let typed: Vec<&String> = calls
+            .iter()
+            .filter(|call| call.starts_with("send "))
+            .collect();
+        if kind == "opencode" {
+            // Its `--prompt` is lost on the session `--session` opens: the
+            // message is typed once it is in front.
+            assert!(run.ends_with("opencode --session session-w-radar"), "{run}");
+            assert_eq!(typed, [&format!("send t51 {CARRY_ON}")]);
+        } else {
+            assert!(
+                run.ends_with(&format!("session-w-radar {}", carry_on_words())),
+                "{kind}: {run}"
+            );
+            assert!(typed.is_empty(), "{kind}: {calls:?}");
+        }
+        // The terminal keeps the plain resume line, which the daemon types
+        // after a core restart: those agents were not stopped mid-turn.
+        core.restart();
+        let restarted = core.terminal("t51").unwrap();
+        let line = crate::hc::daemon::needs_resume(&restarted).unwrap();
+        assert!(line.ends_with("session-w-radar"), "{kind}: {line}");
+        assert!(!line.contains("[Corgi]"), "{kind}: {line}");
+    }
+}
+
+#[test]
+fn resume_types_the_carry_on_into_a_kept_shell_of_each_harness() {
+    for kind in ["claude", "codex", "opencode"] {
+        let scratch = ScratchDir::new("hc-resume-shell");
+        let (core, path) = paused_worker(&scratch, kind);
+        // A core restart left a shell in the worker's place.
+        {
+            let mut state = core.state.borrow_mut();
+            let (terminal, _) = state.terminals.get_mut("t2").unwrap();
+            terminal.state = "live".into();
+            terminal.pid = Some(2_000);
+            terminal.foreground = Some(crate::hc::Foreground {
+                name: "zsh".into(),
+                ..Default::default()
+            });
+        }
+        let before = core.calls().len();
+        let outcome = resume_with(&core, &path, 2_000, &mut Silent).unwrap();
+        assert_eq!(outcome.done, ["w-radar"], "{kind}");
+        let typed: Vec<String> = core.calls()[before..]
+            .iter()
+            .filter(|call| call.starts_with("send "))
+            .cloned()
+            .collect();
+        let line = core.terminal("t2").unwrap().labels[RESUME_LABEL].clone();
+        if kind == "opencode" {
+            assert_eq!(
+                typed,
+                [format!("send t2 {line}"), format!("send t2 {CARRY_ON}")]
+            );
+        } else {
+            assert_eq!(typed, [format!("send t2 {line} {}", carry_on_words())]);
+        }
+    }
+}
+
+#[test]
+fn a_codex_supervisor_is_resumed_in_its_kept_shell_told_to_carry_on() {
+    let scratch = ScratchDir::new("hc-resume-codex-supervisor");
+    let path = scratch.join("pause.json");
+    let core = FakeCore::with(vec![(
+        on("codex", terminal("t1", "supervisor", true, "working")),
+        Acts::Well,
+    )]);
+    pause_with(&core, &path, None, 1_000, &mut Silent).unwrap();
+    assert!(core.calls().contains(&"send t1 /quit".to_string()));
+    let before = core.calls().len();
+    let outcome = resume_with(&core, &path, 2_000, &mut Silent).unwrap();
+    assert_eq!(outcome.done, ["supervisor"]);
+    assert_eq!(
+        core.calls()[before],
+        format!(
+            "send t1 /bin/sh -c 'agent' corgi-agent /w '' codex --no-daemon resume \
+             session-supervisor {}",
+            carry_on_words()
+        )
+    );
+    assert!(!shell_in_front(&core.terminal("t1").unwrap()));
+}
+
+#[test]
+fn an_agent_brought_back_by_hand_before_resume_is_told_nothing() {
+    for kind in ["claude", "opencode"] {
+        let scratch = ScratchDir::new("hc-resume-by-hand");
+        let path = scratch.join("pause.json");
+        let core = FakeCore::with(vec![(
+            on(kind, terminal("t1", "supervisor", true, "working")),
+            Acts::Well,
+        )]);
+        pause_with(&core, &path, None, 1_000, &mut Silent).unwrap();
+        // Someone resumed it in its shell already.
+        {
+            let mut state = core.state.borrow_mut();
+            let (terminal, _) = state.terminals.get_mut("t1").unwrap();
+            terminal.foreground = Some(crate::hc::Foreground {
+                name: kind.into(),
+                ..Default::default()
+            });
+            set_status(terminal, "idle");
+        }
+        let before = core.calls().len();
+        let outcome = resume_with(&core, &path, 2_000, &mut Silent).unwrap();
+        assert_eq!(outcome.done, ["supervisor"], "{kind}");
+        assert!(
+            core.calls()[before..].is_empty(),
+            "{kind}: {:?}",
+            core.calls()
+        );
+    }
+}
+
+#[test]
+fn an_opencode_agent_that_cannot_be_told_is_back_and_named() {
+    let scratch = ScratchDir::new("hc-resume-untold");
+    let (core, path) = paused_worker(&scratch, "opencode");
+    // Its new terminal is gone before the message goes.
+    struct Losing<'a>(&'a FakeCore);
+    impl Core for Losing<'_> {
+        fn terminals(&self) -> Result<Vec<Terminal>> {
+            self.0.terminals()
+        }
+        fn get(&self, address: &str) -> Result<Option<Terminal>> {
+            self.0.get(address)
+        }
+        fn keys(&self, address: &str, keys: &[&str]) -> Result<()> {
+            self.0.keys(address, keys)
+        }
+        fn send(&self, _: &str, _: &str) -> Result<()> {
+            anyhow::bail!("t51 is blocked")
+        }
+        fn holds_draft(&self, terminal: &Terminal) -> Option<bool> {
+            self.0.holds_draft(terminal)
+        }
+        fn run(&self, spec: &RunSpec) -> Result<Terminal> {
+            self.0.run(spec)
+        }
+        fn remove(&self, address: &str) -> Result<()> {
+            self.0.remove(address)
+        }
+        fn label(&self, address: &str, labels: &[(&str, &str)]) -> Result<()> {
+            self.0.label(address, labels)
+        }
+        fn wait(&self) {}
+    }
+    let outcome = resume_with(&Losing(&core), &path, 2_000, &mut Silent).unwrap();
+    assert_eq!(outcome.result("resumed"), "resumed");
+    assert_eq!(
+        outcome.message("Resumed", NOTHING_PAUSED),
+        "Resumed 1 agent. Left running: w-radar was not told to carry on (t51 is blocked); \
+         tell it to"
+    );
+}
+
+#[test]
+fn the_carry_on_reaches_the_agent_as_one_argument_through_a_posix_shell() {
+    let scratch = ScratchDir::new("hc-resume-quoting");
+    let dir = scratch.canonicalize().unwrap();
+    // A harness that prints each argument it gets.
+    let command: Vec<String> = [
+        "/bin/sh",
+        "-c",
+        r#"for a do printf '[%s]\n' "$a"; done"#,
+        "claude",
+        "--resume",
+        "s-1",
+    ]
+    .map(String::from)
+    .to_vec();
+    let mut agent = PausedAgent::of(
+        &terminal("t1", "w-radar", false, "working"),
+        &shell_line(&launch::agent_argv(&dir, None, &command)),
+        1,
+    );
+    agent.harness = "claude".into();
+    let line = agent.resume_carrying_on().unwrap();
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", &format!("exec {line}")])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("[--resume]\n[s-1]\n[--]\n[{CARRY_ON}]\n")
+    );
+    agent.harness = "opencode".into();
+    assert_eq!(agent.resume_carrying_on(), None);
 }
