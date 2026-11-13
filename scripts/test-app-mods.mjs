@@ -506,7 +506,9 @@ async function projects(w, props = {}, module = undefined) {
     drawn.slice(6),
     [
       'C', 'Corgi',
-      'W', 'weather',
+      // A project's row counts its agents by state: one working, one
+      // blocked, two idle (the supervisor, and one in no state).
+      'W', 'weather', '1', '1', '2',
       'Supervisor', 'IDLE',
       'Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING',
       'Review the cache fix', 'BLOCKED',
@@ -527,7 +529,7 @@ async function projects(w, props = {}, module = undefined) {
   // ellipsis.
   const row = byId(root, 'agent-t3');
   assert.equal(row.kind, 'v_flex');
-  assert.equal(row.children.length, 2);
+  assert.equal(row.children.length, 3, 'two lines, and the edge');
   const [first, second] = row.children.map(kept);
   assert.equal(first.children.length, 1);
   const [task] = first.children.map(kept);
@@ -555,7 +557,7 @@ async function projects(w, props = {}, module = undefined) {
   assert.ok(!texts(row).includes('worktree-calm-forest-4f96'));
   // What Corgi does not know is left out, with nothing in its place: the
   // badge alone on the second line.
-  assert.deepEqual(byId(root, 'agent-t4').children.map((child) => texts(child)), [['Review the cache fix'], ['BLOCKED']], 'a blocked agent');
+  assert.deepEqual(byId(root, 'agent-t4').children.map((child) => texts(child)), [['Review the cache fix'], ['BLOCKED'], []], 'a blocked agent');
   assertBadge(byId(root, 'badge-t4'), 'blocked', 'BLOCKED');
   assertBadge(byId(root, 'badge-t2'), 'idle', 'IDLE');
   assertBadge(byId(root, 'badge-t7'), 'done', 'DONE');
@@ -610,7 +612,7 @@ async function projects(w, props = {}, module = undefined) {
 // it; a project's row is not lit at all; a space outside any project is
 // while none of its agents has the focus.
 {
-  const lit = (root) => [...ids(root, 'space-'), ...ids(root, 'agent-')].filter((id) => 'bg' in byId(root, id).calls);
+  const lit = (root) => [...ids(root, 'space-'), ...ids(root, 'agent-')].filter((id) => byId(root, id).calls.bg?.[0] === '#selected');
   const w = window();
   const mod = await projects(w);
   // A shell in ~, a space outside any project: its row.
@@ -645,13 +647,130 @@ async function projects(w, props = {}, module = undefined) {
   w.spaces.at(-1).active = false;
   w.spaces[2].active = true;
   const mod = await projects(w);
+  const lit = (root, id) => byId(root, id).calls.bg[0] === '#selected';
   let root = mod.render();
-  assert.ok('bg' in byId(root, 'agent-t3').calls, 'the first agent of the shown worktree');
-  assert.ok(!('bg' in byId(root, 'agent-t4').calls));
+  assert.ok(lit(root, 'agent-t3'), 'the first agent of the shown worktree');
+  assert.ok(!lit(root, 'agent-t4'));
   w.agents[2].focused = true;
   root = mod.render();
-  assert.ok(!('bg' in byId(root, 'agent-t3').calls));
-  assert.ok('bg' in byId(root, 'agent-t4').calls, 'the agent with the focus');
+  assert.ok(!lit(root, 'agent-t3'));
+  assert.ok(lit(root, 'agent-t4'), 'the agent with the focus');
+}
+
+// Each agent is a faintly shaded card with its state's color as a bar at
+// its left, past the card's rounding, so the corners never cut into it.
+// The lit card has the selection's fill and an outline every card has,
+// unseen until lit.
+{
+  const w = window();
+  w.agents[1].focused = true;
+  const mod = await projects(w);
+  const root = mod.render();
+  const card = byId(root, 'agent-t4');
+  assert.deepEqual([card.calls.bg, card.calls.border_color], [['#foreground0d'], ['#foreground00']], 'shaded, its outline unseen');
+  assert.ok('border_1' in card.calls && 'relative' in card.calls);
+  const lit = byId(root, 'agent-t3');
+  assert.deepEqual([lit.calls.bg, lit.calls.border_color], [['#selected'], ['#muted']], 'lit: the selection and an outline');
+  assert.ok('border_1' in lit.calls, 'the same outline: lighting moves nothing');
+  const radius = card.calls.rounded[0];
+  for (const [id, color] of [['t2', '#muted'], ['t3', '#working'], ['t4', '#blocked'], ['t5', '#muted'], ['t7', '#done']]) {
+    const edge = byId(root, `edge-${id}`);
+    assert.deepEqual(edge.calls.bg, [color], `${id}: the edge in its state's color (no state: idle's)`);
+    assert.deepEqual([edge.calls.top, edge.calls.bottom], [[0], [0]], `${id}: from top to bottom`);
+    assert.ok('absolute' in edge.calls);
+    // Inside a 1 px border, the rounding ends `radius` from the card's edge.
+    assert.ok(edge.calls.left[0] + 1 >= radius, `${id}: past the corners' rounding`);
+    assert.ok(byId(root, `agent-${id}`).calls.pl[0] > edge.calls.left[0] + edge.calls.w[0], `${id}: the text clear of the bar`);
+  }
+  // 2 px under the project's row, 4 between cards.
+  assert.deepEqual([byId(root, 'agent-t2').calls.mt, card.calls.mt], [[2], [4]]);
+  // A narrow sidebar takes in the cards' margins: the second line keeps its room.
+  const wide = card.calls.ml[0] + card.calls.pl[0] + card.calls.pr[0];
+  w.sidebar = 190;
+  const narrow = byId(mod.render(), 'agent-t4').calls;
+  assert.ok(narrow.ml[0] + narrow.pl[0] + narrow.pr[0] < wide, 'narrower margins at 190 px');
+  assert.ok(narrow.ml[0] + narrow.pl[0] + narrow.pr[0] + 2 <= 30, 'no less room than the rows had before cards');
+}
+
+// A project's row counts its agents by state, the supervisor's too: a
+// count in each state's badge color, in the HERD card's order, a state with
+// none left out. A space outside any project has none.
+{
+  const w = window();
+  w.agents[2].status = 'working';
+  const mod = await projects(w);
+  const root = mod.render();
+  assert.deepEqual(ids(root, 'count-'), ['count-sp-weather-working', 'count-sp-weather-idle']);
+  assertBadge(byId(root, 'count-sp-weather-working'), 'working', '2');
+  assertBadge(byId(root, 'count-sp-weather-idle'), 'idle', '2');
+  assert.equal(byId(root, 'count-sp-weather-working').calls.tooltip[0], '2 working');
+  // Between the name and the ahead and behind arrows, at the right.
+  assert.ok('flex_none' in byId(root, 'counts-sp-weather').calls, 'never cut');
+  assert.deepEqual(ids(byId(root, 'space-sp-home'), 'count'), [], '~ is no project');
+  // A worker tagged ready to merge counts as MERGE.
+  const status = structuredClone(STATUS);
+  status.projects[0].agents[0].tag = 'merge';
+  const merging = await projects(window({ status }));
+  assert.deepEqual(texts(byId(merging.render(), 'counts-sp-weather')), ['1', '1', '2']);
+  assert.deepEqual(ids(merging.render(), 'count-'), ['count-sp-weather-blocked', 'count-sp-weather-merge', 'count-sp-weather-idle']);
+}
+
+// A click on a project's row folds it to its supervisor: its other agents,
+// its worktrees' rows and their cards are not drawn, agent.next and
+// agent.prev pass them by, and its counts stay. Another click unfolds it.
+// Which projects are folded outlasts the app (localStorage). Its space is
+// not shown, nor is its row lit; a space outside any project is shown by
+// a click, as before.
+{
+  const stored = new Map();
+  const before = globalThis.localStorage;
+  globalThis.localStorage = { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)), removeItem: (k) => stored.delete(k) };
+  try {
+    const w = window();
+    const mod = await projects(w);
+    let root = mod.render();
+    const chevron = (root) => byId(root, 'fold-sp-weather').args[0];
+    assert.equal(chevron(root), 'mods/workspace-chrome/chevron-down.svg');
+    assert.equal(byId(root, 'fold-sp-home'), null, 'no chevron where nothing folds');
+    // A failed pull of a worktree with no agent: its card, until folded.
+    mod.view.pulls[JSON.stringify([null, `${TREES}/worktree-quiet-lake-0a1b`])] = { phase: 'failed', message: 'Couldn\'t reach origin' };
+    root = mod.render();
+    assert.ok(ids(root, 'pull-card-').length === 1);
+    const ran = w.ran.length;
+    click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
+    click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
+    assert.equal(w.ran.length, ran, 'the space is not shown');
+    root = mod.render();
+    assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t7'], 'the supervisor stays');
+    assert.deepEqual(ids(root, 'space-'), ['space-sp-corgi', 'space-sp-weather', 'space-sp-home'], 'the worktree with no agent goes too');
+    assert.deepEqual(ids(root, 'pull-card-'), [], 'and its card');
+    assert.deepEqual(w.agentOrder, ['t2', 't7']);
+    assert.equal(chevron(root), 'mods/workspace-chrome/chevron-right.svg');
+    assert.deepEqual(texts(byId(root, 'counts-sp-weather')), ['1', '1', '2'], 'the counts stay');
+    assert.ok(!('bg' in byId(root, 'space-sp-weather').calls), 'never lit');
+    assert.deepEqual(JSON.parse(stored.get('projects.folded')), [JSON.stringify([null, `${REPO}/.git`])]);
+
+    // Remembered: a new start draws it folded.
+    const again = await projects(window());
+    assert.deepEqual(ids(again.render(), 'agent-'), ['agent-t2', 'agent-t7']);
+    globalThis.__world = w;
+
+    // Unfolded, it is all back.
+    click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
+    click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
+    root = mod.render();
+    assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7']);
+    assert.deepEqual(ids(root, 'pull-card-').length, 1);
+    assert.deepEqual(w.agentOrder, ['t2', 't3', 't4', 't5', 't7']);
+    assert.deepEqual(JSON.parse(stored.get('projects.folded')), []);
+
+    // A space outside any project is shown by a click.
+    click(root, 'space-sp-corgi', mod.cx, 'on_mouse_down:left');
+    click(root, 'space-sp-corgi', mod.cx, 'on_mouse_up:left');
+    assert.deepEqual(w.ran.at(-1), ['space.select', { id: 'sp-corgi' }]);
+  } finally {
+    globalThis.localStorage = before;
+  }
 }
 
 // Without corgi the list still shows every space and agent, by its own title.
@@ -665,7 +784,7 @@ async function projects(w, props = {}, module = undefined) {
   assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', 'WORKING 1', 'BLOCKED 1', 'DONE 1', 'IDLE 1']);
   assert.deepEqual(
     drawn.slice(8),
-    ['W', 'weather', 'Weather supervisor', 'IDLE', 'Fixing the cache', 'WORKING', 'Review the cache fix', 'BLOCKED', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code', 'DONE'],
+    ['W', 'weather', '1', '1', '1', 'Weather supervisor', 'IDLE', 'Fixing the cache', 'WORKING', 'Review the cache fix', 'BLOCKED', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code', 'DONE'],
     drawn.join(' | '),
   );
 }
@@ -1196,7 +1315,7 @@ async function merged(outcome, state) {
   // after a spacer; no other row has one.
   assert.deepEqual(ids(root, 'merge-'), ['merge-t3']);
   const row = byId(root, 'agent-t3');
-  assert.deepEqual(row.children.map((child) => texts(child)), [['Fix the cache so that it holds'], ['Opus 5.5', '·', '33%', 'MERGE']]);
+  assert.deepEqual(row.children.map((child) => texts(child)), [['Fix the cache so that it holds'], ['Opus 5.5', '·', '33%', 'MERGE'], []]);
   const line = kept(row.children[1]).children.map(kept);
   const [spacer, mark] = line.slice(-2);
   assert.ok('flex_1' in spacer.calls, 'the mark is pushed to the right edge');
@@ -1895,7 +2014,7 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   const w = labWindow();
   const mod = await projects(w);
   const root = mod.render();
-  assert.deepEqual(byId(root, 'agent-lab/t3').children.map((child) => texts(child)), [['Serve the forecast'], ['Sonnet 5.5', '·', '50%', 'MERGE']]);
+  assert.deepEqual(byId(root, 'agent-lab/t3').children.map((child) => texts(child)), [['Serve the forecast'], ['Sonnet 5.5', '·', '50%', 'MERGE'], []]);
   assert.deepEqual(texts(byId(root, 'agent-lab/t2')), ['Supervisor', 'Opus 5.5', '·', '10%', 'IDLE']);
   assert.deepEqual(byId(root, 'merge-lab/t3').calls.tooltip, ['Merge worktree/api into develop and push'], "lab's project, not this computer's");
   assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING']);

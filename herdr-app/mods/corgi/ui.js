@@ -71,13 +71,37 @@ function onFill(c) {
   });
   return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.3 ? "#16161a" : "#ffffff";
 }
+// The states in the order the HERD card and a project's row count them,
+// each with its word for a count's tooltip.
+export const STATES = [
+  ["working", "working"],
+  ["blocked", "blocked"],
+  ["merge", "to merge"],
+  ["done", "done"],
+  ["idle", "idle"],
+  ["paused", "paused"],
+  ["exited", "exited"],
+];
+// `agents` by the badge their rows show: a worker tagged ready to merge
+// counts as MERGE, not as done or idle, unless it is paused; an agent in no
+// state counts as idle.
+export function stateCounts(agents) {
+  const n = Object.fromEntries(STATES.map(([k]) => [k, 0]));
+  for (const a of agents) n[badgeKey(a) ?? "idle"]++;
+  return n;
+}
+// A state's color: its badge's fill, the text of IDLE's tint and EXITED's
+// outline, and the edge of an agent's card.
+export function stateColor(t, key) {
+  return { working: t.working, blocked: t.blocked, merge: t.accent, done: t.done ?? t.dim, idle: t.muted, paused: t.muted, exited: t.blocked }[key] ?? t.dim;
+}
 // The badge of state `key`, drawn as the MERGE mark is: a small pill, solid
 // in the state's color (`text`, default its word). IDLE, the state at rest, is
 // a quiet tint; EXITED an outline, so that neither shouts. No animation.
 export function badge(t, key, text = BADGES[key]) {
   const pill = div().flex_none().px(5).rounded(4).text_size(10).font_semibold().child(text);
-  if (key === "idle") return pill.bg(t.muted + "33").text_color(t.muted);
-  if (key === "exited") return pill.border_1().border_color(t.blocked).text_color(t.blocked);
-  const fill = { working: t.working, blocked: t.blocked, merge: t.accent, done: t.done ?? t.dim, paused: t.muted }[key] ?? t.dim;
+  const fill = stateColor(t, key);
+  if (key === "idle") return pill.bg(fill + "33").text_color(fill);
+  if (key === "exited") return pill.border_1().border_color(fill).text_color(fill);
   return pill.bg(fill).text_color(key === "merge" ? t.accent_foreground : onFill(fill));
 }
