@@ -163,13 +163,21 @@ fn corgi(view: &str) -> Value {
 }
 
 /// `main` with Corgi's changes: Projects for Spaces, no Agents, Corgi's
-/// brand row, and the Questions panel last in `panel-body`.
+/// brand row, and the Questions and terminal panels last in `panel-body`.
 fn with_projects(layout: Value) -> Value {
     let mut layout = with_sidebar(layout);
-    find_mut(&mut layout, "panel-body").unwrap()["children"]
+    let stack = find_mut(&mut layout, "panel-body").unwrap()["children"]
         .as_array_mut()
-        .unwrap()
-        .push(json!({ "id": "corgi-questions", "type": "block", "content": corgi("questions") }));
+        .unwrap();
+    stack.push(json!({ "id": "corgi-questions", "type": "block", "content": corgi("questions") }));
+    stack.push(json!({
+        "id": "corgi-terminal", "type": "column", "background": "background", "radius": 10,
+        "border": { "width": 1, "color": "border" },
+        "children": [
+            { "id": "corgi-terminal-head", "type": "block", "size": { "px": 58 }, "content": corgi("terminal") },
+            { "id": "corgi-terminal-body", "type": "block", "padding": [6, 10], "content": corgi("terminal-hint") }
+        ]
+    }));
     layout
 }
 
@@ -254,8 +262,8 @@ fn a_layout_without_a_brand_block_gets_the_projects_list_alone() {
     assert_eq!(count_view(&layout, View::Projects), 1);
     assert_eq!(
         count(&layout, "corgi"),
-        2,
-        "the Projects list and the Questions panel"
+        4,
+        "the Projects list, the Questions panel and the terminal panel's header and hint"
     );
     assert_eq!(count(&layout, "workspace-chrome"), 1, "the footer");
     assert_eq!(put_projects(&mut layout), Ok(Change::Unchanged));

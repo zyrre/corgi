@@ -83,14 +83,17 @@ The branch stays. A worktree with uncommitted or untracked changes is
 refused (dirty) and nothing is closed; --force removes it anyway, discarding
 them, and --keep-worktree leaves the worktree on disk. The Herdr app closes
 the worker's space once its last terminal is gone; a space with a terminal
-of the person's in it stays. A supervisor, an agent Corgi did not start and
-the terminal running this command are refused.
+of the person's in it stays. Before the worktree is removed, the shells the
+Herdr app's terminal panel opened in it (in the panel or moved into a tab)
+are ended too; with the worktree kept, they stay. A supervisor, an agent
+Corgi did not start and the terminal running this command are refused.
 
 With --json it prints {\"result\", \"message\", \"reason\", \"dirty\",
-\"worktree\", \"branch\", \"removed\"}: result is closed, refused or failed;
-reason says why a refusal was (dirty, supervisor, no-agent, self,
+\"worktree\", \"branch\", \"removed\", \"shells\"}: result is closed, refused
+or failed; reason says why a refusal was (dirty, supervisor, no-agent, self,
 unavailable); dirty lists the changes as git status --porcelain does;
-removed says whether the worktree was removed. It exits 0 only when the
+removed says whether the worktree was removed; shells lists the addresses
+of the panel's shells that were ended. It exits 0 only when the
 worker was closed. A core that is not running is not started: the close is
 refused as unavailable.";
 

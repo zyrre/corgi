@@ -46,8 +46,8 @@ lacks says so in its block. The views' copies share what Corgi says: `corgi
 status` and `corgi usage` are read once for every block that shows the mod.
 They need the `corgi` command-line tool; `herdr-app/install.sh` in the
 Corgi repository installs the tool and the mod, and puts the Projects
-list, the brand row and the Questions panel (with its tab bar button) into
-the layout the window shows. A layout of your own gets it in
+list, the brand row and the Questions and terminal panels (with their tab
+bar buttons) into the layout the window shows. A layout of your own gets it in
 place; Herdr's own `main` is cloned to `corgi` first, which the window
 switches to (`"main"` shows Herdr's own again). Nothing else in the layout
 changes, so another mod's changes to it (a panel, a tab bar) stay. Corgi
@@ -122,6 +122,58 @@ A supervisor's row in the Projects list ends its first line with a blue
 pill, the question icon and N, while N of its questions have no answer
 from the app (`open_questions` in `corgi status`); a click shows the
 Questions panel on its project, and does not focus the supervisor.
+
+### The terminal panel
+
+A Terminal button in the tab bar (decision 2026-11-16, "A terminal in the
+right-hand panel follows the focused agent's folder; corgi close ends its
+shells") shows a shell in the right-hand panel stack, in the focused
+agent's folder: a worker's worktree, a supervisor's project root, or, for
+an agent Corgi did not start, the checkout its live folder is in. It is a
+column `corgi-terminal` in `panel-body`, a card as Files' and the
+Questions panel's (on `background`, radius 10, a `border` border): the
+`terminal` view as its 58 px header over a block showing the shell (6 and
+10 px of padding), or the `terminal-hint` view while there is none.
+
+The header, two lines:
+
+- a switch, **Worktree | Project root**: the agent's folder, or its
+  project's primary checkout (Corgi's project, else the folder of git's
+  common directory). Each folder has a shell of its own;
+- **Follows focus** (the `pin-off` icon) or **Pinned** (`pin`, in
+  `accent`, outlined in it): following, the panel shows the focused
+  agent's shell, and keeps the last one while focus is on a terminal that
+  is no agent's (the panel's own shell, a shell of the person's) or a mod;
+  pinned, it keeps the agent it shows. Narrower than 340 px, the label
+  goes and the icon stays;
+- **To tab** (`layers`), while a shell shows: the shell moves into a new
+  tab of the agent's space (`terminal.keep`), named `sh-<folder>`,
+  still running what it ran; the panel hides, and offers a new shell for
+  that folder when it shows again;
+- ✕ hides the panel; every shell keeps running.
+- The second line: a `git-branch` (or, for the root, `folder`) icon, the
+  folder's name (its path as the tooltip), the agent's name and its task.
+
+Each folder keeps its shell, running while another shows: a dev server
+started in one worker's worktree still runs when the panel comes back to
+it, and closing and opening the panel keeps them all. A shell is the
+person's login shell (`$SHELL -l`), started hidden on herdr-core the
+first time the panel shows a folder. One the person ends (`exit`) is
+dropped; the panel says "The shell in <folder> ended." with a **New
+shell** button, and starts one by itself again only for another folder.
+The panel follows the focused agent from space to space: while it shows,
+a space the window moves to shows it too (the tab bar otherwise restores
+each space's own panel). It opens shells for this computer's agents only;
+another machine's agent gets a line saying so.
+
+A card whose folder has a shell ends its first line with a `>_` mark (18
+by 14 px, the mod's `terminal.svg` in a rounded outline, before a
+supervisor's question count), in `accent` while the panel shows that
+shell; a click shows the panel with it (focusing the agent while the
+panel follows focus, pinning to it otherwise), and does not click the
+card. `corgi close` of a worker ends the shells in its worktree (the
+panel's and those moved into tabs) before it removes the worktree, and
+says so.
 
 ### The brand row
 
@@ -510,7 +562,9 @@ The `projects` view fills its block on `chrome`, text 13 px:
   Escape keeps. `Close` runs `corgi close <worker> --project <dir> --json`
   on the worker's machine: it ends the worker's hc
   terminal and removes it, by its address, then removes its worktree with
-  `git worktree remove`; the branch stays. The app closes the worker's
+  `git worktree remove`; the branch stays. The terminal panel's shells in
+  that worktree, in the panel or moved into a tab, are ended first
+  (`shells` lists them). The app closes the worker's
   space once its last terminal is gone (a terminal of the person's in it
   keeps it). A worktree with uncommitted or untracked changes is refused
   (`reason` `dirty`, `dirty` listing them) and nothing is closed: `Close
@@ -579,8 +633,9 @@ The `projects` view fills its block on `chrome`, text 13 px:
 
 - The mod, `mods/corgi/` (`mod.json`: `"place": "none"`, `"title":
   "Corgi"`). `main.js` reads the block's `props()` and hands its init and
-  render to the view it names (`projects`, the default, or `brand`; any
-  other draws one line saying this Corgi lacks it). The views' modules:
+  render to the view it names (`projects`, the default, `brand`,
+  `questions`, `terminal` or `terminal-hint`; any other draws one line
+  saying this Corgi lacks it). The views' modules:
   - `projects.js`, the Projects list. It began as a copy of Herdr's
     `spaces` mod (herdr-app 0.1.14) and is Corgi's own since: it follows no
     later version of it. Imports: `div`, `image`, `svg` from `gpui-kit`;
@@ -614,6 +669,19 @@ The `projects` view fills its block on `chrome`, text 13 px:
     `herdr-app/install.sh`).
   - `ui.js`, what the views draw alike: the sidebar's width and rail, the
     spinner, a state's badge, one-line text.
+  - `terminal.js`, the terminal panel's header (`terminal`) and its body
+    while no shell shows (`terminal-hint`), and `shells.js`, what they and
+    the cards' `>_` marks share. Imports: `div`, `svg` from `gpui-kit`;
+    `v_flex`, `h_flex` from `gpui-base`; `theme`, `run`, `checking`,
+    `agents`, `hc`, `exec`, `layout`, `terminals`, `panes`, `focused`,
+    `shared`, `setShared`, `appHome`, `readTextFile`, `writeTextFile` from
+    `herdr`. App commands: `layout.select`, `layout.show`, `layout.hide`,
+    `agent.focus`, `terminal.keep`. Programs: `hc run --bg --keep` (a
+    shell), `hc label`, `hc rm`, `git rev-parse` (`--show-toplevel`,
+    `--git-common-dir`) and `/bin/sh -c` for the login shell. Files: the
+    shown layout's `layouts/<name>.json`, its body block alone. Shared:
+    `corgi.terminal` (what the panel shows). Draws the mod's
+    `terminal.svg` and Herdr's `mods/workspace-chrome/*.svg`.
 - The layout: no file of this folder, but the one change `corgi
   app-layout` makes to the app's own (see "The layout").
 - `corgi projects --json` prints `{query, parent, projects: [{dir, name,
@@ -693,8 +761,16 @@ The `projects` view fills its block on `chrome`, text 13 px:
   the command says why (`--json`: `refused`, exit 0).
 - The Questions panel: a block `corgi-questions` showing the `corgi`
   mod's `questions` view goes last into the stack `panel-body` of the
-  column `panel`, when the layout has them and no such block yet. And a
-  Questions button goes into the tab bar the layout's block `tabs` names.
+  column `panel`, when the layout has them and no such block yet; then the
+  terminal panel, a column `corgi-terminal` (`background`, radius 10, a
+  `border` border) of a block `corgi-terminal-head` (58 px, the view
+  `terminal`) over a block `corgi-terminal-body` (padding 6 and 10, the
+  view `terminal-hint`), when the stack has no column whose child shows
+  the `terminal` view. The mod later writes `{"terminal": "t9"}` into that
+  body block alone, and puts it back when the app took it out because its
+  shell ended (see "The terminal panel"; `shells.js` says how). And a
+  Questions and a Terminal button go into the tab bar the layout's block
+  `tabs` names.
   Herdr's own `tabs` is never edited: it is cloned to `mods/tabs-corgi`
   (asset paths rewritten, `cloned_from` in its `mod.json`, and a first
   line of `main.js` saying Corgi made it, with a hash of what it held),
@@ -704,13 +780,19 @@ The `projects` view fills its block on `chrome`, text 13 px:
   change, each between `// >>> Corgi questions …` and `// <<< Corgi
   questions …` marker lines: just before the tab bar's `this.syncPanel(…)`
   call (and before any comment lines just above it, such as another
-  installer's markers) a line adds `corgi-questions` to the panels it
-  remembers per space, while the stack has the panel; and just before the
-  window buttons (`.when(w?.buttons,`) the button, the tab bar's own
+  installer's markers) lines add `corgi-questions` and `corgi-terminal` to
+  the panels it remembers per space, while the stack has them, and, while
+  the terminal panel shows and the window moves to another space, make it
+  that space's choice before the call restores the space's own (it reads
+  the call's `this.space` and `this.panels`, in a `try`); and just before
+  the window buttons (`.when(w?.buttons,`) the buttons, the tab bar's own
   `panelButton("corgi-questions", "Questions", "mods/corgi/question.svg")`
-  with the count, `shared("corgi.questions.count")`, as a pill. A tab bar
-  unlike Herdr's, one `herdr-app check` refuses, or a `tabs-corgi` that is
-  not Corgi's gets no button, and the command says why; the panel stays.
+  with the count, `shared("corgi.questions.count")`, as a pill, and
+  `panelButton("corgi-terminal", "Terminal", "mods/corgi/terminal.svg")`.
+  An earlier install's lines between the markers are replaced in place. A
+  tab bar unlike Herdr's, one `herdr-app check` refuses, or a `tabs-corgi`
+  that is not Corgi's gets no buttons, and the command says why; the
+  panels stay.
 - `corgi app-layout remove` (run by `herdr-app/install.sh --uninstall`,
   before the mod goes) puts Spaces and Agents back in each of the
   person's layouts that shows the Projects list or the brand row, of the
@@ -720,9 +802,9 @@ The `projects` view fills its block on `chrome`, text 13 px:
   shows `workspace-chrome` again (without the `view` prop, and without
   `props` when that was all). No layout is deleted (`corgi` stays, as the
   person's own) and the window is not switched. The Questions panel's
-  block goes too (a stack showing it shows its first child), and, once no
-  layout on that tab bar has the panel, Corgi's marked lines leave the tab
-  bar; a layout on `tabs-corgi` that is still as cloned goes back to
+  block and the terminal panel's column go too (a stack showing one shows
+  its first child; the shells keep running), and, once no layout on that
+  tab bar has either, Corgi's marked lines leave the tab bar; a layout on `tabs-corgi` that is still as cloned goes back to
   Herdr's `tabs`, and the clone goes once no layout names it. A clone
   another installer changed stays, without Corgi's lines.
 

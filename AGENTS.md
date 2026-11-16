@@ -210,7 +210,10 @@ hands it init and render; the views are modules of their own:
 no view), `brand.js`, the "Herdr + Corgi" row at the sidebar's top, and
 `questions.js`, the Questions panel in the right-hand `panel-body` stack
 (decision 2026-11-11, "The Questions panel shows the selected project's
-questions and backlog, answered card by card"); `ui.js` holds what they
+questions and backlog, answered card by card"), and `terminal.js`, the
+terminal panel in the same stack (its header, `terminal`, and its body
+while no shell shows, `terminal-hint`; `shells.js` keeps its shells, see
+"The terminal panel" below); `ui.js` holds what they
 draw alike, and `data.js` what Corgi says (`corgi status`, `corgi usage`,
 `hc machine ls`, and for the panel `corgi questions` and `corgi
 backlog`), read once for every copy: the app runs a mod's modules once
@@ -227,8 +230,9 @@ its timer); neither `herdr-app check` nor the default view's first frame
 shows this, and the Node stand-in below throws for it. `herdr-app/RECIPE.md` describes the mod for people and agents,
 and `herdr-app/install.sh` installs it with the CLI and runs `corgi
 app-layout` (`src/app_layout.rs`). That changes the layout the window
-shows, in place, in two places: the Questions panel goes last into its
-`panel-body` stack, with a Questions button in its tab bar
+shows, in place, in two places: the Questions and terminal panels go last
+into its `panel-body` stack, with a Questions and a Terminal button in its
+tab bar
 (`src/app_layout/panel.rs`: Herdr's `tabs` cloned to `tabs-corgi`, or a
 copy edited in place between marker lines, as the Jenkins mod's installer
 does; see RECIPE.md "The layout"), and the left sidebar: its `spaces` block
@@ -592,6 +596,56 @@ core on this Mac, never the person's core or their machines list:
 - Lab's rows are under "This computer"'s in the window, which takes no
   scroll from a script: a preview copy of the mod that adds `null` to
   `this.folded` folds this computer's.
+
+### The terminal panel
+
+A column `corgi-terminal` in `panel-body` (decision 2026-11-16): the
+`terminal` view over a block `corgi-terminal-body`, which shows the shell
+of the focused agent's folder, `{"terminal": "t9"}`. `shells.js` says how
+it works; what its choices rest on, seen in the preview (2026-11-16):
+
+- A shell is `hc run --bg --keep` with the login shell (`$SHELL -l`; `hc
+  run` with no program starts the core's `$SHELL`, `/bin/sh` in the
+  preview, whose core has `SHELL=/bin/sh`), labelled `corgi.shell=panel`
+  and `corgi.shell.dir=<folder>`. The labels are the tracking, read by the
+  mod (`terminals()` gives labels and `state`) and by `corgi close`
+  (`hc ls --label`); there is no file of the mod's to keep in step.
+- Showing another shell is a change of the block's `terminal` in the
+  layout's file: the window shows the new one at once and keeps
+  `hidden`, the stack's `active` and sizes, which live by id in
+  `layouts/.state/<layout>.json`. The mod writes the file with
+  `writeTextFile(path, text, expected)`, the app's compare-and-swap,
+  rewriting the body block alone; no `layout.set`.
+- When a block's terminal ends, the app deletes the block from the file
+  (and keeps the terminal `finished` until `hc rm`); the mod puts the block
+  back and removes the finished shell.
+- `terminal.keep --place tab` of a terminal a block shows gives it a tab in
+  the shown space but leaves it in the block too; To tab takes it out of
+  the block, relabels it `corgi.shell=tab` and hides the panel.
+- The tab bar's `syncPanel` restores each space's own panel when the
+  space changes, which closed the terminal panel on every move to another
+  worker's space; Corgi's list lines make it the new space's choice while
+  it shows (they read `this.space` and `this.panels`, in a `try`).
+- The header's timer follows the focus every 500 ms while the panel shows;
+  hidden, it writes and starts nothing.
+
+To look at it: `do layout.select --stack panel-body --child
+corgi-terminal` and `do layout.show --id panel` (the button's two
+commands) with an agent focused (`do agent.focus --terminal t2`). The
+switches are reached by a preview-home copy of `projects.js` whose command
+loop calls `shells.js`'s `setKind("root")`, `setFollow(false)`,
+`moveToTab()`, `newShell()` and `showShellOf("t3")` (each followed by
+`follow()`), under names without a dash (`do corgi.termroot`). A shell's
+address is in `hc ls` on the preview's core (`hcp`, as `sh-<folder>`), and
+`hc send <address> -- '<command>'` runs a command in it. To try `corgi
+close` there, give a fake worker Corgi's labels first (`hc label t2
+corgi.role=worker corgi.project=<fake/alpha>`, its agents have none) and
+run `target/release/corgi close <name> --project <fake/alpha> --json`
+with the preview's `HC_SESSION` and `XDG_STATE_HOME` under `env -i`; it
+removes that fake worktree, and the next `start` makes it again on the
+branch the close kept. Gruvbox light and dark: copy
+`~/.config/herdr-app/themes/gruvbox-*.json` into the preview home's
+`themes/` and set the layout state's `theme` (see "The preview window").
 
 ### The Jenkins mod
 

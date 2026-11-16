@@ -105,6 +105,9 @@ function world(overrides = {}) {
     toasts: [],
     commands: [], // `<mod>.<command>`s waiting for the mod, as from a key
     agentOrder: null,
+    hcs: [], // hc's arguments, each call
+    hcPrograms: [], // [(args) => result | promise | undefined], before the machines list
+    writes: [], // files written: [path, text]
     ...overrides,
   };
   const colors = new Proxy({}, { get: (_t, name) => (typeof name === 'string' ? `#${name}` : undefined) });
@@ -143,11 +146,26 @@ function world(overrides = {}) {
     home: () => HOME,
     appHome: () => APP,
     readTextFile: async (path) => w.files[path] ?? null,
+    // As the app's: only over the text the writer read (null: a new file).
+    writeTextFile: async (path, text, expected) => {
+      if ((w.files[path] ?? null) !== expected) throw new Error(`${path}: stale snapshot`);
+      w.files[path] = text;
+      w.writes.push([path, text]);
+      return null;
+    },
+    checking: () => false,
     // The commands sent so far, then none: a mod's loop for them ends.
     nextCommand: () => (w.commands.length ? Promise.resolve(w.commands.shift()) : Promise.reject(new Error('no more commands in a test'))),
     // No folder is watched here: a mod falls back to its timers.
     watchFolder: () => Promise.reject(new Error('no watch in a test')),
-    hc: async () => ({ code: 0, stdout: JSON.stringify({ machines: w.machineList }), stderr: '' }),
+    hc: async (args = []) => {
+      w.hcs.push(args);
+      for (const program of w.hcPrograms) {
+        const result = program(args);
+        if (result !== undefined) return { code: 0, stdout: '', stderr: '', ...(await result) };
+      }
+      return { code: 0, stdout: JSON.stringify({ machines: w.machineList }), stderr: '' };
+    },
     exec: async (command, args = [], options = {}) => {
       w.execs.push([command, ...args]);
       w.calls.push({ command, args, options });
@@ -164,8 +182,8 @@ function world(overrides = {}) {
 
 const HERDR_EXPORTS = [
   'spaces', 'panes', 'agents', 'terminals', 'machines', 'focused', 'layout', 'window', 'theme', 'shared', 'setShared',
-  'setAgentOrder', 'run', 'notify', 'openOverlay', 'home', 'appHome', 'readTextFile', 'watchFolder', 'nextCommand', 'hc', 'exec',
-  'props',
+  'setAgentOrder', 'run', 'notify', 'openOverlay', 'home', 'appHome', 'readTextFile', 'writeTextFile', 'watchFolder', 'nextCommand',
+  'hc', 'exec', 'props', 'checking',
 ];
 const sources = {
   'gpui-kit': 'const k = globalThis.__kit; export const View = k.View, div = k.div, svg = k.svg, image = k.image;',
@@ -2752,6 +2770,326 @@ const publish = async (list) => {
   await projects(w, {}, 'one');
   await projects(w, {}, 'two');
   assert.equal(w.execs.filter((call) => call[1] === 'status').length, 2);
+}
+
+// --- the terminal panel ------------------------------------------------------------
+
+// The layout file with the terminal panel as `corgi app-layout` puts it,
+// shown (or not): the window's live layout is the file, with the panel's
+// `hidden` and the stack's `active`.
+const TERMINAL_LAYOUT = `${APP}/layouts/corgi.json`;
+function terminalWindow({ shown = true, body = { mod: 'corgi', props: { view: 'terminal-hint' } } } = {}) {
+  const w = window();
+  const column = { id: 'corgi-terminal', type: 'column', children: [
+    { id: 'corgi-terminal-head', type: 'block', size: { px: 58 }, content: { mod: 'corgi', props: { view: 'terminal' } } },
+    ...(body ? [{ id: 'corgi-terminal-body', type: 'block', padding: [6, 10], content: body }] : []),
+  ] };
+  const tree = { id: 'root', children: [
+    { id: 'sidebar', size: { px: 268 }, children: [] },
+    { id: 'panel', type: 'column', children: [{ id: 'panel-body', type: 'stack', children: [
+      { id: 'files', type: 'block', content: { mod: 'files' } },
+      { id: 'other', type: 'block', content: { mod: 'gitlab' } },
+      column,
+    ] }] },
+  ] };
+  w.files[TERMINAL_LAYOUT] = JSON.stringify(tree, null, 2);
+  w.shared.layout = 'corgi';
+  w.view = { hidden: !shown, active: 'corgi-terminal' };
+  w.api.layout = () => {
+    const live = JSON.parse(w.files[TERMINAL_LAYOUT]);
+    const panel = live.children[1];
+    panel.hidden = w.view.hidden;
+    panel.children[0].active = w.view.active;
+    live.children[0].size.px = w.sidebar;
+    return live;
+  };
+  // hc: a shell started is live and labelled; a label or a kill changes it.
+  let next = 20;
+  w.hcPrograms.push((args) => {
+    if (args[0] === 'run') {
+      const labels = {};
+      args.forEach((a, i) => { if (args[i - 1] === '--label') { const [k, ...v] = a.split('='); labels[k] = v.join('='); } });
+      const address = `t${next++}`;
+      w.terminals.push({ address, state: 'live', cwd: args[args.indexOf('--cwd') + 1], labels, argv: args.slice(args.indexOf('--') + 1) });
+      return { stdout: JSON.stringify({ address, state: 'live' }) };
+    }
+    if (args[0] === 'label') {
+      const t = w.terminals.find((x) => x.address === args[1]);
+      const [k, v] = args[2].split('=');
+      t.labels[k] = v;
+      return { stdout: JSON.stringify(t) };
+    }
+    if (args[0] === 'rm') {
+      w.terminals = w.terminals.filter((x) => x.address !== args[1]);
+      return { stdout: '{}' };
+    }
+    return undefined;
+  });
+  // The person's login shell.
+  w.programs.push((command, args) => (command === '/bin/sh' && /UserShell/.test(args[1] ?? '') ? { stdout: '/bin/zsh' } : undefined));
+  return w;
+}
+const bodyNow = (w) => JSON.parse(w.files[TERMINAL_LAYOUT]).children[1].children[0].children[2].children.find((c) => c.id === 'corgi-terminal-body')?.content ?? null;
+const runs = (w) => w.hcs.filter((a) => a[0] === 'run');
+const focus = (w, terminal) => {
+  w.focused = { space: 'sp-calm', tab: 'tab-sp-calm', pane: `pane-${terminal}`, terminal };
+};
+// The Projects list (it reads Corgi's status for every copy) and the
+// panel's header, sharing the mod's modules.
+async function terminalPanel(w, module) {
+  const list = await projects(w, {}, module);
+  const head = await start(w, { view: 'terminal' }, module);
+  return { list, head };
+}
+
+// Follows focus: the focused agent's folder gets a shell of its own, started
+// once, in the person's login shell, put into the panel's body; another
+// agent's folder another; back, the first one again.
+{
+  const w = terminalWindow();
+  const { head } = await terminalPanel(w, 'terminal-follow');
+  const calm = `${TREES}/worktree-calm-forest-4f96`;
+  focus(w, 't3');
+  await head.tick(500);
+  assert.deepEqual(runs(w), [[
+    'run', '--bg', '--keep', '--json', '--no-parent', '--no-notify', '--name', 'sh-worktree-calm-forest-4f96',
+    '--cwd', calm, '--label', 'corgi.shell=panel', '--label', `corgi.shell.dir=${calm}`, '--', '/bin/zsh', '-l',
+  ]]);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  assert.equal(w.shared['corgi.terminal'].dir, calm);
+  // Only the body block changed in the file.
+  const written = JSON.parse(w.files[TERMINAL_LAYOUT]);
+  assert.deepEqual(written.children[1].children[0].children.map((c) => c.id), ['files', 'other', 'corgi-terminal']);
+  assert.equal(written.children[1].hidden, undefined, 'the panel state is not written');
+  // Nothing to do while nothing changed.
+  const writes = w.writes.length;
+  await head.tick(500);
+  assert.equal(w.writes.length, writes);
+  assert.equal(runs(w).length, 1);
+  // The supervisor: its folder is the project root.
+  focus(w, 't2');
+  await head.tick(500);
+  assert.equal(runs(w).length, 2);
+  assert.equal(runs(w)[1][runs(w)[1].indexOf('--cwd') + 1], REPO);
+  assert.deepEqual(bodyNow(w), { terminal: 't21' });
+  // Back: the first shell, still running whatever it ran.
+  focus(w, 't3');
+  await head.tick(500);
+  assert.equal(runs(w).length, 2, 'no new shell');
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  // A terminal that is no agent's (the panel's own shell, a person's) keeps it.
+  focus(w, 't20');
+  await head.tick(500);
+  focus(w, 't8');
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+
+  // The switch: the project root's shell, then the worktree's again.
+  click(head.render(), 'terminal-root', head.cx);
+  await head.settle();
+  assert.equal(w.shared['corgi.terminal'].kind, 'root');
+  assert.deepEqual(bodyNow(w), { terminal: 't21' }, "the root's shell is the supervisor's");
+  assert.ok(texts(head.render()).includes('weather'));
+  click(head.render(), 'terminal-worktree', head.cx);
+  await head.settle();
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  assert.equal(runs(w).length, 2);
+  const drawn = texts(head.render());
+  assert.ok(drawn.includes('worktree-calm-forest-4f96') && drawn.includes('w-cache') && drawn.includes('Fix the cache so that it holds'), drawn.join(' | '));
+  assert.ok(drawn.includes('Follows focus'));
+
+  // Pinned: another agent's focus leaves it.
+  click(head.render(), 'terminal-pin', head.cx);
+  await head.settle();
+  assert.equal(w.shared['corgi.terminal'].follow, false);
+  assert.ok(texts(head.render()).includes('Pinned'));
+  focus(w, 't2');
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  click(head.render(), 'terminal-pin', head.cx);
+  await head.settle();
+  assert.deepEqual(bodyNow(w), { terminal: 't21' }, 'follows again');
+}
+
+// Folders: Corgi's worktree for its worker, git's checkout for an agent
+// started by hand (and its project's root from git's common directory);
+// another machine's agent gets none.
+{
+  const w = terminalWindow();
+  const { head } = await terminalPanel(w, 'terminal-folders');
+  const calm = `${TREES}/worktree-calm-forest-4f96`;
+  w.panes.find((p) => p.terminal === 't4').cwd = `${calm}/src`;
+  CHECKOUTS[`${calm}/src`] = [calm, `${REPO}/.git`];
+  focus(w, 't4');
+  await head.tick(500);
+  assert.equal(w.shared['corgi.terminal'].dir, calm, "the checkout's top, not the folder it is in");
+  w.shared['corgi.terminal'] = { ...w.shared['corgi.terminal'], kind: 'root' };
+  await head.tick(500);
+  assert.equal(w.shared['corgi.terminal'].dir, REPO);
+  delete CHECKOUTS[`${calm}/src`];
+  // Another machine's agent.
+  w.agents.push(agent('sp-lab', 'lab/t3', 'working', 'far'));
+  focus(w, 'lab/t3');
+  const before = runs(w).length;
+  await head.tick(500);
+  assert.equal(w.shared['corgi.terminal'].note, 'remote');
+  assert.equal(runs(w).length, before);
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } });
+  const hint = await start(w, { view: 'terminal-hint' }, 'terminal-folders');
+  assert.ok(texts(hint.render()).some((x) => /another machine/.test(x)));
+}
+
+// The tracking is hc's labels: a live shell of the panel's, by its folder;
+// a finished one, one moved to a tab, another machine's or the person's
+// own shell are not the panel's, and a finished one is removed from hc.
+{
+  const w = terminalWindow();
+  const shells = await import(new URL('../herdr-app/mods/corgi/shells.js?module=terminal-track', import.meta.url));
+  globalThis.__world = w;
+  const list = [
+    { address: 't30', state: 'live', labels: { 'corgi.shell': 'panel', 'corgi.shell.dir': '/a' } },
+    { address: 't31', state: 'finished', labels: { 'corgi.shell': 'panel', 'corgi.shell.dir': '/b' } },
+    { address: 't32', state: 'live', labels: { 'corgi.shell': 'tab', 'corgi.shell.dir': '/c' } },
+    { address: 'lab/t33', state: 'live', labels: { 'corgi.shell': 'panel', 'corgi.shell.dir': '/d' } },
+    { address: 't34', state: 'live', labels: {} },
+  ];
+  assert.deepEqual([...shells.panelShells(list)], [['/a', 't30']]);
+  shells.sweep(list);
+  shells.sweep(list);
+  assert.deepEqual(w.hcs, [['rm', 't31']], 'once');
+  assert.equal(shells.shellName('/x/Worktree Calm.forest'), 'sh-worktree-calm-forest');
+  // Put back: the body block the app took out when its shell ended.
+  const tree = { id: 'r', children: [{ id: 'corgi-terminal', children: [{ id: 'corgi-terminal-head' }] }] };
+  assert.equal(shells.placeBody(tree, { terminal: 't9' }), true);
+  assert.deepEqual(tree.children[0].children[1], { id: 'corgi-terminal-body', type: 'block', padding: [6, 10], content: { terminal: 't9' } });
+  assert.equal(shells.placeBody(tree, { terminal: 't9' }), false);
+  assert.equal(shells.placeBody({ id: 'r' }, { terminal: 't9' }), false, 'no panel, nothing');
+  // Follow or pinned.
+  const listed = [{ address: 't2' }, { address: 't3' }];
+  assert.equal(shells.targetOf({ follow: true, agent: 't2' }, { terminal: 't3' }, listed), 't3');
+  assert.equal(shells.targetOf({ follow: true, agent: 't2' }, { terminal: 't20' }, listed), 't2');
+  assert.equal(shells.targetOf({ follow: false, agent: 't2' }, { terminal: 't3' }, listed), 't2');
+  assert.equal(shells.targetOf({ follow: true }, null, listed), null);
+}
+
+// Only while the panel shows: hidden, or another child of the stack shown,
+// it starts and writes nothing.
+{
+  const w = terminalWindow({ shown: false });
+  const { head } = await terminalPanel(w, 'terminal-hidden');
+  focus(w, 't3');
+  await head.tick(500);
+  w.view = { hidden: false, active: 'files' };
+  await head.tick(500);
+  assert.equal(runs(w).length, 0);
+  assert.equal(w.writes.length, 0);
+  w.view.active = 'corgi-terminal';
+  await head.tick(500);
+  assert.equal(runs(w).length, 1);
+}
+
+// The body block put back after the app took it out, and a write that
+// another writer's change came between is not made: the next one is, on
+// the file as it is then, with that change kept.
+{
+  const w = terminalWindow({ body: null });
+  const { head } = await terminalPanel(w, 'terminal-put-back');
+  focus(w, 't3');
+  const read = w.api.readTextFile;
+  let raced = false;
+  w.api.readTextFile = async (path) => {
+    const text = await read(path);
+    if (path === TERMINAL_LAYOUT && !raced) {
+      raced = true;
+      const theirs = JSON.parse(w.files[path]);
+      theirs.children[1].children[0].children[1].content = { mod: 'gitlab', props: { theirs: true } };
+      w.files[path] = JSON.stringify(theirs);
+    }
+    return text;
+  };
+  await head.tick(500);
+  assert.equal(w.writes.length, 0, 'refused: the file changed after it was read');
+  await head.tick(500);
+  assert.equal(w.writes.length, 1);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  const file = JSON.parse(w.files[TERMINAL_LAYOUT]);
+  assert.deepEqual(file.children[1].children[0].children[1].content, { mod: 'gitlab', props: { theirs: true } }, "the other writer's change stays");
+}
+
+// A shell the person ended (`exit`): dropped, removed from hc, and the
+// panel says so with a New shell button; elsewhere and back, a new one.
+// To tab: relabelled, out of the panel, a tab of the agent's space.
+{
+  const w = terminalWindow();
+  const { head } = await terminalPanel(w, 'terminal-end');
+  focus(w, 't3');
+  await head.tick(500);
+  w.terminals.find((t) => t.address === 't20').state = 'finished';
+  // The app took the block out of the file.
+  const file = JSON.parse(w.files[TERMINAL_LAYOUT]);
+  file.children[1].children[0].children[2].children.pop();
+  w.files[TERMINAL_LAYOUT] = JSON.stringify(file);
+  await head.tick(500);
+  assert.equal(runs(w).length, 1, 'no new shell by itself');
+  assert.equal(w.shared['corgi.terminal'].note, 'ended');
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } }, 'put back, with the hint');
+  assert.ok(w.hcs.some((a) => a[0] === 'rm' && a[1] === 't20'));
+  const hint = await start(w, { view: 'terminal-hint' }, 'terminal-end');
+  assert.ok(texts(hint.render()).includes('The shell in worktree-calm-forest-4f96 ended.'));
+  click(hint.render(), 'terminal-new', hint.cx);
+  await hint.settle();
+  assert.equal(runs(w).length, 2);
+  assert.deepEqual(bodyNow(w), { terminal: 't21' });
+
+  // To tab.
+  click(head.render(), 'terminal-tab', head.cx);
+  await head.settle();
+  assert.equal(w.terminals.find((t) => t.address === 't21').labels['corgi.shell'], 'tab');
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } });
+  assert.deepEqual(w.ran.slice(-3), [['agent.focus', { terminal: 't3' }], ['terminal.keep', { terminal: 't21', place: 'tab' }], ['layout.hide', { id: 'panel' }]]);
+  assert.equal(w.shared['corgi.terminal'].note, 'moved');
+  // Shown again: no shell starts by itself where one moved away.
+  await head.tick(500);
+  assert.equal(runs(w).length, 2);
+  // Another folder, then back: a new one.
+  focus(w, 't2');
+  await head.tick(500);
+  focus(w, 't3');
+  await head.tick(500);
+  assert.equal(runs(w).length, 4);
+}
+
+// The `>_` mark: on a card whose folder has a shell, also at 190 px; a click
+// shows the panel with it (and focuses the agent, as the panel follows).
+{
+  const w = terminalWindow({ shown: false });
+  const { list, head } = await terminalPanel(w, 'terminal-mark');
+  assert.equal(byId(list.render(), 'shell-t3'), null);
+  w.terminals.push({ address: 't40', state: 'live', labels: { 'corgi.shell': 'panel', 'corgi.shell.dir': `${TREES}/worktree-calm-forest-4f96` } });
+  await list.tick(1000);
+  for (const px of [268, 190]) {
+    w.sidebar = px;
+    const root = list.render();
+    const mark = byId(root, 'shell-t3');
+    assert.ok(mark, `a mark at ${px} px`);
+    // On the card's first line, after its task.
+    const first = kept(byId(root, 'agent-t3').children[0]);
+    assert.ok(first.children.map(kept).includes(mark));
+    assert.equal(byId(root, 'shell-t2'), null, 'the root has none');
+  }
+  click(list.render(), 'shell-t3', list.cx);
+  assert.equal(list.cx.stopped, 1, 'the card is not clicked too');
+  assert.deepEqual(w.ran.slice(-3), [
+    ['agent.focus', { terminal: 't3' }],
+    ['layout.select', { stack: 'panel-body', child: 'corgi-terminal' }],
+    ['layout.show', { id: 'panel' }],
+  ]);
+  w.view.hidden = false;
+  focus(w, 't3');
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't40' }, 'that shell, no new one');
+  assert.equal(runs(w).length, 0);
+  assert.deepEqual(kept(byId(list.render(), 'shell-t3')).calls.border_color, ['#accent'], 'lit while the panel shows it');
 }
 
 console.log('app mods: ok');

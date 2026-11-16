@@ -276,8 +276,17 @@ fake_behind() {
   done
 }
 
+# A worktree on its own branch; a `corgi close` tried here removed the
+# worktree and kept the branch, which it is then made on again.
 fake_worktree() {
-  [[ -d "$2" ]] || git -C "$1" worktree add -q -b "worktree/${2##*/worktree-}" "$2"
+  local branch="worktree/${2##*/worktree-}"
+  [[ -d "$2" ]] && return 0
+  git -C "$1" worktree prune
+  if git -C "$1" rev-parse -q --verify "refs/heads/$branch" >/dev/null; then
+    git -C "$1" worktree add -q "$2" "$branch"
+  else
+    git -C "$1" worktree add -q -b "$branch" "$2"
+  fi
 }
 
 # One agent of the canned status: name, role, state, task, terminal, folder,

@@ -64,6 +64,7 @@ import {
 } from "herdr";
 import { narrow, toggleSidebar, sidebarPx, oneLine, tildePaths, spinner, BADGES, badgeKey, badge, STATES, stateCounts, stateColor } from "./ui.js";
 import { store, POLL_MS, USAGE_POLL_MS, MACHINES_MS, NO_CORGI, CURRENT, COUNT, PICK, QUESTIONS_BLOCK } from "./data.js";
+import { homeNow, shellIn, panelShells, panelState, showShellOf } from "./shells.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -385,7 +386,11 @@ export default class Projects {
       }
       // A prompt cache's minutes count down between reads (`cacheFigure`).
       const synced = this.sync();
-      if (this.cacheTurned() || synced) cx.notify();
+      // The terminal panel's shells, for the cards' `>_` marks.
+      const shells = [...panelShells()].join();
+      const shellsTurned = shells !== this.shellsKey;
+      this.shellsKey = shells;
+      if (this.cacheTurned() || synced || shellsTurned) cx.notify();
       this.publishQuestions();
     });
     // `corgi.open`, from a key or `herdr-app do`.
@@ -1854,6 +1859,7 @@ export default class Projects {
     const key = badgeKey(a);
     // A supervisor's open questions, as a pill at the right of its first line.
     const asked = a.supervisor ? this.openQuestions(a) : 0;
+    const shell = this.shellMark(a, t);
     const tight = sidebarPx() < CARD_ROOMY;
     return v_flex()
       .id(`agent-${a.address}`)
@@ -1877,6 +1883,7 @@ export default class Projects {
       .on_mouse_down("right", () => this.menu(w))
       .child(h_flex().h(18).items_center()
         .child(div().flex_1().min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
+        .when(Boolean(shell), (el) => el.child(shell))
         .when(asked > 0, (el) => el.child(this.questionPill(a, asked, t))))
       .child(h_flex().h(16).gap(5).items_center().text_size(11).text_color(t.dim)
         .when(Boolean(pic) && !modelOut, (el) => el.child(pic))
@@ -1890,6 +1897,26 @@ export default class Projects {
         .when(Boolean(key), (el) => el.child(div().flex_1()).child(key === "merge" ? this.mergeMark(a, t) : badge(t, key).id(`badge-${a.address}`))))
       // Inside the border, past the corners' rounding: whole from top to bottom.
       .child(div().id(`edge-${a.address}`).absolute().left(CARD_RADIUS - 1).top(0).bottom(0).w(CARD_EDGE).bg(stateColor(t, key ?? "idle")));
+  }
+
+  // A `>_` on a card whose folder (a worker's worktree, a supervisor's
+  // project root) has a shell of the terminal panel's (shells.js): a click
+  // shows the panel with it. In the accent while the panel shows it.
+  shellMark(a, t) {
+    const dir = homeNow(a.address);
+    const address = dir && shellIn(dir);
+    if (!address) return null;
+    const lit = panelState().address === address;
+    return h_flex().id(`shell-${a.address}`).ml(5).w(18).h(14).flex_none().items_center().justify_center().rounded(3)
+      .border_1().border_color(lit ? t.accent : t.muted + "80").text_color(lit ? t.accent : t.muted).cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(`A shell runs in ${base(dir)}: show it in the terminal panel`)
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        showShellOf(a.address);
+      })
+      .child(svg("mods/corgi/terminal.svg").size(10));
   }
 
   // --- the Questions panel -----------------------------------------------------------
