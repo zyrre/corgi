@@ -1245,6 +1245,13 @@ const run = async (mods, ms, each = () => {}) => {
     each(at + 2_000);
   }
 };
+// Ticks as `run` does until `w` has `n` toasts, for at most `ms`.
+const runUntil = async (mods, w, n, ms) => {
+  for (let at = 0; at < ms && w.toasts.length < n; at += 2_000) {
+    skew += 2_000;
+    for (const mod of mods) await mod.tick();
+  }
+};
 const listReads = (fake, place = 'team-dev') => fake.requests.filter((r) => r.path === `/job/${place}/api/json`);
 
 test('a blip of a failed read or two shows no error, only how old the rows are, and a good read clears that', async () => {
@@ -1549,8 +1556,8 @@ const svgsOf = (mod, id) => {
   walk(byId(mod.render(), id), (n) => { if (n.kind === 'svg') out.push(path.basename(n.args[0], '.svg')); });
   return out;
 };
-// A layout as Herdr's, with the panel in its right-hand stack (hidden, or
-// showing `active`) and the floating block that watches for the toasts.
+// A layout as Herdr's, with the panel in its right-hand stack: the column
+// `panel` hidden or not, and the stack showing `active`.
 const panelLayout = ({ hidden = true, active = 'files' } = {}) => ({
   type: 'row',
   children: [
@@ -1560,8 +1567,9 @@ const panelLayout = ({ hidden = true, active = 'files' } = {}) => ({
       { id: 'jenkins-panel', type: 'block', content: { mod: 'jenkins', props: { panel: true } } },
     ] }] },
   ],
-  floating: [{ id: 'jenkins-watch', content: { mod: 'jenkins', props: { watch: true } }, edge: 'bottom', align: 'end' }],
 });
+const SHOWN = { hidden: false, active: 'jenkins-panel' };
+const SELECT = ['layout.select', { stack: 'panel-body', child: 'jenkins-panel' }];
 
 test('the toasts\' logic: a baseline first, an end and a wait once each, what a toast says', async () => {
   const alerts = await import(new URL('../alerts.js', import.meta.url));
@@ -1609,9 +1617,18 @@ test('the toasts\' logic: a baseline first, an end and a wait once each, what a 
   // Mutes: the job's own, or its section's.
   assert.ok(alerts.muted(failed, new Set([failed.job.path]), new Set()) && alerts.muted(failed, new Set(), new Set(['/job/team-prod'])) && !alerts.muted(failed, new Set(['/job/x']), new Set(['/job/team-dev'])));
 
-  // The panel in a layout: the commands that show it.
-  assert.deepEqual(alerts.showCommands(panelLayout()), [['layout.select', { stack: 'panel-body', child: 'jenkins-panel' }], ['layout.show', { id: 'panel' }]]);
+  // The panel in a layout: the commands that show it, whether it shows, and
+  // the one command a toast's click runs to bring it nearer.
+  assert.deepEqual(alerts.showCommands(panelLayout()), [SELECT, ['layout.show', { id: 'panel' }]]);
   assert.deepEqual(alerts.showCommands({ type: 'row', children: [] }), []);
+  const states = [panelLayout(), panelLayout({ hidden: true, active: 'jenkins-panel' }), panelLayout({ hidden: false, active: 'files' }), panelLayout(SHOWN), { type: 'row', children: [] }];
+  assert.deepEqual(states.map(alerts.panelShows), [false, false, false, true, true]);
+  assert.deepEqual(states.map(alerts.panelSelected), [false, true, false, true, true]);
+  assert.deepEqual(states.map(alerts.showStep), [SELECT, ['layout.show', { id: 'panel' }], SELECT, null, null]);
+  const first = panelLayout({ hidden: false });
+  delete first.children[1].children[0].active;
+  first.children[1].children[0].children.reverse();
+  assert.ok(alerts.panelShows(first), 'a stack with no `active` shows its first child');
 });
 
 test('toasts: none for what was so at the first read, one when a build succeeds, fails or starts to wait for input', async () => {
@@ -1725,39 +1742,62 @@ test('the bells: a job\'s and a section\'s mute, kept by the app, and a click on
   await fake.close();
 });
 
-test('the toast\'s click: the watcher shows the panel, and the panel opens on the build, where an input\'s buttons are', async () => {
+test('the toast\'s click: the panel shown once and then hidden gets no mod command, so the click shows it, and it opens on the build, where an input\'s buttons are', async () => {
   const fake = await startFakeJenkins();
   const w = configured(fake);
-  w.layout = panelLayout();
-  w.props = { watch: true };
-  const watcher = await start(w, 'app'); // the panel was never shown: only the watcher runs
-  assert.deepEqual(texts(watcher.render()), [], 'it draws nothing');
-  await run([watcher], 4.5 * 60_000);
-  assert.deepEqual(toasted(w).map(([title]) => title), ['poller_master #57 succeeded'], 'it reads the lists and toasts');
-  await watcher.send(w.toasts[0].action.name.replace('jenkins.', ''));
-  assert.deepEqual(w.ran, [['layout.select', { stack: 'panel-body', child: 'jenkins-panel' }], ['layout.show', { id: 'panel' }]]);
-  assert.equal(watcher.view.view().kind, 'list', 'the watcher goes nowhere itself');
-
-  // Shown, the panel starts, and goes to the build.
-  w.layout = panelLayout({ hidden: false, active: 'jenkins-panel' });
   w.props = { panel: true };
-  const panel = await start(w, 'app');
+  w.layout = panelLayout(SHOWN);
+  const panel = await start(w, 'app'); // shown once: the app starts it
+  await panel.tick();
+  w.layout = panelLayout({ hidden: true, active: 'jenkins-panel' }); // its column hidden
+  await runUntil([panel], w, 1, 5 * 60_000);
+  assert.deepEqual(toasted(w).map(([title]) => title), ['poller_master #57 succeeded'], 'hidden, it reads the lists and toasts');
+  assert.deepEqual(w.toasts[0].action, { name: 'layout.show', args: { id: 'panel' } }, 'its click shows the column');
+  // Clicked: the column shows, and the panel goes to the build.
+  w.layout = panelLayout(SHOWN);
+  await panel.tick();
   assert.equal(panel.view.view().kind, 'job');
   assert.ok(panel.says('Stages of #57 · success · took 6m 00s'), panel.texts().join('|'));
 
-  // A wait: the click opens the job's stages, with the step's Proceed and Abort.
+  // Behind Files, its column hidden too: the click selects it in the stack,
+  // and the panel shows the column itself.
   await panel.key('escape');
   w.layout = panelLayout();
   fake.run(['team-prod', 'api_master'], { ms: 60_000, paused: 'Approve' });
-  await run([watcher, panel], 90_000);
+  await runUntil([panel], w, 2, 150_000);
   assert.deepEqual(toasted(w).slice(1).map(([title]) => title), ['api_master #65 waits for input']);
+  assert.deepEqual(w.toasts[1].action, { name: SELECT[0], args: SELECT[1] });
   w.ran = [];
-  await watcher.send(w.toasts[1].action.name.replace('jenkins.', ''));
-  assert.equal(w.ran.length, 2);
+  w.layout = panelLayout({ hidden: true, active: 'jenkins-panel' }); // what the click did
   await panel.tick();
-  assert.equal(panel.view.view().kind, 'job');
-  assert.equal(panel.view.view().number, 65);
+  assert.deepEqual(w.ran, [SELECT, ['layout.show', { id: 'panel' }]]);
+  assert.equal(panel.view.view().kind, 'list', 'not shown yet');
+  w.layout = panelLayout(SHOWN);
+  await panel.tick();
+  assert.deepEqual([panel.view.view().kind, panel.view.view().number], ['job', 65]);
   assert.ok(byId(panel.render(), `jk-input-${APPROVE}-proceed`) && byId(panel.render(), `jk-input-${APPROVE}-abort`), panel.texts().join('|'));
+
+  // A toast not clicked: the panel opened later stays where it was.
+  await panel.key('escape');
+  w.layout = panelLayout({ hidden: false, active: 'files' });
+  fake.run(['team-dev', 'parser_master'], { ms: 20_000 });
+  await runUntil([panel], w, 3, 200_000);
+  assert.deepEqual(toasted(w).slice(2).map(([title]) => title), ['parser_master #302 succeeded']);
+  assert.deepEqual(w.toasts[2].action, { name: SELECT[0], args: SELECT[1] });
+  await run([panel], 20_000);
+  w.ran = [];
+  w.layout = panelLayout(SHOWN);
+  await panel.tick();
+  assert.equal(panel.view.view().kind, 'list');
+  assert.deepEqual(w.ran, []);
+
+  // Shown, its toast's click is a mod command that reaches it.
+  fake.run(['team-dev', 'parser_master'], { ms: 20_000 });
+  await runUntil([panel], w, 4, 40_000);
+  assert.deepEqual(toasted(w).slice(3).map(([title]) => title), ['parser_master #303 succeeded']);
+  assert.match(w.toasts[3].action.name, /^jenkins\.show-\d+$/);
+  await panel.send(w.toasts[3].action.name.replace('jenkins.', ''));
+  assert.deepEqual([panel.view.view().kind, panel.view.view().number], ['job', 303]);
 
   // Without a panel in the layout (a tab), the copy clicked goes there itself.
   const v = configured(fake);
@@ -1768,6 +1808,45 @@ test('the toast\'s click: the watcher shows the panel, and the panel opens on th
   await tab.send(v.toasts[0].action.name.replace('jenkins.', ''));
   assert.deepEqual([tab.view.view().kind, tab.view.view().place.label], ['job', 'team-dev/parser_master']);
   assert.deepEqual(v.ran, []);
+  await fake.close();
+});
+
+test('the panel reads more slowly while it does not show: the lists every minute while a build runs and every three at rest, its view not at all', async () => {
+  const fake = await startFakeJenkins();
+  const w = configured(fake, { folders: 'team-dev' });
+  w.props = { panel: true };
+  w.layout = panelLayout(SHOWN);
+  const panel = await start(w);
+  await panel.click(item(['team-dev', 'api_master'])); // a job view: read every half minute while it shows
+  await panel.tick();
+  const jobReads = () => fake.requests.filter((r) => r.path === '/job/team-dev/job/api_master/api/json').length;
+  const polled = () => fake.requests.filter((r) => r.path === '/job/team-dev/job/poller_master/57/wfapi/describe').length;
+  const count = () => [listReads(fake).length, polled(), jobReads()];
+  // Shown, while poller_master #57 runs: the list every ten seconds, its stages every half minute.
+  let before = count();
+  await run([panel], 60_000);
+  assert.deepEqual(count().map((n, i) => n - before[i]), [6, 2, 2]);
+
+  // Behind Files (or with its column hidden): every minute, and not the job.
+  w.layout = panelLayout({ hidden: false, active: 'files' });
+  before = count();
+  await run([panel], 120_000);
+  assert.deepEqual(count().map((n, i) => n - before[i]), [2, 2, 0]);
+
+  // At rest (#57 ended): every three minutes.
+  await run([panel], 120_000);
+  assert.ok(panel.view.listOf({ path: '/job/team-dev' }).data.every((j) => !j.lastBuild?.building), 'nothing runs');
+  before = count();
+  await run([panel], 360_000);
+  assert.deepEqual(count().map((n, i) => n - before[i]), [2, 0, 0]);
+
+  // Shown again: what it shows is read at once, and the lists at their own pace.
+  w.layout = panelLayout(SHOWN);
+  before = count();
+  await run([panel], 2_000);
+  assert.equal(jobReads() - before[2], 1, 'the job at once');
+  await run([panel], 60_000);
+  assert.ok(listReads(fake).length - before[0] >= 1);
   await fake.close();
 });
 
@@ -1857,21 +1936,26 @@ test('install.sh --panel right puts it into a layout\'s right-hand panel stack, 
     layout.children[1].children[2]] }, ...extra] });
   const stackOf = (layout) => layout.children[1].children[1].children[1].children[0];
   const panel = { id: 'jenkins-panel', type: 'block', content: { mod: 'jenkins', props: { panel: true } } };
-  // The watcher for the popups: a floating block on the root that draws nothing.
+  // The watcher an earlier version put on the root for the popups: a
+  // floating block that drew nothing. The media mod's own stays.
   const watch = { id: 'jenkins-watch', content: { mod: 'jenkins', props: { watch: true } }, edge: 'bottom', align: 'end' };
   const watched = (layout) => ({ ...layout, floating: [...(layout.floating ?? []), watch] });
+  const media = { id: 'media-watch', content: { mod: 'media', props: { watch: true } }, edge: 'bottom', align: 'end' };
+  const unwatched = /layout \w+: took out jenkins-watch\b.* an earlier version put in for the popups; the panel reads for them itself now/;
 
   // To the layout the window shows: one child more in the right-hand panel's
-  // stack, after Files, Changes and GitLab, and the watcher floating on its
-  // root; nothing else changed (the panel stays hidden, Files stays its
-  // shown child, the top row as it was).
+  // stack, after Files, Changes and GitLab, and nothing floating; nothing
+  // else changed (the panel stays hidden, Files stays its shown child, the
+  // top row as it was).
   let r = run('--panel', 'right');
   assert.equal(r.code, 0, r.out);
   assert.ok(fs.existsSync(path.join(app, 'mods', 'jenkins', 'main.js')), 'the mod is installed with it');
-  assert.match(r.out, /Jenkins is in its right-hand panel \(stack panel-body, block jenkins-panel\), beside Files and Changes, with a watcher for its popups that draws nothing \(jenkins-watch, floating\)/);
-  assert.deepEqual(read('corgi'), watched(shaped(corgi, { ...files, children: [...files.children, panel] })));
+  assert.match(r.out, /Jenkins is in its right-hand panel \(stack panel-body, block jenkins-panel\), beside Files and Changes\n/);
+  assert.doesNotMatch(r.out, /watch/);
+  assert.deepEqual(read('corgi'), shaped(corgi, { ...files, children: [...files.children, panel] }));
+  assert.equal(read('corgi').floating, undefined, 'no watcher block');
   assert.deepEqual(read('corgi').children.map((c) => c.id), ['sidebar', 'work'], 'no block of its own in the top row');
-  assert.deepEqual(Object.keys(read('corgi')), [...Object.keys(corgi), 'floating'], 'its fields in their order');
+  assert.deepEqual(Object.keys(read('corgi')), Object.keys(corgi), 'its fields in their order');
   assert.ok(fs.readFileSync(file('corgi'), 'utf8').includes('räksmörgås'), 'text as it was, not escaped');
   assert.equal(fs.statSync(file('corgi')).mode & 0o777, 0o600, 'its mode kept');
   assert.deepEqual(fs.readdirSync(path.join(app, 'layouts')).sort(), ['corgi.json', 'main.json'], 'nothing left beside it');
@@ -1907,17 +1991,31 @@ test('install.sh --panel right puts it into a layout\'s right-hand panel stack, 
   assert.equal(run('--panel', 'right', '--layout', 'mine').code, 0);
   assert.deepEqual(read('mine').children.map((c) => c.id), ['sidebar', 'work', 'jenkins-panel']);
   assert.deepEqual(stackOf(read('mine')).children.map((c) => c.id), ['files', 'changes', 'gitlab', 'jenkins-panel-2']);
-  // A layout with floating blocks of its own, a watcher among them already: none doubled, theirs kept.
-  const note = { id: 'jenkins-watch', content: { mod: 'notes' }, edge: 'top' };
-  const hung = { ...corgi, children: [corgi.children[0], { ...corgi.children[1], floating: [{ id: 'w', content: { mod: 'jenkins', props: { watch: true } } }] }], floating: [note] };
+  // An earlier version's watcher: --panel right, --panel off and --uninstall
+  // each take it out, wherever it hangs, and say so; the media mod's watcher
+  // and other floating blocks stay.
+  const note = { id: 'jenkins-watch-note', content: { mod: 'notes' }, edge: 'top' };
+  const inner = { id: 'w', content: { mod: 'jenkins', props: { watch: true } } };
+  const hung = { ...corgi, children: [corgi.children[0], { ...corgi.children[1], floating: [inner] }], floating: [note, watch, media] };
+  const bare_ = JSON.parse(JSON.stringify({ ...hung, children: [hung.children[0], { ...hung.children[1], floating: undefined }], floating: [note, media] }));
   fs.writeFileSync(file('hung'), JSON.stringify(hung));
-  assert.equal(run('--panel', 'right', '--layout', 'hung').code, 0);
-  assert.deepEqual(read('hung').floating, [note], 'it has a watcher already, under another block');
-  assert.equal(run('--panel', 'off', '--layout', 'hung').code, 0);
-  assert.deepEqual(read('hung'), JSON.parse(JSON.stringify({ ...hung, children: [hung.children[0], { ...hung.children[1], floating: undefined }] })), 'off takes the watcher out, wherever it hangs, and leaves the rest');
-  fs.writeFileSync(file('hung'), JSON.stringify({ ...corgi, floating: [note] }));
-  assert.equal(run('--panel', 'right', '--layout', 'hung').code, 0);
-  assert.deepEqual(read('hung').floating, [note, { ...watch, id: 'jenkins-watch-2' }], 'an id taken by a floating block: another');
+  r = run('--panel', 'right', '--layout', 'hung');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /layout hung: took out jenkins-watch and w, the floating blocks an earlier version put in for the popups/);
+  assert.deepEqual(read('hung').floating, [note, media], 'the watchers go, the rest stays');
+  assert.equal(read('hung').children[1].floating, undefined, 'a floating list left empty goes');
+  r = run('--panel', 'right', '--layout', 'hung');
+  assert.doesNotMatch(r.out, unwatched, 'once');
+  fs.writeFileSync(file('hung'), JSON.stringify(hung));
+  r = run('--panel', 'off', '--layout', 'hung');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, unwatched);
+  assert.deepEqual(read('hung'), bare_, 'off takes it out, a layout without the panel too');
+  fs.writeFileSync(file('hung'), JSON.stringify(watched(shaped(corgi, { ...files, children: [...files.children, panel] }))));
+  r = run('--panel', 'off', '--layout', 'hung');
+  assert.match(r.out, unwatched);
+  assert.match(r.out, /layout hung: took Jenkins out \(jenkins-panel, jenkins-watch\)/);
+  assert.deepEqual(read('hung'), corgi, 'with its panel: the layout as it was');
   fs.rmSync(file('hung'));
 
   // An earlier install's panel, a block `jenkins` at the end of the top row
@@ -1929,7 +2027,7 @@ test('install.sh --panel right puts it into a layout\'s right-hand panel stack, 
   r = run('--panel', 'right', '--layout', 'old');
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /took out the Jenkins panel of an earlier install at the end of its top row \(jenkins\)/);
-  assert.deepEqual(read('old'), watched(shaped(corgi, { ...shown, children: [...files.children, panel] })));
+  assert.deepEqual(read('old'), shaped(corgi, { ...shown, children: [...files.children, panel] }));
   const migrated = fs.readFileSync(file('old'), 'utf8');
   assert.equal(run('--panel', 'right', '--layout', 'old').code, 0);
   assert.equal(fs.readFileSync(file('old'), 'utf8'), migrated);
@@ -1939,7 +2037,7 @@ test('install.sh --panel right puts it into a layout\'s right-hand panel stack, 
   assert.deepEqual(read('old'), shaped(corgi, files));
   fs.rmSync(file('old'));
 
-  // Off: the panel and the watcher go; the layout is as it was, and the mod stays.
+  // Off: the panel goes; the layout is as it was, and the mod stays.
   r = run('--panel', 'off', '--layout', 'corgi');
   assert.equal(r.code, 0, r.out);
   assert.deepEqual(read('corgi'), corgi);
@@ -1952,11 +2050,13 @@ test('install.sh --panel right puts it into a layout\'s right-hand panel stack, 
   fs.writeFileSync(file('corgi'), JSON.stringify(own));
   assert.equal(run('--panel', 'right').code, 0);
   assert.match(run('--panel', 'off').out, /has no Jenkins panel/, 'right found the block by hand, so added none');
-  assert.deepEqual(read('corgi'), own, 'nor a watcher');
+  assert.deepEqual(read('corgi'), own);
+  fs.writeFileSync(file('corgi'), JSON.stringify({ ...own, floating: [...own.floating, watch, media] }));
   r = run('--uninstall');
   assert.equal(r.code, 0, r.out);
+  assert.match(r.out, unwatched, 'an earlier version\'s watcher too');
   assert.deepEqual(stackOf(read('corgi')), { ...files, active: 'files' });
-  assert.equal(read('corgi').floating, undefined, 'a floating one too');
+  assert.deepEqual(read('corgi').floating, [media], 'a floating one too, the media mod\'s watcher left alone');
   assert.deepEqual(read('mine').children.map((c) => c.id), ['sidebar', 'work', 'jenkins-panel'], 'a column of that id is not Jenkins');
   assert.deepEqual(stackOf(read('mine')), files);
   assert.equal(fs.readFileSync(file('main'), 'utf8'), main);
@@ -2151,11 +2251,10 @@ test('install.sh --panel right puts a Jenkins button into the layout\'s tab bar:
   const stock = fs.readdirSync(path.join(mods, 'tabs')).sort();
   const panel = { id: 'jenkins-panel', type: 'block', content: { mod: 'jenkins', props: { panel: true } } };
   const withTabs = (layout, bar) => ({ ...layout, children: [layout.children[0], { ...layout.children[1], children: [{ ...layout.children[1].children[0], content: { mod: bar } }, layout.children[1].children[1]] }] });
-  // The panel in the stack, and the watcher for the popups floating on the root.
+  // The panel in the stack.
   const withPanel = (layout) => {
     const work = layout.children[1], body = work.children[1];
-    return { ...layout, children: [layout.children[0], { ...work, children: [work.children[0], { ...body, children: [body.children[0], { ...body.children[1], children: [{ ...stack, children: [...stack.children, panel] }] }] }] }],
-      floating: [{ id: 'jenkins-watch', content: { mod: 'jenkins', props: { watch: true } }, edge: 'bottom', align: 'end' }] };
+    return { ...layout, children: [layout.children[0], { ...work, children: [work.children[0], { ...body, children: [body.children[0], { ...body.children[1], children: [{ ...stack, children: [...stack.children, panel] }] }] }] }] };
   };
   const stackOf = (layout) => layout.children[1].children[1].children[1].children[0];
   const shown = (name) => read(name).children[1].children[0].content.mod;
@@ -2415,8 +2514,10 @@ test('install.sh --panel right puts a Jenkins button into the layout\'s tab bar:
   fs.rmSync(home, { recursive: true });
 });
 
+// `node tests/test.mjs <text>` runs only the cases whose name has it.
+const only = process.argv[2] ?? '';
 let failed = 0;
-for (const { name, run } of cases) {
+for (const { name, run } of cases.filter((c) => c.name.includes(only))) {
   skew = 0;
   try {
     await run();
@@ -2426,5 +2527,6 @@ for (const { name, run } of cases) {
     console.log(`FAIL  ${name}\n${error.stack}`);
   }
 }
-console.log(failed ? `${failed} of ${cases.length} failed` : `all ${cases.length} passed`);
+const ran = cases.filter((c) => c.name.includes(only)).length;
+console.log(failed ? `${failed} of ${ran} failed` : `all ${ran} passed`);
 process.exit(failed ? 1 : 0);

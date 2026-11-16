@@ -230,6 +230,11 @@ class JenkinsData {
     this.toasts = new Map(); // a toast's number → the build its click opens: { place, number }
     this.posted = 0; // the toasts' numbers so far
     this.goto = null; // a toast clicked: { seq, place, number, at }, for the copy that shows it
+    // The last toast the panel posted while it did not show: { command, at }.
+    // Its click runs a layout command (alerts.js `showStep`), as a hidden
+    // copy gets no mod commands, so the panel goes to `command`'s build when
+    // it shows soon after.
+    this.pending = null;
     this.gone = 0; // the clicks so far
   }
 
@@ -246,6 +251,7 @@ class JenkinsData {
     const same = this.settings && ["url", "user", "token", "folders"].every((k) => (this.settings[k] ?? "") === (settings[k] ?? ""));
     if (same) return false;
     this.watch.reset();
+    this.pending = null;
     this.settings = settings;
     this.saved += 1;
     return true;

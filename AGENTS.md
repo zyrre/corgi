@@ -691,16 +691,26 @@ an input posts a `notify`, found by the list and stage reads in
 `data.js`'s shared store, so one read makes one popup whatever the
 number of copies. Seen in the preview (2026-11-16): a stack child that was
 shown once keeps its timer while its column is hidden or another child
-shows, but one never shown never starts, and a mod command reaches shown
-copies only; `nextCommand()` gives the command's name alone, without
-`run`'s args, and a name such as `jenkins.show-12` arrives whole
-(`show-12`). So `--panel right` also puts a floating `jenkins-watch`
-block (`props.watch`, it draws nothing) on the layout's root, as the media
-mod's installer does, and a popup's click is `jenkins.show-<n>`, the
-build kept in the store under `n`. `POST /__fake/run?job=…&result=…&ms=…`
-(`&paused=Approve`) on the fake starts a build for a popup. A preview-home
-command added to the `nextCommand` loop reaches the watcher too: guard
-one that toggles something with `this.watcher`, or it runs twice.
+shows, but one never shown never starts, and a mod command reaches only a
+copy on screen (a hidden panel, or one behind Files, got no
+`jenkins.<command>`; its `run()` of an app command works);
+`nextCommand()` gives the command's name alone, without `run`'s args,
+and a name such as `jenkins.show-12` arrives whole (`show-12`). So the
+panel works as GitLab's does, with no block of its own for the popups
+(decision 2026-11-16; an earlier version's floating `jenkins-watch`, which
+each installer action now takes out): while hidden it reads only the
+settings' lists and their running builds' stages, every 3 minutes or every
+minute while a build runs or waits (`HIDDEN_*`), and popups begin once it
+has been shown after the app starts. A popup it posts while shown runs
+`jenkins.show-<n>`, the build kept in the store under `n`; one it posts
+while hidden runs the one layout command that brings it nearest
+(`showStep`: `layout.select` of it, else `layout.show --id panel`) and
+leaves `store.pending`, so the panel that shows within `PENDING_FOR` goes
+to that build, after showing its column itself when the click only
+selected it (`clicked`). The toast mod's default popup stays about 6 s.
+`POST /__fake/run?job=…&result=…&ms=…` (`&paused=Approve`) on the fake
+starts a build for a popup; the preview takes no clicks, so `do` the
+popup's action (log it from a preview-home copy) to click it.
 
 The window takes no clicks, so a view behind one (a job, a log, the build
 form, the abort question) is reached as for the Projects list: in the

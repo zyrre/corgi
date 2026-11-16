@@ -4,15 +4,12 @@
 #   python3 -I install-layout.py ACTION HOME LAYOUT APP
 #
 # ACTION `add` puts the panel into one layout, as a child of its right-hand
-# panel stack `panel-body` beside Files, Changes (and GitLab); the watcher, a
-# floating block on the layout's root that draws nothing and reads the lists
-# for the popups while the panel has never been shown (the app starts a
-# stack's other children only when they show), and takes a popup's click;
-# and a Jenkins button that shows the panel into that layout's tab bar.
-# `off` takes the panel and the watcher this installer put in, and the
-# button, out of one; `all` takes every block showing the mod, floating ones
-# too, and every button, out of every layout of the person's (or of
-# LAYOUT's), for the uninstall. LAYOUT may be empty: the
+# panel stack `panel-body` beside Files, Changes (and GitLab), and a Jenkins
+# button that shows the panel into that layout's tab bar. `off` takes the
+# panel this installer put in, and the button, out of one; `all` takes every
+# block showing the mod, floating ones too, and every button, out of every
+# layout of the person's (or of LAYOUT's), for the uninstall. Each takes out
+# the watcher an earlier version put in (`jenkins-watch`). LAYOUT may be empty: the
 # shown layout (`add`, `off`) or all (`all`). APP is the herdr-app to check a
 # changed tab bar with, or empty.
 #
@@ -41,12 +38,6 @@ PANEL = {"type": "block", "content": {"mod": MOD, "props": {"panel": True}}}
 # tab bar hid and showed) left `hidden` there, which would hide a stack child
 # of that id, so the stack showed another child while its button was lit.
 BLOCK = "jenkins-panel"
-# The watcher: a floating block on the layout's root, drawing nothing. A mod
-# command (a popup's click) reaches only copies that show, and a stack's
-# child starts only once shown, so the panel alone would neither read the
-# lists before it was first opened nor get the click while hidden.
-WATCH = "jenkins-watch"
-WATCHER = {"content": {"mod": MOD, "props": {"watch": True}}, "edge": "bottom", "align": "end"}
 STACK, COLUMN = "panel-body", "panel"
 STOCK, CLONE = "tabs", "tabs-jenkins"
 # The line of the clone's main.js that says this installer made it, and what
@@ -113,6 +104,10 @@ def shows(node, ours_only):
     return not ours_only or (content.get("props") or {}).get("panel") is True
 
 
+# The watcher an earlier version put on the layout's root for the popups: a
+# floating block `jenkins-watch` (`props.watch`) that drew nothing. The panel
+# reads for them itself now, as GitLab's does, once it has been shown; every
+# action takes the watcher out.
 def watching(node):
     content = node.get("content")
     return isinstance(content, dict) and content.get("mod") == MOD and (content.get("props") or {}).get("watch") is True
@@ -150,15 +145,33 @@ def stack_of(layout):
     return body
 
 
+# Takes an earlier version's watchers out of the layout's floating blocks,
+# wherever they hang; a floating list left empty goes. Returns their ids.
+def unwatch(node):
+    gone = []
+    hung = node.get("floating")
+    if isinstance(hung, list):
+        kept = [f for f in hung if not (isinstance(f, dict) and watching(f))]
+        gone += [f.get("id", "") for f in hung if f not in kept]
+        if kept:
+            node["floating"] = kept
+        elif len(kept) != len(hung):
+            node.pop("floating")
+    for child in node.get("children") or []:
+        if isinstance(child, dict):
+            gone += unwatch(child)
+    return gone
+
+
 # Takes the blocks showing the mod out from under `node` (not from under
 # `spare`); a stack showing one shows its first child left instead. With
-# `floating`, also its floating blocks: the watcher (any, without
+# `floating`, also its floating blocks showing the mod (any, without
 # `ours_only`); a floating list left empty goes. Returns their ids.
 def take(node, ours_only, spare=None, floating=False):
     gone = []
     hung = node.get("floating")
     if floating and isinstance(hung, list):
-        kept = [f for f in hung if not (isinstance(f, dict) and (watching(f) or shows(f, ours_only)))]
+        kept = [f for f in hung if not (isinstance(f, dict) and not watching(f) and shows(f, ours_only))]
         gone += [f.get("id", "") for f in hung if f not in kept]
         if kept:
             node["floating"] = kept
@@ -478,6 +491,12 @@ def unique(layout, base):
     return block
 
 
+def unwatched_note(n, ids):
+    what = f"{ids[0]}, the floating block" if len(ids) == 1 else f"{', '.join(ids[:-1])} and {ids[-1]}, the floating blocks"
+    return (f"layout {n}: took out {what} an earlier version put in for the popups; "
+            f"the panel reads for them itself now, once it has been shown")
+
+
 def show_by_hand(block):
     return (f"herdr-app do layout.select --stack {STACK} --child {block}, then herdr-app do layout.show --id {COLUMN}, "
             f"shows it (layout.hide --id {COLUMN} hides it again)")
@@ -502,9 +521,9 @@ def add(n):
         body["children"].append(there)
         changed = True
     panel = there if shows(there, True) else None
-    # The watcher: one floating block on the root, wherever the panel is.
-    if panel is not None and not any(watching(f) for f in floats(layout)):
-        layout.setdefault("floating", []).append({"id": unique(layout, WATCH), **WATCHER})
+    # An earlier version's watcher goes: the panel reads for the popups itself.
+    unwatched = unwatch(layout)
+    if unwatched:
         changed = True
     # The button, worked out whole before anything is written.
     put = None  # ("clone", files) or ("main", path, text, whether it had the button)
@@ -586,9 +605,10 @@ def add(n):
         write(path, layout)
         if moved:
             say(f"layout {n}: took out the Jenkins panel of an earlier install at the end of its top row ({', '.join(moved)})")
+        if unwatched:
+            say(unwatched_note(n, unwatched))
         if panel is not None:
-            say(f"layout {n}: Jenkins is in its right-hand panel (stack {STACK}, block {panel['id']}), beside Files and Changes, "
-                f"with a watcher for its popups that draws nothing ({WATCH}, floating)")
+            say(f"layout {n}: Jenkins is in its right-hand panel (stack {STACK}, block {panel['id']}), beside Files and Changes")
         if tabs is not None and tabs["content"]["mod"] == CLONE:
             say(f"layout {n}: its tab bar is mods/{CLONE} now")
 
@@ -602,7 +622,10 @@ def remove(names, ours_only):
         if shipped(n) and not ours_only:
             continue
         path, layout = open_layout(n)
-        gone = take(layout, ours_only, floating=True)
+        unwatched = unwatch(layout)
+        if unwatched:
+            say(unwatched_note(n, unwatched))
+        gone = take(layout, ours_only, floating=True) + unwatched
         tabs = tab_block(layout)
         if tabs is not None:
             bars.add(tabs["content"]["mod"])

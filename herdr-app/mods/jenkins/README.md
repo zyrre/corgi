@@ -40,17 +40,18 @@ panel, the one under the tab bar where Files and Changes (and GitLab, when
 that mod is installed) show, as one more child of its stack `panel-body`.
 One of them shows at a time, and opening Jenkins changes nothing else in
 the window: the tab bar keeps its width and its buttons their places. It
-also puts a block that draws nothing, `jenkins-watch`, floating on the
-layout: the app starts a panel only once it is first shown, and a hidden
-one gets no commands, so this block is what reads the lists for the popups
-before you open the panel, and what takes a popup's click. It
 looks as they do there: a card with a border, its own header under the tab
 bar. Drag the panel's edge to size it; the app remembers, for all of them.
 Running it again changes nothing, and it adds no second Jenkins to a stack
-that has one already. `--panel off` takes out the one it added, and the floating block;
+that has one already. `--panel off` takes out the one it added;
 `--uninstall` takes every block showing the mod out of your layouts (only
 out of NAME's with `--layout`), since a block naming a mod that is gone
 shows an error.
+
+An earlier version also put a block that drew nothing, `jenkins-watch`,
+floating on the layout, which read the lists for the popups. The panel
+does that itself now, and `--panel right`, `--panel off` and
+`--uninstall` each take that block out and say so.
 
 An earlier version of the installer put the panel in a block of its own at
 the right end of the layout's top row, full height, which made the tab bar
@@ -72,9 +73,6 @@ it, add the block yourself as the last child of the stack `panel-body`:
 `{ "id": "jenkins-panel", "type": "block", "content": { "mod": "jenkins", "props": { "panel": true } } }`.
 `props.panel` tells the mod it is in the panel, so it draws itself as Files
 and Changes do, and tells the installer the block is the one it manages.
-For the popups (below), also add a block that draws nothing, floating on the
-layout's root (its `floating` list):
-`{ "id": "jenkins-watch", "content": { "mod": "jenkins", "props": { "watch": true } }, "edge": "bottom", "align": "end" }`.
 The id is `jenkins-panel`, not `jenkins`, because the app keeps a block's
 state (hidden, size) by id after the block is gone, and the earlier
 version's block `jenkins`, hidden by its button, would hide a stack child
@@ -248,12 +246,18 @@ which an app started from the Dock usually has not.
   opens the panel on that build's stages, where a waiting build's Proceed
   and Abort are. None comes for what was so already when the app started or
   the settings changed, for a job seen for the first time, or for a build
-  that starts. They come whether the panel shows or not, also while it is
-  hidden or was never opened, since `--panel right` puts the floating `jenkins-watch`
-  block in that reads the lists at their usual pace (every minute, every
-  ten seconds while a build runs or waits). Only the jobs of the settings'
-  folders make popups, not those of a folder opened from them; more than
-  three at once make one popup for all of them.
+  that starts. They come whether the panel shows or not, as GitLab's do:
+  the panel reads the lists for them also while it is hidden or another
+  panel shows, then more slowly (every three minutes, every minute while a
+  build runs or waits, instead of every minute and every ten seconds). The
+  app starts the panel only once it is first shown, so after the app
+  starts the popups begin once you have opened the panel. A hidden panel
+  gets no commands, so a popup it posted while hidden shows the panel when
+  clicked (it selects Jenkins in the panel, or shows the panel), and the
+  panel then opens on that build; opening the panel some other way while
+  that popup is still up (about 15 seconds) does the same. Only the jobs of
+  the settings' folders make popups, not those of a folder opened from
+  them; more than three at once make one popup for all of them.
 - **Mute.** The bell at the end of a job's row mutes its popups, or unmutes
   them; a muted job shows a crossed-out bell, and the bell of one that is not
   shows while the pointer is over its row. The bell on a heading mutes every

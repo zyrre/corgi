@@ -19,10 +19,10 @@
 // A listed job's build that ends or starts to wait at an input step posts a
 // toast (alerts.js), unless its job or its section is muted (the bell on its
 // row and on its heading); the toast's click opens the panel on that build.
-// Given `{ watch: true }` (a floating block install.sh --panel puts on the
-// layout) it draws nothing: the app starts a stack's child only once it is
-// shown, so without it nothing would read the lists, or take the toast's
-// click, until the panel was opened.
+// The panel keeps reading for the toasts while it is hidden or another child
+// of its stack shows, as GitLab's does, more slowly (HIDDEN_*); the app
+// starts a stack's child only once it is shown, so the toasts begin once the
+// panel has been shown after the app started.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
@@ -36,9 +36,13 @@ import {
 } from "./util.js";
 import { icon, spinner, look as stateLook, mark, bar, iconButton, pill } from "./ui.js";
 import { store } from "./data.js";
-import { MUTED, MUTED_SECTIONS, AT_ONCE, muted, toast, summary, panelBlock, showCommands } from "./alerts.js";
+import { MUTED, MUTED_SECTIONS, AT_ONCE, muted, toast, summary, panelBlock, panelSelected, panelShows, showCommands, showStep } from "./alerts.js";
 
 const LIST_EVERY = 60000, LIST_BUSY = 10000; // the lists: at rest, and while a build runs or waits
+// The panel's reads while it does not show, for the toasts alone: the lists
+// at rest and while a build runs or waits, and the stages of their running
+// builds (whether one waits for input).
+const HIDDEN_EVERY = 180000, HIDDEN_BUSY = 60000;
 const JOB_EVERY = 30000, JOB_BUSY = 5000;
 const ROW = 18; // a console line's height
 
@@ -48,6 +52,7 @@ const INPUT_EVERY = 10000; // the input steps a shown build waits at, while its 
 const WAITING_EVERY = 30000; // the stages of a list's running Pipeline builds: whether one waits for input
 const FOLDED = "jenkins.collapsed"; // the headings folded, kept by the app across restarts
 const GOTO_FOR = 20000; // a toast's click is taken up by a copy that starts this soon after it
+const PENDING_FOR = 15000; // the panel shown this soon after a toast it posted hidden goes to its build (a toast shows for about 6 s)
 
 const active = (items) => (items ?? []).some((j) => ["running", "queued"].includes(jobState(j)));
 
@@ -56,7 +61,8 @@ export default class Jenkins extends View {
     let layout = null;
     try { layout = given(); } catch { /* shown where it has no props */ }
     this.panel = Boolean((layout ?? initial)?.panel);
-    this.watcher = Boolean((layout ?? initial)?.watch); // draws nothing: reads the lists for the toasts
+    this.hidden = false; // the panel's column is hidden, or its stack shows another child
+    this.selected = true; // its stack shows it, the column hidden or not
     this.hover = null; // the id of the row or heading under the pointer: it shows its bell
     this.went = 0; // the last toast click this copy took up (`store.goto.seq`)
     this.handle = cx.focus_handle();
@@ -236,11 +242,12 @@ export default class Jenkins extends View {
 
   // Whether the running Pipeline builds of a list wait for input, which the
   // list does not say: their stages, read every half minute while they run
-  // (a wait lasts minutes; the job view reads the same entry more often).
+  // (a wait lasts minutes; the job view reads the same entry more often), or
+  // every minute while the panel does not show.
   readWaiting(place, cx) {
     for (const item of this.listOf(place)?.data ?? []) {
       if (isFolder(item) || !isPipeline(item) || !item.lastBuild?.building) continue;
-      this.readStages(childOf(place, item.name), item.lastBuild.number, cx, { every: WAITING_EVERY, runs: false });
+      this.readStages(childOf(place, item.name), item.lastBuild.number, cx, { every: this.hidden ? HIDDEN_BUSY : WAITING_EVERY, runs: false });
     }
   }
 
@@ -353,11 +360,21 @@ export default class Jenkins extends View {
   }
 
   // What is due of what the view shows. A list while a build runs or waits
-  // is read more often than one at rest; a followed log every time.
+  // is read more often than one at rest; a followed log every time. While
+  // the panel does not show, only what the toasts need, and more slowly:
+  // the settings' lists and their running builds' stages. What else the
+  // view shows is read when it shows again.
   poll(cx) {
     if (!this.src) return;
     const view = this.view();
     this.readWho(cx);
+    if (this.hidden) {
+      for (const place of this.places) {
+        this.readList(place, cx, { every: active(this.listOf(place)?.data) ? HIDDEN_BUSY : HIDDEN_EVERY });
+        this.readWaiting(place, cx);
+      }
+      return;
+    }
     for (const place of this.listed()) {
       this.readList(place, cx, { every: active(this.listOf(place)?.data) ? LIST_BUSY : LIST_EVERY });
       this.readWaiting(place, cx);
@@ -378,6 +395,11 @@ export default class Jenkins extends View {
     }
   }
 
+  // The layout the window shows, or null.
+  tree() {
+    try { return layout(); } catch { return null; } // no layout here
+  }
+
   // Every two seconds: takes up settings another copy saved, reads what is
   // due, and draws again when another copy's read changed something (or a
   // "Last read … ago" line counts on).
@@ -386,6 +408,12 @@ export default class Jenkins extends View {
       this.apply(store.settings, cx);
       cx.notify();
     }
+    // Whether this copy shows: always, unless it is the right-hand panel's
+    // and the panel's column is hidden or its stack shows another child.
+    const tree = this.panel ? this.tree() : null, was = this.hidden, selected = this.selected;
+    this.hidden = Boolean(tree) && !panelShows(tree);
+    this.selected = !tree || panelSelected(tree);
+    this.clicked(was, selected, tree);
     this.takeGoto(cx);
     this.poll(cx);
     if (store.version !== this.drawn) {
@@ -426,14 +454,41 @@ export default class Jenkins extends View {
     const loud = events.filter((e) => !muted(e, jobs, sections));
     if (!loud.length) return;
     const host = hostOf(this.settings?.url ?? "");
-    const post = (n, action) => {
-      try { notify({ ...n, action }); } catch { /* no toasts here */ }
+    const post = (n, command) => {
+      try { notify({ ...n, action: this.action(command) }); } catch { /* no toasts here */ }
     };
-    if (loud.length > AT_ONCE) { post(summary(loud, host), { name: "jenkins.show" }); return; }
+    if (loud.length > AT_ONCE) { post(summary(loud, host), "show"); return; }
     for (const e of loud) {
       const stages = this.entry("stages", this.stagesKey(e.job, e.number))?.data ?? null;
-      post(toast(e, { stages, host }), { name: `jenkins.show-${store.target(e.job, e.number)}` });
+      post(toast(e, { stages, host }), `show-${store.target(e.job, e.number)}`);
     }
+  }
+
+  // What a toast's click runs: `jenkins.<command>`, which reaches the copies
+  // that show. The panel that does not show gets no mod command, so its
+  // toast's click runs the layout command that brings it nearest to showing
+  // (`showStep`), and the panel goes to `command` when it shows (`clicked`).
+  action(command) {
+    const step = this.hidden ? showStep(this.tree()) : null;
+    if (!step) return { name: `jenkins.${command}` };
+    store.pending = { command, at: Date.now() };
+    return { name: step[0], args: step[1] };
+  }
+
+  // Each tick of the panel, after a toast it posted while it did not show:
+  // once it shows, it goes where the toast's click asked (the last such
+  // toast's, the click's being no different from the tab bar's button). A
+  // click that only selected it in its stack, its column hidden still, is
+  // followed by the rest of what shows it: the click runs one command.
+  clicked(was, selected, tree) {
+    const p = store.pending;
+    if (!this.panel || !p) return;
+    if (Date.now() - p.at > PENDING_FOR) { store.pending = null; return; }
+    if (!this.hidden) {
+      if (was) { store.pending = null; this.aim(p.command); }
+      return;
+    }
+    if (this.selected && !selected) this.showPanel(tree);
   }
 
   // `jenkins.show-<n>`, a toast's click (`jenkins.show`: the list): every
@@ -441,18 +496,25 @@ export default class Jenkins extends View {
   // the panel is shown. The copy that shows the panel goes there
   // (`takeGoto`), also one the click starts.
   goTo(command, cx) {
+    this.aim(command);
+    this.showPanel(this.tree());
+    this.takeGoto(cx);
+  }
+
+  // Keeps where a toast's click goes, for the copy that shows the panel;
+  // the same click from another copy a moment later is the same.
+  aim(command) {
     const now = Date.now(), last = store.goto;
-    if (!(last && last.command === command && now - last.at < 3000)) {
-      const target = command.startsWith("show-") ? store.toasts.get(Number(command.slice(5))) ?? null : null;
-      store.gone += 1;
-      store.goto = { seq: store.gone, command, place: target?.place ?? null, number: target?.number, at: now };
-    }
-    let tree = null;
-    try { tree = layout(); } catch { /* no layout here */ }
+    if (last && last.command === command && now - last.at < 3000) return;
+    const target = command.startsWith("show-") ? store.toasts.get(Number(command.slice(5))) ?? null : null;
+    store.gone += 1;
+    store.goto = { seq: store.gone, command, place: target?.place ?? null, number: target?.number, at: now };
+  }
+
+  showPanel(tree) {
     for (const [name, args] of showCommands(tree)) {
       try { run(name, args); } catch { /* not here */ }
     }
-    this.takeGoto(cx);
   }
 
   // Goes where a toast's click asked, once: the build's stages in the job
@@ -460,14 +522,10 @@ export default class Jenkins extends View {
   // does, or the copy that was clicked when the layout has no panel.
   takeGoto(cx) {
     const g = store.goto;
-    if (!g || g.seq === this.went || this.watcher || !this.settings) return;
+    if (!g || g.seq === this.went || !this.settings) return;
     this.went = g.seq;
     if (Date.now() - g.at > GOTO_FOR) return; // clicked before this copy started
-    if (!this.panel) {
-      let tree = null;
-      try { tree = layout(); } catch { /* no layout here */ }
-      if (panelBlock(tree)) return; // the panel goes there
-    }
+    if (!this.panel && panelBlock(this.tree())) return; // the panel goes there
     this.stack = this.stack.filter((v) => v.kind === "settings" && !this.client);
     this.log = null; this.form = null; this.confirm = null;
     if (g.place && this.client) this.show({ kind: "job", place: g.place, number: g.number }, cx);
@@ -1277,7 +1335,6 @@ export default class Jenkins extends View {
   }
 
   render() {
-    if (this.watcher) return div();
     const t = theme(), now = Date.now(), view = this.view();
     this.staleShown = false;
     const parts = !this.settings ? [this.line("Reading the settings…", t)]
