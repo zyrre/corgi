@@ -318,6 +318,10 @@ scripts/app-preview status             # layout, focus, and errors from mods and
 scripts/app-preview stop               # always, before the final report
 ```
 
+The window is 1280x800 points, too short for every made-up project
+unfolded: `APP_PREVIEW_SIZE=1280x1200 scripts/app-preview start` shows
+them all.
+
 Read each picture yourself (the Read tool shows a PNG) and say what looks
 wrong in it, also when it is not your change's. While the Mac's screen is
 locked, the window draws almost nothing and `shot` repeats an old frame
@@ -331,7 +335,10 @@ its home's `layouts/.state/corgi.json`), then
 A fresh home has no such file until the layout's state changes: write
 `{"theme": {...}}` alone, and copy a theme of the user's
 (`~/.config/herdr-app/themes/gruvbox-*.json`) into the home's `themes/`
-first. The switch resets the sidebar's width: `layout.resize` after it.
+first. Once the window has run, that file holds the whole layout: edit
+its `"theme"` in place, and a theme name it lacks makes the app skip the
+file (the error shows in `status`). The switch resets the sidebar's
+width: `layout.resize` after it.
 A change that is visual
 (what a view draws: a row, a width, a color, an element, where text is cut,
 a state's mark) attaches screenshots to its report: each one's path under

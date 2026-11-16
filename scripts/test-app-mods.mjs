@@ -773,6 +773,61 @@ async function projects(w, props = {}, module = undefined) {
   }
 }
 
+// Each project (a repository's space) sits in one rounded area: its row,
+// its agents' cards and its worktrees' rows, on a faint tint inside a soft
+// outline, both in its avatar's color. A space outside any repository has
+// none; a folded project's area holds its row and supervisor alone. A
+// project with no stored color has a neutral area. A narrow sidebar gives
+// the area the list's margin, so what is in it keeps its room.
+{
+  const w = window();
+  w.shared['space.colors'] = { 'sp-weather': 'ansi4', 'sp-corgi': 'ansi1' };
+  const mod = await projects(w);
+  let root = mod.render();
+  assert.deepEqual(ids(root, 'area-'), ['area-sp-weather'], 'only the repository');
+  const area = byId(root, 'area-sp-weather');
+  assert.deepEqual([area.calls.bg, area.calls.border_color], [['#5b8def12'], ['#5b8def59']], 'its avatar\'s blue');
+  assert.ok('border_1' in area.calls && 'rounded' in area.calls);
+  const avatar = kept(kept(byId(area, 'space-sp-weather').children.at(-1)).children[0]);
+  assert.deepEqual([texts(avatar), avatar.calls.bg], [['W'], ['#5b8def']], 'the avatar in the same color');
+  assert.deepEqual(ids(area, 'space-'), ['space-sp-weather', 'space-sp-quiet'], 'its row and its worktree\'s with no agent');
+  assert.deepEqual(ids(area, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5']);
+  assert.deepEqual(ids(root, 'space-'), ['space-sp-corgi', 'space-sp-weather', 'space-sp-quiet', 'space-sp-home'], 'the plain spaces stay in the list');
+  // Folded: its row and supervisor.
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
+  root = mod.render();
+  assert.deepEqual(byId(root, 'area-sp-weather').children.map((c) => kept(c).id), ['space-sp-weather', 'agent-t2']);
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
+
+  // A stored hex is used as it is, cut to its color.
+  w.shared['space.colors'] = { ...w.shared['space.colors'], 'sp-weather': '#123456ff' };
+  assert.deepEqual(byId(mod.render(), 'area-sp-weather').calls.border_color, ['#12345659']);
+
+  // At 190 px, the list's margin and the area's outline and inset make
+  // the margin there was without an area.
+  const list = (root) => {
+    let found = null;
+    walk(root, (node) => { if ('overflow_y_scrollbar' in node.calls) found ??= node; });
+    return found;
+  };
+  const wide = list(mod.render()).calls.px[0];
+  w.sidebar = 190;
+  root = mod.render();
+  assert.equal(list(root).calls.px[0] + 1 + byId(root, 'area-sp-weather').calls.p[0], wide);
+  assert.ok(byId(root, 'space-sp-weather').calls.px[0] < 8, 'and the row takes in its own');
+}
+{
+  // `~` never gets a stored color: in a repository, its area is neutral.
+  const w = window();
+  w.spaces[1].name = '~';
+  const mod = await projects(w);
+  const area = byId(mod.render(), 'area-sp-weather');
+  assert.equal(w.shared['space.colors']['sp-weather'], undefined);
+  assert.deepEqual([area.calls.bg, area.calls.border_color], [['#foreground08'], ['#border']]);
+}
+
 // Without corgi the list still shows every space and agent, by its own title.
 {
   const w = window();
