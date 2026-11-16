@@ -1609,9 +1609,7 @@ test('the toasts\' logic: a baseline first, an end and a wait once each, what a 
   // Mutes: the job's own, or its section's.
   assert.ok(alerts.muted(failed, new Set([failed.job.path]), new Set()) && alerts.muted(failed, new Set(), new Set(['/job/team-prod'])) && !alerts.muted(failed, new Set(['/job/x']), new Set(['/job/team-dev'])));
 
-  // The panel in a layout: shown, and the commands that show it.
-  assert.ok(!alerts.panelShown(panelLayout()) && !alerts.panelShown(panelLayout({ hidden: false })) && alerts.panelShown(panelLayout({ hidden: false, active: 'jenkins-panel' })));
-  assert.ok(!alerts.panelShown(null) && !alerts.panelShown({ type: 'row', children: [] }));
+  // The panel in a layout: the commands that show it.
   assert.deepEqual(alerts.showCommands(panelLayout()), [['layout.select', { stack: 'panel-body', child: 'jenkins-panel' }], ['layout.show', { id: 'panel' }]]);
   assert.deepEqual(alerts.showCommands({ type: 'row', children: [] }), []);
 });
@@ -1640,7 +1638,7 @@ test('toasts: none for what was so at the first read, one when a build succeeds,
   await fake.close();
 });
 
-test('toasts: two copies post one, a new start of the app posts none for what it finds, and none while the panel shows', async () => {
+test('toasts: two copies post one, a new start of the app posts none for what it finds, and the panel showing or not changes nothing', async () => {
   const fake = await startFakeJenkins();
   const w = configured(fake);
   const a = await start(w, 'pair'), b = await start(w, 'pair');
@@ -1654,11 +1652,11 @@ test('toasts: two copies post one, a new start of the app posts none for what it
   w.layout = panelLayout({ hidden: false, active: 'jenkins-panel' });
   fake.run(['team-dev', 'api_master'], { ms: 20_000 });
   await run([again], 60_000);
-  assert.equal(w.toasts.length, 1, 'the panel shows: no toast');
+  assert.deepEqual(toasted(w).slice(1).map(([title]) => title), ['api_master #129 succeeded'], 'the panel shows: a toast all the same');
   w.layout = panelLayout({ hidden: false, active: 'files' });
   fake.run(['team-dev', 'api_master'], { ms: 20_000 });
   await run([again], 60_000);
-  assert.deepEqual(toasted(w).slice(1).map(([title]) => title), ['api_master #130 succeeded'], 'the panel behind Files: a toast');
+  assert.deepEqual(toasted(w).slice(2).map(([title]) => title), ['api_master #130 succeeded'], 'the panel behind Files: a toast');
   await fake.close();
 });
 

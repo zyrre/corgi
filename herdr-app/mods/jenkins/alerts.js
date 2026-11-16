@@ -141,23 +141,6 @@ export function panelBlock(layout) {
   return found;
 }
 
-// Whether the panel is on screen: no ancestor hidden, and each stack on the
-// way shows the child it is in (a stack with no `active` shows its first).
-export function panelShown(layout) {
-  const found = panelBlock(layout);
-  if (!found || found.node.hidden) return false;
-  const chain = [...found.path, found.node];
-  for (let i = 0; i < chain.length - 1; i++) {
-    const node = chain[i], child = chain[i + 1];
-    if (node.hidden) return false;
-    if (node.type === "stack") {
-      const active = node.active ?? node.children?.find((c) => c?.id)?.id;
-      if (active !== child.id) return false;
-    }
-  }
-  return true;
-}
-
 // The commands that show the panel: select it in its stack, then show every
 // hidden block above it (Herdr's `panel` column). [] when there is no panel.
 export function showCommands(layout) {

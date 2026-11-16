@@ -36,7 +36,7 @@ import {
 } from "./util.js";
 import { icon, spinner, look as stateLook, mark, bar, iconButton, pill } from "./ui.js";
 import { store } from "./data.js";
-import { MUTED, MUTED_SECTIONS, AT_ONCE, muted, toast, summary, panelBlock, panelShown, showCommands } from "./alerts.js";
+import { MUTED, MUTED_SECTIONS, AT_ONCE, muted, toast, summary, panelBlock, showCommands } from "./alerts.js";
 
 const LIST_EVERY = 60000, LIST_BUSY = 10000; // the lists: at rest, and while a build runs or waits
 const JOB_EVERY = 30000, JOB_BUSY = 5000;
@@ -417,17 +417,14 @@ export default class Jenkins extends View {
   }
 
   // Posts a toast for each event (alerts.js) of a job not muted, one for all
-  // when there are more than AT_ONCE, none while the panel shows. Each names
-  // the build its click opens; the read that found them runs once for every
+  // when there are more than AT_ONCE, whether the panel shows or not. Each
+  // names the build its click opens; the read that found them runs once for every
   // copy, so each event is posted once.
   announce(events) {
     if (!events.length) return;
     const { jobs, sections } = this.mutes();
     const loud = events.filter((e) => !muted(e, jobs, sections));
     if (!loud.length) return;
-    let tree = null;
-    try { tree = layout(); } catch { /* no layout here */ }
-    if (panelShown(tree)) return;
     const host = hostOf(this.settings?.url ?? "");
     const post = (n, action) => {
       try { notify({ ...n, action }); } catch { /* no toasts here */ }

@@ -247,9 +247,9 @@ which an app started from the Dock usually has not.
   wait names the stage it waits in, once per build and step. A click on it
   opens the panel on that build's stages, where a waiting build's Proceed
   and Abort are. None comes for what was so already when the app started or
-  the settings changed, for a job seen for the first time, for a build that
-  starts, or while the panel shows. They come while the panel is hidden or
-  was never opened, since `--panel right` puts the floating `jenkins-watch`
+  the settings changed, for a job seen for the first time, or for a build
+  that starts. They come whether the panel shows or not, also while it is
+  hidden or was never opened, since `--panel right` puts the floating `jenkins-watch`
   block in that reads the lists at their usual pace (every minute, every
   ten seconds while a build runs or waits). Only the jobs of the settings'
   folders make popups, not those of a folder opened from them; more than
