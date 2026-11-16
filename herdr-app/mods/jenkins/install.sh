@@ -6,7 +6,7 @@
 #   herdr-app/mods/jenkins/install.sh --panel off [--layout NAME] [--home DIR]
 #   herdr-app/mods/jenkins/install.sh --uninstall [--forget] [--layout NAME] [--home DIR]
 #
-# It copies the mod's files (main.js, data.js, api.js, util.js, ui.js, mod.json and
+# It copies the mod's files (main.js, data.js, alerts.js, api.js, util.js, ui.js, mod.json and
 # icons/) to mods/jenkins in the app's home ($HERDR_APP_HOME, else
 # ~/.config/herdr-app; --home DIR), checked first with `herdr-app check` and
 # swapped in with one rename, and only when they differ from what is there:
@@ -28,8 +28,13 @@
 #                  herdr-gitlab's tabs-gitlab), with Jenkins in the list
 #                  of panels its syncPanel remembers per space.
 #                  If another mod's install later replaces that copy, run
-#                  --panel right again to bring the button back
-#   --panel off    takes that panel and its button out of the layout again
+#                  --panel right again to bring the button back. And it
+#                  puts a block that draws nothing (jenkins-watch) floating
+#                  on the layout's root, which reads the lists for the
+#                  popups while the panel has never been opened, and takes
+#                  a popup's click
+#   --panel off    takes that panel, the floating block and the button out
+#                  of the layout again
 #                  (and points it back at Herdr's tab bar while the copy is
 #                  as this script made it); the mod stays
 #   --layout NAME  the layout to change (layouts/NAME.json): by default the
@@ -156,7 +161,7 @@ install_mod() {
   rm -rf "$stage"
   mkdir -p "$stage/jenkins" || die "could not create $stage"
   trap 'rm -rf "$stage"' EXIT
-  for file in main.js data.js api.js util.js ui.js mod.json; do
+  for file in main.js data.js alerts.js api.js util.js ui.js mod.json; do
     cp "$here/$file" "$stage/jenkins/$file" || die "could not copy $file"
   done
   cp -R "$here/icons" "$stage/jenkins/icons" || die "could not copy the icons"

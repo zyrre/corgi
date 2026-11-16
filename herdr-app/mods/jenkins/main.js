@@ -16,10 +16,17 @@
 // What it reads is read once for every copy of it (the panel, an overlay, a
 // tab) by data.js, which also backs off from a Jenkins that fails and keeps
 // a short failure quiet.
+// A listed job's build that ends or starts to wait at an input step posts a
+// toast (alerts.js), unless its job or its section is muted (the bell on its
+// row and on its heading); the toast's click opens the panel on that build.
+// Given `{ watch: true }` (a floating block install.sh --panel puts on the
+// layout) it draws nothing: the app starts a stack's child only once it is
+// shown, so without it nothing would read the lists, or take the toast's
+// click, until the panel was opened.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, VirtualListScrollHandle } from "gpui-base";
-import { theme, home, nextCommand, settings as look, shared, setShared, props as given } from "herdr";
+import { theme, home, nextCommand, settings as look, shared, setShared, props as given, notify, layout, run } from "herdr";
 import { Client, loadSettings, saveSettings, settingsPath, ready } from "./api.js";
 import {
   parsePlaces, childOf, leaf, hostOf, normalizeBase, isFolder, jobState, buildState, progress, ago, lastRead, took, span,
@@ -29,6 +36,7 @@ import {
 } from "./util.js";
 import { icon, spinner, look as stateLook, mark, bar, iconButton, pill } from "./ui.js";
 import { store } from "./data.js";
+import { MUTED, MUTED_SECTIONS, AT_ONCE, muted, toast, summary, panelBlock, panelShown, showCommands } from "./alerts.js";
 
 const LIST_EVERY = 60000, LIST_BUSY = 10000; // the lists: at rest, and while a build runs or waits
 const JOB_EVERY = 30000, JOB_BUSY = 5000;
@@ -39,6 +47,7 @@ const RUNS_EVERY = 60000; // a job's last runs, for what each stage took last ti
 const INPUT_EVERY = 10000; // the input steps a shown build waits at, while its stages say it waits
 const WAITING_EVERY = 30000; // the stages of a list's running Pipeline builds: whether one waits for input
 const FOLDED = "jenkins.collapsed"; // the headings folded, kept by the app across restarts
+const GOTO_FOR = 20000; // a toast's click is taken up by a copy that starts this soon after it
 
 const active = (items) => (items ?? []).some((j) => ["running", "queued"].includes(jobState(j)));
 
@@ -47,6 +56,9 @@ export default class Jenkins extends View {
     let layout = null;
     try { layout = given(); } catch { /* shown where it has no props */ }
     this.panel = Boolean((layout ?? initial)?.panel);
+    this.watcher = Boolean((layout ?? initial)?.watch); // draws nothing: reads the lists for the toasts
+    this.hover = null; // the id of the row or heading under the pointer: it shows its bell
+    this.went = 0; // the last toast click this copy took up (`store.goto.seq`)
     this.handle = cx.focus_handle();
     this.scroll = VirtualListScrollHandle.new();
     this.settings = null; // null until read
@@ -86,6 +98,7 @@ export default class Jenkins extends View {
       let s;
       try { s = await loadSettings(); } catch { s = { url: "", user: "", token: "", folders: "", source: "none" }; }
       this.apply(s, cx);
+      this.takeGoto(cx);
       cx.notify();
     });
     cx.timer.every(2000, (cx) => this.tick(cx));
@@ -95,6 +108,7 @@ export default class Jenkins extends View {
         let command;
         try { command = await nextCommand(); } catch { return; } // no more commands: the copy is going
         if (command === "refresh") this.refresh(cx);
+        else if (command === "show" || command.startsWith("show-")) this.goTo(command, cx);
         else if (command === "settings") this.show({ kind: "settings" }, cx);
         cx.notify();
       }
@@ -210,7 +224,14 @@ export default class Jenkins extends View {
   }
 
   readList(place, cx, opts = {}) {
-    this.src?.read("list", place.path, (c) => c.list(place), cx, { ...opts, then: (_e, cx) => this.readWaiting(place, cx) });
+    this.src?.read("list", place.path, (c) => c.list(place), cx, {
+      ...opts,
+      then: (e, cx) => {
+        // A folder of the settings: its jobs' builds that ended since, for the toasts.
+        if (this.places.some((p) => p.path === place.path)) this.announce(store.watch.list(place, e.data));
+        this.readWaiting(place, cx);
+      },
+    });
   }
 
   // Whether the running Pipeline builds of a list wait for input, which the
@@ -244,6 +265,7 @@ export default class Jenkins extends View {
     }, cx, {
       ...opts,
       then: (e, cx) => {
+        this.announce(store.watch.stages(place.path, number, e.data));
         if (!e.data.missing && runs) this.readRuns(place, cx);
         if (isPaused(e.data) && this.shows(place, number)) this.readInputs(place, number, cx, { every: INPUT_EVERY });
       },
@@ -364,12 +386,95 @@ export default class Jenkins extends View {
       this.apply(store.settings, cx);
       cx.notify();
     }
+    this.takeGoto(cx);
     this.poll(cx);
     if (store.version !== this.drawn) {
       this.drawn = store.version;
       if (this.log && this.follow && (this.view().kind === "build" || this.view().kind === "stage")) this.toEnd(cx);
       cx.notify();
     } else if (this.staleShown) cx.notify();
+  }
+
+  // --- toasts ------------------------------------------------------------------------
+
+  // The jobs and the sections muted, as the app keeps them: two sets of paths.
+  mutes() {
+    const read = (key) => {
+      try { return new Set((shared(key) ?? []).filter((p) => typeof p === "string")); } catch { return new Set(); }
+    };
+    return { jobs: read(MUTED), sections: read(MUTED_SECTIONS) };
+  }
+
+  // Mutes a job's toasts (MUTED) or a section's (MUTED_SECTIONS), or unmutes
+  // them. A section's mute silences its jobs whatever their own setting, which
+  // stays as it was: unmuting the section brings it back.
+  toggleMute(key, path, cx) {
+    const { jobs, sections } = this.mutes(), set = key === MUTED ? jobs : sections;
+    if (set.has(path)) set.delete(path);
+    else set.add(path);
+    try { setShared(key, [...set]); } catch { /* kept until the app starts over */ }
+    cx.notify();
+  }
+
+  // Posts a toast for each event (alerts.js) of a job not muted, one for all
+  // when there are more than AT_ONCE, none while the panel shows. Each names
+  // the build its click opens; the read that found them runs once for every
+  // copy, so each event is posted once.
+  announce(events) {
+    if (!events.length) return;
+    const { jobs, sections } = this.mutes();
+    const loud = events.filter((e) => !muted(e, jobs, sections));
+    if (!loud.length) return;
+    let tree = null;
+    try { tree = layout(); } catch { /* no layout here */ }
+    if (panelShown(tree)) return;
+    const host = hostOf(this.settings?.url ?? "");
+    const post = (n, action) => {
+      try { notify({ ...n, action }); } catch { /* no toasts here */ }
+    };
+    if (loud.length > AT_ONCE) { post(summary(loud, host), { name: "jenkins.show" }); return; }
+    for (const e of loud) {
+      const stages = this.entry("stages", this.stagesKey(e.job, e.number))?.data ?? null;
+      post(toast(e, { stages, host }), { name: `jenkins.show-${store.target(e.job, e.number)}` });
+    }
+  }
+
+  // `jenkins.show-<n>`, a toast's click (`jenkins.show`: the list): every
+  // shown copy gets it, the first keeps where it goes for all of them, and
+  // the panel is shown. The copy that shows the panel goes there
+  // (`takeGoto`), also one the click starts.
+  goTo(command, cx) {
+    const now = Date.now(), last = store.goto;
+    if (!(last && last.command === command && now - last.at < 3000)) {
+      const target = command.startsWith("show-") ? store.toasts.get(Number(command.slice(5))) ?? null : null;
+      store.gone += 1;
+      store.goto = { seq: store.gone, command, place: target?.place ?? null, number: target?.number, at: now };
+    }
+    let tree = null;
+    try { tree = layout(); } catch { /* no layout here */ }
+    for (const [name, args] of showCommands(tree)) {
+      try { run(name, args); } catch { /* not here */ }
+    }
+    this.takeGoto(cx);
+  }
+
+  // Goes where a toast's click asked, once: the build's stages in the job
+  // view (where an input's Proceed and Abort are), or the list. The panel
+  // does, or the copy that was clicked when the layout has no panel.
+  takeGoto(cx) {
+    const g = store.goto;
+    if (!g || g.seq === this.went || this.watcher || !this.settings) return;
+    this.went = g.seq;
+    if (Date.now() - g.at > GOTO_FOR) return; // clicked before this copy started
+    if (!this.panel) {
+      let tree = null;
+      try { tree = layout(); } catch { /* no layout here */ }
+      if (panelBlock(tree)) return; // the panel goes there
+    }
+    this.stack = this.stack.filter((v) => v.kind === "settings" && !this.client);
+    this.log = null; this.form = null; this.confirm = null;
+    if (g.place && this.client) this.show({ kind: "job", place: g.place, number: g.number }, cx);
+    cx.notify();
   }
 
   // --- moving about --------------------------------------------------------------
@@ -673,7 +778,25 @@ export default class Jenkins extends View {
       .when(part === null, (el) => el.child(div().flex_none().text_color(t.working).child(took(build, now))));
   }
 
-  jobRow(place, item, t, now) {
+  // The row or heading under the pointer, whose bell shows.
+  hovered(id, on, cx) {
+    if (on) this.hover = id;
+    else if (this.hover === id) this.hover = null;
+    cx.notify();
+  }
+
+  // The mute button of a row or a heading: bell-off while muted, always; a
+  // bell to mute it only while the pointer is over its row. A row keeps its
+  // place free (`reserve`), so that its numbers do not move; a heading does
+  // not, so that a narrow panel keeps its counts. Its click mutes or unmutes,
+  // and neither opens the job nor folds.
+  bell(id, on, shown, tip, action, t, reserve = true) {
+    if (!on && !shown) return reserve ? div().size(22).flex_none() : null;
+    return iconButton(id, on ? "bell-off" : "bell", tip, action, t, { size: 22 });
+  }
+
+  // A job of a folder of the settings (`mutes` given) has a mute button for its toasts.
+  jobRow(place, item, t, now, mutes = null) {
     const at = childOf(place, item.name), id = `jk-item-${at.path}`;
     if (isFolder(item)) {
       return h_flex().id(id).h(30).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -689,12 +812,17 @@ export default class Jenkins extends View {
       : state === "running" && last?.building ? h_flex().flex_none().gap(6).items_center().child(div().flex_none().text_size(11).text_color(t.dim).child(`#${last.number}`)).child(this.meter(last, t, now))
       : div().flex_none().text_size(11).text_color(state === "queued" ? t.ansi3 : t.dim)
         .child(state === "queued" ? "queued" : state === "disabled" ? "disabled" : last ? `#${last.number} · ${ago(last.timestamp, now)}` : "never built");
-    return h_flex().id(id).h(30).flex_none().px(8).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+    const own = Boolean(mutes?.jobs.has(at.path)), section = Boolean(mutes?.sections.has(place.path)), name = leaf(place.label);
+    const tip = own ? `Popups muted for ${item.name}: click to unmute${section ? ` (still silent while ${name} is muted)` : ""}`
+      : section ? `Silent while ${name} is muted: click to mute ${item.name} on its own too` : `Mute popups for ${item.name}`;
+    return h_flex().id(id).h(30).flex_none().pl(8).pr(mutes ? 2 : 8).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
       .tooltip(`${at.label}: ${LABEL[state]}${last && !last.building ? `, #${last.number} took ${span(last.duration)}` : ""}`)
       .on_click((_e, cx) => this.show({ kind: "job", place: at }, cx))
+      .when(Boolean(mutes), (el) => el.on_hover((on, cx) => this.hovered(id, on, cx)))
       .child(mark(state, t))
       .child(div().flex_1().min_w(0).truncate().text_color(quiet ? t.muted : t.foreground).child(item.name))
-      .child(right);
+      .child(right)
+      .when(Boolean(mutes), (el) => el.child(this.bell(`jk-mute-${at.path}`, own, this.hover === id, tip, (cx) => this.toggleMute(MUTED, at.path, cx), t)));
   }
 
   // Folds a heading of the list, or unfolds it; the app keeps which are folded.
@@ -714,15 +842,20 @@ export default class Jenkins extends View {
 
   // A folder of the settings' list: its name, large, and a click folds it.
   // Folded, it still says how many of its jobs run and how many failed.
-  heading(place, items, t, title) {
-    const folded = this.folded.has(place.path), env = envOf(place.label);
+  heading(place, items, t, title, mutes) {
+    const folded = this.folded.has(place.path), env = envOf(place.label), id = `jk-head-${place.path}`;
+    const silent = mutes.sections.has(place.path), name = title || "Jenkins";
+    const bell = this.bell(`jk-mute-${place.path}`, silent, this.hover === id,
+      silent ? `Popups muted for every job in ${name}: click to unmute (each job's own setting applies again)` : `Mute popups for every job in ${name}`,
+      (cx) => this.toggleMute(MUTED_SECTIONS, place.path, cx), t, false);
     const count = (state) => (items ?? []).filter((j) => jobState(j) === state).length;
     const paused = (items ?? []).filter((j) => jobState(j) === "running" && j.lastBuild?.building && this.waiting(childOf(place, j.name), j.lastBuild.number)).length;
     const running = count("running") - paused, failed = count("failed");
     // The name and its tag keep their width; in a narrow panel the counts give way first.
-    return h_flex().id(`jk-head-${place.path}`).h(46).flex_none().mt(4).pl(4).pr(4).gap(8).items_center().rounded(7).overflow_hidden()
+    return h_flex().id(id).h(46).flex_none().mt(4).pl(4).pr(4).gap(8).items_center().rounded(7).overflow_hidden()
       .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(folded ? "Show its jobs" : "Fold it away")
       .on_click((_e, cx) => this.fold(place, cx))
+      .on_hover((on, cx) => this.hovered(id, on, cx))
       .child(svg(icon(folded ? "chevron-right" : "chevron-down")).size(16).flex_none().text_color(t.muted))
       .child(div().flex_none().text_size(18).font_semibold().child(title))
       .when(Boolean(env), (el) => el.child(this.envTag(env, t)))
@@ -734,15 +867,16 @@ export default class Jenkins extends View {
         .when(failed > 0, (el) => el.child(h_flex().id(`jk-head-failed-${place.path}`).flex_none().gap(3).items_center().text_size(12).text_color(t.ansi1)
           .tooltip(`${failed} failed last time`).child(svg(icon("failed")).size(12)).child(String(failed))))
         .when(Boolean(items), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child(String(items.length))))
+        .when(Boolean(bell), (el) => el.child(bell))
         .child(iconButton(`jk-open-${place.path}`, "external", "Open in the browser", (cx) => this.open(this.client.page(place), cx), t, { size: 22 })));
   }
 
   // A place's header and its rows: a large heading that folds for the
   // folders of the list (`big`), a small one for a folder opened from it.
   section(place, t, now, title, big = false) {
-    const entry = this.listOf(place), items = entry?.data;
+    const entry = this.listOf(place), items = entry?.data, mutes = big ? this.mutes() : null;
     const state = this.status(entry, `list the jobs of ${place.label || "Jenkins"}`, t, now, place.path);
-    const rows = [big ? this.heading(place, items, t, title) : h_flex().h(28).flex_none().pt(6).px(8).gap(6).items_center().text_size(11).font_medium().text_color(t.dim)
+    const rows = [big ? this.heading(place, items, t, title, mutes) : h_flex().h(28).flex_none().pt(6).px(8).gap(6).items_center().text_size(11).font_medium().text_color(t.dim)
       .child(div().min_w(0).truncate().child(title))
       .when(Boolean(items), (el) => el.child(div().flex_none().child(String(items.length))))
       .child(div().flex_1())
@@ -751,7 +885,7 @@ export default class Jenkins extends View {
     if (big && this.folded.has(place.path)) return rows;
     if (!items) { if (!state.length) rows.push(this.line("Reading the jobs…", t)); }
     else if (!items.length) rows.push(this.line("No jobs here, or none this token may see.", t));
-    else rows.push(...items.map((item) => this.jobRow(place, item, t, now)));
+    else rows.push(...items.map((item) => this.jobRow(place, item, t, now, mutes)));
     return rows;
   }
 
@@ -1146,6 +1280,7 @@ export default class Jenkins extends View {
   }
 
   render() {
+    if (this.watcher) return div();
     const t = theme(), now = Date.now(), view = this.view();
     this.staleShown = false;
     const parts = !this.settings ? [this.line("Reading the settings…", t)]

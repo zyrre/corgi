@@ -679,6 +679,22 @@ preview's app copy shows its own "Herdr … are ready" update toast over the
 bottom right corner, where the panel's footer is, and no command dismisses
 it.
 
+Popups (`alerts.js`): a listed job's build that ends or starts to wait at
+an input posts a `notify`, found by the list and stage reads in
+`data.js`'s shared store, so one read makes one popup whatever the
+number of copies. Seen in the preview (2026-11-16): a stack child that was
+shown once keeps its timer while its column is hidden or another child
+shows, but one never shown never starts, and a mod command reaches shown
+copies only; `nextCommand()` gives the command's name alone, without
+`run`'s args, and a name such as `jenkins.show-12` arrives whole
+(`show-12`). So `--panel right` also puts a floating `jenkins-watch`
+block (`props.watch`, it draws nothing) on the layout's root, as the media
+mod's installer does, and a popup's click is `jenkins.show-<n>`, the
+build kept in the store under `n`. `POST /__fake/run?job=…&result=…&ms=…`
+(`&paused=Approve`) on the fake starts a build for a popup. A preview-home
+command added to the `nextCommand` loop reaches the watcher too: guard
+one that toggles something with `this.watcher`, or it runs twice.
+
 The window takes no clicks, so a view behind one (a job, a log, the build
 form, the abort question) is reached as for the Projects list: in the
 preview home's copy of `main.js`, add commands to the `nextCommand` loop

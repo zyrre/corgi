@@ -22,9 +22,15 @@
 // the error shows only after QUIET_FAILS failures in a row or QUIET_MS of
 // failing (`loud`). One that will not pass by itself (401, 403, 404, the
 // settings) shows at once.
+//
+// It also keeps what the popups know (alerts.js `Watch`: each listed job's
+// newest build as last seen), so that one read, whichever copy started it,
+// makes one popup; the settings changing forgets it, and so does a new start
+// of the app, which loads the modules afresh.
 
 import { Client, JenkinsError } from "./api.js";
 import { emptyLog, appendLog } from "./util.js";
+import { Watch } from "./alerts.js";
 
 export const BACKOFF = [10000, 30000, 60000]; // the waits after the 1st, 2nd and later failures in a row
 export const QUIET_FAILS = 3;
@@ -217,12 +223,29 @@ class JenkinsData {
     this.settings = null; // the settings last taken into use by any copy
     this.saved = 0; // bumped with them: a copy on older ones takes these up
     this.sources = new Map(); // url, user and token → Source
+    // The toasts' memory (alerts.js): each listed job's newest build as last
+    // seen, here so that an event is seen once by all copies, and forgotten
+    // with the settings, so that the next read is a baseline.
+    this.watch = new Watch();
+    this.toasts = new Map(); // a toast's number → the build its click opens: { place, number }
+    this.posted = 0; // the toasts' numbers so far
+    this.goto = null; // a toast clicked: { seq, place, number, at }, for the copy that shows it
+    this.gone = 0; // the clicks so far
+  }
+
+  // Keeps what a toast's click opens; the last 50.
+  target(place, number) {
+    this.posted += 1;
+    this.toasts.set(this.posted, { place, number });
+    for (const n of this.toasts.keys()) if (n <= this.posted - 50) this.toasts.delete(n);
+    return this.posted;
   }
 
   // The settings every copy uses from now on.
   use(settings) {
     const same = this.settings && ["url", "user", "token", "folders"].every((k) => (this.settings[k] ?? "") === (settings[k] ?? ""));
     if (same) return false;
+    this.watch.reset();
     this.settings = settings;
     this.saved += 1;
     return true;

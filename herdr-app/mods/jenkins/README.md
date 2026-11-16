@@ -40,10 +40,14 @@ panel, the one under the tab bar where Files and Changes (and GitLab, when
 that mod is installed) show, as one more child of its stack `panel-body`.
 One of them shows at a time, and opening Jenkins changes nothing else in
 the window: the tab bar keeps its width and its buttons their places. It
+also puts a block that draws nothing, `jenkins-watch`, floating on the
+layout: the app starts a panel only once it is first shown, and a hidden
+one gets no commands, so this block is what reads the lists for the popups
+before you open the panel, and what takes a popup's click. It
 looks as they do there: a card with a border, its own header under the tab
 bar. Drag the panel's edge to size it; the app remembers, for all of them.
 Running it again changes nothing, and it adds no second Jenkins to a stack
-that has one already. `--panel off` takes out the one it added;
+that has one already. `--panel off` takes out the one it added, and the floating block;
 `--uninstall` takes every block showing the mod out of your layouts (only
 out of NAME's with `--layout`), since a block naming a mod that is gone
 shows an error.
@@ -68,6 +72,9 @@ it, add the block yourself as the last child of the stack `panel-body`:
 `{ "id": "jenkins-panel", "type": "block", "content": { "mod": "jenkins", "props": { "panel": true } } }`.
 `props.panel` tells the mod it is in the panel, so it draws itself as Files
 and Changes do, and tells the installer the block is the one it manages.
+For the popups (below), also add a block that draws nothing, floating on the
+layout's root (its `floating` list):
+`{ "id": "jenkins-watch", "content": { "mod": "jenkins", "props": { "watch": true } }, "edge": "bottom", "align": "end" }`.
 The id is `jenkins-panel`, not `jenkins`, because the app keeps a block's
 state (hidden, size) by id after the block is gone, and the earlier
 version's block `jenkins`, hidden by its button, would hide a stack child
@@ -233,9 +240,31 @@ which an app started from the Dock usually has not.
   Jenkins refuses, or an input answered meanwhile in the browser, shows as
   an error, and the view reads the build again. The token's user must be
   one the step accepts (its `submitter`).
+- **Popups.** When a build of a job in the list ends (succeeded, failed,
+  unstable, aborted) or starts to wait at an input step, a popup says so:
+  `api_master #57 failed`, with the folder (and `DEV` or `PROD`) and where
+  it failed when its stages were read already, else how long it took; a
+  wait names the stage it waits in, once per build and step. A click on it
+  opens the panel on that build's stages, where a waiting build's Proceed
+  and Abort are. None comes for what was so already when the app started or
+  the settings changed, for a job seen for the first time, for a build that
+  starts, or while the panel shows. They come while the panel is hidden or
+  was never opened, since `--panel right` puts the floating `jenkins-watch`
+  block in that reads the lists at their usual pace (every minute, every
+  ten seconds while a build runs or waits). Only the jobs of the settings'
+  folders make popups, not those of a folder opened from them; more than
+  three at once make one popup for all of them.
+- **Mute.** The bell at the end of a job's row mutes its popups, or unmutes
+  them; a muted job shows a crossed-out bell, and the bell of one that is not
+  shows while the pointer is over its row. The bell on a heading mutes every
+  job of that folder whatever its own setting, and unmuting the folder
+  brings each job's own setting back. The app remembers both across
+  restarts, by the job's and the folder's path. Muting stops the popups
+  only: the list still shows everything, and a click on a bell neither opens
+  the job nor folds the heading.
 - The arrow-out buttons open the folder, job or build in the browser.
-- Esc goes back a view. `jenkins.refresh` and `jenkins.settings` are its
-  commands for `keys.json`.
+- Esc goes back a view. `jenkins.refresh`, `jenkins.settings` and
+  `jenkins.show` (the panel, on the list) are its commands for `keys.json`.
 
 ## When Jenkins does not answer
 
@@ -287,8 +316,8 @@ a stage with branches inside shows all of them.
 ## Develop
 
 `main.js` (the views), `data.js` (what is read, shared by every copy of
-the mod, with the back-off and when an error shows), `api.js` (Jenkins and
-the settings), `util.js` (pure helpers), `ui.js` (marks and buttons),
+the mod, with the back-off and when an error shows), `alerts.js` (what makes
+a popup and what it says), `api.js` (Jenkins and the settings), `util.js` (pure helpers), `ui.js` (marks and buttons),
 `icons/`. After a change:
 
 ```sh
@@ -309,7 +338,10 @@ values, with `wfapi/pendingInputActions` and the step's answers;
 real Jenkins served for an answered release notes input (read only).
 `node tests/fake-jenkins.mjs
 48765` serves it for a look at the mod in a window: point the settings at
-`http://127.0.0.1:48765`. It fails on demand: `curl -X POST
+`http://127.0.0.1:48765`. `curl -X POST
+'http://127.0.0.1:48765/__fake/run?job=team-dev/parser_master&result=FAILURE&ms=20000&at=Build'`
+starts a build there that fails 20 seconds later (`&paused=Approve` on a
+`team-prod` job: one that stops at its input), for a popup. It fails on demand: `curl -X POST
 'http://127.0.0.1:48765/__fake/fail?mode=status&status=503'` (or
 `mode=refuse`, `mode=stall`; `&count=2` for the next two requests,
 `&path=<regex>` for some paths), and `/__fake/recover` ends it. Never try
