@@ -24,6 +24,13 @@
 // (`stall`), or answered with `status` (`status`: 503, 401, …); `recover()`
 // ends it. Run as a program, `POST /__fake/fail?mode=…&status=…&count=…&path=…`
 // and `POST /__fake/recover` do the same (no auth; never counted as requests).
+//
+// `run(names, { result, ms, at, paused })` starts a build of a job now, as
+// someone in the browser would: it ends after `ms` (60 s) with `result`
+// (SUCCESS, FAILURE at stage `at`, UNSTABLE, ABORTED), or stops at the input
+// step of stage `paused` (`Approve`, `Release Notes`) and waits there until
+// answered. `POST /__fake/run?job=team-dev/api_master&result=FAILURE&ms=20000&at=Build`
+// does it from outside (for a toast in a window).
 
 import { createHash } from 'node:crypto';
 import http from 'node:http';
@@ -285,7 +292,7 @@ function seed() {
  *   crumbs     false: a Jenkins without CSRF protection (no crumb issuer, none asked)
  *   queueMs    how long a triggered build waits in the queue (1500)
  *   stageView  false: a Jenkins without Pipeline Stage View (wfapi answers 404)
- * Resolves with { url, port, requests, root, find, setCrumb, fail, recover, release, close }.
+ * Resolves with { url, port, requests, root, find, run, setCrumb, fail, recover, release, close }.
  */
 export async function startFakeJenkins(options = {}) {
   const clock = options.clock ?? Date.now;
@@ -326,8 +333,8 @@ export async function startFakeJenkins(options = {}) {
       job.queued = null;
     }
     for (const build of job.builds) {
-      if (build.result === null && build.estimated && now - build.timestamp >= build.estimated) {
-        build.result = 'SUCCESS';
+      if (build.result === null && build.estimated && !build.paused && now - build.timestamp >= build.estimated) {
+        build.result = build.ends ?? 'SUCCESS';
         build.duration = build.estimated;
       }
     }
@@ -410,6 +417,19 @@ export async function startFakeJenkins(options = {}) {
   const recover = () => {
     outage = null;
   };
+  // A build of the job at `names` starts now (the file's head says how it goes).
+  const run = (names, { result = 'SUCCESS', ms = 60_000, at, paused } = {}) => {
+    const job = find(names);
+    if (job?.kind !== 'job') throw new Error(`no job ${names.join('/')}`);
+    settle(job);
+    const number = (job.builds[0]?.number ?? 0) + 1;
+    const input = paused ? { Approve: APPROVE, 'Release Notes': RELEASE_NOTES }[paused] ?? APPROVE : undefined;
+    const build = { number, result: null, timestamp: clock(), estimated: Number(ms), ends: result, parameters: { gitBranch: 'master' } };
+    if (at) build.at = at;
+    if (paused) Object.assign(build, { paused, input });
+    job.builds.unshift(build);
+    return build;
+  };
   // The stalled requests are answered now, as if Jenkins had come back.
   const release = () => {
     const ways = held;
@@ -423,6 +443,14 @@ export async function startFakeJenkins(options = {}) {
       if (url.pathname === '/__fake/fail') fail(Object.fromEntries(url.searchParams));
       else if (url.pathname === '/__fake/recover') recover();
       else if (url.pathname === '/__fake/release') release();
+      else if (url.pathname === '/__fake/run') {
+        const q = Object.fromEntries(url.searchParams);
+        try {
+          run(String(q.job ?? '').split('/').filter(Boolean), q);
+        } catch (error) {
+          return send(res, 404, String(error.message));
+        }
+      }
       else return send(res, 404, 'Not found');
       return send(res, 200, 'ok');
     }
@@ -587,6 +615,7 @@ export async function startFakeJenkins(options = {}) {
     requests,
     root,
     find,
+    run,
     setCrumb: (next) => {
       crumb = next;
     },

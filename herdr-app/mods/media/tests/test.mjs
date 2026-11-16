@@ -964,7 +964,7 @@ test('beside the Jenkins mod and Corgi: each one\'s lines in a shared tab bar st
   assert.equal(h.main('tabs-jenkins'), corgiLines(jenkinsOnly));
   assert.equal(find(h.read(), 'tabs').content.mod, 'tabs-jenkins');
   assert.ok(find(h.read(), 'jenkins-panel'));
-  assert.equal(h.read().floating, undefined);
+  assert.deepEqual(h.read().floating.map((f) => f.id), ['jenkins-watch'], 'Media\'s watcher is gone, Jenkins\' stays');
   fs.rmSync(h.home, { recursive: true });
 
   // Media first (tabs-media), then Jenkins into that copy; Jenkins off, then Media off.
