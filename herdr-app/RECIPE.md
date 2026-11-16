@@ -7,7 +7,9 @@ shaded card of two lines with its state's color down its left edge
 (the agent's task; under it, smaller, its harness's icon, its model, how
 full its context is and, at the right, its state as a badge: `WORKING`,
 `BLOCKED`, `DONE`, `IDLE`, `PAUSED`, `EXITED`), and a `+` that opens a project: type a name or a path, and Enter shows
-its supervisor or starts it. A project's row counts its agents by state in
+its supervisor or starts it. Each project sits in a faint tint and outline
+of its avatar's color, so you see where it ends and which project an agent
+is in. A project's row counts its agents by state in
 small colored numbers, and a click on it folds the project to its
 supervisor, or unfolds it. A worker Corgi tagged ready to merge has a
 `MERGE` badge in its row, in place of its state's: click it, confirm, and its branch is merged into
@@ -254,7 +256,8 @@ The `projects` view fills its block on `chrome`, text 13 px:
     badge color (`muted` for `IDLE`, `PAUSED` and an agent in no state,
     `blocked` for `EXITED`), so the corners round beside the bar and never
     cut into it. The text starts 9 px after the bar (7 under 230 px), 8 px
-    (6) before the right edge. 8 px of room follow a group of cards. Each card
+    (6) before the right edge. Under a space outside any repository, 8 px
+    of room follow its group of cards. Each card
     has two lines. The first (18 px): the task
     in 12.5 px (medium weight for `Supervisor`), the line's whole width,
     cut with `…`. The second (16 px), in `dim` 11 px, 5 px apart from
@@ -278,6 +281,21 @@ The `projects` view fills its block on `chrome`, text 13 px:
     (`worktree-calm-forest-4f96`; nothing on the primary checkout) is not
     drawn; it is the row's tooltip. The supervisor is first; the rest keep
     the app's order. The badge, the icon and the fill stay whole.
+  - A project's area (decision 2026-11-16): its row, its pull card, its
+    agents' cards, their merge cards and its worktrees' rows, only its row
+    and supervisor's card while it is folded, in one rounded area (radius
+    10, 2 px inside a 1 px outline, 4 px at its foot, 6 px of room after
+    it): a faint tint of its avatar's color (alpha `12`, about 7 %) inside
+    an outline of the same color (alpha `59`, about 35 %), over the theme
+    rather than mixed into it, as the window can be see-through. The color
+    is the avatar's stored one (`space.colors`, a name in the mod's `MARK`
+    or the theme's, or a hex); a project with none (`~` when it is a
+    repository) has a neutral area, `foreground` at 3 % inside a `border`
+    outline. A space outside any repository has no area. Under 230 px the
+    list's side margin is 5 px rather than 8, so an area's outline and
+    inset take no room from what is in it, and a row's padding is 5 px
+    rather than 8, with 6 px gaps rather than 9: a short name stays whole
+    beside its counts and arrows, and nothing touches the outline.
   - Under a worker's row, while its merge is asked about, runs or has
     ended: a card indented like the row (22 px; `surface`, radius 7,
     padding 7, text 11.5 px, its text wrapping) with a `border` outline

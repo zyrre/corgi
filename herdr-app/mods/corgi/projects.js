@@ -10,9 +10,11 @@
 // title. Each agent is a shaded card with its state's color down its left
 // edge, on two lines: the task, then the harness, model and context
 // fill with the state's badge at the right. A project's row counts its
-// agents by state. A worktree's space with no agent keeps its plain row. Spaces outside
-// any repository (~, other folders) show as spaces, with
-// their agents under them. Click a project's row to fold it to its
+// agents by state. A worktree's space with no agent keeps its plain row.
+// Each project (its row, its agents' cards, its worktrees' rows) sits in
+// one rounded area, a faint tint inside a soft outline in its avatar's
+// color. Spaces outside any repository (~, other folders) show as plain
+// spaces, with their agents under them. Click a project's row to fold it to its
 // supervisor (or unfold it), another space to show it and an agent to show its
 // terminal; right-click for the space's menu; drag a space to reorder. The
 // command `corgi.open` does what the + does, for a key of the person's
@@ -119,6 +121,23 @@ const PULL_SCRIPT = 'ssh="${GIT_SSH_COMMAND:-$(git config --get core.sshCommand)
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
+// The color of `w`'s avatar: its stored color (a name in MARK or the
+// theme's, or a hex), null while it has none (`~` never has one).
+function markOf(w, t) {
+  const color = (shared("space.colors") ?? {})[w.id];
+  if (!color) return null;
+  return color.startsWith("#") ? color : (MARK[color] ?? t[color] ?? null);
+}
+// A project's area (`projectArea`): its corners' rounding, and the room
+// between its outline and what is in it.
+const AREA_RADIUS = 10;
+const AREA_INSET = 2;
+// The list's margin at each side. A narrow sidebar (CARD_ROOMY) gives an
+// area's outline and inset (1 + AREA_INSET) the list's margin, so that the
+// rows and cards in it keep the room they had without one: a row's counts
+// and arrows and a card's model clear of the outline.
+const LIST_MARGIN = 8;
+const LIST_MARGIN_TIGHT = LIST_MARGIN - 1 - AREA_INSET;
 
 // The where() of a listed row: the checkout its git was read in.
 const rowKey = (r) => JSON.stringify([r.w.machine ?? null, r.at]);
@@ -1393,22 +1412,25 @@ export default class Projects {
         more: folded || kids.length > 0 || members.some(({ a }) => !a.supervisor),
         counts: stateCounts(members.map(({ a }) => a)),
       };
+      // A project's rows and cards go into its area; a space outside any
+      // repository's, straight into the list.
+      const area = [];
       // Only the agent with the focus is lit, never a project's row with it:
       // a project's row (a repository's space) is not lit at all, a click on
       // it folds it; a space outside any repository is lit while none of its
       // agents has the focus.
-      out.push(this.row(head, t, !head.g && head.w.active && !(by[head.w.id] ?? []).some((a) => a.focused), fold));
+      area.push(this.row(head, t, !head.g && head.w.active && !(by[head.w.id] ?? []).some((a) => a.focused), fold));
       const card = this.pullCard(rowKey(head), t);
-      if (card) out.push(card);
+      if (card) area.push(card);
       let panel = false;
       for (const [i, { a, r }] of shown.entries()) {
         // A worktree's space has no row of its own while agents stand for it:
         // shown, its first agent is lit unless another of its agents has the focus.
         const mine = by[r.w.id] ?? [];
         const lit = a.focused || (r.tree && r.w.active && mine[0] === a && !mine.some((x) => x.focused));
-        out.push(this.agent(a, r, lit, t, i === 0));
+        area.push(this.agent(a, r, lit, t, i === 0));
         if (this.merge?.terminal === a.address) {
-          out.push(this.mergePanel(this.merge, t));
+          area.push(this.mergePanel(this.merge, t));
           panel = true;
         }
         order.push(a.address);
@@ -1419,17 +1441,43 @@ export default class Projects {
       const m = this.merge;
       const closing = m?.phase === "closing" || m?.phase === "closed";
       const here = (head.w.machine ?? null) === (m?.machine ?? null);
-      if (!folded && !panel && closing && here && (head.at === m.dir || members.some(({ a }) => a.corgi?.project === m.dir))) out.push(this.mergePanel(m, t));
+      if (!folded && !panel && closing && here && (head.at === m.dir || members.some(({ a }) => a.corgi?.project === m.dir))) area.push(this.mergePanel(m, t));
       for (const k of folded ? [] : kids) {
         if ((by[k.w.id] ?? []).length) continue;
-        out.push(this.row(k, t));
+        area.push(this.row(k, t));
         const card = this.pullCard(rowKey(k), t);
-        if (card) out.push(card);
+        if (card) area.push(card);
       }
-      // Room after a group of agents, before the next project.
-      if (shown.length) out.push(div().flex_none().h(8));
+      if (head.g) out.push(this.projectArea(area, head.w, t));
+      else {
+        out.push(...area);
+        // Room after a group of agents, before the next project.
+        if (shown.length) out.push(div().flex_none().h(8));
+      }
     }
     return { out, order };
+  }
+
+  // A project's area (decision 2026-11-16): `els`, its row, its agents'
+  // cards and its worktrees' rows (only its row and supervisor while it is
+  // folded), on one rounded faint tint inside a soft 1 px outline, both in
+  // the color of `w`'s avatar. Low alphas over the theme, not a mix: the
+  // window can be see-through. A project with no stored color yet (`~` in
+  // a repository) has a neutral one: the theme's border, a faint
+  // foreground.
+  projectArea(els, w, t) {
+    const mark = markOf(w, t)?.slice(0, 7);
+    return v_flex()
+      .id(`area-${w.id}`)
+      .flex_none()
+      .mb(6)
+      .p(AREA_INSET)
+      .pb(4)
+      .rounded(AREA_RADIUS)
+      .border_1()
+      .border_color(mark ? `${mark}59` : t.border)
+      .bg(mark ? `${mark}12` : `${t.foreground}08`)
+      .children(els);
   }
 
   // Folds the project whose repository is `repo` to its supervisor, or
@@ -1649,13 +1697,14 @@ export default class Projects {
   // says how many of its agents are in each state, folded or not.
   row({ w, i, g, tree, at }, t, on = w.active, fold = null) {
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex((s) => s.id === this.pressed);
-    const colors = shared("space.colors") ?? {};
-    const color = colors[w.id] ?? "ansi6";
-    const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
+    const fill = markOf(w, t) ?? MARK.ansi6;
+    // A narrow sidebar takes in the row's margins, as it does a card's, so
+    // that a short name stays whole beside the counts and arrows.
+    const tight = sidebarPx() < CARD_ROOMY;
     return v_flex()
       .relative()
       .id(`space-${w.id}`)
-      .px(8)
+      .px(tight ? 5 : 8)
       .h(tree ? TREE_ROW : SPACE_ROW)
       .flex_none()
       .justify_center()
@@ -1697,12 +1746,12 @@ export default class Projects {
       .on_mouse_down("right", () => this.menu(w))
       .child(
         h_flex()
-          .gap(9)
+          .gap(tight ? 6 : 9)
           .items_center()
           .when(tree, (el) => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, (el) => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
           // The name gives way first: the counts and arrows after it stay whole.
-          .child(h_flex().flex_shrink(1).max_w(150).gap(3).items_center()
+          .child(h_flex().flex_shrink(1).min_w(0).max_w(150).gap(3).items_center()
             .child(div().min_w(0).truncate().text_color(t.foreground).child(w.name))
             .when(Boolean(fold?.more), (el) => el.child(svg(`mods/workspace-chrome/chevron-${fold.folded ? "right" : "down"}.svg`)
               .id(`fold-${w.id}`).size(10).flex_none().text_color(t.dim))))
@@ -1901,7 +1950,7 @@ export default class Projects {
             .child(svg("mods/workspace-chrome/plus.svg").size(14)))))
       .when(Boolean(this.pausing) && !collapsed, (el) => el.child(this.pausePanel(t)))
       .when(this.open && !collapsed, (el) => el.child(this.openPanel(t)))
-      .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : 8).pb(14).overflow_y_scrollbar().mode("always")
+      .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : sidebarPx() < CARD_ROOMY ? LIST_MARGIN_TIGHT : LIST_MARGIN).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.pressedPull = null; cx.notify(); })
         .children(this.grouped(t, collapsed, sp, ps)))
       .when(Boolean(version), (el) => el.child(version))
