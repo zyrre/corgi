@@ -80,7 +80,50 @@ const CARD_RADIUS = 6;
 const CARD_EDGE = 3;
 // The narrowest sidebar whose cards keep their full margins.
 const CARD_ROOMY = 230;
+// The narrowest sidebar whose cards' second line keeps the model beside the
+// context fill and the prompt cache (`agent`): under it the model would be
+// cut to a letter or to nothing.
+const MODEL_ROOMY = 200;
 const RAIL_CELL = 32;
+// An agent's prompt cache as its card's second line shows it, from `cache`
+// in `corgi status --json` (`c`, the agent's entry, with `read_at`, when
+// its read began): { text, tip, soon } while it is warm, `42m`, `1h` from
+// an hour on, `soon` once 5 minutes or less are left (drawn in `ansi3`, to
+// prompt it before it goes); `cold` once it lapsed, the tokens the next
+// prompt re-reads in its tooltip; a `?` after either when its lifetime is
+// only estimated (Codex), which the cache may outlive. Null when unknown.
+// The minutes count down from the read, so a card between reads, or with
+// reads failing, never shows more time than is left: `minutes_left` is
+// rounded up, and the count starts when the read did.
+const CACHE_SOON_MIN = 5;
+function cacheFigure(c, now = Date.now()) {
+  const cache = c?.cache;
+  if (!cache || (cache.state !== "warm" && cache.state !== "cold")) return null;
+  const mark = cache.estimated ? "?" : "";
+  const read = Number.isFinite(c.read_at) ? c.read_at : now;
+  const secs = cache.state === "warm" && Number.isFinite(cache.minutes_left)
+    ? cache.minutes_left * 60 - Math.max(0, now - read) / 1000
+    : 0;
+  if (secs > 0) {
+    const min = Math.ceil(secs / 60);
+    const text = min >= 60 ? `${Math.floor(min / 60)}h` : `${min}m`;
+    const left = `${min} more minute${min === 1 ? "" : "s"}`;
+    const tip = cache.estimated
+      ? `Prompt cache warm for at least ${left} (estimated; it may last longer)`
+      : `Prompt cache warm for ${left}`;
+    return { text: text + mark, tip, soon: min <= CACHE_SOON_MIN };
+  }
+  const tokens = Number.isFinite(cache.tokens) ? compactTokens(cache.tokens) : null;
+  const rereads = tokens ? `the next prompt re-reads ${tokens} tokens` : "the next prompt re-reads the whole context";
+  const tip = cache.estimated ? `Cache likely cold: ${rereads}` : `Cache cold: ${rereads}`;
+  return { text: `cold${mark}`, tip, soon: false };
+}
+// A token count as `corgi fleet` writes one (`compact_tokens`): `40k`, `1.2M`.
+function compactTokens(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.ceil(n / 1_000)}k`;
+  return String(n);
+}
 const railCell = (el) => h_flex().flex_none().justify_center().child(el);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
@@ -340,7 +383,9 @@ export default class Projects {
         this.refreshCorgi(cx);
         store.refreshRemotes(cx);
       }
-      if (this.sync()) cx.notify();
+      // A prompt cache's minutes count down between reads (`cacheFigure`).
+      const synced = this.sync();
+      if (this.cacheTurned() || synced) cx.notify();
       this.publishQuestions();
     });
     // `corgi.open`, from a key or `herdr-app do`.
@@ -386,6 +431,16 @@ export default class Projects {
     if (!m || (m.machine ?? null) !== machine || ["running", "asking", "closing", "closed"].includes(m.phase)) return;
     const worker = this.corgiAgents.get(m.terminal);
     if (!worker || (m.phase === "confirm" && worker.tag !== "merge")) this.merge = null;
+  }
+
+  // Whether a card's prompt cache figure changed since the last look (a
+  // minute counted down, a cache gone cold), which no read redraws.
+  cacheTurned() {
+    const now = Date.now();
+    const key = [...this.corgiAgents].map(([address, c]) => `${address}:${cacheFigure(c, now)?.text ?? ""}`).join(",");
+    if (key === this.cacheKey) return false;
+    this.cacheKey = key;
+    return true;
   }
 
   // The project an agent of Corgi's is in, from its machine's status.
@@ -1772,11 +1827,15 @@ export default class Projects {
   }
 
   // One agent, on two lines. The first: its task, the whole width, cut with
-  // `…`. The second, dim and smaller: its harness's icon, its model and how
-  // full its context is, each only when known, and at the right edge its
+  // `…`. The second, dim and smaller: its harness's icon, its model, how
+  // full its context is and how long its prompt cache stays warm
+  // (`cacheFigure`), each only when known, and at the right edge its
   // state's badge (`badge`; for a worker tagged ready to merge, the MERGE
   // mark that opens the merge question). The worktree it works in is the
-  // row's tooltip.
+  // row's tooltip. As the line runs out of room the model is cut first; in
+  // a sidebar under MODEL_ROOMY, where it would be cut to a letter or to
+  // nothing, a line with a cache figure leaves it out, and the icon's
+  // tooltip names it. The badge, the fill and the cache figure stay whole.
   // Each is a faintly shaded card with its state's color as a full-height
   // bar at its left: the card reaches past the bar by its rounding, so its
   // corners round beside the bar and never cut into it. Cards stand 4 px
@@ -1790,6 +1849,8 @@ export default class Projects {
     const pic = icon(a.program, 12, a.supervisor ? t.foreground : t.muted);
     const model = oneLine(a.corgi?.model);
     const ctx = Number.isFinite(a.corgi?.ctx_pct) ? `${Math.round(a.corgi.ctx_pct)}%` : "";
+    const cache = cacheFigure(a.corgi);
+    const modelOut = Boolean(cache && model && pic) && sidebarPx() < MODEL_ROOMY;
     const key = badgeKey(a);
     // A supervisor's open questions, as a pill at the right of its first line.
     const asked = a.supervisor ? this.openQuestions(a) : 0;
@@ -1818,10 +1879,14 @@ export default class Projects {
         .child(div().flex_1().min_w(0).truncate().text_color(a.status === "idle" && !on ? t.muted : t.foreground).when(a.supervisor, (el) => el.font_medium()).child(a.task))
         .when(asked > 0, (el) => el.child(this.questionPill(a, asked, t))))
       .child(h_flex().h(16).gap(5).items_center().text_size(11).text_color(t.dim)
-        .when(Boolean(pic), (el) => el.child(pic))
-        .when(Boolean(model), (el) => el.child(div().flex_shrink(1).min_w(0).truncate().child(model)))
-        .when(Boolean(model && ctx), (el) => el.child(div().flex_none().child("·")))
+        .when(Boolean(pic) && !modelOut, (el) => el.child(pic))
+        .when(modelOut, (el) => el.child(div().id(`model-${a.address}`).flex_none().tooltip(model).child(pic)))
+        .when(Boolean(model) && !modelOut, (el) => el.child(div().flex_shrink(1).min_w(0).truncate().child(model)))
+        .when(Boolean(model && ctx) && !modelOut, (el) => el.child(div().flex_none().child("·")))
         .when(Boolean(ctx), (el) => el.child(div().flex_none().child(ctx)))
+        .when(Boolean(((model && !modelOut) || ctx) && cache), (el) => el.child(div().flex_none().child("·")))
+        .when(Boolean(cache), (el) => el.child(div().id(`cache-${a.address}`).flex_none().child(cache.text).tooltip(cache.tip)
+          .when(cache.soon, (c) => c.text_color(t.ansi3))))
         .when(Boolean(key), (el) => el.child(div().flex_1()).child(key === "merge" ? this.mergeMark(a, t) : badge(t, key).id(`badge-${a.address}`))))
       // Inside the border, past the corners' rounding: whole from top to bottom.
       .child(div().id(`edge-${a.address}`).absolute().left(CARD_RADIUS - 1).top(0).bottom(0).w(CARD_EDGE).bg(stateColor(t, key ?? "idle")));

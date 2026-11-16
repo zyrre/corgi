@@ -263,10 +263,22 @@ The `projects` view fills its block on `chrome`, text 13 px:
     cut with `…`. The second (16 px), in `dim` 11 px, 5 px apart from
     the left: the harness's icon (12 px; Claude's now, Codex's or
     OpenCode's when it is one), the model (`Opus 5.5`, cut with `…` if the
-    line runs out), a `·`, and the context fill (`33%`), from `model` and
-    `ctx_pct` in `corgi status --json`. What is not known is left out with
-    nothing in its place (no `·` without both): an agent started by hand
-    shows its icon alone. At the right end of the second line, the state's
+    line runs out), a `·`, the context fill (`33%`), a `·`, and how long
+    the prompt cache stays warm (`42m`, `1h` from an hour on), from
+    `model`, `ctx_pct` and `cache` in `corgi status --json`. The cache
+    figure is `ansi3` (amber) at 5 minutes or less, so the person can
+    prompt the agent before it goes, and `cold` once it lapsed; a `?`
+    follows either when the lifetime is only estimated (Codex), as in
+    `corgi fleet`. Its tooltip says what it is (`Prompt cache warm for 42
+    more minutes`; `Cache cold: the next prompt re-reads 180k tokens`).
+    The minutes count down from when the status read began, also between
+    reads (a 1-second timer redraws a card whose figure changed), so a
+    card never shows more time than is left. What is not known is left
+    out with nothing in its place (a `·` only between two things shown):
+    an agent started by hand shows its icon alone. As the line runs out
+    of room the model is cut first; in a sidebar under 200 px, where it
+    would be cut to a letter or to nothing, a line with a cache figure
+    leaves the model out and the icon's tooltip names it. At the right end of the second line, the state's
     badge, still (no animation), 10 px semibold, 5 px padding, radius 4:
     `WORKING` on `working`, `BLOCKED` on `blocked`, `DONE` on `done`,
     `PAUSED` on `muted` (an agent paused by `⏸ Agents`, tagged or not),
@@ -280,7 +292,8 @@ The `projects` view fills its block on `chrome`, text 13 px:
     alone. The worktree's folder name
     (`worktree-calm-forest-4f96`; nothing on the primary checkout) is not
     drawn; it is the row's tooltip. The supervisor is first; the rest keep
-    the app's order. The badge, the icon and the fill stay whole.
+    the app's order. The badge, the icon, the fill and the cache figure
+    stay whole.
   - A project's area (decision 2026-11-16): its row, its pull card, its
     agents' cards, their merge cards and its worktrees' rows, only its row
     and supervisor's card while it is folded, in one rounded area (radius

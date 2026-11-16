@@ -204,7 +204,7 @@ class CorgiData {
     cx.spawn(async (cx) => {
       const status = await this.status();
       // With no answer the pause stays as it was last said.
-      this.learn(null, status ?? { projects: [], paused: this.seen.get(null)?.paused ?? null });
+      this.learn(null, status ?? { projects: [], paused: this.seen.get(null)?.paused ?? null }, this.local.started);
       this.build = status?.corgi ?? null;
       this.daemon = status?.daemon ?? null;
       if (status) this.answered(null);
@@ -229,8 +229,11 @@ class CorgiData {
   }
 
   // Keeps what `machine`'s Corgi said (`status`), or forgets it (null), and
-  // puts every machine's together again.
-  learn(machine, status) {
+  // puts every machine's together again. Each agent keeps when its read
+  // began (`read_at`, ms), so that what counts down (its prompt cache's
+  // `minutes_left`) counts on from there between reads, and never shows
+  // more time than was left.
+  learn(machine, status, at = Date.now()) {
     if (!status) this.seen.delete(machine);
     else {
       const agents = new Map();
@@ -238,8 +241,8 @@ class CorgiData {
         for (const a of p.agents ?? []) {
           if (!a.terminal) continue;
           // Corgi there names its own core's terminals; the app, `lab/t3`.
-          if (machine) agents.set(`${machine}/${a.terminal}`, { ...a, project: p.dir, machine });
-          else agents.set(a.terminal, { ...a, project: p.dir });
+          if (machine) agents.set(`${machine}/${a.terminal}`, { ...a, project: p.dir, machine, read_at: at });
+          else agents.set(a.terminal, { ...a, project: p.dir, read_at: at });
         }
       }
       const projects = new Map((status.projects ?? []).map((p) => [p.dir, p]));
@@ -369,7 +372,7 @@ class CorgiData {
       r.loading = false;
       // Gone meanwhile: nothing to keep.
       if (this.machines.some((k) => k.name === machine && k.state === "connected")) {
-        this.learn(machine, status);
+        this.learn(machine, status, at);
         if (status) this.answered(machine);
       }
       this.changed(cx);

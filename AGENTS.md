@@ -322,6 +322,11 @@ The window is 1280x800 points, too short for every made-up project
 unfolded: `APP_PREVIEW_SIZE=1280x1200 scripts/app-preview start` shows
 them all.
 
+The preview's home is the path `start` prints
+(`/tmp/corgi-ap-<uid>-<checksum of the checkout>/home`): use that one,
+never a glob such as `/tmp/corgi-ap-*/home`, which matches other
+workers' preview homes too.
+
 Read each picture yourself (the Read tool shows a PNG) and say what looks
 wrong in it, also when it is not your change's. While the Mac's screen is
 locked, the window draws almost nothing and `shot` repeats an old frame
@@ -396,7 +401,9 @@ space's git is read, the worktrees' spaces show as rows of their own.
 On a fresh home's first start the Projects list can stay empty of
 Corgi's tasks and marks for 10 seconds and more, although the mod reads
 `corgi status` every 5: take a shot that looks empty again.
-Change the made-up projects in `start_fakes` when a view needs
+Every agent's prompt cache in the canned status is `warm 55m`: for
+other cache states, edit the agents' `cache` in `fake/status.json` after
+`start`. Change the made-up projects in `start_fakes` when a view needs
 a state they lack. `scripts/test-app-preview` runs the script against a
 fake app, hc, AeroSpace and corgi, opening nothing: run it, and
 `shellcheck scripts/app-preview scripts/test-app-preview`, after changing
@@ -620,7 +627,7 @@ screenshot would show its settings):
 ```bash
 node herdr-app/mods/jenkins/tests/fake-jenkins.mjs 48765 &   # stop it by its pid afterwards
 scripts/app-preview start
-home=$(ls -d /tmp/corgi-ap-*/home)
+home="/tmp/corgi-ap-$(id -u)-$(pwd -P | tr -d '\n' | cksum | cut -d ' ' -f 1)/home"   # the home start printed
 HERDR_APP_BIN="target/app-preview/app.noindex/Herdr Preview.app/Contents/MacOS/Herdr" herdr-app/mods/jenkins/install.sh --home "$home" --panel right --layout corgi
 mkdir -p "$home/jenkins"
 printf '{"url":"http://127.0.0.1:48765","user":"jane","token":"fake-token","folders":"team-dev, team-prod"}\n' >"$home/jenkins/settings.json"
@@ -797,7 +804,7 @@ preview's home with a drop folder of the preview's own, never the real one:
 
 ```bash
 scripts/app-preview start
-home=$(ls -d /tmp/corgi-ap-*/home)
+home="/tmp/corgi-ap-$(id -u)-$(pwd -P | tr -d '\n' | cksum | cut -d ' ' -f 1)/home"   # the home start printed
 HERDR_APP_BIN="target/app-preview/app.noindex/Herdr Preview.app/Contents/MacOS/Herdr" herdr-app/mods/media/install.sh --home "$home" --folder "${home%/home}/drop" --panel right --layout corgi
 cp shot.png "${home%/home}/drop/" && printf 'A caption\n' > "${home%/home}/drop/shot.txt"
 scripts/app-preview do media.show                            # what the toast's click runs

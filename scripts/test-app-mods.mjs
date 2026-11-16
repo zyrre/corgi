@@ -608,6 +608,129 @@ async function projects(w, props = {}, module = undefined) {
   assert.deepEqual(texts(kept(byId(mod.render(), 'agent-t3').children[1])), ['33%', 'WORKING']);
 }
 
+// The prompt cache, after the context fill: the time it stays warm, `cold`
+// once it lapsed, a `?` when only estimated, nothing when unknown. The
+// clock is the test's, so that the countdown between reads can be seen.
+{
+  const realNow = Date.now;
+  let clock = Date.parse('2026-11-16T09:00:00Z');
+  Date.now = () => clock;
+  try {
+    // The card's second line, and its cache figure, for `cache` (and other
+    // fields of w-cache) as `corgi status --json` gives them.
+    const card = async (cache, extra = {}) => {
+      const status = structuredClone(STATUS);
+      Object.assign(status.projects[0].agents[0], { cache, ...extra });
+      const w = window({ status });
+      const mod = await projects(w);
+      // The first look at the live agents reads the status again: done here,
+      // so that only the clock moves the figure after it.
+      await mod.tick(1000);
+      const line = () => {
+        const root = mod.render();
+        return { texts: texts(kept(byId(root, 'agent-t3').children[1])), figure: byId(root, 'cache-t3') };
+      };
+      return { w, mod, line };
+    };
+    const warm = (minutes, extra = {}) => ({ state: 'warm', minutes_left: minutes, tokens: 180000, estimated: false, ...extra });
+
+    // Warm: the minutes left, whole, with what they are in its tooltip.
+    let { mod, line } = await card(warm(42));
+    let now = line();
+    assert.deepEqual(now.texts, ['Opus 5.5', '·', '33%', '·', '42m', 'WORKING']);
+    assert.ok('flex_none' in now.figure.calls, 'the figure stays whole; the model is cut first');
+    assert.deepEqual(now.figure.calls.tooltip, ['Prompt cache warm for 42 more minutes']);
+    assert.equal(now.figure.calls.text_color, undefined, 'dim, as the line, while there is time');
+
+    // It counts down from the read, between reads: a minute later, 41m,
+    // and the 1-second timer draws the card again for it.
+    clock += 61_000;
+    const drawn = mod.cx.notified;
+    await mod.tick(1000);
+    assert.ok(mod.cx.notified > drawn, 'a minute counted down draws the card again');
+    assert.deepEqual(line().texts.slice(3, 5), ['·', '41m']);
+    assert.deepEqual(line().figure.calls.tooltip, ['Prompt cache warm for 41 more minutes']);
+    // Another second changes no figure, and draws nothing for it.
+    const still = mod.cx.notified;
+    clock += 1_000;
+    await mod.tick(1000);
+    assert.equal(mod.cx.notified, still, 'nothing to draw while the figure holds');
+    // The next read says 42 again (a prompt renewed it): the count starts over.
+    await mod.tick(5000);
+    assert.deepEqual(line().texts[4], '42m');
+
+    // Five minutes or less: amber, to catch it before it goes.
+    ({ mod, line } = await card(warm(6)));
+    assert.equal(line().texts[4], '6m');
+    assert.equal(line().figure.calls.text_color, undefined);
+    clock += 30_000;
+    assert.equal(line().texts[4], '6m', 'minutes_left is rounded up: half a minute on, still within 6');
+    clock += 31_000;
+    assert.equal(line().texts[4], '5m');
+    assert.deepEqual(line().figure.calls.text_color, ['#ansi3']);
+    ({ line } = await card(warm(1)));
+    assert.deepEqual([line().texts[4], line().figure.calls.text_color], ['1m', ['#ansi3']]);
+    assert.deepEqual(line().figure.calls.tooltip, ['Prompt cache warm for 1 more minute']);
+    // Counted down to nothing between reads: cold, with what it re-reads.
+    clock += 60_000;
+    assert.equal(line().texts[4], 'cold');
+    assert.deepEqual(line().figure.calls.tooltip, ['Cache cold: the next prompt re-reads 180k tokens']);
+    assert.equal(line().figure.calls.text_color, undefined, 'cold is dim, as the line');
+
+    // An hour and more: hours.
+    ({ line } = await card(warm(60)));
+    assert.equal(line().texts[4], '1h');
+    ({ line } = await card(warm(125)));
+    assert.equal(line().texts[4], '2h');
+
+    // Estimated (Codex): a `?`, warm or cold, as `corgi fleet` marks it.
+    ({ line } = await card(warm(42, { estimated: true })));
+    assert.equal(line().texts[4], '42m?');
+    assert.deepEqual(line().figure.calls.tooltip, ['Prompt cache warm for at least 42 more minutes (estimated; it may last longer)']);
+    ({ line } = await card({ state: 'cold', minutes_left: 0, tokens: 1_250_000, estimated: true }));
+    assert.equal(line().texts[4], 'cold?');
+    assert.deepEqual(line().figure.calls.tooltip, ['Cache likely cold: the next prompt re-reads 1.3M tokens']);
+
+    // Cold.
+    ({ line } = await card({ state: 'cold', minutes_left: 0, tokens: 179_200, estimated: false }));
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', '·', 'cold', 'WORKING']);
+    assert.deepEqual(line().figure.calls.tooltip, ['Cache cold: the next prompt re-reads 180k tokens']);
+
+    // Unknown, or no cache at all: nothing, and no dot for it.
+    for (const cache of [{ state: 'unknown', minutes_left: null, tokens: null, estimated: false }, undefined]) {
+      ({ line } = await card(cache));
+      assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', 'WORKING']);
+      assert.equal(line().figure, null);
+    }
+
+    // A dot only between two things shown.
+    ({ line } = await card(warm(42), { ctx_pct: null }));
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '42m', 'WORKING']);
+    ({ line } = await card(warm(42), { ctx_pct: null, model: null }));
+    assert.deepEqual(line().texts, ['42m', 'WORKING']);
+
+    // A narrow sidebar: the model is cut first, the figure stays whole; under
+    // 200 px, where the model would be cut to a letter or to nothing, the
+    // line leaves it out and the icon's tooltip names it.
+    let w;
+    ({ w, mod, line } = await card(warm(42)));
+    w.sidebar = 215;
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', '·', '42m', 'WORKING']);
+    assert.equal(byId(mod.render(), 'model-t3'), null);
+    w.sidebar = 190;
+    assert.deepEqual(line().texts, ['33%', '·', '42m', 'WORKING']);
+    const named = byId(mod.render(), 'model-t3');
+    assert.deepEqual(named.calls.tooltip, ['Opus 5.5']);
+    assert.deepEqual(kept(named.children[0]).args, ['icons/claude.svg'], 'the icon, with the model as its tooltip');
+    // Without a cache figure the model keeps its place, cut as before.
+    ({ w, line } = await card(undefined));
+    w.sidebar = 190;
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', 'WORKING']);
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 // What is lit: only the agent with the focus, never a project's row with
 // it; a project's row is not lit at all; a space outside any project is
 // while none of its agents has the focus.
