@@ -141,6 +141,41 @@ export function panelBlock(layout) {
   return found;
 }
 
+// The panel and the blocks above it, from the root; [] when there is no panel.
+function chainOf(layout) {
+  const found = panelBlock(layout);
+  return found ? [...found.path, found.node] : [];
+}
+
+// The stack above the panel that shows another of its children (`active`,
+// else its first), with the child the panel is in, or null.
+function unselected(chain) {
+  for (let i = 0; i < chain.length - 1; i++) {
+    const node = chain[i], next = chain[i + 1];
+    if (node.type !== "stack" || !Array.isArray(node.children) || !node.children.includes(next)) continue;
+    if ((node.active ?? node.children[0]?.id) !== next.id) return { stack: node, child: next };
+  }
+  return null;
+}
+
+// Whether each stack above the panel shows the child it is in, hidden or not.
+export const panelSelected = (layout) => !unselected(chainOf(layout));
+
+// Whether the panel shows: selected, and neither it nor a block above it
+// hidden. True when the layout has no panel.
+export const panelShows = (layout) => panelSelected(layout) && !chainOf(layout).some((node) => node.hidden);
+
+// The one command that brings the panel nearest to showing, for a toast's
+// click while it does not show (the click runs one): selecting it in its
+// stack first, else showing the hidden block above it (Herdr's `panel`
+// column). null when it shows, or there is no panel.
+export function showStep(layout) {
+  const chain = chainOf(layout), off = unselected(chain);
+  if (off) return off.stack.id && off.child.id ? ["layout.select", { stack: off.stack.id, child: off.child.id }] : null;
+  const hidden = chain.find((node) => node.hidden && node.id);
+  return hidden ? ["layout.show", { id: hidden.id }] : null;
+}
+
 // The commands that show the panel: select it in its stack, then show every
 // hidden block above it (Herdr's `panel` column). [] when there is no panel.
 export function showCommands(layout) {

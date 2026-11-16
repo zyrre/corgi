@@ -28,13 +28,12 @@
 #                  herdr-gitlab's tabs-gitlab), with Jenkins in the list
 #                  of panels its syncPanel remembers per space.
 #                  If another mod's install later replaces that copy, run
-#                  --panel right again to bring the button back. And it
-#                  puts a block that draws nothing (jenkins-watch) floating
-#                  on the layout's root, which reads the lists for the
-#                  popups while the panel has never been opened, and takes
-#                  a popup's click
-#   --panel off    takes that panel, the floating block and the button out
-#                  of the layout again
+#                  --panel right again to bring the button back. The
+#                  panel posts the popups once it has been shown, also
+#                  while hidden afterwards. A floating jenkins-watch block
+#                  an earlier version put on the layout's root is taken
+#                  out (as by --panel off and --uninstall)
+#   --panel off    takes that panel and the button out of the layout again
 #                  (and points it back at Herdr's tab bar while the copy is
 #                  as this script made it); the mod stays
 #   --layout NAME  the layout to change (layouts/NAME.json): by default the
