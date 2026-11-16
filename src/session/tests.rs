@@ -189,6 +189,203 @@ fn a_claude_transcript_says_when_its_prompt_cache_lapses() {
     assert_eq!(claude_facts(&path, None).cache, None);
 }
 
+/// An `api-request` record as Claude Code 2.1.317 writes it, trimmed to what
+/// Corgi reads: the conversation's breakpoint on `messages` has `ttl`, and
+/// the system prompt's, shared across sessions, has its own.
+fn api_request(timestamp: &str, query_source: &str, messages_ttl: &str) -> String {
+    format!(
+        r#"{{"type":"api-request","sessionId":"s1","timestamp":"{timestamp}","version":"2.1.317","querySource":"{query_source}","params":"{{'model': 'claude-opus-5-5'}}","cacheControl":[{{"path":["system",1],"value":{{"type":"ephemeral","ttl":"1h","scope":"global"}}}},{{"path":["messages",189,"content",0],"value":{{"type":"ephemeral","ttl":"{messages_ttl}"}}}}]}}"#
+    )
+}
+
+/// An assistant reply whose request wrote `written_1h` tokens to the hour-long
+/// cache and read `read` from it.
+fn reply(timestamp: &str, written_1h: u64, read: u64) -> String {
+    format!(
+        r#"{{"type":"assistant","isSidechain":false,"timestamp":"{timestamp}","message":{{"model":"claude-opus-5-5","content":[{{"type":"text","text":"Done."}}],"usage":{{"input_tokens":2,"cache_creation_input_tokens":{written_1h},"cache_read_input_tokens":{read},"output_tokens":200,"cache_creation":{{"ephemeral_1h_input_tokens":{written_1h},"ephemeral_5m_input_tokens":0}}}}}}}}"#
+    )
+}
+
+/// Records Claude Code writes without a request, trimmed from real ones: a
+/// recap the CLI shows a user who comes back, a notice, a queued message, a
+/// merge request link, and the turn's end.
+const BOOKKEEPING_AFTER_THE_TURN: [&str; 5] = [
+    r#"{"isSidechain":false,"type":"system","subtype":"turn_duration","durationMs":20000,"timestamp":"2026-11-16T12:00:21Z","isMeta":false}"#,
+    r#"{"isSidechain":false,"type":"system","subtype":"away_summary","content":"Fixed the uploader.","timestamp":"2026-11-16T12:03:20Z","isMeta":false,"entrypoint":"cli","version":"2.1.317"}"#,
+    r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-16T12:08:44Z","sessionId":"s1","content":"<task-notification>"}"#,
+    r#"{"type":"pr-link","sessionId":"s1","prNumber":1740,"prUrl":"https://example.test/merge_requests/1740","prRepository":"group/repo","timestamp":"2026-11-16T12:54:50Z"}"#,
+    r#"{"isSidechain":false,"type":"system","subtype":"informational","content":"Your organization may apply global configuration.","isMeta":false,"timestamp":"2026-11-16T12:55:06Z","level":"notice"}"#,
+];
+
+fn cache_expiry(path: &Path) -> Option<u64> {
+    claude_facts(path, None).cache.map(|cache| cache.expires_at)
+}
+
+fn at(timestamp: &str) -> u64 {
+    parse_rfc3339(timestamp).expect("timestamp")
+}
+
+#[test]
+fn records_written_without_a_request_do_not_keep_a_claude_cache_warm() {
+    let directory = TempDir::new("claude-cache-bookkeeping");
+    let path = directory.join("session.jsonl");
+    let mut lines = vec![
+        r#"{"type":"user","isSidechain":false,"timestamp":"2026-11-16T12:00:00Z","message":{"role":"user","content":"Fix the uploader"}}"#.to_string(),
+        api_request("2026-11-16T12:00:01Z", "repl_main_thread:outputStyle:Concise", "1h"),
+        reply("2026-11-16T12:00:20Z", 1000, 19000),
+    ];
+    lines.extend(BOOKKEEPING_AFTER_THE_TURN.map(str::to_string));
+    write(&path, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+
+    // Five minutes are left, where the informational notice 55 minutes in
+    // would have shown an hour.
+    assert_eq!(
+        cache_expiry(&path),
+        Some(at("2026-11-16T12:00:01Z") + CLAUDE_CACHE_1H)
+    );
+
+    // A transcript without `api-request` records, from an older Claude Code,
+    // counts from the reply, and the same records leave it alone.
+    lines.remove(1);
+    write(&path, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+    assert_eq!(
+        cache_expiry(&path),
+        Some(at("2026-11-16T12:00:20Z") + CLAUDE_CACHE_1H)
+    );
+}
+
+#[test]
+fn a_claude_cache_counts_from_when_the_request_went_out_not_from_its_answer() {
+    let directory = TempDir::new("claude-cache-sent");
+    let path = directory.join("session.jsonl");
+    // A long answer: four minutes from request to reply.
+    write(
+        &path,
+        &[
+            &api_request("2026-11-16T12:00:00Z", "repl_main_thread", "1h"),
+            &reply("2026-11-16T12:04:00Z", 1000, 19000),
+        ],
+    );
+    assert_eq!(
+        cache_expiry(&path),
+        Some(at("2026-11-16T12:00:00Z") + CLAUDE_CACHE_1H)
+    );
+
+    // A request in flight has no answer yet, and counts already.
+    write(
+        &path,
+        &[
+            &api_request("2026-11-16T12:00:00Z", "repl_main_thread", "1h"),
+            &reply("2026-11-16T12:00:03Z", 1000, 19000),
+            r#"{"type":"user","isSidechain":false,"timestamp":"2026-11-16T12:30:00Z","message":{"role":"user","content":"Now the downloader"}}"#,
+            &api_request("2026-11-16T12:30:01Z", "repl_main_thread", "1h"),
+        ],
+    );
+    assert_eq!(
+        cache_expiry(&path),
+        Some(at("2026-11-16T12:30:01Z") + CLAUDE_CACHE_1H)
+    );
+
+    // A headless `claude -p` session's only conversation is `sdk`'s.
+    write(
+        &path,
+        &[
+            &api_request("2026-11-16T12:00:00Z", "sdk", "1h"),
+            &reply("2026-11-16T12:00:03Z", 1000, 19000),
+        ],
+    );
+    assert_eq!(
+        cache_expiry(&path),
+        Some(at("2026-11-16T12:00:00Z") + CLAUDE_CACHE_1H)
+    );
+}
+
+#[test]
+fn a_claude_cache_lives_as_long_as_the_conversations_breakpoint_asks() {
+    let directory = TempDir::new("claude-cache-breakpoint");
+    let path = directory.join("session.jsonl");
+    // The newest request only read the cache, so its usage names no
+    // lifetime; its breakpoint still asks for five minutes.
+    write(
+        &path,
+        &[
+            &api_request("2026-11-16T12:00:00Z", "repl_main_thread", "1h"),
+            &reply("2026-11-16T12:00:03Z", 1000, 19000),
+            &api_request("2026-11-16T12:10:00Z", "repl_main_thread", "5m"),
+            &reply("2026-11-16T12:10:03Z", 0, 20000),
+        ],
+    );
+    assert_eq!(
+        cache_expiry(&path),
+        Some(at("2026-11-16T12:10:00Z") + CLAUDE_CACHE_5M)
+    );
+
+    // A request that names no breakpoint on the conversation keeps the
+    // lifetime of the newest cache write.
+    write(
+        &path,
+        &[
+            &api_request("2026-11-16T12:00:00Z", "repl_main_thread", "1h"),
+            &reply("2026-11-16T12:00:03Z", 1000, 19000),
+            r#"{"type":"api-request","timestamp":"2026-11-16T12:10:00Z","querySource":"repl_main_thread","cacheControl":[{"path":["system",1],"value":{"type":"ephemeral","ttl":"5m","scope":"global"}}]}"#,
+            &reply("2026-11-16T12:10:03Z", 0, 20000),
+        ],
+    );
+    assert_eq!(
+        cache_expiry(&path),
+        Some(at("2026-11-16T12:10:00Z") + CLAUDE_CACHE_1H)
+    );
+}
+
+#[test]
+fn the_shortest_breakpoint_lifetime_on_the_conversation_governs() {
+    let breakpoints = |entries: &str| {
+        claude_breakpoint_lifetime(&serde_json::from_str(entries).expect("cacheControl"))
+    };
+    // The hour-long prefix outlives the newest breakpoint, but the whole
+    // context is warm only as long as that one.
+    assert_eq!(
+        breakpoints(
+            r#"[{"path":["system",1],"value":{"type":"ephemeral","ttl":"1h"}},{"path":["messages",10,"content",0],"value":{"type":"ephemeral","ttl":"1h"}},{"path":["messages",40,"content",0],"value":{"type":"ephemeral","ttl":"5m"}}]"#
+        ),
+        Some(CLAUDE_CACHE_5M)
+    );
+    // Anthropic's default lifetime, and the system prompt's alone saying
+    // nothing about the conversation.
+    assert_eq!(
+        breakpoints(r#"[{"path":["messages",3],"value":{"type":"ephemeral"}}]"#),
+        Some(CLAUDE_CACHE_5M)
+    );
+    assert_eq!(
+        breakpoints(r#"[{"path":["system",1],"value":{"type":"ephemeral","ttl":"1h"}}]"#),
+        None
+    );
+}
+
+#[test]
+fn a_claude_request_of_several_rounds_fills_the_context_of_its_newest() {
+    let directory = TempDir::new("claude-iterations");
+    let path = directory.join("session.jsonl");
+    write(
+        &path,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-11-16T12:53:22Z","message":{"model":"claude-opus-5-5","usage":{"input_tokens":4,"cache_creation_input_tokens":13121,"cache_read_input_tokens":46122,"output_tokens":400,"cache_creation":{"ephemeral_1h_input_tokens":13121,"ephemeral_5m_input_tokens":0},"iterations":[{"input_tokens":2,"output_tokens":200,"cache_read_input_tokens":17061,"cache_creation_input_tokens":12121,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":12121},"type":"message"},{"input_tokens":2,"output_tokens":200,"cache_read_input_tokens":29061,"cache_creation_input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":1000},"type":"message"}]}}}"#,
+        ],
+    );
+    let facts = claude_facts(&path, None);
+    assert_eq!(facts.context_tokens, Some(30_063));
+    assert_eq!(facts.cache.map(|cache| cache.tokens), Some(30_063));
+
+    // One round, as every request so far has had, is the top-level usage.
+    write(
+        &path,
+        &[
+            r#"{"type":"assistant","timestamp":"2026-11-16T12:53:22Z","message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_creation_input_tokens":12121,"cache_read_input_tokens":17061,"output_tokens":200,"cache_creation":{"ephemeral_1h_input_tokens":12121,"ephemeral_5m_input_tokens":0},"iterations":[{"input_tokens":2,"output_tokens":200,"cache_read_input_tokens":17061,"cache_creation_input_tokens":12121,"type":"message"}]}}}"#,
+        ],
+    );
+    assert_eq!(claude_facts(&path, None).context_tokens, Some(29_184));
+}
+
 #[test]
 fn a_claude_transcript_reports_the_effort_recorded_beside_the_turn() {
     let directory = TempDir::new("claude-effort");
@@ -809,7 +1006,8 @@ fn a_growing_transcript_is_read_on_from_where_the_last_read_stopped() {
     assert_eq!(facts.model.as_deref(), Some("Opus 5"));
     assert_eq!(facts.effort.as_deref(), Some("high"));
     assert_eq!(facts.task.as_deref(), Some("Fix the uploader"));
-    // The cache lapses an hour after the newest record, which wrote none.
+    // Without `api-request` records, the cache lapses an hour after the
+    // newest reply, though that reply wrote none.
     let touched_at = parse_rfc3339("2026-09-11T18:02:00Z").expect("timestamp");
     assert_eq!(
         facts.cache.map(|cache| cache.expires_at),

@@ -66,12 +66,29 @@ pub struct ClaudeScan {
     conversation: Conversation,
     /// The newest request of the main conversation.
     request: Option<ClaudeRequest>,
-    /// The newest moment the main conversation touched the API: an assistant
-    /// reply, or a user turn or tool result whose request is in flight. The
-    /// row shows it as the session's last activity.
-    touched_at: Option<u64>,
+    /// The newest request the main conversation sent, as its `api-request`
+    /// record has it.
+    sent: Option<ClaudeSent>,
+    /// What stands in for `sent` in a transcript without `api-request`
+    /// records, which older Claude Code versions do not write: the newest
+    /// main-conversation record that stands for a request, an assistant reply
+    /// or a user turn or tool result whose request is in flight.
+    turn_at: Option<u64>,
     /// The cache lifetime the newest cache write asked for. A request that
     /// only read the cache writes zero for both lifetimes and says nothing.
+    lifetime: Option<u64>,
+}
+
+/// One request of the main conversation, from the `api-request` record Claude
+/// Code writes as it sends it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClaudeSent {
+    /// When the request went out. Anthropic refreshes the cache as it reads
+    /// it, so the lifetime counts from here, not from the end of the answer.
+    at: u64,
+    /// The lifetime of the conversation's breakpoint
+    /// ([`claude_breakpoint_lifetime`]), which a request names whether it
+    /// writes the cache or only reads it.
     lifetime: Option<u64>,
 }
 
@@ -95,7 +112,22 @@ impl ClaudeScan {
         if record["isSidechain"] == true {
             return scan;
         }
-        scan.touched_at = record["timestamp"].as_str().and_then(parse_rfc3339);
+        let at = || record["timestamp"].as_str().and_then(parse_rfc3339);
+        match record["type"].as_str() {
+            Some("api-request") if is_main_query(record) => {
+                scan.sent = at().map(|at| ClaudeSent {
+                    at,
+                    lifetime: claude_breakpoint_lifetime(&record["cacheControl"]),
+                });
+            }
+            Some("assistant") => scan.turn_at = at(),
+            Some("user") if record["isMeta"] != true => scan.turn_at = at(),
+            // Every other record (`system`, `attachment`, `queue-operation`,
+            // `pr-link`, `file-history-*` and the rest) is bookkeeping the CLI
+            // writes without a request: an `away_summary` minutes after the
+            // last turn, an `informational` notice an hour or days later.
+            _ => {}
+        }
         let usage = &record["message"]["usage"];
         scan.lifetime = claude_cache_lifetime(usage);
         if record["type"] == "assistant" && usage.is_object() {
@@ -106,14 +138,7 @@ impl ClaudeScan {
                 // message, so the level shows for a Claude session exactly as
                 // it does for a Codex one.
                 effort: record_effort(record).map(str::to_string),
-                tokens: [
-                    "input_tokens",
-                    "cache_creation_input_tokens",
-                    "cache_read_input_tokens",
-                ]
-                .iter()
-                .filter_map(|key| usage[*key].as_u64())
-                .sum(),
+                tokens: claude_context_tokens(usage),
             });
         }
         scan
@@ -150,10 +175,16 @@ impl ClaudeScan {
 
     /// The prompt cache of the session, whose whole context is `tokens`.
     /// Anthropic re-warms a cache on every request that reads it, so the cache
-    /// lapses one lifetime after the newest record of the conversation.
+    /// lapses one lifetime after the newest request of the conversation went
+    /// out. Without `api-request` records, the newest reply or user turn
+    /// stands in for that request.
     pub fn prompt_cache(&self, tokens: u64) -> Option<PromptCache> {
+        let (at, lifetime) = match self.sent {
+            Some(sent) => (sent.at, sent.lifetime.or(self.lifetime)),
+            None => (self.turn_at?, self.lifetime),
+        };
         Some(PromptCache {
-            expires_at: self.touched_at? + self.lifetime?,
+            expires_at: at + lifetime?,
             tokens,
             kind: PromptCacheKind::Exact,
         })
@@ -165,16 +196,22 @@ impl Fold for ClaudeScan {
         Self {
             conversation: self.conversation.or(older.conversation),
             request: self.request.or(older.request),
-            touched_at: self.touched_at.or(older.touched_at),
+            sent: self.sent.or(older.sent),
+            turn_at: self.turn_at.or(older.turn_at),
             lifetime: self.lifetime.or(older.lifetime),
         }
     }
 
+    /// A reply comes after the `api-request` of its request, so a scan back
+    /// from the end meets it first and must go on to that record. A transcript
+    /// without `api-request` records never completes and costs one read of the
+    /// largest window, as any field it never records does.
     fn complete(&self) -> bool {
         self.conversation.complete()
             && self.request.is_some()
-            && self.touched_at.is_some()
-            && self.lifetime.is_some()
+            && self
+                .sent
+                .is_some_and(|sent| sent.lifetime.is_some() || self.lifetime.is_some())
     }
 }
 
@@ -260,6 +297,58 @@ pub fn claude_cache_lifetime(usage: &Value) -> Option<u64> {
     } else {
         None
     }
+}
+
+/// Whether an `api-request` record is a request of the main conversation:
+/// `repl_main_thread` in the interactive CLI, with a suffix such as
+/// `:outputStyle:Concise` when an output style is on, and `sdk` in a headless
+/// `claude -p` or Agent SDK session, whose only conversation it is. Side
+/// queries (titles, summaries) have caches of their own.
+fn is_main_query(record: &Value) -> bool {
+    record["querySource"].as_str().is_some_and(|source| {
+        source == "sdk"
+            || source
+                .strip_prefix("repl_main_thread")
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
+    })
+}
+
+/// The lifetime of the conversation's cache, from the `cacheControl` an
+/// `api-request` record lists: the breakpoints on `messages`, not the system
+/// prompt's, which is shared across sessions. A request may mix lifetimes, and
+/// the shortest governs: Anthropic has a longer-lived breakpoint come before a
+/// shorter one, so the shortest is the newest, the only one that holds the
+/// whole context. A breakpoint without a `ttl` lives Anthropic's default five
+/// minutes.
+pub fn claude_breakpoint_lifetime(cache_control: &Value) -> Option<u64> {
+    cache_control
+        .as_array()?
+        .iter()
+        .filter(|entry| entry["path"][0] == "messages")
+        .map(|entry| match entry["value"]["ttl"].as_str() {
+            Some("1h") => CLAUDE_CACHE_1H,
+            _ => CLAUDE_CACHE_5M,
+        })
+        .min()
+}
+
+/// The size of the context a usage record carried: its input, the part of it
+/// written to the cache, and the part read from it. A request Claude Code ran
+/// in several rounds lists each in `iterations`, where the top-level figures
+/// may add the rounds up, so the newest round is the live context.
+pub fn claude_context_tokens(usage: &Value) -> u64 {
+    let rounds = usage["iterations"]
+        .as_array()
+        .filter(|rounds| rounds.len() > 1);
+    let usage = rounds.and_then(|rounds| rounds.last()).unwrap_or(usage);
+    [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ]
+    .iter()
+    .filter_map(|key| usage[*key].as_u64())
+    .sum()
 }
 
 /// What Claude Code's settings say about the context window of its sessions.

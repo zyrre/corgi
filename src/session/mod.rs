@@ -12,9 +12,14 @@
 //!   `~/.claude/projects/<slugged cwd>/<session id>.jsonl`. The newest
 //!   assistant message carries the model that answered and the exact token
 //!   usage of that request; `text`, `thinking`, and `tool_use` blocks carry
-//!   the conversation. Every record is timestamped, and the usage says which
-//!   prompt-cache lifetime the request was written with, which together give
-//!   the moment the session's cache lapses.
+//!   the conversation. Each request of the main conversation has an
+//!   `api-request` record, written as it goes out, whose `cacheControl` names
+//!   the lifetime of the conversation's cache breakpoint: the two give the
+//!   moment the session's cache lapses. Many other records (`system`,
+//!   `attachment`, `queue-operation`, …) are written without a request and
+//!   leave the cache alone. Older versions wrote no `api-request`; there the
+//!   newest reply or user turn stands in, and the usage's cache writes give
+//!   the lifetime.
 //! - Codex appends `~/.codex/sessions/<y>/<m>/<d>/rollout-<stamp>-<thread>.jsonl`,
 //!   whose `token_count` events carry the usage together with the model's own
 //!   context window, and whose `response_item` records carry the conversation.
