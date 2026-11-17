@@ -37,7 +37,7 @@ use std alone.
 Clippy lints code under `#[cfg(target_os = ...)]` only on that OS, so a lint
 can pass on your machine and fail CI on the other (a `return` left at the end
 of a macOS-only block did). CI runs on both Linux and macOS; check both jobs.
-CI also runs `node scripts/test-app-mods.mjs`, the Jenkins and Media mods'
+CI also runs `node scripts/test-app-mods.mjs`, the Jenkins, Media and Jira mods'
 tests and `bash scripts/test-install` on both (on Node 26: the tests use
 `node:module`'s `registerHooks`); `herdr-app check` needs the app, which a
 runner lacks, so it stays a local check.
@@ -924,6 +924,105 @@ scripts/app-preview do media.show                            # what the toast's 
 
 The window takes no clicks: Clear all, behind its question, is reached by
 a preview-home copy of `main.js` whose command loop calls `store.clear()`.
+
+### The Jira mod
+
+`herdr-app/mods/jira/` is a mod of its own as the Jenkins mod is (decision
+2026-11-17): no `corgi`, its own `install.sh` (`--home`, `--panel right`,
+`--layout`, `--panel off`, `--uninstall`, `--forget`), a `README.md` for
+its users, nothing of Corgi's. It reaches Jira Server or Data Center with
+the app's `fetch` and a personal access token (`Authorization: Bearer`,
+`api.js`), kept in `jira/settings.json` of the app's home, mode 600, which
+must never reach the repository, a log, a screenshot or a report. Before
+handing off a change to it:
+
+```bash
+herdr-app check herdr-app/mods/jira
+node herdr-app/mods/jira/tests/test.mjs
+shellcheck herdr-app/mods/jira/install.sh
+```
+
+`check` draws only the settings form (no settings in a fresh home): after
+changing a view, check a scratch copy (outside the repository) whose
+`init` fills the store with made-up entries
+(`this.src.entry(kind, key).succeeded(data)`, and the forms made by
+`askComment` and `askWorklog`) and whose `render` draws every `render…`
+view one after another; a bogus builder put into one of them must make
+that check fail, or the copy does not reach it.
+
+The test runs the mod under Node with stand-ins as the Jenkins mod's does,
+against `tests/fake-jira.mjs`: project `DEMO`, Scrum board 7 with sprint
+41 (64 issues, served 50 at a time, so the list reads two pages), Kanban
+board 8, transitions with one (`Approve`) whose screen requires a
+resolution, and two tokens (`fake-token`, Jane Doe, may act;
+`viewer-token` only reads; an assignment it may not make is 401, as Jira
+Server answers one). `assign`, `comment` and `move` (and `POST
+/__fake/assign|comment|move?…` from outside) are other people's doings, for
+the popups. The installer's cases run it beside the Jenkins and Media
+mods' installers and Corgi's tab bar lines. **Never transition, assign,
+comment or log work on a real Jira**; a real one is only ever read (a
+brief may permit a read-only check with the person's token from `zsh
+-ic`; print counts and timings, never issue contents).
+
+What its choices rest on:
+
+- The list reads a sprint with `/rest/api/2/search?jql=sprint = <id> ORDER
+  BY Rank ASC`, not the agile API's `sprint/<id>/issue`: on a real sprint
+  of 449 issues (2026-11-17) the agile one took 5 s per 200, the search
+  0.3 s for all of them.
+- Board, sprints and issues are read as a chain (each good read's `then`
+  starts the next), so a first look needs no second tick.
+- The Jenkins mod's "Reading… forever" (be30b19 era: hidden decided from
+  `layout()`, reads skipped, and a read past its limit expired only when
+  asked again) is avoided twice over: hidden, the view's own reads go on
+  every `HIDDEN_EVERY` (10 min) and a thing never read is read at once; and
+  `Entry.expire` runs wherever an entry is looked at, `render` included, so
+  a stalled read turns into an error on screen after `READ_LIMIT` (30 s)
+  without another read being asked. With nothing read yet, any failure
+  shows at once (`loud`); the quiet "Last read … ago" is only for data
+  already shown.
+- The popups come from one read, `assignee = currentUser() AND updated >=
+  -<n>m` with `expand=changelog` and the `comment` field, every minute
+  while the panel shows and every three while hidden (no watcher block);
+  `alerts.js`'s `Watch` counts history entries and comments made after its
+  first read, by someone other than the token's user, once each.
+- Seen in the preview (2026-11-17): `herdr-app do jira.open-DEMO-101`
+  arrives (capitals and dashes are fine; `keyOf` takes any case). With no
+  copy shown the app refuses the command (`unknown command … need the mod
+  loaded`); `layout.select --stack panel-body --child jira-panel`, `layout.show
+  --id panel` and then the command, sent at once one after another, open
+  the issue. Another mod can instead `setShared("jira.open", { key, at:
+  Date.now() })`, which the panel takes up on its tick, hidden or not.
+- Also seen there: a toast the hidden panel posted (behind its hidden
+  column, every three minutes) carries `layout.show --id panel`, and
+  running it opened the panel on that issue. In a 280 px panel the issue
+  header's status pill gives way (it is cut), so the bell, refresh and
+  browser buttons keep their place.
+
+To look at it, as for the Jenkins mod:
+
+```bash
+node herdr-app/mods/jira/tests/fake-jira.mjs 48766 &        # stop it by its pid afterwards
+scripts/app-preview start
+home="/tmp/corgi-ap-$(id -u)-$(pwd -P | tr -d '\n' | cksum | cut -d ' ' -f 1)/home"   # the home start printed
+HERDR_APP_BIN="target/app-preview/app.noindex/Herdr Preview.app/Contents/MacOS/Herdr" herdr-app/mods/jira/install.sh --home "$home" --panel right --layout corgi
+mkdir -p "$home/jira" && printf '{"url":"http://127.0.0.1:48766","token":"fake-token","board":"7"}\n' >"$home/jira/settings.json"
+scripts/app-preview do layout.select --stack panel-body --child jira-panel && scripts/app-preview do layout.show --id panel
+scripts/app-preview do jira.open-DEMO-101
+```
+
+The views behind a click (the status choices, the confirm cards, the
+forms) are reached by a preview-home copy of `main.js` whose command loop
+calls what the clicks call (`this.show({ kind: "status", key }, cx)`,
+`this.askTransition(key, transition, cx)`, `this.transition(cx)`,
+`this.askAssign(key, cx)`, `this.assign(cx)`, `this.askComment(key, cx)`
+then `this.form.body.set_value(…)` and `this.sendComment(cx)`,
+`this.askWorklog(key, cx)` then `this.form.time.set_value(…)` and
+`this.logWork(cx)`); `this.readWatch(cx, { force: true })` reads for the
+popups at once, so a toast can be caught in a shot. Saving that copy
+reloads the mod and so starts the popups' baseline again. To click a toast
+posted while hidden, have the copy append each toast's action to a file
+(`exec("sh", …)`) and `do` it when it appears.
 
 ### After a merge
 
