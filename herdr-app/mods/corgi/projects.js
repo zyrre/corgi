@@ -64,7 +64,7 @@ import {
 } from "herdr";
 import { narrow, toggleSidebar, sidebarPx, oneLine, tildePaths, spinner, BADGES, badgeKey, badge, STATES, stateCounts, stateColor } from "./ui.js";
 import { store, POLL_MS, USAGE_POLL_MS, MACHINES_MS, NO_CORGI, CURRENT, COUNT, PICK, QUESTIONS_BLOCK } from "./data.js";
-import { homeNow, shellIn, panelShells, panelState, showShellOf } from "./shells.js";
+import { homeNow, shellIn, panelShells, panelState, showShellOf, watch } from "./shells.js";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -368,7 +368,12 @@ export default class Projects {
     cx.timer.every(MACHINES_MS, (cx) => store.refreshMachines(cx, this.turns));
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
-    cx.timer.every(250, (cx) => this.checkNew(cx));
+    cx.timer.every(250, (cx) => {
+      this.checkNew(cx);
+      // Whether the person opened the terminal panel (shells.js), watched
+      // here too: the panel's own timer may not run while it is hidden.
+      watch();
+    });
     // Every copy polls; the store reads for all of them at once.
     store.poll(cx, this.turns);
     cx.timer.every(POLL_MS, (cx) => {

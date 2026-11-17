@@ -182,7 +182,10 @@ fn herdrs_tab_bar_is_cloned_with_the_button_and_the_layout_names_the_clone() {
     );
     assert!(main.contains("enabled.push(\"corgi-questions\")"));
     assert!(main.contains("enabled.push(\"corgi-terminal\")"));
-    assert!(main.contains("this.panels[now.id] = \"corgi-terminal\""));
+    // Each space keeps its own panel: no line makes the terminal panel
+    // every space's (decision 2026-11-17).
+    assert!(!main.contains("this.panels"), "{main}");
+    assert!(!main.contains("spaces()"));
     // The list's line goes before the call, the button before the window buttons.
     let list = main.find(LIST_BEGIN).unwrap();
     assert!(list < main.find(SYNC).unwrap());
@@ -268,6 +271,61 @@ fn an_earlier_installs_lines_are_replaced_in_place_and_the_terminal_button_joins
     );
     restore(&home, None).unwrap();
     assert_eq!(fs::read_to_string(copy.join("main.js")).unwrap(), theirs);
+}
+
+/// The list block as the install of the terminal panel (2026-11-16) left
+/// it: with a line making the terminal panel the choice of every space the
+/// window changed to, so it followed into every space.
+const FOLLOW_LIST: &str = "    // >>> Corgi questions panel: corgi app-layout adds Corgi's Questions and terminal \
+panels to the panels remembered per space; corgi app-layout remove takes them out
+    try { if (find(body, \"corgi-questions\") && !enabled.includes(\"corgi-questions\")) \
+enabled.push(\"corgi-questions\"); } catch (_) {}
+    try { if (find(body, \"corgi-terminal\") && !enabled.includes(\"corgi-terminal\")) \
+enabled.push(\"corgi-terminal\"); } catch (_) {}
+    try { const now = spaces().find(s => s.active); if (now && this.space !== undefined && now.id !== \
+this.space && panel && !panel.hidden && body?.active === \"corgi-terminal\") this.panels[now.id] = \
+\"corgi-terminal\"; } catch (_) {}
+    // <<< Corgi questions panel
+";
+
+#[test]
+fn a_reinstall_takes_the_line_that_made_the_terminal_panel_follow_into_every_space_out() {
+    let home = home_with("panel-follow", &[("corgi", with_panel())]);
+    let mods = home.join("mods");
+    put_button(&home, "corgi", None, &passes).unwrap();
+    let clone = mods.join(CLONE).join("main.js");
+    let fresh = fs::read_to_string(&clone).unwrap();
+    // The live copy as the last install left it: the same, but for its list block.
+    let (start, stop) = marked(&fresh, LIST_BEGIN, LIST_END).unwrap().unwrap();
+    let mut old = fresh.clone();
+    old.replace_range(start..stop, FOLLOW_LIST);
+    assert!(old.contains("this.panels[now.id] = \"corgi-terminal\""));
+    fs::write(&clone, &old).unwrap();
+    assert_eq!(
+        clone_state(&mods),
+        CloneState::AsCloned,
+        "still Corgi's clone"
+    );
+
+    assert_eq!(
+        put_button(&home, "corgi", None, &passes).unwrap(),
+        Button::Added {
+            tab_bar: CLONE.into(),
+            cloned: false
+        }
+    );
+    let main = fs::read_to_string(&clone).unwrap();
+    assert_eq!(main, fresh, "the block is the new one, in the same place");
+    assert!(!main.contains("this.panels"));
+    assert_eq!(main.matches(LIST_BEGIN).count(), 1);
+    assert!(
+        main.contains("enabled.push(\"corgi-terminal\")"),
+        "still remembered per space"
+    );
+    assert_eq!(
+        put_button(&home, "corgi", None, &passes).unwrap(),
+        Button::Unchanged
+    );
 }
 
 /// herdr-gitlab's copy of the tab bar with the Jenkins mod's lines in it.

@@ -623,9 +623,19 @@ it works; what its choices rest on, seen in the preview (2026-11-16):
   the shown space but leaves it in the block too; To tab takes it out of
   the block, relabels it `corgi.shell=tab` and hides the panel.
 - The tab bar's `syncPanel` restores each space's own panel when the
-  space changes, which closed the terminal panel on every move to another
-  worker's space; Corgi's list lines make it the new space's choice while
-  it shows (they read `this.space` and `this.panels`, in a `try`).
+  space changes, and Corgi's list lines add the terminal panel to the
+  panels it remembers, so the panel stays in the space it was opened in
+  (decision 2026-11-17). Lines of 2026-11-16 also made it every new
+  space's choice while it showed (`this.panels[now.id]`), and with
+  shells started on focus every agent clicked got one; a reinstall
+  replaces the marked block, which takes that line out of a live copy.
+- No shell starts by itself: a look starts one only on `shells.js`'s
+  `asked`, set by Open shell, New shell, the switch, and `watch()` seeing
+  the panel show in the space where it was seen hidden for 400 ms or
+  more (the Terminal button; the tab bar's restore on a space change
+  hides it for a frame at most). `watch` also runs on the Projects list's
+  250 ms timer, since the header's may not run while the panel is
+  hidden. A Node test of it sets `Date.now`.
 - The header's timer follows the focus every 500 ms while the panel shows;
   hidden, it writes and starts nothing.
 
@@ -634,7 +644,7 @@ corgi-terminal` and `do layout.show --id panel` (the button's two
 commands) with an agent focused (`do agent.focus --terminal t2`). The
 switches are reached by a preview-home copy of `projects.js` whose command
 loop calls `shells.js`'s `setKind("root")`, `setFollow(false)`,
-`moveToTab()`, `newShell()` and `showShellOf("t3")` (each followed by
+`moveToTab()`, `newShell()` (Open shell and New shell) and `showShellOf("t3")` (each followed by
 `follow()`), under names without a dash (`do corgi.termroot`). A shell's
 address is in `hc ls` on the preview's core (`hcp`, as `sh-<folder>`), and
 `hc send <address> -- '<command>'` runs a command in it. To try `corgi
