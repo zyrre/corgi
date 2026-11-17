@@ -865,6 +865,12 @@ node herdr-app/mods/media/tests/test.mjs
 shellcheck herdr-app/mods/media/install.sh
 ```
 
+`herdr-app check` draws the first frame alone, the empty panel, so it never
+reaches `big()` or `row()`: after changing them, check a scratch copy of
+the mod (outside the repository) whose `render` draws them for made-up
+items (a picture, a video without a preview), which fails on a builder the
+app lacks.
+
 The test runs the item logic alone, the mod with stand-ins whose `exec`
 runs the real `sh`, `cp`, `mkdir`, `rm`, `head`, `mv` and `test` on scratch
 folders (`ffmpeg`, `qlmanage` and `open` are fakes), and `install.sh` on
