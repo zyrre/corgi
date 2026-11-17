@@ -51,7 +51,12 @@ export const HINT = { mod: "corgi", props: { view: "terminal-hint" } };
 const BODY_PADDING = [6, 10];
 
 // What the panel shows, shared by every copy:
-//   kind      "worktree" (the agent's folder) or "root" (its project's primary checkout)
+//   kind      "worktree" (the agent's folder) or "root" (its project's primary
+//             checkout), for the agent shown: its folder's choice in `rooted`
+//   rooted    the agents' folders (`home`) whose panel shows the project root,
+//             the switch's choice for each. The switch is the shown agent's
+//             alone: a choice kept for every agent showed one root shell for
+//             all of a project's workers, in every space (2026-11-17)
 //   follow    true: the focused agent's; false: pinned to `agent`
 //   agent     the agent's address
 //   home      its folder: a worker's worktree, a supervisor's project root
@@ -65,7 +70,19 @@ const BODY_PADDING = [6, 10];
 //             "moved", "problem" (with `problem`)
 export function panelState() {
   const st = shared(STATE);
-  return { kind: "worktree", follow: true, ...(st && typeof st === "object" ? st : {}) };
+  const was = st && typeof st === "object" ? st : {};
+  // A state from before `rooted`: its root choice was made for the agent it showed.
+  const rooted = Array.isArray(was.rooted) ? was.rooted : was.kind === "root" && was.home ? [was.home] : [];
+  return { kind: "worktree", follow: true, ...was, rooted };
+}
+
+// The folders `rooted` keeps, the latest choices.
+const ROOTED_MAX = 32;
+// `rooted` with the choice for the folder `home`.
+function choose(rooted, home, kind) {
+  const out = rooted.filter((h) => h !== home);
+  if (kind === "root" && home) out.push(home);
+  return out.slice(-ROOTED_MAX);
 }
 
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -391,10 +408,12 @@ async function look() {
   const remote = Boolean(agent) && !local(agent);
   // Pinned, its folder stays even when the agent is gone (closed).
   const home = !agent || remote ? null : (!st.follow && st.agent === agent && st.home) || (await homeOf(agent)) || (agent === st.agent ? st.home : null);
-  const dir = home ? (st.kind === "root" ? await rootOf(home, agent) : home) : null;
+  // The switch as chosen for this agent's folder (Worktree unless chosen).
+  const kind = home ? (st.rooted.includes(home) ? "root" : "worktree") : st.kind;
+  const dir = home ? (kind === "root" ? await rootOf(home, agent) : home) : null;
   // A switch while git answered: the next look is for it.
   const now = panelState();
-  if (now.kind !== st.kind || now.follow !== st.follow || (!now.follow && now.agent !== st.agent)) return;
+  if (now.kind !== st.kind || !same(now.rooted, st.rooted) || now.follow !== st.follow || (!now.follow && now.agent !== st.agent)) return;
   // The person's ask, taken by this look (a later one is the next look's).
   const wanted = asked !== null;
   asked = null;
@@ -423,7 +442,7 @@ async function look() {
     problem = st.problem;
   } else if (!address && !wanted) note = "none";
   else if (!address) {
-    setPanelState({ agent, home, dir, address: null, ended, why, note: "starting", problem: null });
+    setPanelState({ agent, home, kind, dir, address: null, ended, why, note: "starting", problem: null });
     try {
       address = await openShell(dir);
     } catch (e) {
@@ -431,7 +450,7 @@ async function look() {
       problem = oneLine(String(e?.message ?? e)) || "The shell did not start.";
     }
   }
-  setPanelState({ agent, home, dir, address, ended, why, note: address ? null : note, problem });
+  setPanelState({ agent, home, kind, dir, address, ended, why, note: address ? null : note, problem });
   const content = address ? { terminal: address } : HINT;
   if (!same(bodyOf(layout()), content)) await putBody(content);
 }
@@ -449,7 +468,8 @@ export function showPanel() {
 // pinned to while it does not.
 export function showShellOf(address) {
   const st = panelState();
-  setPanelState({ agent: address, home: homeNow(address), kind: "worktree", ended: null, why: null });
+  const home = homeNow(address);
+  setPanelState({ agent: address, home, kind: "worktree", rooted: choose(st.rooted, home, "worktree"), ended: null, why: null });
   if (st.follow) run("agent.focus", { terminal: address });
   showPanel();
 }
@@ -461,11 +481,14 @@ export function newShell() {
   ask();
 }
 
-// The kind of folder ("worktree", "root"): a shell starts in the other
-// folder when it has none, the switch being the person's ask. Or follow or pin.
+// The kind of folder ("worktree", "root") for the agent shown, kept for its
+// folder: a shell starts in the other folder when it has none, the switch
+// being the person's ask. Another agent shows its own folder's choice. Or
+// follow or pin.
 export function setKind(kind) {
-  if (panelState().kind === kind) return;
-  setPanelState({ kind, ended: null, why: null });
+  const st = panelState();
+  if (st.kind === kind) return;
+  setPanelState({ kind, rooted: choose(st.rooted, st.home, kind), ended: null, why: null });
   ask();
 }
 export function setFollow(on) {

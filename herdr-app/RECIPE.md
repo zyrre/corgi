@@ -139,7 +139,10 @@ The header, two lines:
 
 - a switch, **Worktree | Project root**: the agent's folder, or its
   project's primary checkout (Corgi's project, else the folder of git's
-  common directory). Each folder has a shell of its own;
+  common directory). Each folder has a shell of its own. The choice is
+  the shown agent's, kept for its folder: another agent shows its own
+  folder's choice (Worktree until picked), so Project root picked for one
+  worker leaves the others on their worktrees;
 - **Follows focus** (the `pin-off` icon) or **Pinned** (`pin`, in
   `accent`, outlined in it): following, the panel shows the focused
   agent's shell (or, without one, "No shell here" and Open shell), and keeps the last one while focus is on a terminal that
