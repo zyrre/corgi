@@ -959,7 +959,10 @@ resolution, and two tokens (`fake-token`, Jane Doe, may act;
 Server answers one). `assign`, `comment` and `move` (and `POST
 /__fake/assign|comment|move?…` from outside) are other people's doings, for
 the popups. The installer's cases run it beside the Jenkins and Media
-mods' installers and Corgi's tab bar lines. **Never transition, assign,
+mods' installers and Corgi's tab bar lines. A test that leaves a read
+stalled (`fake.fail({ mode: "stall" })`) must not `await settle()`, which
+never ends while the read is held: it clicks with `mod.press(id)`, which
+does not wait, and fires the timers with `mod.poke()`. **Never transition, assign,
 comment or log work on a real Jira**; a real one is only ever read (a
 brief may permit a read-only check with the person's token from `zsh
 -ic`; print counts and timings, never issue contents).
@@ -970,6 +973,12 @@ What its choices rest on:
   BY Rank ASC`, not the agile API's `sprint/<id>/issue`: on a real sprint
   of 449 issues (2026-11-17) the agile one took 5 s per 200, the search
   0.3 s for all of them.
+- Its tab bar lines go in as the Media mod's do: a list line above
+  `this.syncPanel(…)`, which stays as it was, and the button before the
+  window buttons. So Jira, Jenkins and Media install in any order, each
+  into the copy the others made: the Jenkins installer replaces the
+  `syncPanel` line itself, and a second installer doing the same would no
+  longer find the line it looks for.
 - Board, sprints and issues are read as a chain (each good read's `then`
   starts the next), so a first look needs no second tick.
 - The Jenkins mod's "Reading… forever" (be30b19 era: hidden decided from
