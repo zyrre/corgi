@@ -282,6 +282,21 @@ export function fit(width, height, maxW, maxH, { grow = false } = {}) {
   return { w: Math.max(1, Math.round(w * scale)), h: Math.max(1, Math.round(h * scale)) };
 }
 
+// The frame an item is shown large in, in w() units: the same for every
+// item, so that the text and the list under it stay put while the person
+// clicks through items; only the panel's own size changes it. As wide as
+// the panel less its margins (12 a side) and the frame's padding and border
+// (7 a side), and 3:4 of that high, at most 55% of the panel's height
+// (160 to 520): a screenshot nearly fills it, a tall picture gets the
+// height, and a narrow, tall panel does not push the list down under an
+// empty portrait frame. `panelW`×`panelH` is the size on screen, which w()
+// and h() scale by the app's `zoom`.
+export function frameOf(panelW, panelH, zoom = 1) {
+  const w = Math.max(120, Math.round(panelW / zoom - 38));
+  const maxH = Math.max(160, Math.min(520, (panelH / zoom - 42) * 0.55));
+  return { w, h: Math.round(Math.min(maxH, w * 0.75)) };
+}
+
 // "just now", "5 min ago", "3 h ago", "2 days ago".
 export function ago(at, now) {
   const s = Math.max(0, Math.round((now - at) / 1000));

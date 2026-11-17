@@ -418,6 +418,27 @@ test('fitting a picture into a box, and how long ago', () => {
   assert.deepEqual(items.fit(100, 50, 320, 300), { w: 100, h: 50 }, 'never larger than it is');
   assert.deepEqual(items.fit(10, 5, 320, 300, { grow: true }), { w: 320, h: 160 });
   assert.deepEqual(items.fit(null, null, 400, 400), { w: 400, h: 300 }, 'unknown: 4:3');
+  // The frame: the panel's width less 38, 3:4 of that high, at most 55% of the panel's height less its header (160 to 520).
+  assert.deepEqual(items.frameOf(398, 900), { w: 360, h: 270 }, '4:3 of the width');
+  assert.deepEqual(items.frameOf(800, 900), { w: 762, h: 472 }, 'capped by the height');
+  assert.deepEqual(items.frameOf(398, 1200), { w: 360, h: 270 }, 'a tall, narrow panel: no portrait frame');
+  assert.deepEqual(items.frameOf(1400, 2000), { w: 1362, h: 520 }, 'at most 520');
+  assert.deepEqual(items.frameOf(800, 200), { w: 762, h: 160 }, 'at least 160 where the width allows');
+  assert.deepEqual(items.frameOf(100, 900), { w: 120, h: 90 }, 'at least 120 wide');
+  assert.deepEqual(items.frameOf(495, 900, 1.25), { w: 358, h: 269 }, 'w() units at the app\'s zoom');
+  // Every shape fits inside one frame, centred by the panel; small ones keep their size, an SVG grows.
+  const frame = items.frameOf(398, 900);
+  for (const [width, height, grow, want] of [
+    [1920, 1080, false, { w: 360, h: 203 }], // wide
+    [400, 1600, false, { w: 68, h: 270 }], // tall
+    [16, 16, false, { w: 16, h: 16 }], // icon-sized
+    [48, 24, true, { w: 360, h: 180 }], // SVG
+    [24, 48, true, { w: 135, h: 270 }], // a tall SVG
+  ]) {
+    const box = items.fit(width, height, frame.w, frame.h, { grow });
+    assert.deepEqual(box, want, `${width}×${height}`);
+    assert.ok(box.w <= frame.w && box.h <= frame.h, `${width}×${height} fits`);
+  }
   const now = 10_000_000;
   assert.equal(items.ago(now - 10_000, now), 'just now');
   assert.equal(items.ago(now - 5 * 60_000, now), '5 min ago');
@@ -519,6 +540,76 @@ test('the picture fits the panel at the app\'s zoom; several at once make one to
   assert.ok(panel.says('Animated GIF: the panel shows its first frame; Open plays it'));
   await panel.click('media-open');
   assert.deepEqual(w.calls.filter((c) => c[0] === 'open'), [['open', path.join(w.drop, 'b.gif')]]);
+});
+
+test('the frame and the lines under it keep one size whatever item is shown; only the panel\'s size changes them', async () => {
+  const w = world({ qlmanage: false });
+  w.layout = panelLayout({ hidden: false, active: 'media-panel' });
+  const panel = await start(w, { props: { panel: true }, module: 'm2b' });
+  kept(panel.render()).handlers.on_size_change({ width: 398, height: 900 }, panel.cx);
+  w.drops('wide.png', png(1920, 1080));
+  w.drops('wide.txt', 'A wide screenshot with a caption much longer than the panel is wide, which is cut to one line\nand a second line');
+  w.drops('tall.png', png(400, 1600));
+  w.drops('icon.png', png(16, 16));
+  w.drops('icon.txt', 'An icon');
+  w.drops('chart.svg', '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 24"><rect width="48" height="24"/></svg>');
+  w.drops('spin.gif', gif(240, 120, 3));
+  w.drops('clip.mp4', Buffer.alloc(100, 1));
+  await panel.wait(4);
+  assert.equal(panel.store.items.length, 6);
+  const by = Object.fromEntries(panel.store.items.map((i) => [i.name, i]));
+  assert.equal(by['clip.mp4'].file, null, 'the video has a placeholder');
+
+  // What a switch could move: the frame's size, the heights of the lines under it, and the list's place under them.
+  const layoutOf = () => {
+    const root = panel.render();
+    const big = byId(root, 'media-big');
+    const frame = byId(big, 'media-frame');
+    const line = (id) => { const el = byId(big, id); assert.ok(el, `${id} is there`); return [id, el.calls.h?.[0], el.calls.line_height?.[0], 'truncate' in el.calls]; };
+    const kids = big.children.map(kept);
+    return {
+      frame: [frame.calls.w?.[0], frame.calls.h?.[0]],
+      lines: [line('media-caption'), line('media-meta'), line('media-note')],
+      order: kids.map((k) => k.id ?? k.kind),
+      list: ids(root, 'media-item-'),
+    };
+  };
+  const shown = () => {
+    const frame = byId(byId(panel.render(), 'media-big'), 'media-frame');
+    const pic = kept(frame.children[0]);
+    return { kind: pic.kind, w: pic.calls.w?.[0], h: pic.calls.h?.[0] };
+  };
+  const want = { 'wide.png': { kind: 'image', w: 360, h: 203 }, 'tall.png': { kind: 'image', w: 68, h: 270 },
+    'icon.png': { kind: 'image', w: 16, h: 16 }, 'chart.svg': { kind: 'image', w: 360, h: 180 },
+    'spin.gif': { kind: 'image', w: 240, h: 120 }, 'clip.mp4': { kind: 'v_flex', w: 360, h: 270 } };
+  const first = layoutOf();
+  assert.deepEqual(first.frame, [360, 270]);
+  for (const name of ['wide.png', 'tall.png', 'icon.png', 'chart.svg', 'spin.gif', 'clip.mp4', 'wide.png']) {
+    await panel.click(`media-item-${by[name].id}`);
+    assert.deepEqual(layoutOf(), first, `${name} moves nothing`);
+    const pic = shown();
+    assert.deepEqual(pic, want[name], `${name} is fitted into the frame`);
+    assert.ok(pic.w <= 360 && pic.h <= 270);
+  }
+
+  // The caption: one line, cut, the whole of its first line in the tooltip; without one, the file name there and nothing to repeat it.
+  await panel.click(`media-item-${by['wide.png'].id}`);
+  const caption = byId(panel.render(), 'media-caption');
+  assert.deepEqual(caption.children, ['A wide screenshot with a caption much longer than the panel is wide, which is cut to one line']);
+  assert.deepEqual(caption.calls.tooltip, ['A wide screenshot with a caption much longer than the panel is wide, which is cut to one line']);
+  assert.ok(texts(byId(panel.render(), 'media-meta')).includes('wide.png'));
+  await panel.click(`media-item-${by['tall.png'].id}`);
+  assert.deepEqual(byId(panel.render(), 'media-caption').children, ['tall.png']);
+  assert.ok(!texts(byId(panel.render(), 'media-meta')).includes('tall.png'), 'the file name is not said twice');
+  assert.deepEqual(byId(panel.render(), 'media-note').children, [''], 'no note: its line stays, empty');
+  await panel.click(`media-item-${by['spin.gif'].id}`);
+  assert.deepEqual(byId(panel.render(), 'media-note').calls.tooltip, ['Animated GIF: the panel shows its first frame; Open plays it']);
+
+  // Resizing the panel resizes the frame.
+  kept(panel.render()).handlers.on_size_change({ width: 638, height: 900 }, panel.cx);
+  assert.deepEqual(layoutOf().frame, [600, 450]);
+  kept(panel.render()).handlers.on_size_change({ width: 638, height: 600 }, panel.cx);
+  assert.deepEqual(layoutOf().frame, [600, 307]);
 });
 
 test('a caption that comes after the picture was taken in is added to it', async () => {

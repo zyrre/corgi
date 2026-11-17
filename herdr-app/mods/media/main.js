@@ -1,9 +1,11 @@
 // Media in the Herdr app: images, GIFs and videos that coding agents put in
 // front of the person by copying a file into a drop folder
 // (~/.local/share/herdr-media by default; media/settings.json of the app's
-// home names another). The newest is shown large, scaled to fit, with its
-// caption (the first line of a `<same name>.txt` beside it), file name and
-// time; every item is listed below it in arrival order, the one shown marked, to click. It keeps the last 50.
+// home names another). The newest is shown large, scaled to fit a frame of
+// one size for every item, with its caption (the first line of a
+// `<same name>.txt` beside it), file name and time; every item is listed
+// below it in arrival order, the one shown marked, to click, and the list
+// stays put when another is shown. It keeps the last 50.
 // A new one posts a toast whose click shows the panel, and the tab bar's
 // Media button counts what came since the panel was last seen.
 //
@@ -20,7 +22,12 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, nextCommand, layout, run, settings, props as given } from "herdr";
 import { store } from "./store.js";
-import { fit, ago, titleOf, oneLine, noteOf, showCommands } from "./items.js";
+import { fit, frameOf, ago, titleOf, oneLine, noteOf, showCommands } from "./items.js";
+
+// The heights of the lines under the big picture, fixed so that they are the
+// same with and without a caption or a note.
+const LINE_TITLE = 20;
+const LINE = 18;
 
 const MOD = "media";
 const icon = (name) => `mods/${MOD}/icons/${name}.svg`;
@@ -137,26 +144,32 @@ export default class Media extends View {
 
   big(item, t, now) {
     // on_size_change gives the size on screen, and w()/h() are scaled by the
-    // app's zoom (seen at 1.1 in the preview): the panel's width in w() units,
-    // less the margins (12 a side) and the frame's padding and border (7 a side).
+    // app's zoom (seen at 1.1 in the preview). The frame and the three lines
+    // under it have one size for every item, so that nothing below moves
+    // when another item is shown: the picture is fitted into the frame and
+    // centred on its surface, the caption (else the file name) and the note
+    // are one line each, cut with "…" and whole in their tooltips, and the
+    // note's line is there, empty, when there is none.
     let zoom = 1;
     try { zoom = Number(settings()?.zoom) || 1; } catch { /* 1 */ }
-    const width = Math.max(120, (this.size?.width ?? 360) / zoom - 38);
-    const maxH = Math.max(160, Math.min(520, ((this.size?.height ?? 640) / zoom - 42) * 0.55));
-    const box = item.file ? fit(item.width, item.height, width, maxH, { grow: item.format === "svg" }) : { w: width, h: Math.round(Math.min(maxH, width * 0.5)) };
+    const frame = frameOf(this.size?.width ?? 360, this.size?.height ?? 640, zoom);
+    const box = item.file ? fit(item.width, item.height, frame.w, frame.h, { grow: item.format === "svg" }) : frame;
     const note = noteOf(item);
+    const title = oneLine(titleOf(item));
     const newest = store.items[0]?.id === item.id;
+    const line = (id, px) => div().id(id).w_full().min_w(0).h(px).line_height(`${px}px`).flex_none().truncate();
     return v_flex().id("media-big").flex_none().px(12).pt(12).pb(4).gap(8)
-      .child(h_flex().id("media-big-picture").w_full().justify_center().p(6).rounded(8).bg(t.surface).border_1().border_color(t.border)
+      .child(h_flex().id("media-big-picture").w_full().flex_none().justify_center().p(6).rounded(8).bg(t.surface).border_1().border_color(t.border)
         .cursor_pointer().tooltip("Open it in its own viewer")
         .on_click((_e, cx) => { cx.spawn(async () => { await store.open(item); }); })
-        .child(this.picture(item, box.w, box.h, t)))
-      .when(Boolean(item.caption), (el) => el.child(div().id("media-caption").text_size(13.5).text_color(t.foreground).child(oneLine(item.caption))))
-      .child(h_flex().gap(6).items_center().text_size(11.5).text_color(t.dim)
+        .child(h_flex().id("media-frame").w(frame.w).h(frame.h).flex_none().items_center().justify_center().overflow_hidden()
+          .child(this.picture(item, box.w, box.h, t))))
+      .child(line("media-caption", LINE_TITLE).text_size(13.5).text_color(t.foreground).tooltip(title).child(title))
+      .child(h_flex().id("media-meta").w_full().h(LINE).flex_none().gap(6).items_center().text_size(11.5).line_height(`${LINE}px`).text_color(t.dim)
         .when(newest, (el) => el.child(div().flex_none().px(5).rounded(4).bg(t.raised).text_color(t.muted).child("Newest")))
-        .child(div().flex_1().min_w(0).truncate().tooltip(item.name).child(oneLine(item.name)))
+        .child(div().flex_1().min_w(0).truncate().when(Boolean(item.caption), (el) => el.tooltip(item.name).child(oneLine(item.name))))
         .child(div().flex_none().child(ago(item.at, now))))
-      .when(Boolean(note), (el) => el.child(div().id("media-note").text_size(11.5).text_color(t.muted).child(note)))
+      .child(line("media-note", LINE).text_size(11.5).text_color(t.muted).when(Boolean(note), (el) => el.tooltip(note)).child(note))
       .child(h_flex().gap(6).pt(2)
         .child(pill("media-open", "Open", t, { name: "external", tone: note ? "solid" : "plain", tip: "Open it in its own viewer", onClick: (cx) => { cx.spawn(async () => { await store.open(item); }); } }))
         .child(pill("media-remove", "Remove", t, { name: "x", tip: "Take it out of the panel (the file stays in the drop folder)", onClick: (cx) => {

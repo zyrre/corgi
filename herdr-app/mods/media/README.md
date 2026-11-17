@@ -9,7 +9,11 @@ window, with a toast and a count on the tab bar's Media button.
 
 The panel shows the newest item large, scaled to fit, with its caption,
 file name and when it came. Earlier items are listed below it; click one
-to see it large. It keeps the last 50.
+to see it large. The frame it is shown in keeps one size, whatever the
+item's shape (only resizing the panel changes it), and the caption and
+note under it are one line each, cut with "…" (point at one for the whole
+text), so the list stays put while you click through items. It keeps the
+last 50.
 
 ## Install
 
