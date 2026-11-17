@@ -1,12 +1,17 @@
-//! Corgi's Questions panel in the Herdr app's layout: the `corgi` mod's
-//! `questions` view as a child of the right-hand panel stack `panel-body`
-//! (beside Files, Changes and other mods' panels), and a "Questions" button
-//! in the tab bar that shows it there, with the count of open questions.
+//! Corgi's panels in the Herdr app's layout, children of the right-hand
+//! panel stack `panel-body` (beside Files, Changes and other mods' panels),
+//! each with a button in the tab bar that shows it there:
 //!
-//! The panel is one block of the layout, `corgi-questions`, which
-//! [`put_questions`] adds and [`take_questions`] takes out with the rest of
-//! Corgi's. Its id was never another block's: the app keeps a block's
-//! `hidden` and `size` by id after the block left the layout.
+//! - the Questions panel, the `corgi` mod's `questions` view, one block
+//!   `corgi-questions`, its button with the count of open questions;
+//! - the terminal panel, a column `corgi-terminal`: the mod's `terminal`
+//!   view as its header over a block that shows a shell of the focused
+//!   agent's folder (`{"terminal": "t9"}`, which the mod puts there) or,
+//!   until there is one, the mod's `terminal-hint` view.
+//!
+//! [`put_panels`] adds them and [`take_panels`] takes them out with the
+//! rest of Corgi's. Their ids were never another block's: the app keeps a
+//! block's `hidden` and `size` by id after the block left the layout.
 //!
 //! The button lives in the tab bar's mod, which the layout's `tabs` block
 //! names. Herdr's own `tabs` is never edited (Herdr replaces it on every
@@ -20,11 +25,17 @@
 //!
 //! - just before the tab bar's call that remembers per space which panel
 //!   was open (`this.syncPanel(…)`, or the marked lines another installer
-//!   put in its place), a line adds `corgi-questions` to that call's list
-//!   while the layout's stack has the panel;
-//! - just before the window buttons (`.when(w?.buttons,`), the button: the
-//!   tab bar's own `panelButton`, as Files' and Changes', with the count the
-//!   Corgi mod publishes in `shared("corgi.questions.count")` as a pill.
+//!   put in its place), lines add `corgi-questions` and `corgi-terminal` to
+//!   that call's list while the layout's stack has them, and make the
+//!   terminal panel, while it shows, the choice of a space the window
+//!   changes to, before the call restores that space's own: it follows the
+//!   focused agent into its space instead of closing there (it reads the
+//!   call's `this.space` and `this.panels`, inside a `try`, so a tab bar
+//!   without them keeps its own per-space choice);
+//! - just before the window buttons (`.when(w?.buttons,`), the buttons: the
+//!   tab bar's own `panelButton`, as Files' and Changes', Questions' with
+//!   the count the Corgi mod publishes in `shared("corgi.questions.count")`
+//!   as a pill, and Terminal.
 //!
 //! [`take_button`] puts the clone's layouts back on `tabs`, and removes the
 //! clone once no layout names it, only while the clone is as it was cloned
@@ -44,6 +55,15 @@ use super::{CORGI_MOD, children, children_mut, find_mut, layout_path, read_json,
 /// The panel's block id, and the view of the Corgi mod it shows.
 pub const QUESTIONS_BLOCK: &str = "corgi-questions";
 pub const QUESTIONS_VIEW: &str = "questions";
+/// The terminal panel: its column, its header's view and blocks, and the
+/// view its body shows until the mod puts a shell there.
+pub const TERMINAL_COLUMN: &str = "corgi-terminal";
+pub const TERMINAL_VIEW: &str = "terminal";
+const TERMINAL_HEAD: &str = "corgi-terminal-head";
+const TERMINAL_BODY: &str = "corgi-terminal-body";
+const TERMINAL_HINT_VIEW: &str = "terminal-hint";
+/// The header's height: two lines, the switches over the folder.
+const TERMINAL_HEAD_PX: u32 = 58;
 /// The column and the stack of Herdr's layouts that hold the panels.
 const COLUMN: &str = "panel";
 const STACK: &str = "panel-body";
@@ -72,13 +92,13 @@ const NEEDS: [(&str, &str); 5] = [
     ("enabled", "enabled = "),
     ("shared", "shared"),
 ];
-const BY_HAND: &str = "the Questions button was not added (the panel is in the layout, and \
-                       the Projects list's counts open it)";
+const BY_HAND: &str = "the Questions and Terminal buttons were not added (the panels are in the \
+                       layout, and the Projects list's counts and shell marks open them)";
 
-// --- the panel block ---------------------------------------------------------------
+// --- the panel blocks ---------------------------------------------------------------
 
-/// Whether `node` is a block showing the Corgi mod's Questions panel.
-fn shows_questions(node: &Value) -> bool {
+/// Whether `node` is a block showing the Corgi mod's view `view`.
+fn shows_view(node: &Value, view: &str) -> bool {
     let Some(content) = node.get("content") else {
         return false;
     };
@@ -87,60 +107,131 @@ fn shows_questions(node: &Value) -> bool {
             .get("props")
             .and_then(|p| p.get("view"))
             .and_then(Value::as_str)
-            == Some(QUESTIONS_VIEW)
+            == Some(view)
+}
+
+/// Whether `node` is the Questions panel's block.
+fn shows_questions(node: &Value) -> bool {
+    shows_view(node, QUESTIONS_VIEW)
+}
+
+/// Whether `node` is the terminal panel: a column whose header shows the
+/// mod's `terminal` view (its body shows a shell, or the hint, or nothing
+/// once the app took out the block of a shell that ended).
+fn shows_terminal(node: &Value) -> bool {
+    node.get("type").and_then(Value::as_str) == Some("column")
+        && children(node)
+            .iter()
+            .any(|child| shows_view(child, TERMINAL_VIEW))
+}
+
+/// Whether `node` is one of Corgi's panels.
+fn corgi_panel(node: &Value) -> bool {
+    shows_questions(node) || shows_terminal(node)
+}
+
+fn count_where(node: &Value, wanted: fn(&Value) -> bool) -> usize {
+    usize::from(wanted(node))
+        + children(node)
+            .iter()
+            .map(|child| count_where(child, wanted))
+            .sum::<usize>()
 }
 
 /// How many blocks under `node` show the Questions panel.
 pub fn count_questions(node: &Value) -> usize {
-    usize::from(shows_questions(node)) + children(node).iter().map(count_questions).sum::<usize>()
+    count_where(node, shows_questions)
 }
 
-/// Puts the Questions panel last into the layout's panel stack
-/// (`panel-body` in the column `panel`): whether it was added. A layout
-/// with the panel already, or without such a stack, is left alone.
-pub fn put_questions(layout: &mut Value) -> bool {
-    if count_questions(layout) > 0 {
-        return false;
-    }
-    let Some(column) = find_mut(layout, COLUMN) else {
-        return false;
-    };
-    let Some(stack) = find_mut(column, STACK) else {
-        return false;
-    };
+/// How many terminal panels `node` has.
+pub fn count_terminal(node: &Value) -> usize {
+    count_where(node, shows_terminal)
+}
+
+/// How many of Corgi's panels (Questions, the terminal) `node` has.
+pub fn count_panels(node: &Value) -> usize {
+    count_where(node, corgi_panel)
+}
+
+/// The children of the layout's panel stack (`panel-body` in the column
+/// `panel`), when it has one.
+fn stack_children(layout: &mut Value) -> Option<&mut Vec<Value>> {
+    let column = find_mut(layout, COLUMN)?;
+    let stack = find_mut(column, STACK)?;
     if stack.get("type").and_then(Value::as_str) != Some("stack") {
-        return false;
+        return None;
     }
-    let Some(children) = children_mut(stack) else {
-        return false;
-    };
-    children.push(json!({
-        "id": QUESTIONS_BLOCK,
-        "type": "block",
-        "content": { "mod": CORGI_MOD, "props": { "view": QUESTIONS_VIEW } }
-    }));
-    true
+    children_mut(stack)
 }
 
-/// Takes every block showing the Questions panel out of `node`; a stack
-/// that showed one shows its first child left. Whether there was one.
-pub fn take_questions(node: &mut Value) -> bool {
+/// Puts Corgi's panels that `layout` lacks last into its panel stack, the
+/// Questions panel, then the terminal panel: whether one was added. A
+/// layout without such a stack is left alone.
+pub fn put_panels(layout: &mut Value) -> bool {
+    let questions = count_questions(layout) == 0;
+    let terminal = count_terminal(layout) == 0;
+    let Some(children) = stack_children(layout) else {
+        return false;
+    };
+    if questions {
+        children.push(json!({
+            "id": QUESTIONS_BLOCK,
+            "type": "block",
+            "content": { "mod": CORGI_MOD, "props": { "view": QUESTIONS_VIEW } }
+        }));
+    }
+    if terminal {
+        children.push(terminal_column());
+    }
+    questions || terminal
+}
+
+/// The terminal panel's column, as Files', Changes' and the other panels'
+/// cards look: its header, and a body with the hint until a shell shows.
+fn terminal_column() -> Value {
+    json!({
+        "id": TERMINAL_COLUMN,
+        "type": "column",
+        "background": "background",
+        "radius": 10,
+        "border": { "width": 1, "color": "border" },
+        "children": [
+            {
+                "id": TERMINAL_HEAD,
+                "type": "block",
+                "size": { "px": TERMINAL_HEAD_PX },
+                "content": { "mod": CORGI_MOD, "props": { "view": TERMINAL_VIEW } }
+            },
+            {
+                "id": TERMINAL_BODY,
+                "type": "block",
+                "padding": [6, 10],
+                "content": { "mod": CORGI_MOD, "props": { "view": TERMINAL_HINT_VIEW } }
+            }
+        ]
+    })
+}
+
+/// Takes Corgi's panels out of `node`; a stack that showed one shows its
+/// first child left. Whether there was one. The terminal panel's shells
+/// keep running: `corgi close` ends a worktree's.
+pub fn take_panels(node: &mut Value) -> bool {
     let Some(children) = children_mut(node) else {
         return false;
     };
     let gone: Vec<String> = children
         .iter()
-        .filter(|child| shows_questions(child))
+        .filter(|child| corgi_panel(child))
         .filter_map(|child| child.get("id").and_then(Value::as_str).map(str::to_string))
         .collect();
     let before = children.len();
-    children.retain(|child| !shows_questions(child));
+    children.retain(|child| !corgi_panel(child));
     let mut taken = children.len() != before;
     let first = children
         .iter()
         .find_map(|child| child.get("id").and_then(Value::as_str).map(str::to_string));
     for child in children.iter_mut() {
-        taken |= take_questions(child);
+        taken |= take_panels(child);
     }
     if let Some(active) = node.get("active").and_then(Value::as_str)
         && gone.iter().any(|id| id == active)
@@ -198,16 +289,27 @@ fn indent_of(line: &str) -> &str {
     &line[..line.len() - line.trim_start().len()]
 }
 
-/// The line that adds the panel to the list the tab bar remembers per space.
+/// The lines that add the panels to the list the tab bar remembers per space.
 fn list_lines(indent: &str) -> String {
+    let add = |id: &str| {
+        format!(
+            "try {{ if (find(body, \"{id}\") && !enabled.includes(\"{id}\")) \
+             enabled.push(\"{id}\"); }} catch (_) {{}}"
+        )
+    };
     [
         format!(
-            "{LIST_BEGIN}: corgi app-layout adds the Questions panel to the panels remembered per \
-             space; corgi app-layout remove takes it out"
+            "{LIST_BEGIN}: corgi app-layout adds Corgi's Questions and terminal panels to the \
+             panels remembered per space; corgi app-layout remove takes them out"
         ),
+        add(QUESTIONS_BLOCK),
+        add(TERMINAL_COLUMN),
+        // The terminal panel follows the focused agent from space to space:
+        // shown when the space changes, it is what the new space restores.
         format!(
-            "try {{ if (find(body, \"{QUESTIONS_BLOCK}\") && !enabled.includes(\"{QUESTIONS_BLOCK}\")) \
-             enabled.push(\"{QUESTIONS_BLOCK}\"); }} catch (_) {{}}"
+            "try {{ const now = spaces().find(s => s.active); if (now && this.space !== undefined \
+             && now.id !== this.space && panel && !panel.hidden && body?.active === \"{TERMINAL_COLUMN}\") \
+             this.panels[now.id] = \"{TERMINAL_COLUMN}\"; }} catch (_) {{}}"
         ),
         LIST_END.to_string(),
     ]
@@ -216,11 +318,12 @@ fn list_lines(indent: &str) -> String {
     .collect()
 }
 
-/// The button, shown while the layout's stack has the panel.
+/// The buttons, each shown while the layout's stack has its panel.
 fn button_lines(indent: &str) -> String {
     [
         format!(
-            "{BUTTON_BEGIN}: corgi app-layout puts it here; corgi app-layout remove takes it out"
+            "{BUTTON_BEGIN}: corgi app-layout puts Corgi's buttons here; corgi app-layout remove \
+             takes them out"
         ),
         format!(
             ".when(Boolean(find(body, \"{QUESTIONS_BLOCK}\")), el => el.child(panelButton(\"{QUESTIONS_BLOCK}\", \
@@ -230,6 +333,10 @@ fn button_lines(indent: &str) -> String {
          .bg(t.accent).text_color(t.accent_foreground).text_size(10.5).font_semibold()\
          .child(String(Number(shared(\"corgi.questions.count\"))))))))"
             .to_string(),
+        format!(
+            ".when(Boolean(find(body, \"{TERMINAL_COLUMN}\")), el => el.child(panelButton(\
+             \"{TERMINAL_COLUMN}\", \"Terminal\", \"mods/corgi/terminal.svg\")))"
+        ),
         BUTTON_END.to_string(),
     ]
     .iter()
@@ -462,8 +569,8 @@ pub enum Button {
     Refused(String),
 }
 
-/// Puts the Questions button into the tab bar the personal layout `name`
-/// in `home` shows, when the layout has the panel: in Herdr's `tabs`
+/// Puts Corgi's buttons into the tab bar the personal layout `name` in
+/// `home` shows, when the layout has one of its panels: in Herdr's `tabs`
 /// cloned to [`CLONE`] (the layout then names the clone), or in place in
 /// a copy. `check` is `herdr-app check` of a staged mod folder: `Err` with
 /// what it said refuses the change. `version` is Herdr's, for the clone's
@@ -476,7 +583,7 @@ pub fn put_button(
 ) -> Result<Button> {
     let path = layout_path(home, name);
     let mut layout = read_layout(&path)?;
-    if count_questions(&layout) == 0 {
+    if count_panels(&layout) == 0 {
         return Ok(Button::NoPanel);
     }
     let Some(tab_bar) = tab_mod(&layout) else {
@@ -544,23 +651,23 @@ pub fn put_button(
 }
 
 /// The tab bar mods the personal layouts in `home` name, by layout, and
-/// whether each layout has the Questions panel.
+/// whether each layout has one of Corgi's panels.
 fn tab_bars(home: &Path) -> Vec<(String, String, bool)> {
     super::personal_layouts(home, |_| true)
         .into_iter()
         .filter_map(|name| {
             let layout = read_json(&layout_path(home, &name))?;
             let bar = tab_mod(&layout)?;
-            Some((name, bar, count_questions(&layout) > 0))
+            Some((name, bar, count_panels(&layout) > 0))
         })
         .collect()
 }
 
-/// Takes the Questions button out of the tab bar of the layout `name`,
-/// once no personal layout that names the same tab bar has the panel:
+/// Takes Corgi's buttons out of the tab bar of the layout `name`, once no
+/// personal layout that names the same tab bar has one of its panels:
 /// Corgi's lines go, and a layout on Corgi's clone, still as cloned, goes
 /// back to Herdr's `tabs` (the clone goes once no layout names it). Run
-/// after the panel was taken out of `name`. What it did, for a person.
+/// after the panels were taken out of `name`. What it did, for a person.
 pub fn take_button(home: &Path, name: &str) -> Result<Option<String>> {
     let path = layout_path(home, name);
     let Some(mut layout) = read_json(&path) else {
@@ -593,9 +700,7 @@ pub fn take_button(home: &Path, name: &str) -> Result<Option<String>> {
     match without_button(&text) {
         Ok(without) if without != text => {
             write_text(&main, &without)?;
-            Ok(Some(format!(
-                "took the Questions button out of mods/{tab_bar}"
-            )))
+            Ok(Some(format!("took Corgi's buttons out of mods/{tab_bar}")))
         }
         Ok(_) => Ok(None),
         Err(why) => Ok(Some(format!(

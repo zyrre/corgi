@@ -53,6 +53,14 @@ echo "$n" > "$d/count.$1"
 f="$d/$1.$2"
 [ -e "$f.out" ] || [ -e "$f.code" ] || f="$d/$1"
 [ -e "$d/$1.$n.out" ] && f="$d/$1.$n"
+case "$2" in
+*/*) ;;
+*)
+  m=$(( $(cat "$d/count.$1.$2" 2>/dev/null || echo 0) + 1 ))
+  echo "$m" > "$d/count.$1.$2"
+  [ -e "$d/$1.$2.$m.out" ] && f="$d/$1.$2.$m"
+  ;;
+esac
 [ -e "$f.out" ] && cat "$f.out"
 [ -e "$f.err" ] && cat "$f.err" >&2
 exit "$(cat "$f.code" 2>/dev/null || echo 0)"
@@ -67,7 +75,8 @@ exit "$(cat "$f.code" 2>/dev/null || echo 0)"
         HcClient::new(self.dir.join("hc"))
     }
 
-    /// `hc reply`'s output (`reply` is `CMD` or `CMD.TARGET`).
+    /// `hc reply`'s output (`reply` is `CMD` or `CMD.TARGET`; `CMD.N` for
+    /// the command's Nth call, `CMD.TARGET.N` for its Nth call on TARGET).
     pub(super) fn answer(&self, reply: &str, out: &str) {
         fs::write(self.dir.join(format!("{reply}.out")), out).unwrap();
     }

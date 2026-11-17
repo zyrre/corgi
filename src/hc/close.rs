@@ -6,8 +6,11 @@
 //! A worker in a worktree has a space of its own in the Herdr app
 //! ([`super::launch::worker_space`]), which the app closes by itself once
 //! its last terminal is gone; one where the person opened a terminal of
-//! their own stays, with it. So nothing here closes a space, and nothing
-//! but the worker's own terminal is ended. A supervisor is never closed.
+//! their own stays, with it. So nothing here closes a space, and of the
+//! person's terminals only the shells Corgi's mod opened for its terminal
+//! panel in the worktree being removed are ended (labelled
+//! [`SHELL_LABEL`], also once moved into a tab): they would go on in a
+//! folder that is gone. A supervisor is never closed.
 
 use std::{
     path::{Path, PathBuf},
@@ -23,7 +26,7 @@ use crate::{
     model::Agent,
 };
 
-use super::{HcClient, SPACE_LABEL};
+use super::{HcClient, SHELL_DIR_LABEL, SHELL_KINDS, SHELL_LABEL, SPACE_LABEL};
 
 /// How long a killed terminal may take to finish before it is removed.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -56,6 +59,9 @@ pub struct CloseOutcome {
     pub branch: Option<String>,
     /// Whether the worktree was removed from disk.
     pub removed: bool,
+    /// The terminal panel's shells in the removed worktree that were ended,
+    /// by address.
+    pub shells: Vec<String>,
 }
 
 impl CloseOutcome {
@@ -68,6 +74,7 @@ impl CloseOutcome {
             worktree: None,
             branch: None,
             removed: false,
+            shells: Vec::new(),
         }
     }
 
@@ -80,6 +87,7 @@ impl CloseOutcome {
             worktree: worktree.map(Worktree::path),
             branch: worktree.and_then(|worktree| worktree.branch.clone()),
             removed: false,
+            shells: Vec::new(),
         }
     }
 
@@ -96,6 +104,7 @@ impl CloseOutcome {
             "worktree": self.worktree,
             "branch": self.branch,
             "removed": self.removed,
+            "shells": self.shells,
         })
     }
 }
@@ -196,6 +205,11 @@ pub fn close_worker(
             worktree.as_ref(),
         );
     }
+    // The panel's shells go before the folder they run in.
+    let shells = match remove {
+        Some(worktree) => end_shells(client, &worktree.checkout),
+        None => Shells::default(),
+    };
     let shared = shared_space(client, agent, agents);
     let mut message = format!("Closed {name}");
     let mut removed = false;
@@ -208,12 +222,18 @@ pub fn close_worker(
             }
             args.push(&path);
             if let Err(error) = git_output(Path::new(root), &args) {
-                return CloseOutcome::failed(
-                    format!("Closed {name}, but its worktree {path} stays: {error:#}"),
+                let mut failed = CloseOutcome::failed(
+                    format!(
+                        "Closed {name}{}, but its worktree {path} stays: {error:#}",
+                        shells.ended_words()
+                    ),
                     Some(worktree),
                 );
+                failed.shells = shells.ended;
+                return failed;
             }
             removed = true;
+            message.push_str(&shells.ended_words());
             message.push_str(&format!(" and removed its worktree {path}"));
         }
         (Some(worktree), None) if !worktree.checkout.exists() => {
@@ -238,6 +258,9 @@ pub fn close_worker(
             "; its space stays, with {shared} other terminal(s) in it"
         ));
     }
+    if let Some(problem) = &shells.problem {
+        message.push_str(&format!("; {problem}"));
+    }
     CloseOutcome {
         result: "closed",
         message,
@@ -246,7 +269,77 @@ pub fn close_worker(
         worktree: worktree.as_ref().map(Worktree::path),
         branch: worktree.and_then(|worktree| worktree.branch),
         removed,
+        shells: shells.ended,
     }
+}
+
+/// What [`end_shells`] did: the shells it ended, and what it could not do.
+#[derive(Debug, Default)]
+struct Shells {
+    ended: Vec<String>,
+    problem: Option<String>,
+}
+
+impl Shells {
+    /// `, ended its shell t9` (or `shells t9, t12`), for after `Closed NAME`.
+    fn ended_words(&self) -> String {
+        match self.ended.as_slice() {
+            [] => String::new(),
+            [one] => format!(", ended its shell {one}"),
+            many => format!(", ended its shells {}", many.join(", ")),
+        }
+    }
+}
+
+/// Ends the Corgi mod's terminal-panel shells ([`SHELL_LABEL`], in the
+/// panel or moved into a tab) whose folder is `checkout` or inside it, each
+/// by its address. A shell that cannot be listed or ended is said, and
+/// stays: the close goes on.
+fn end_shells(client: &HcClient, checkout: &Path) -> Shells {
+    let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let checkout = canonical(checkout);
+    let mut shells = Shells::default();
+    let mut found: Vec<String> = Vec::new();
+    for kind in SHELL_KINDS {
+        let listed = match client.list(&[(SHELL_LABEL, kind)]) {
+            Ok(listed) => listed,
+            Err(error) => {
+                shells.problem = Some(format!(
+                    "its terminal panel's shells could not be listed: {error:#}"
+                ));
+                return shells;
+            }
+        };
+        for terminal in listed {
+            // hc filtered by the label; a fake of it in a test does not.
+            if terminal.label(SHELL_LABEL) != Some(kind) {
+                continue;
+            }
+            let dir = terminal
+                .label(SHELL_DIR_LABEL)
+                .unwrap_or(terminal.cwd.as_str());
+            if !dir.is_empty()
+                && canonical(Path::new(dir)).starts_with(&checkout)
+                && !found.contains(&terminal.address)
+            {
+                found.push(terminal.address);
+            }
+        }
+    }
+    let mut failed = Vec::new();
+    for address in found {
+        match end_terminal(client, &address) {
+            Ok(()) => shells.ended.push(address),
+            Err(error) => failed.push(format!("{address} ({error:#})")),
+        }
+    }
+    if !failed.is_empty() {
+        shells.problem = Some(format!(
+            "its terminal panel's shell(s) {} could not be ended",
+            failed.join(", ")
+        ));
+    }
+    shells
 }
 
 /// The worker's checkout when it is a linked worktree of the repository at
@@ -459,6 +552,7 @@ mod tests {
                 worktree: Some(path.clone()),
                 branch: Some("worktree/fix".into()),
                 removed: true,
+                shells: Vec::new(),
             }
         );
         assert_eq!(project.ends(), ["kill|t5|--json", "rm|t5|--json"]);
@@ -467,7 +561,8 @@ mod tests {
         assert_eq!(
             outcome.json(),
             json!({"result": "closed", "message": outcome.message, "reason": null,
-                   "dirty": [], "worktree": path, "branch": "worktree/fix", "removed": true})
+                   "dirty": [], "worktree": path, "branch": "worktree/fix", "removed": true,
+                   "shells": []})
         );
     }
 
@@ -597,6 +692,135 @@ mod tests {
         );
         assert!(project.worktree.exists());
         assert!(!project.ends().iter().any(|call| call.starts_with("rm|")));
+    }
+
+    /// A shell of the terminal panel, as `hc get` describes it while live.
+    fn shell(address: &str, kind: &str, dir: &Path) -> String {
+        json!({"address": address, "state": "live", "cwd": dir,
+               "labels": {"corgi.shell": kind, "corgi.shell.dir": dir}})
+        .to_string()
+    }
+
+    #[test]
+    fn the_panels_shells_in_the_worktree_are_ended_before_it_is_removed_and_said() {
+        let project = Project::new("hc-close-shells");
+        let sub = project.worktree.join("src");
+        fs::create_dir_all(&sub).unwrap();
+        let elsewhere = project._scratch.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        project.hc.answer(
+            "ls",
+            r#"{"terminals":[{"address":"t5"},{"address":"t9"},{"address":"t10"},{"address":"t11"},{"address":"t12"}]}"#,
+        );
+        // t9 in the worktree and t10 in a folder of it, moved into a tab:
+        // live while listed and when ended, finished once killed.
+        for (address, kind, dir) in [("t9", "panel", &project.worktree), ("t10", "tab", &sub)] {
+            for n in 1..=4 {
+                project
+                    .hc
+                    .answer(&format!("get.{address}.{n}"), &shell(address, kind, dir));
+            }
+            project.hc.answer(
+                &format!("get.{address}"),
+                &format!(r#"{{"address":"{address}","state":"finished"}}"#),
+            );
+        }
+        // At the project's root and elsewhere: not the worktree's.
+        project
+            .hc
+            .answer("get.t11", &shell("t11", "panel", &project.repo));
+        project
+            .hc
+            .answer("get.t12", &shell("t12", "panel", &elsewhere));
+        let outcome = project.close("w-fix", CloseOptions::default());
+        let path = project.worktree.to_string_lossy().into_owned();
+        assert_eq!(outcome.result, "closed", "{}", outcome.message);
+        assert_eq!(
+            outcome.message,
+            format!(
+                "Closed w-fix, ended its shells t9, t10 and removed its worktree {path}; \
+                 branch worktree/fix stays"
+            )
+        );
+        assert_eq!(outcome.shells, ["t9", "t10"]);
+        assert_eq!(outcome.json()["shells"], json!(["t9", "t10"]));
+        assert_eq!(
+            project.ends(),
+            [
+                "kill|t5|--json",
+                "rm|t5|--json",
+                "kill|t9|--json",
+                "rm|t9|--json",
+                "kill|t10|--json",
+                "rm|t10|--json"
+            ]
+        );
+        // Ended before the worktree went: listed while it was there.
+        let calls = project.hc.calls();
+        let last_kill = calls.iter().rposition(|c| c.starts_with("kill|")).unwrap();
+        assert!(
+            calls[..last_kill]
+                .iter()
+                .any(|c| c.starts_with("ls|--label|corgi.shell=panel"))
+        );
+        assert!(!project.worktree.exists());
+    }
+
+    #[test]
+    fn shells_stay_with_a_worktree_that_stays_and_a_refused_close_ends_none() {
+        let project = Project::new("hc-close-shells-stay");
+        project
+            .hc
+            .answer("ls", r#"{"terminals":[{"address":"t5"},{"address":"t9"}]}"#);
+        project
+            .hc
+            .answer("get.t9", &shell("t9", "panel", &project.worktree));
+        let kept = project.close(
+            "w-fix",
+            CloseOptions {
+                keep_worktree: true,
+                ..CloseOptions::default()
+            },
+        );
+        assert_eq!(kept.result, "closed", "{}", kept.message);
+        assert!(kept.shells.is_empty());
+        assert!(!project.ends().iter().any(|call| call.contains("t9")));
+
+        let project = Project::new("hc-close-shells-dirty");
+        project
+            .hc
+            .answer("get.t9", &shell("t9", "panel", &project.worktree));
+        fs::write(project.worktree.join("draft.txt"), "unsaved\n").unwrap();
+        let refused = project.close("w-fix", CloseOptions::default());
+        assert_eq!(refused.reason, Some("dirty"));
+        assert!(project.hc.calls().is_empty(), "nothing asked of hc");
+    }
+
+    #[test]
+    fn a_shell_that_cannot_be_ended_is_said_and_the_worktree_still_goes() {
+        let project = Project::new("hc-close-shells-stuck");
+        project
+            .hc
+            .answer("ls", r#"{"terminals":[{"address":"t5"},{"address":"t9"}]}"#);
+        project
+            .hc
+            .answer("get.t9", &shell("t9", "panel", &project.worktree));
+        project.hc.fail(
+            "kill.t9",
+            9,
+            r#"{"error":{"kind":"blocked","message":"refused","hint":""}}"#,
+        );
+        let outcome = project.close("w-fix", CloseOptions::default());
+        assert_eq!(outcome.result, "closed", "{}", outcome.message);
+        assert!(outcome.shells.is_empty());
+        assert!(
+            outcome
+                .message
+                .ends_with("; its terminal panel's shell(s) t9 (hc: refused) could not be ended"),
+            "{}",
+            outcome.message
+        );
+        assert!(!project.worktree.exists());
     }
 
     #[test]

@@ -25,15 +25,21 @@ Herdr app window (herdr-app)
        ├─ projects ── the sidebar's list: runs corgi projects/open/merge/close/
        │              pause/resume --json, here and on other machines
        ├─ brand ───── the sidebar's top row
+       ├─ questions ─ the right-hand panel's Questions
+       ├─ terminal ── the right-hand panel's shell of the focused agent's folder
+       │              (shells.js: one hidden hc shell per folder, swapped into
+       │              the panel's block in the layout file)
        └─ data.js ─── corgi status and usage --json and hc machine ls, read
                       once for every block that shows the mod
 
 herdr-core (hc), one core per session
   ├─ <project>-supervisor ── a kept shell terminal with the supervisor typed into it
-  └─ workers ──────────────── one terminal each, in a worktree of its own
-       labels on each: corgi.project, corgi.role, corgi.request, corgi.task,
-       corgi.harness, corgi.session, corgi.resume, corgi.pid, corgi.tag,
-       corgi.tag.at, corgi.handover, corgi.baseline, herdr.space
+  ├─ workers ──────────────── one terminal each, in a worktree of its own
+  │    labels on each: corgi.project, corgi.role, corgi.request, corgi.task,
+  │    corgi.harness, corgi.session, corgi.resume, corgi.pid, corgi.tag,
+  │    corgi.tag.at, corgi.handover, corgi.baseline, herdr.space
+  └─ the terminal panel's shells ── one per folder, opened by the mod:
+       corgi.shell (panel, or tab once moved into a tab), corgi.shell.dir
 
 corgi (target/release/corgi, linked as ~/.local/bin/corgi)
   ├─ what a supervisor runs: spawn, fleet, digest, report, inbox, tag, role
@@ -97,7 +103,7 @@ every item. Code no command reaches fails `cargo clippy -- -D warnings`.
 | `model.rs`, `rows.rs` | `Agent` and `AgentInfo`; an agent's task summary. |
 | `projects.rs`, `choices.rs` | The projects Corgi knows and remembers; the filtered list behind `corgi projects`. |
 | `usage.rs`, `usage_cache.rs` | Plan usage per provider, and the cache every process shares. |
-| `app_layout.rs`, `app_layout/panel.rs`, `herdr_app.rs` | The app's layout with Corgi's sidebar; its Questions panel and the tab bar's button; the `herdr-app` it asks. |
+| `app_layout.rs`, `app_layout/panel.rs`, `herdr_app.rs` | The app's layout with Corgi's sidebar; its Questions and terminal panels and the tab bar's buttons; the `herdr-app` it asks. |
 | `questions.rs` | A supervisor's open questions parsed, and the user's answers from the app: their inbox lines and records. |
 | `draft.rs`, `activity.rs` | Whether an input box holds a draft; redaction, and the folder-trust question. |
 | `backlog.rs`, `job.rs`, `paths.rs`, `progress.rs`, `time.rs`, `version.rs` | A supervisor's `backlog.md`; a background job; the state directory; progress lines; time without a date crate; `corgi --version`. |
@@ -391,6 +397,21 @@ agents; this is what the binary does for them.
 - **Close.** `corgi close NAME --project DIR --json` ends a worker's
   terminal and removes it, then its worktree (`git worktree remove`; the
   branch stays). A dirty worktree is refused once; `--force` discards it.
+  The terminal panel's shells in the worktree are ended before it goes:
+  the mod labels each shell it opens (`corgi.shell`, `corgi.shell.dir`) and
+  keeps no list of its own, so the core, which knows whether a shell still
+  runs, is the one record both the mod (`terminals()`) and `corgi close`
+  (`hc ls --label`) read, also on another machine, and a shell the person
+  ended is gone from it with nothing to tidy.
+- **The terminal panel.** A shell's terminal is part of the layout (a
+  block `{"terminal": "t9"}`), so the mod shows another by rewriting that
+  one block in the layout's file, read just before and written with the
+  app's `writeTextFile` compare-and-swap: a write that another writer (an
+  installer, another mod, the app taking out a finished terminal's block)
+  came between is refused and tried again on the next look, so no one's
+  edit is lost. It writes only on a switch, and only while the panel
+  shows; `layout.set`, which replaces the whole tree from the window's
+  copy, is not used.
 - **Tag.** `corgi tag NAME merge` (a supervisor runs it) marks a resting
   worker with commits ahead of the base, and no open question, ready to
   merge; the list shows MERGE in place of its state. The tag stops applying

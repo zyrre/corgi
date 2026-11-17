@@ -76,6 +76,14 @@ pub const BASELINE_LABEL: &str = "corgi.baseline";
 /// another pid lost it (a core stop, a reboot) and got a shell in its place,
 /// which the daemon gives the [`RESUME_LABEL`] line, once.
 pub const PID_LABEL: &str = "corgi.pid";
+/// A shell the Corgi mod opened for the Herdr app's right-hand terminal
+/// panel: `panel` while the panel shows it (one per folder), `tab` once the
+/// person moved it into a tab. `corgi close` ends those in the worktree it
+/// removes.
+pub const SHELL_LABEL: &str = "corgi.shell";
+pub const SHELL_KINDS: [&str; 2] = ["panel", "tab"];
+/// The folder such a shell was opened for, as the mod named it.
+pub const SHELL_DIR_LABEL: &str = "corgi.shell.dir";
 
 /// An error `hc` reported: `{error: {kind, message, hint}}` on stderr, with
 /// its exit code (3 not found, 9 blocked, 10 status mismatch, 11 finished).

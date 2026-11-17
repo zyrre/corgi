@@ -21,8 +21,10 @@ and takes out the Agents list, which Projects shows too; the brand row at
 the sidebar's top shows Corgi's (\"Herdr + Corgi\") in place of Herdr's.
 Both are views of Corgi's one mod, corgi: a block names its view in its
 props, {\"mod\": \"corgi\", \"props\": {\"view\": \"projects\"}}.
-It also puts Corgi's Questions panel (the view questions) last into the
-layout's right-hand panel stack, panel-body, and a Questions button into
+It also puts Corgi's Questions panel (the view questions) and terminal
+panel (a column corgi-terminal: the view terminal over a shell of the
+focused agent's folder) last into the layout's right-hand panel stack,
+panel-body, and a Questions and a Terminal button into
 its tab bar: Herdr's own tabs mod is cloned to tabs-corgi for it, and a copy
 already there (tabs-gitlab, tabs-jenkins) gets it between marker lines.
 Nothing else in the layout changes, so other mods' changes to it stay. The layout is the one the
@@ -42,8 +44,9 @@ corgi mod's views in place, in each of your layouts.
 
   remove        puts Herdr's Spaces and Agents lists and its brand row back
                 in each of your layouts that shows Corgi's, of its one mod
-                or its old ones (or in NAME), and takes the Questions panel
-                and its button out; no layout is deleted and the window is
+                or its old ones (or in NAME), and takes the Questions and
+                terminal panels and their buttons out (the panel's shells
+                keep running); no layout is deleted and the window is
                 not switched
 
   --layout NAME the layout to change, instead of the one the window shows
@@ -112,12 +115,12 @@ pub fn app_layout_command(args: &[String]) -> Result<()> {
             tab_bar,
             cloned: true,
         }) => message.push_str(&format!(
-            "; the Questions panel is in its right-hand panel, with a Questions button in a \
-             copy of Herdr's tab bar, {tab_bar}"
+            "; the Questions and terminal panels are in its right-hand panel, with their \
+             buttons in a copy of Herdr's tab bar, {tab_bar}"
         )),
         Some(Button::Added { tab_bar, .. }) => message.push_str(&format!(
-            "; the Questions panel is in its right-hand panel, with a Questions button in the \
-             tab bar {tab_bar}"
+            "; the Questions and terminal panels are in its right-hand panel, with their \
+             buttons in the tab bar {tab_bar}"
         )),
         Some(Button::Refused(why)) => message.push_str(&format!("; {why}")),
         Some(Button::Unchanged | Button::NoPanel) | None => {}

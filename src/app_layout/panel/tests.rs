@@ -60,7 +60,7 @@ fn home_with(label: &str, layouts: &[(&str, Value)]) -> ScratchDir {
 
 fn with_panel() -> Value {
     let mut layout = main_layout();
-    assert!(put_questions(&mut layout));
+    assert!(put_panels(&mut layout));
     layout
 }
 
@@ -72,29 +72,84 @@ fn tab_bar_of(home: &Path, name: &str) -> String {
     tab_mod(&read_json(&layout_path(home, name)).unwrap()).unwrap()
 }
 
-#[test]
-fn the_panel_joins_the_stack_once_and_leaves_it_with_its_active_child() {
-    let mut layout = main_layout();
-    assert!(put_questions(&mut layout));
-    assert!(!put_questions(&mut layout), "once");
-    assert_eq!(count_questions(&layout), 1);
-    let stack = find_mut(&mut layout, STACK).unwrap();
-    let last = stack["children"]
-        .as_array()
+/// The ids of the panel stack's children.
+fn stack_ids(layout: &mut Value) -> Vec<String> {
+    stack_children(layout)
         .unwrap()
-        .last()
-        .unwrap()
-        .clone();
-    assert_eq!(last["id"], QUESTIONS_BLOCK);
-    assert_eq!(last["content"]["props"]["view"], QUESTIONS_VIEW);
-    stack["active"] = QUESTIONS_BLOCK.into();
-    assert!(take_questions(&mut layout));
-    assert_eq!(layout, main_layout());
-    assert!(!take_questions(&mut layout));
+        .iter()
+        .map(|child| child["id"].as_str().unwrap().to_string())
+        .collect()
+}
 
-    // No stack: no panel.
+#[test]
+fn the_panels_join_the_stack_once_and_leave_it_with_its_active_child() {
+    let mut layout = main_layout();
+    let before = stack_ids(&mut layout);
+    assert!(put_panels(&mut layout));
+    assert!(!put_panels(&mut layout), "once");
+    assert_eq!((count_questions(&layout), count_terminal(&layout)), (1, 1));
+    assert_eq!(
+        stack_ids(&mut layout),
+        [
+            before.clone(),
+            vec![QUESTIONS_BLOCK.into(), TERMINAL_COLUMN.into()]
+        ]
+        .concat()
+    );
+    let stack = find_mut(&mut layout, STACK).unwrap();
+    let questions = stack["children"][before.len()].clone();
+    assert_eq!(questions["content"]["props"]["view"], QUESTIONS_VIEW);
+    // The terminal panel: a card of a column, its header over the hint.
+    let terminal = stack["children"][before.len() + 1].clone();
+    assert_eq!(terminal["type"], "column");
+    assert_eq!(
+        terminal["children"][0]["content"],
+        json!({ "mod": "corgi", "props": { "view": "terminal" } })
+    );
+    assert_eq!(terminal["children"][0]["size"], json!({ "px": 58 }));
+    assert_eq!(
+        terminal["children"][1]["content"],
+        json!({ "mod": "corgi", "props": { "view": "terminal-hint" } })
+    );
+    stack["active"] = TERMINAL_COLUMN.into();
+    assert!(take_panels(&mut layout));
+    assert_eq!(layout, main_layout());
+    assert!(!take_panels(&mut layout));
+
+    // No stack: no panels.
     let mut bare = json!({ "id": "root", "type": "row", "children": [] });
-    assert!(!put_questions(&mut bare));
+    assert!(!put_panels(&mut bare));
+}
+
+#[test]
+fn a_layout_from_before_the_terminal_gets_it_and_its_shell_or_none_is_still_corgis() {
+    // The Questions panel alone, as an earlier install left it.
+    let mut layout = main_layout();
+    stack_children(&mut layout).unwrap().push(json!({
+        "id": QUESTIONS_BLOCK, "type": "block",
+        "content": { "mod": "corgi", "props": { "view": "questions" } }
+    }));
+    assert!(put_panels(&mut layout));
+    assert_eq!(count_questions(&layout), 1);
+    assert_eq!(count_terminal(&layout), 1);
+    // The mod put a shell into its body; the app took the body out when
+    // the shell ended: the column is the terminal panel either way.
+    let column = find_mut(&mut layout, TERMINAL_COLUMN).unwrap();
+    column["children"][1]["content"] = json!({ "terminal": "t9" });
+    assert!(!put_panels(&mut layout), "not a second one");
+    let column = find_mut(&mut layout, TERMINAL_COLUMN).unwrap();
+    column["children"].as_array_mut().unwrap().pop();
+    assert!(!put_panels(&mut layout));
+    assert!(take_panels(&mut layout));
+    assert_eq!(layout, main_layout());
+
+    // Another column of the stack's is not Corgi's.
+    let mut theirs = main_layout();
+    let other = json!({ "id": "x", "type": "column", "children": [
+        { "id": "x-head", "type": "block", "content": { "mod": "other", "props": { "view": "terminal" } } }
+    ] });
+    stack_children(&mut theirs).unwrap().push(other);
+    assert_eq!(count_terminal(&theirs), 0);
 }
 
 #[test]
@@ -122,7 +177,12 @@ fn herdrs_tab_bar_is_cloned_with_the_button_and_the_layout_names_the_clone() {
         "assets moved"
     );
     assert!(main.contains(&format!("panelButton(\"{QUESTIONS_BLOCK}\", \"Questions\"")));
+    assert!(
+        main.contains("panelButton(\"corgi-terminal\", \"Terminal\", \"mods/corgi/terminal.svg\")")
+    );
     assert!(main.contains("enabled.push(\"corgi-questions\")"));
+    assert!(main.contains("enabled.push(\"corgi-terminal\")"));
+    assert!(main.contains("this.panels[now.id] = \"corgi-terminal\""));
     // The list's line goes before the call, the button before the window buttons.
     let list = main.find(LIST_BEGIN).unwrap();
     assert!(list < main.find(SYNC).unwrap());
@@ -150,9 +210,64 @@ fn herdrs_tab_bar_is_cloned_with_the_button_and_the_layout_names_the_clone() {
     assert_eq!(tab_bar_of(&home, "corgi"), STOCK);
     assert!(!mods.join(CLONE).exists());
     assert_eq!(
-        count_questions(&read_json(&layout_path(&home, "corgi")).unwrap()),
+        count_panels(&read_json(&layout_path(&home, "corgi")).unwrap()),
         0
     );
+}
+
+/// The tab bar's lines as an install from before the terminal panel left
+/// them: the Questions panel's alone.
+const OLD_LIST: &str =
+    "    // >>> Corgi questions panel: corgi app-layout adds the Questions panel to the \
+panels remembered per space; corgi app-layout remove takes it out
+    try { if (find(body, \"corgi-questions\") && !enabled.includes(\"corgi-questions\")) \
+enabled.push(\"corgi-questions\"); } catch (_) {}
+    // <<< Corgi questions panel
+";
+const OLD_BUTTON: &str = "      // >>> Corgi questions button: corgi app-layout puts it here; corgi app-layout \
+remove takes it out
+      .when(Boolean(find(body, \"corgi-questions\")), el => el.child(panelButton(\"corgi-questions\", \
+\"Questions\", \"mods/corgi/question.svg\")))
+      // <<< Corgi questions button
+";
+
+#[test]
+fn an_earlier_installs_lines_are_replaced_in_place_and_the_terminal_button_joins_once() {
+    let mut layout = with_panel();
+    find_mut(&mut layout, TABS_BLOCK).unwrap()["content"]["mod"] = "tabs-gitlab".into();
+    let home = home_with("panel-upgrade", &[("corgi", layout)]);
+    let copy = home.join("mods").join("tabs-gitlab");
+    fs::create_dir_all(&copy).unwrap();
+    let theirs = gitlab_with_jenkins();
+    let old = theirs
+        .replacen(
+            "    // >>> Jenkins panel",
+            &format!("{OLD_LIST}    // >>> Jenkins panel"),
+            1,
+        )
+        .replacen(
+            "      .when(w?.buttons,",
+            &format!("{OLD_BUTTON}      .when(w?.buttons,"),
+            1,
+        );
+    fs::write(copy.join("main.js"), &old).unwrap();
+    assert_eq!(without_button(&old).unwrap(), theirs);
+    assert!(matches!(
+        put_button(&home, "corgi", None, &passes).unwrap(),
+        Button::Added { .. }
+    ));
+    let main = fs::read_to_string(copy.join("main.js")).unwrap();
+    assert_eq!(main.matches(BUTTON_BEGIN).count(), 1);
+    assert_eq!(main.matches("panelButton(\"corgi-terminal\"").count(), 1);
+    assert_eq!(main.matches("panelButton(\"corgi-questions\"").count(), 1);
+    assert_eq!(without_button(&main).unwrap(), theirs);
+    // Again: nothing to do.
+    assert_eq!(
+        put_button(&home, "corgi", None, &passes).unwrap(),
+        Button::Unchanged
+    );
+    restore(&home, None).unwrap();
+    assert_eq!(fs::read_to_string(copy.join("main.js")).unwrap(), theirs);
 }
 
 /// herdr-gitlab's copy of the tab bar with the Jenkins mod's lines in it.
@@ -239,7 +354,7 @@ fn a_tab_bar_that_check_refuses_or_that_is_not_like_herdrs_is_left_alone() {
 
     // A layout without a panel stack gets no button.
     let mut bare = main_layout();
-    take_questions(&mut bare);
+    take_panels(&mut bare);
     let home = home_with("panel-none", &[("bare", bare)]);
     assert_eq!(
         put_button(&home, "bare", None, &passes).unwrap(),

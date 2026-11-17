@@ -33,9 +33,9 @@
 //! Projects list is there, and changes nothing when it is. A layout with no
 //! Spaces or Projects list to put it in is left alone, with why.
 //!
-//! The layout also gets Corgi's Questions panel, in its right-hand panel
-//! stack, and the tab bar a Questions button ([`panel`]); `remove` takes
-//! both out again.
+//! The layout also gets Corgi's Questions and terminal panels, in its
+//! right-hand panel stack, and the tab bar a button for each ([`panel`]);
+//! `remove` takes them out again.
 //!
 //! [`restore`] (`corgi app-layout remove`, which the uninstall runs) puts
 //! Herdr's Spaces and Agents lists back where Corgi's Projects list is, and
@@ -387,7 +387,7 @@ fn put_brand(node: &mut Value) -> bool {
 /// nowhere to put the Projects list; the layout is then unchanged.
 pub fn put_projects(layout: &mut Value) -> Result<Change, String> {
     let change = put_sidebar(layout)?;
-    let added = panel::put_questions(layout);
+    let added = panel::put_panels(layout);
     Ok(match change {
         Change::Unchanged if added => Change::Edited,
         change => change,
@@ -487,8 +487,8 @@ fn insert_after(node: &mut Value, after: &str, block: Value) -> Option<Value> {
 /// block showing Corgi's brand row shows `workspace-chrome` again. Whether
 /// there was anything of Corgi's to take out.
 fn take_projects(layout: &mut Value, agents: impl FnOnce(&Value) -> Value) -> bool {
-    let questions = panel::take_questions(layout);
-    take_sidebar(layout, agents) || questions
+    let panels = panel::take_panels(layout);
+    take_sidebar(layout, agents) || panels
 }
 
 /// [`take_projects`]'s sidebar part.
@@ -717,12 +717,12 @@ fn personal_layouts(home: &Path, wanted: impl Fn(&Value) -> bool) -> Vec<String>
 }
 
 /// The personal layouts in `home` that show Corgi's Projects list, its
-/// brand row or its Questions panel.
+/// brand row or one of its panels.
 fn layouts_with_projects(home: &Path) -> Vec<String> {
     personal_layouts(home, |layout| {
         count_view(layout, View::Projects)
             + count_view(layout, View::Brand)
-            + panel::count_questions(layout)
+            + panel::count_panels(layout)
             > 0
     })
 }

@@ -4,14 +4,17 @@
 //   { "mod": "corgi", "props": { "view": "projects" } }   the Projects list
 //   { "mod": "corgi", "props": { "view": "brand" } }      "Herdr + Corgi" at the sidebar's top
 //   { "mod": "corgi", "props": { "view": "questions" } }  the Questions panel, in the right-hand panel stack
+//   { "mod": "corgi", "props": { "view": "terminal" } }   the terminal panel's header, in that stack
+//   { "mod": "corgi", "props": { "view": "terminal-hint" } }  its body while no shell shows
 //
 // A block with no view shows the Projects list. `corgi app-layout` puts
 // the first two into the sidebar of the layout, in place of Herdr's Spaces
-// and Agents lists and brand row, and the Questions panel into its
-// `panel-body` stack with a button in the tab bar; `corgi app-layout
-// remove` puts Herdr's back and takes the panel out.
+// and Agents lists and brand row, and the Questions and terminal panels
+// into its `panel-body` stack with a button each in the tab bar; `corgi
+// app-layout remove` puts Herdr's back and takes the panels out.
 //
-// Each view is a module of its own (projects.js, brand.js, questions.js) with what they
+// Each view is a module of its own (projects.js, brand.js, questions.js,
+// terminal.js, whose shells shells.js keeps) with what they
 // draw alike in ui.js. What Corgi says (`corgi status`, plan usage, the
 // machines) is read in data.js once for every copy of the mod, however
 // many blocks show it.
@@ -20,8 +23,15 @@ import { theme, props as blockProps } from "herdr";
 import Brand from "./brand.js";
 import Projects from "./projects.js";
 import Questions from "./questions.js";
+import { TerminalHead, TerminalHint } from "./terminal.js";
 
-const VIEWS = new Map([["projects", Projects], ["brand", Brand], ["questions", Questions]]);
+const VIEWS = new Map([
+  ["projects", Projects],
+  ["brand", Brand],
+  ["questions", Questions],
+  ["terminal", TerminalHead],
+  ["terminal-hint", TerminalHint],
+]);
 
 // A view this Corgi does not have (a layout made for a newer one): says so
 // in its block rather than show another view there.
