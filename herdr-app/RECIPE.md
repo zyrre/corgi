@@ -352,7 +352,7 @@ The `projects` view fills its block on `chrome`, text 13 px:
     alone. The worktree's folder name
     (`worktree-calm-forest-4f96`; nothing on the primary checkout) is not
     drawn; it is the row's tooltip. The supervisor is first, then the
-    project's agents by state: blocked, working, done (with `MERGE`), idle,
+    project's agents by state: blocked, working, `MERGE`, done, idle,
     then the rest (paused, exited, in no state); within a state by the
     task, case-insensitive, then by terminal, so a row moves only when its
     state changes. A state missing for a moment (a refresh) keeps the last

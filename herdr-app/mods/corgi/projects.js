@@ -267,11 +267,11 @@ const KEYS = ["Enter opens", "Tab completes", "Esc closes"];
 const STATUS = { working: "working", blocked: "blocked", done: "done", idle: "idle" };
 
 // Where an agent's state puts it among its project's agents, after the
-// supervisor: blocked, working, done, idle, then the rest (paused, exited,
-// in no state). MERGE, a worker done and tagged, stands with done, so
-// tagging one does not move it.
-const PLACES = { blocked: 0, working: 1, done: 2, merge: 2, idle: 3 };
-const LAST_PLACE = 4;
+// supervisor: blocked, working, MERGE (a worker tagged ready to merge, its
+// own place: it waits on the user), done, idle, then the rest (paused,
+// exited, in no state).
+const PLACES = { blocked: 0, working: 1, merge: 2, done: 3, idle: 4 };
+const LAST_PLACE = 5;
 // How long a row keeps its state's place while its state is missing (a
 // refresh of the app's agents or of `corgi status` in between).
 const STATE_KEPT_MS = 10_000;

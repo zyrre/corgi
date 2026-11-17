@@ -917,7 +917,7 @@ async function projects(w, props = {}, module = undefined) {
 }
 
 // Within a project, the supervisor first, then its agents by state:
-// blocked, working, done, idle, then the rest (here one in no state); by
+// blocked, working, MERGE, done, idle, then the rest (here one in no state); by
 // name within a state, case-insensitive, and by terminal when two names
 // are the same. A row moves only when its agent's state changes, and keeps
 // its place while its state is missing for a moment.
@@ -976,6 +976,22 @@ async function projects(w, props = {}, module = undefined) {
   tests.status = 'working';
   assert.deepEqual(listed(), moved, 'and back with its state');
 
+  // Fix the cache is done: among the done, by name.
+  w.agents.find((a) => a.address === 't3').status = 'done';
+  const finished = ['t2', 't4', 't12', 't13', 't10', 't14', 't3', 't11', 't15', 't5', 't7'];
+  assert.deepEqual(listed(), finished);
+  // Tagged ready to merge: MERGE has its own place, between working and
+  // done, so it moves up.
+  const status = structuredClone(STATUS);
+  Object.assign(status.projects[0].agents[0], { tag: 'merge', branch: 'worktree/calm-forest-4f96', state: 'done' });
+  w.programs[1] = corgi({ status });
+  for (const timer of mod.cx.timers.filter((timer) => timer.ms === 5000)) timer.tick(mod.cx);
+  await mod.settle();
+  assert.ok(byId(mod.render(), 'merge-t3'), 'its MERGE mark');
+  const merging = ['t2', 't4', 't12', 't13', 't3', 't10', 't14', 't11', 't15', 't5', 't7'];
+  assert.deepEqual(listed(), merging);
+  assert.deepEqual(w.agentOrder, merging);
+
   // Folded: the supervisor alone, and agent.next and agent.prev skip the rest.
   let root = mod.render();
   click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
@@ -985,8 +1001,8 @@ async function projects(w, props = {}, module = undefined) {
   root = mod.render();
   click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
   click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
-  assert.deepEqual(listed(), moved);
-  assert.deepEqual(w.agentOrder, moved);
+  assert.deepEqual(listed(), merging);
+  assert.deepEqual(w.agentOrder, merging);
 }
 
 // Each project (a repository's space) sits in one rounded area: its row,
