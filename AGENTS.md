@@ -638,6 +638,18 @@ it works; what its choices rest on, seen in the preview (2026-11-16):
   hidden. A Node test of it sets `Date.now`.
 - The header's timer follows the focus every 500 ms while the panel shows;
   hidden, it writes and starts nothing.
+- End shell (`endShell`) ends the shown shell as
+  `corgi close` does: `hc kill`, which answers once the terminal finished
+  (its background jobs end too), then `hc rm`, which refuses a live
+  terminal (`kind: "live"`), so a removal hc refuses that way is tried
+  again, paced by the view's `cx.sleep`. The shell is in `ending` from the
+  click on, which `panelShells` skips, since `terminals()` may list it
+  live a moment longer (else the `>_` mark and a look would bring it
+  back), and the body is given the hint before the kill, so the app has
+  no block of an ending terminal to take out; when that write loses, the
+  app takes the block out and the next look puts it back. It always
+  asks: hc's `foreground` (`hc get`) is the shell itself at its prompt
+  with a background job running, so "idle" cannot be told.
 
 To look at it: `do layout.select --stack panel-body --child
 corgi-terminal` and `do layout.show --id panel` (the button's two
@@ -645,7 +657,11 @@ commands) with an agent focused (`do agent.focus --terminal t2`). The
 switches are reached by a preview-home copy of `projects.js` whose command
 loop calls `shells.js`'s `setKind("root")`, `setFollow(false)`,
 `moveToTab()`, `newShell()` (Open shell and New shell) and `showShellOf("t3")` (each followed by
-`follow()`), under names without a dash (`do corgi.termroot`). A shell's
+`follow()`), under names without a dash (`do corgi.termroot`). End
+shell's card is the header's (`this.askEnd(address, cx)`, `this.end(cx)`,
+`this.confirm = null` for Cancel), which takes no mod command while the
+list's loop has them: the loop `setShared`s the command, and a 100 ms
+timer in a preview-home copy of `terminal.js` acts on it with its own `cx`. A shell's
 address is in `hc ls` on the preview's core (`hcp`, as `sh-<folder>`), and
 `hc send <address> -- '<command>'` runs a command in it. To try `corgi
 close` there, give a fake worker Corgi's labels first (`hc label t2

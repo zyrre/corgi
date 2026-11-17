@@ -16,7 +16,8 @@
 // them with `terminals()`, `corgi close` with `hc ls --label`, both from the
 // one place that knows whether the shell still runs, so a shell the person
 // ended (`exit`) is simply no longer listed, and nothing else needs to be
-// kept in step. A shell moved into a tab is relabelled `corgi.shell=tab`:
+// kept in step. End shell in the header ends one (`endShell`: killed, then
+// removed, as `corgi close` does). A shell moved into a tab is relabelled `corgi.shell=tab`:
 // no longer the panel's, still ended by `corgi close` with its worktree.
 //
 // The panel is a column `corgi-terminal` in the layout's `panel-body` stack
@@ -83,14 +84,19 @@ export const local = (address) => typeof address === "string" && address !== "" 
 
 // Shells started here that `terminals()` does not list yet, by folder.
 const started = new Map();
+// Shells the person ended with End shell (`endShell`), no longer the
+// panel's from the click on, though `terminals()` may list them live for a
+// moment: address -> whether hc removed it (then dropped once unlisted).
+const ending = new Map();
 
 // The panel's live shells on this computer, by folder.
 export function panelShells(list = terminals()) {
   const out = new Map();
   const all = Array.isArray(list) ? list : [];
+  for (const [address, removed] of ending) if (removed && !all.some((t) => t?.address === address)) ending.delete(address);
   for (const t of all) {
     const labels = t?.labels ?? {};
-    if (labels[SHELL_LABEL] !== "panel" || (t.state ?? "live") !== "live" || !local(t.address)) continue;
+    if (labels[SHELL_LABEL] !== "panel" || (t.state ?? "live") !== "live" || !local(t.address) || ending.has(t.address)) continue;
     const dir = labels[DIR_LABEL];
     if (dir && !out.has(dir)) out.set(dir, t.address);
   }
@@ -109,7 +115,7 @@ export const shellIn = (dir) => (dir ? panelShells().get(dir) ?? null : null);
 const removing = new Set();
 export function sweep(list = terminals()) {
   for (const t of Array.isArray(list) ? list : []) {
-    if (!t?.labels?.[SHELL_LABEL] || t.state !== "finished" || !local(t.address) || removing.has(t.address)) continue;
+    if (!t?.labels?.[SHELL_LABEL] || t.state !== "finished" || !local(t.address) || removing.has(t.address) || ending.get(t.address) === false) continue;
     forget(t.address);
   }
 }
@@ -139,11 +145,20 @@ async function loginShell() {
 export const shellName = (dir) => `sh-${dir.replace(/\/+$/, "").split("/").pop()}`.toLowerCase().replace(/[^a-z0-9_-]+/g, "-").slice(0, 32);
 
 // What hc said went wrong, in a line.
-function hcProblem(r) {
+function hcProblem(r, command = "run") {
   try {
     return oneLine(JSON.parse(r.stderr).error.message);
   } catch (_) {
-    return oneLine(r.stderr) || `hc run exited ${r.code}`;
+    return oneLine(r.stderr) || `hc ${command} exited ${r.code}`;
+  }
+}
+
+// The kind of hc's error ("live", "not_found", …), if it said one.
+function hcKind(r) {
+  try {
+    return JSON.parse(r.stderr).error.kind ?? null;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -478,4 +493,47 @@ export async function moveToTab() {
   run("terminal.keep", { terminal: address, place: "tab" });
   run("layout.hide", { id: PANEL });
   return true;
+}
+
+// Ends the shell at `address`, the shown one (End shell, once the person
+// confirmed it): as `corgi close` ends a worktree's shells, its program is
+// ended (`hc kill`, which answers once the terminal finished; whatever runs
+// in it, its background jobs too, stops) and the finished terminal removed
+// (`hc rm`). It stops being the panel's at once, so neither the `>_` mark
+// nor a look shows it meanwhile, and the body shows the hint before the
+// kill, so the app has no block of an ending terminal to take out (when the
+// write loses to another writer it does, and the next look puts the block
+// back). The panel then says "No shell here" with Open shell, and starts
+// none by itself: nothing is asked. `sleep(ms)` (the view's `cx.sleep`)
+// paces the removal while hc still lists it live; without it, or when the
+// removal fails, `sweep` removes the finished terminal. `{ ok, problem }`.
+export async function endShell(address, sleep = null) {
+  if (!local(address)) return { ok: false, problem: "The panel ends this computer's shells only." };
+  ending.set(address, false);
+  for (const [dir, a] of started) if (a === address) started.delete(dir);
+  asked = null;
+  const st = panelState();
+  if (st.address === address) setPanelState({ address: null, ended: null, why: null, note: "none", problem: null });
+  for (let i = 0; i < 3 && !(await putBody(HINT)); i++);
+  const killed = await hc(["kill", address, "--json"]);
+  for (let i = 0; ; i++) {
+    const r = await hc(["rm", address, "--json"]);
+    if (r.code === 0 || hcKind(r) === "not_found") {
+      ending.set(address, true);
+      return { ok: true, problem: null };
+    }
+    // Not ended (hc refused the kill, the core is gone): the panel's
+    // again, and said.
+    if (killed.code !== 0) {
+      ending.delete(address);
+      return { ok: false, problem: `The shell did not end: ${hcProblem(killed, "kill")}` };
+    }
+    if (hcKind(r) === "live" && sleep && i < 20) {
+      await sleep(150);
+      continue;
+    }
+    // Ended: `sweep` removes it once hc lists it finished.
+    ending.set(address, true);
+    return { ok: true, problem: null };
+  }
 }
