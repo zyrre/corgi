@@ -152,7 +152,11 @@ The header, two lines:
   that folder when it shows again;
 - ✕ hides the panel; every shell keeps running.
 - The second line: a `git-branch` (or, for the root, `folder`) icon, the
-  folder's name (its path as the tooltip), the agent's name and its task.
+  folder's name (its path as the tooltip), the agent's name and its task,
+  cut at the right for **End shell** at its end while a shell shows: the
+  mod's `power` icon, 18 px, `muted` (`blocked` under the pointer), with
+  the tooltip "End this shell (asks first)". It is on the second line as
+  the first has no room left at the column's narrowest (280 px).
 
 Each folder keeps its shell, running while another shows: a dev server
 started in one worker's worktree still runs when the panel comes back to
@@ -167,6 +171,16 @@ no shell shows "No shell here" with **Open shell**, and starts nothing;
 an agent whose folder has one shows it. A failed start says why, with
 Open shell to try again. One the person ends (`exit`) is dropped; the
 panel says "The shell in <folder> ended." with a **New shell** button.
+**End shell** asks first, in a card that takes the header's place
+("End this shell? Anything running in it stops.", **Cancel** and **End**
+in `blocked`, as the Jenkins panel asks before an abort). It always asks:
+herdr-core names the shell as its foreground program while it waits at
+its prompt, also when a job it started in the background (`npm run dev
+&`) runs, and the kill ends those too. End ends the shell as `corgi
+close` does (`hc kill`, then `hc rm`): it is gone from hc, its card's
+`>_` mark goes, and the panel, still open, says "No shell here" with
+Open shell, and starts none by itself; other folders' shells run on. A
+shell hc does not end is said in the card, with Dismiss, and shows again.
 The panel stays in the space it was opened in: the tab bar remembers it
 per space, as Files and Changes, so another space shows its own panel,
 or none, and the terminal panel and its shell are there again on coming

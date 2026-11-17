@@ -236,6 +236,11 @@ async function start(w, props = {}, module = `copy-${copies++}`) {
     spawn(task) {
       tasks.push(Promise.resolve(task(cx)));
     },
+    // The AsyncContext's pause: none here, counted.
+    slept: 0,
+    sleep: async () => {
+      cx.slept += 1;
+    },
     timer: {
       every: (ms, tick) => cx.timers.push({ ms, tick }),
       after: (_ms, tick) => tasks.push(Promise.resolve().then(() => tick(cx))),
@@ -2819,9 +2824,20 @@ function terminalWindow({ shown = true, body = { mod: 'corgi', props: { view: 't
       t.labels[k] = v;
       return { stdout: JSON.stringify(t) };
     }
+    // As hc's: a kill answers once the terminal finished; a live one is
+    // not removed, a gone one is not found.
+    const gone = () => ({ code: 3, stderr: JSON.stringify({ error: { kind: 'not_found', message: `no terminal "${args[1]}"` } }) });
+    if (args[0] === 'kill') {
+      const t = w.terminals.find((x) => x.address === args[1]);
+      if (!t) return gone();
+      t.state = 'finished';
+      return { stdout: JSON.stringify(t) };
+    }
     if (args[0] === 'rm') {
+      const t = w.terminals.find((x) => x.address === args[1]);
+      if (t?.state === 'live') return { code: 1, stderr: JSON.stringify({ error: { kind: 'live', message: `${args[1]} is still running` } }) };
       w.terminals = w.terminals.filter((x) => x.address !== args[1]);
-      return { stdout: '{}' };
+      return { stdout: JSON.stringify({ removed: args[1] }) };
     }
     return undefined;
   });
@@ -3256,6 +3272,172 @@ async function terminalPanel(w, module) {
   assert.deepEqual(bodyNow(w), { terminal: 't40' }, 'that shell, no new one');
   assert.equal(runs(w).length, 0);
   assert.deepEqual(kept(byId(list.render(), 'shell-t3')).calls.border_color, ['#accent'], 'lit while the panel shows it');
+}
+
+// End shell: asks first, in a card in the header's place; Cancel keeps
+// the shell; End ends it (hc kill, then hc rm, as corgi close does): gone
+// from hc, no longer tracked, its `>_` mark gone, the panel on the hint
+// with Open shell and no shell started by itself, and another folder's
+// shell left running.
+{
+  const w = terminalWindow();
+  const { list, head } = await terminalPanel(w, 'terminal-endshell');
+  const shells = await import(new URL('../herdr-app/mods/corgi/shells.js?module=terminal-endshell', import.meta.url));
+  const calm = `${TREES}/worktree-calm-forest-4f96`;
+  const sunny = `${TREES}/worktree-sunny-field-529d`;
+  focus(w, 't3');
+  await head.tick(500);
+  assert.equal(byId(head.render(), 'terminal-end'), null, 'no shell shows: no End shell');
+  shells.newShell();
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  // Another folder's shell, running a loop.
+  w.terminals.push({ address: 't40', state: 'live', labels: { 'corgi.shell': 'panel', 'corgi.shell.dir': sunny } });
+  await list.tick(1000);
+  assert.ok(byId(list.render(), 'shell-t3'), 'the mark, before');
+  const ends = () => w.hcs.filter((a) => a[0] === 'kill' || a[0] === 'rm');
+
+  // Asked first.
+  click(head.render(), 'terminal-end', head.cx);
+  assert.deepEqual(texts(byId(head.render(), 'terminal-confirm')), ['End this shell? Anything running in it stops.', 'Cancel', 'End']);
+  assert.equal(byId(head.render(), 'terminal-hide'), null, 'the card takes the header');
+  assert.deepEqual(ends(), [], 'nothing ended while it asks');
+  // Cancel keeps it.
+  click(head.render(), 'terminal-end-no', head.cx);
+  await head.settle();
+  assert.equal(byId(head.render(), 'terminal-confirm'), null);
+  assert.ok(byId(head.render(), 'terminal-end'));
+  assert.deepEqual(ends(), []);
+  assert.equal(w.terminals.find((t) => t.address === 't20').state, 'live');
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+
+  // The panel moves on to another agent's shell while it asks: dropped.
+  click(head.render(), 'terminal-end', head.cx);
+  focus(w, 't5');
+  w.agents.push(agent('sp-sunny', 't5', 'working', '✳ Write the docs'));
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't40' });
+  assert.equal(byId(head.render(), 'terminal-confirm'), null, 'not asked about this one');
+  focus(w, 't3');
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+
+  // End. The body shows the hint before the kill, so the app has no
+  // block of an ending terminal to take out.
+  let bodyAtKill = null;
+  w.hcPrograms.unshift((args) => {
+    if (args[0] === 'kill') bodyAtKill = bodyNow(w);
+    return undefined;
+  });
+  click(head.render(), 'terminal-end', head.cx);
+  click(head.render(), 'terminal-end-yes', head.cx);
+  await head.settle();
+  assert.deepEqual(ends(), [['kill', 't20', '--json'], ['rm', 't20', '--json']], 'killed, then removed');
+  assert.deepEqual(bodyAtKill, { mod: 'corgi', props: { view: 'terminal-hint' } });
+  assert.equal(w.terminals.some((t) => t.address === 't20'), false, 'gone from hc, not left finished');
+  assert.equal(byId(head.render(), 'terminal-confirm'), null);
+  assert.equal(byId(head.render(), 'terminal-end'), null);
+  assert.equal(w.shared['corgi.terminal'].address, null);
+  assert.equal(w.shared['corgi.terminal'].note, 'none', 'not "ended": the person asked for it');
+  assert.equal(shells.shellIn(calm), null, 'no longer tracked');
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } });
+  await list.tick(1000);
+  assert.equal(byId(list.render(), 'shell-t3'), null, 'the mark is gone');
+  const hint = await start(w, { view: 'terminal-hint' }, 'terminal-endshell');
+  assert.deepEqual(texts(hint.render()), ['No shell here', 'Open shell']);
+  // No new shell by itself, also after the panel was hidden and opened.
+  for (let i = 0; i < 3; i++) await head.tick(500);
+  assert.equal(runs(w).length, 1);
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } });
+  // The other folder's shell runs on, still tracked.
+  assert.equal(w.terminals.find((t) => t.address === 't40').state, 'live');
+  assert.equal(shells.shellIn(sunny), 't40');
+  // Open shell: a fresh one.
+  click(hint.render(), 'terminal-open', hint.cx);
+  await hint.settle();
+  assert.equal(runs(w).length, 2);
+  assert.deepEqual(bodyNow(w), { terminal: 't21' });
+  assert.equal(w.shared['corgi.terminal'].note, null);
+}
+
+// End shell while the app is behind: hc lists the shell live for a moment
+// after the kill (its removal is tried again, paced), and the hint's write
+// loses to other writers, so the app takes the block out when the shell
+// ends: it is put back with the hint, no problem said and no shell started.
+{
+  const w = terminalWindow();
+  const { list, head } = await terminalPanel(w, 'terminal-endshell-late');
+  const shells = await import(new URL('../herdr-app/mods/corgi/shells.js?module=terminal-endshell-late', import.meta.url));
+  focus(w, 't3');
+  await head.tick(500);
+  shells.newShell();
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  // The kill lands two removals later; until then hc says it is live.
+  let late = 2;
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  w.hcPrograms.unshift((args) => {
+    if (args[0] === 'kill') return held.then(() => ({ stdout: '{}' }));
+    if (args[0] === 'rm' && args[1] === 't20' && late-- > 0) return { code: 1, stderr: JSON.stringify({ error: { kind: 'live', message: 't20 is still running' } }) };
+    if (args[0] === 'rm' && args[1] === 't20') w.terminals = w.terminals.filter((t) => t.address !== 't20');
+    return undefined;
+  });
+  // Other writers win every write of the hint.
+  const write = w.api.writeTextFile;
+  let losing = true;
+  w.api.writeTextFile = async (path, text, expected) => {
+    if (losing && path === TERMINAL_LAYOUT) throw new Error(`${path}: stale snapshot`);
+    return write(path, text, expected);
+  };
+  click(head.render(), 'terminal-end', head.cx);
+  click(head.render(), 'terminal-end-yes', head.cx);
+  // While the kill is under way: no longer the panel's, though hc lists it live.
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(w.terminals.find((t) => t.address === 't20').state, 'live');
+  assert.equal(shells.shellIn(`${TREES}/worktree-calm-forest-4f96`), null);
+  await list.tick(1000);
+  assert.equal(byId(list.render(), 'shell-t3'), null, 'the mark goes at once');
+  assert.ok(texts(byId(head.render(), 'terminal-confirm')).includes('Ending…'));
+  // The shell ends; the app takes its block out of the file.
+  losing = false;
+  const file = JSON.parse(w.files[TERMINAL_LAYOUT]);
+  file.children[1].children[0].children[2].children.pop();
+  w.files[TERMINAL_LAYOUT] = JSON.stringify(file);
+  w.terminals.find((t) => t.address === 't20').state = 'finished';
+  release();
+  await head.settle();
+  assert.equal(head.cx.slept, 2, 'paced between removals');
+  assert.equal(w.terminals.some((t) => t.address === 't20'), false);
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } }, 'put back, with the hint');
+  assert.equal(w.shared['corgi.terminal'].note, 'none');
+  assert.equal(w.shared['corgi.terminal'].problem, null);
+  assert.equal(byId(head.render(), 'terminal-confirm'), null);
+  await head.tick(500);
+  assert.equal(runs(w).length, 1, 'no shell started');
+}
+
+// End shell that hc refuses (its core is gone): said in the card, and the
+// shell shows again, still tracked.
+{
+  const w = terminalWindow();
+  const { head } = await terminalPanel(w, 'terminal-endshell-refused');
+  const shells = await import(new URL('../herdr-app/mods/corgi/shells.js?module=terminal-endshell-refused', import.meta.url));
+  focus(w, 't3');
+  await head.tick(500);
+  shells.newShell();
+  await head.tick(500);
+  w.hcPrograms.unshift((args) => (args[0] === 'kill' ? { code: 1, stderr: JSON.stringify({ error: { kind: 'io', message: 'core is gone' } }) } : undefined));
+  click(head.render(), 'terminal-end', head.cx);
+  click(head.render(), 'terminal-end-yes', head.cx);
+  await head.settle();
+  assert.deepEqual(texts(byId(head.render(), 'terminal-confirm')), ['The shell did not end: core is gone', 'Dismiss']);
+  assert.equal(w.terminals.find((t) => t.address === 't20').state, 'live');
+  assert.deepEqual(bodyNow(w), { terminal: 't20' }, 'shown again');
+  assert.equal(shells.shellIn(`${TREES}/worktree-calm-forest-4f96`), 't20');
+  click(head.render(), 'terminal-end-dismiss', head.cx);
+  assert.ok(byId(head.render(), 'terminal-end'));
+  assert.equal(runs(w).length, 1);
 }
 
 console.log('app mods: ok');
