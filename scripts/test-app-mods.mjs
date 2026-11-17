@@ -2842,21 +2842,33 @@ async function terminalPanel(w, module) {
   return { list, head };
 }
 
-// Follows focus: the focused agent's folder gets a shell of its own, started
-// once, in the person's login shell, put into the panel's body; another
-// agent's folder another; back, the first one again.
+// No shell starts by itself (decision 2026-11-17): the focused agent's
+// folder with none shows "No shell here" and Open shell; Open shell starts
+// one, in the person's login shell, put into the panel's body; another
+// agent's folder shows the same until asked; back, the first one again.
 {
   const w = terminalWindow();
   const { head } = await terminalPanel(w, 'terminal-follow');
   const calm = `${TREES}/worktree-calm-forest-4f96`;
   focus(w, 't3');
   await head.tick(500);
+  await head.tick(500);
+  assert.equal(runs(w).length, 0, 'none on focus');
+  assert.equal(w.shared['corgi.terminal'].note, 'none');
+  assert.equal(w.shared['corgi.terminal'].dir, calm);
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } });
+  const hint = await start(w, { view: 'terminal-hint' }, 'terminal-follow');
+  assert.deepEqual(texts(hint.render()), ['No shell here', 'Open shell']);
+  assert.equal(byId(hint.render(), 'terminal-new'), null);
+  click(hint.render(), 'terminal-open', hint.cx);
+  await hint.settle();
   assert.deepEqual(runs(w), [[
     'run', '--bg', '--keep', '--json', '--no-parent', '--no-notify', '--name', 'sh-worktree-calm-forest-4f96',
     '--cwd', calm, '--label', 'corgi.shell=panel', '--label', `corgi.shell.dir=${calm}`, '--', '/bin/zsh', '-l',
   ]]);
   assert.deepEqual(bodyNow(w), { terminal: 't20' });
   assert.equal(w.shared['corgi.terminal'].dir, calm);
+  assert.equal(w.shared['corgi.terminal'].note, null);
   // Only the body block changed in the file.
   const written = JSON.parse(w.files[TERMINAL_LAYOUT]);
   assert.deepEqual(written.children[1].children[0].children.map((c) => c.id), ['files', 'other', 'corgi-terminal']);
@@ -2866,9 +2878,15 @@ async function terminalPanel(w, module) {
   await head.tick(500);
   assert.equal(w.writes.length, writes);
   assert.equal(runs(w).length, 1);
-  // The supervisor: its folder is the project root.
+  // The supervisor: its folder, the project root, has no shell: the hint again.
   focus(w, 't2');
   await head.tick(500);
+  assert.equal(runs(w).length, 1, 'none on focus');
+  assert.equal(w.shared['corgi.terminal'].dir, REPO);
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } });
+  assert.deepEqual(texts(hint.render()), ['No shell here', 'Open shell']);
+  click(hint.render(), 'terminal-open', hint.cx);
+  await hint.settle();
   assert.equal(runs(w).length, 2);
   assert.equal(runs(w)[1][runs(w)[1].indexOf('--cwd') + 1], REPO);
   assert.deepEqual(bodyNow(w), { terminal: 't21' });
@@ -2909,6 +2927,145 @@ async function terminalPanel(w, module) {
   click(head.render(), 'terminal-pin', head.cx);
   await head.settle();
   assert.deepEqual(bodyNow(w), { terminal: 't21' }, 'follows again');
+  // An agent started by hand in another checkout, with no shell: the hint,
+  // and following on to it starts nothing.
+  w.panes.find((p) => p.terminal === 't7').cwd = `${HOME}/notes`;
+  focus(w, 't7');
+  await head.tick(500);
+  assert.equal(runs(w).length, 2);
+  assert.equal(w.shared['corgi.terminal'].note, 'none');
+}
+
+// The Worktree | Project root switch is an ask: the other folder, without a
+// shell, gets one; with one, it shows it. The same kind again asks nothing.
+{
+  const w = terminalWindow();
+  const { head } = await terminalPanel(w, 'terminal-switch');
+  focus(w, 't3');
+  await head.tick(500);
+  assert.equal(runs(w).length, 0);
+  click(head.render(), 'terminal-worktree', head.cx);
+  await head.settle();
+  assert.equal(runs(w).length, 0, 'the kind it shows already: no ask');
+  click(head.render(), 'terminal-root', head.cx);
+  await head.settle();
+  assert.equal(runs(w).length, 1);
+  assert.equal(runs(w)[0][runs(w)[0].indexOf('--cwd') + 1], REPO);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  // Back to the worktree, which has none: the switch asks for it too.
+  click(head.render(), 'terminal-worktree', head.cx);
+  await head.settle();
+  assert.equal(runs(w).length, 2);
+  assert.deepEqual(bodyNow(w), { terminal: 't21' });
+  // Taken by that look: a later focus on a folder without one starts none.
+  w.panes.find((p) => p.terminal === 't7').cwd = `${HOME}/notes`;
+  focus(w, 't7');
+  await head.tick(500);
+  assert.equal(runs(w).length, 2);
+  // A start that fails says why, and stays said, with Open shell to try again.
+  w.hcPrograms.unshift((args) => (args[0] === 'run' ? { code: 1, stderr: JSON.stringify({ error: { message: 'core is gone' } }) } : undefined));
+  const hint = await start(w, { view: 'terminal-hint' }, 'terminal-switch');
+  click(hint.render(), 'terminal-open', hint.cx);
+  await hint.settle();
+  assert.equal(w.shared['corgi.terminal'].note, 'problem');
+  await head.tick(500);
+  assert.equal(w.shared['corgi.terminal'].note, 'problem', 'still said');
+  assert.deepEqual(texts(hint.render()), ['core is gone', 'Open shell']);
+  const tries = runs(w).length;
+  await head.tick(500);
+  assert.equal(runs(w).length, tries, 'not tried again by itself');
+  w.hcPrograms.shift();
+  click(hint.render(), 'terminal-open', hint.cx);
+  await hint.settle();
+  assert.equal(w.shared['corgi.terminal'].note, null);
+  assert.equal(runs(w).length, tries + 1);
+}
+
+// The Terminal button: the panel shown in the space it was hidden in (for
+// a while) is the person opening it, which asks for a shell. A space the
+// window moves to, whose panel the tab bar restores (the terminal panel
+// where it was opened, or another panel or none elsewhere), asks nothing,
+// even when the panel is seen hidden there for a moment first.
+{
+  const realNow = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => clock;
+  try {
+    const w = terminalWindow({ shown: false });
+    const { list, head } = await terminalPanel(w, 'terminal-open');
+    const active = (id) => w.spaces.forEach((s) => { s.active = s.id === id; });
+    // w-docs, in its worktree's space.
+    w.agents.push(agent('sp-sunny', 't5', 'working', '✳ Write the docs'));
+    const both = async () => {
+      clock += 250;
+      await list.tick(250);
+      clock += 250;
+      await head.tick(500);
+    };
+    active('sp-calm');
+    focus(w, 't3');
+    await both();
+    await both();
+    // Shown with the Files panel: not the terminal panel, nothing.
+    w.view = { hidden: false, active: 'files' };
+    await both();
+    assert.equal(runs(w).length, 0);
+    assert.equal(w.writes.length, 0, 'hidden, nothing written');
+    // The Terminal button.
+    w.view.active = 'corgi-terminal';
+    await both();
+    assert.equal(runs(w).length, 1, 'opened: a shell');
+    assert.deepEqual(bodyNow(w), { terminal: 't20' });
+    await both();
+    assert.equal(runs(w).length, 1, 'asked once');
+
+    // To the supervisor's space: the tab bar restores its own panel there
+    // (none): hidden, nothing starts.
+    active('sp-weather');
+    focus(w, 't2');
+    w.view.hidden = true;
+    await both();
+    await both();
+    assert.equal(runs(w).length, 1);
+    // To a space where the terminal panel was open before: the tab bar
+    // shows it again, after a moment hidden. Not an opening.
+    active('sp-sunny');
+    focus(w, 't5');
+    clock += 30;
+    await list.tick(250);
+    w.view.hidden = false;
+    await both();
+    await both();
+    assert.equal(runs(w).length, 1, 'restored: no shell started');
+    assert.equal(w.shared['corgi.terminal'].note, 'none');
+    assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } });
+    // Back in the first space: its shell is still there.
+    active('sp-calm');
+    focus(w, 't3');
+    await both();
+    assert.deepEqual(bodyNow(w), { terminal: 't20' });
+    assert.equal(runs(w).length, 1);
+    // A moment hidden in the same space is no opening either.
+    w.view.hidden = true;
+    focus(w, 't4');
+    clock += 30;
+    await list.tick(250);
+    w.panes.find((p) => p.terminal === 't4').cwd = `${HOME}/scratch`;
+    w.view.hidden = false;
+    await both();
+    assert.equal(runs(w).length, 1);
+    assert.equal(w.shared['corgi.terminal'].note, 'none');
+    // Hidden for a while, then the button: an opening again.
+    w.view.hidden = true;
+    await both();
+    await both();
+    w.view.hidden = false;
+    await both();
+    assert.equal(runs(w).length, 2);
+    assert.equal(runs(w)[1][runs(w)[1].indexOf('--cwd') + 1], `${HOME}/scratch`);
+  } finally {
+    Date.now = realNow;
+  }
 }
 
 // Folders: Corgi's worktree for its worker, git's checkout for an agent
@@ -2973,19 +3130,18 @@ async function terminalPanel(w, module) {
 }
 
 // Only while the panel shows: hidden, or another child of the stack shown,
-// it starts and writes nothing.
+// it starts and writes nothing, Open shell clicked before included.
 {
   const w = terminalWindow({ shown: false });
   const { head } = await terminalPanel(w, 'terminal-hidden');
   focus(w, 't3');
   await head.tick(500);
   w.view = { hidden: false, active: 'files' };
+  const shells = await import(new URL('../herdr-app/mods/corgi/shells.js?module=terminal-hidden', import.meta.url));
+  shells.ask();
   await head.tick(500);
   assert.equal(runs(w).length, 0);
   assert.equal(w.writes.length, 0);
-  w.view.active = 'corgi-terminal';
-  await head.tick(500);
-  assert.equal(runs(w).length, 1);
 }
 
 // The body block put back after the app took it out, and a write that
@@ -2994,6 +3150,7 @@ async function terminalPanel(w, module) {
 {
   const w = terminalWindow({ body: null });
   const { head } = await terminalPanel(w, 'terminal-put-back');
+  w.terminals.push({ address: 't20', state: 'live', labels: { 'corgi.shell': 'panel', 'corgi.shell.dir': `${TREES}/worktree-calm-forest-4f96` } });
   focus(w, 't3');
   const read = w.api.readTextFile;
   let raced = false;
@@ -3024,6 +3181,10 @@ async function terminalPanel(w, module) {
   const { head } = await terminalPanel(w, 'terminal-end');
   focus(w, 't3');
   await head.tick(500);
+  const shells = await import(new URL('../herdr-app/mods/corgi/shells.js?module=terminal-end', import.meta.url));
+  shells.newShell();
+  await head.tick(500);
+  assert.equal(runs(w).length, 1);
   w.terminals.find((t) => t.address === 't20').state = 'finished';
   // The app took the block out of the file.
   const file = JSON.parse(w.files[TERMINAL_LAYOUT]);
@@ -3035,7 +3196,7 @@ async function terminalPanel(w, module) {
   assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } }, 'put back, with the hint');
   assert.ok(w.hcs.some((a) => a[0] === 'rm' && a[1] === 't20'));
   const hint = await start(w, { view: 'terminal-hint' }, 'terminal-end');
-  assert.ok(texts(hint.render()).includes('The shell in worktree-calm-forest-4f96 ended.'));
+  assert.deepEqual(texts(hint.render()), ['The shell in worktree-calm-forest-4f96 ended.', 'New shell']);
   click(hint.render(), 'terminal-new', hint.cx);
   await hint.settle();
   assert.equal(runs(w).length, 2);
@@ -3051,12 +3212,17 @@ async function terminalPanel(w, module) {
   // Shown again: no shell starts by itself where one moved away.
   await head.tick(500);
   assert.equal(runs(w).length, 2);
-  // Another folder, then back: a new one.
+  // Another folder, then back: none starts by itself; Open shell, offered
+  // again there, starts one.
   focus(w, 't2');
   await head.tick(500);
   focus(w, 't3');
   await head.tick(500);
-  assert.equal(runs(w).length, 4);
+  assert.equal(runs(w).length, 2);
+  assert.equal(w.shared['corgi.terminal'].note, 'none');
+  click(hint.render(), 'terminal-open', hint.cx);
+  await hint.settle();
+  assert.equal(runs(w).length, 3);
 }
 
 // The `>_` mark: on a card whose folder has a shell, also at 190 px; a click

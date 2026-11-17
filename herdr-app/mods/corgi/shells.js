@@ -5,6 +5,11 @@
 //
 // One shell per folder, kept running while another shows: a dev server in
 // one agent's worktree is still running when the panel comes back to it.
+// A shell starts only when the person asks for one (decision 2026-11-17,
+// "The terminal panel stays in the space it was opened in and never starts
+// shells by itself"): see `ask` and `watch` below. Focusing an agent shows
+// its folder's shell when it has one, else says there is none, with Open
+// shell.
 // A shell is a hidden terminal on herdr-core, `hc run --bg --keep` in the
 // folder with the person's login shell, labelled `corgi.shell=panel` and
 // `corgi.shell.dir=<folder>`. Those labels are the tracking: the mod reads
@@ -28,7 +33,7 @@
 // panel shows and its size (those are kept apart, by id). The app takes a
 // terminal's block out of the file when its terminal ends; the next write
 // puts it back.
-import { hc, exec, run, layout, terminals, agents, panes, focused, shared, setShared, appHome, readTextFile, writeTextFile } from "herdr";
+import { hc, exec, run, layout, terminals, agents, panes, focused, spaces, shared, setShared, appHome, readTextFile, writeTextFile } from "herdr";
 import { find, oneLine } from "./ui.js";
 import { store } from "./data.js";
 
@@ -54,8 +59,9 @@ const BODY_PADDING = [6, 10];
 //   ended     a folder whose shell the person ended or moved to a tab (`why`:
 //             "ended", "moved"): no new one starts there until asked, or until
 //             the panel goes to another folder
-//   note      while no shell shows, why: "none", "remote", "starting",
-//             "ended", "moved", "problem" (with `problem`)
+//   note      while no shell shows, why: "none" (no agent, or no shell in
+//             its folder: `dir` says which), "remote", "starting", "ended",
+//             "moved", "problem" (with `problem`)
 export function panelState() {
   const st = shared(STATE);
   return { kind: "worktree", follow: true, ...(st && typeof st === "object" ? st : {}) };
@@ -282,6 +288,56 @@ async function writeBody(content) {
   }
 }
 
+// --- what the person asks for ---------------------------------------------------------
+
+// A shell starts in the shown folder only on the person's word: the
+// Terminal button opening the panel, Open shell or New shell in its body,
+// the Worktree | Project root switch. Focusing an agent starts none, nor
+// does a space the window moves to whose panel the tab bar restores.
+//
+// `asked`: the next look starts a shell in its folder when it has none
+// (and the folder's last shell was not ended or moved away), in the space
+// it was asked in. Taken by that look, dropped when the space changes or
+// the panel hides.
+let asked = null;
+// The panel as last watched: the space, and the times it was first and
+// last seen hidden there.
+let seen = null;
+// How long the panel must have been seen hidden in a space for its showing
+// there to be the person's opening. Moving to a space whose panel the tab
+// bar restores hides it for a frame or two at most, seen once at most.
+export const STEADY_MS = 400;
+
+function activeSpace() {
+  const all = spaces();
+  return (Array.isArray(all) ? all.find((s) => s?.active)?.id : null) ?? focused()?.space ?? null;
+}
+
+// The person asked for a shell in the folder the panel shows.
+export function ask() {
+  asked = { space: activeSpace() };
+}
+
+// One look at whether the panel shows, from every copy's timer (the
+// Projects list's runs while the panel is hidden): shown again in the
+// same space after being seen hidden there for a while, the person opened
+// it (the Terminal button, or the panel's own column chosen in the stack),
+// and that asks for a shell.
+export function watch(tree = layout(), now = Date.now()) {
+  const space = activeSpace();
+  const shows = panelShows(tree);
+  if (!seen || seen.space !== space) seen = { space, from: null, last: null };
+  if (asked && asked.space !== space) asked = null;
+  if (shows) {
+    if (seen.from !== null && seen.last - seen.from >= STEADY_MS) asked = { space };
+    seen.from = seen.last = null;
+  } else {
+    seen.from ??= now;
+    seen.last = now;
+    asked = null;
+  }
+}
+
 // --- following ------------------------------------------------------------------------------
 
 // Which agent the panel is for: the pinned one; else the focused terminal
@@ -295,10 +351,12 @@ export function targetOf(st, f = focused(), listed = agents()) {
 }
 
 // One look: while the panel shows, the shell of the folder it is for, put
-// into its body, started first when the folder has none. Every copy's
-// timer calls it; one look runs at a time.
+// into its body; when the folder has none, the hint saying so, or a new
+// shell when the person asked for one (`ask`). Every copy's timer calls
+// it; one look runs at a time.
 let looking = false;
 export async function follow() {
+  watch();
   if (looking) return;
   looking = true;
   try {
@@ -322,6 +380,9 @@ async function look() {
   // A switch while git answered: the next look is for it.
   const now = panelState();
   if (now.kind !== st.kind || now.follow !== st.follow || (!now.follow && now.agent !== st.agent)) return;
+  // The person's ask, taken by this look (a later one is the next look's).
+  const wanted = asked !== null;
+  asked = null;
   let { ended = null, why = null } = st;
   if (dir !== st.dir) {
     ended = null;
@@ -330,7 +391,7 @@ async function look() {
   const shells = panelShells();
   let address = dir ? shells.get(dir) ?? null : null;
   // The shell it showed there is gone, and not by a move to a tab: the
-  // person ended it. It is dropped; a new one starts when asked.
+  // person ended it. It is dropped; a new one starts when asked (New shell).
   if (dir && st.dir === dir && st.address && !address && !ended && ![...shells.values()].includes(st.address)) {
     forget(st.address);
     ended = dir;
@@ -341,6 +402,11 @@ async function look() {
   if (!agent || (!dir && !remote)) note = "none";
   else if (remote) note = "remote";
   else if (!address && ended === dir) note = why;
+  else if (!address && !wanted && st.note === "problem" && st.dir === dir) {
+    // The start that failed there stays said until asked again.
+    note = "problem";
+    problem = st.problem;
+  } else if (!address && !wanted) note = "none";
   else if (!address) {
     setPanelState({ agent, home, dir, address: null, ended, why, note: "starting", problem: null });
     try {
@@ -373,14 +439,19 @@ export function showShellOf(address) {
   showPanel();
 }
 
-// A new shell where the person ended (or moved away) the last one.
+// A shell in the shown folder, which has none: Open shell, or New shell
+// where the person ended (or moved away) the last one.
 export function newShell() {
   setPanelState({ ended: null, why: null });
+  ask();
 }
 
-// The kind of folder ("worktree", "root"), or follow or pin.
+// The kind of folder ("worktree", "root"): a shell starts in the other
+// folder when it has none, the switch being the person's ask. Or follow or pin.
 export function setKind(kind) {
+  if (panelState().kind === kind) return;
   setPanelState({ kind, ended: null, why: null });
+  ask();
 }
 export function setFollow(on) {
   setPanelState({ follow: on });

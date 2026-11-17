@@ -142,7 +142,7 @@ The header, two lines:
   common directory). Each folder has a shell of its own;
 - **Follows focus** (the `pin-off` icon) or **Pinned** (`pin`, in
   `accent`, outlined in it): following, the panel shows the focused
-  agent's shell, and keeps the last one while focus is on a terminal that
+  agent's shell (or, without one, "No shell here" and Open shell), and keeps the last one while focus is on a terminal that
   is no agent's (the panel's own shell, a shell of the person's) or a mod;
   pinned, it keeps the agent it shows. Narrower than 340 px, the label
   goes and the icon stays;
@@ -157,13 +157,21 @@ The header, two lines:
 Each folder keeps its shell, running while another shows: a dev server
 started in one worker's worktree still runs when the panel comes back to
 it, and closing and opening the panel keeps them all. A shell is the
-person's login shell (`$SHELL -l`), started hidden on herdr-core the
-first time the panel shows a folder. One the person ends (`exit`) is
-dropped; the panel says "The shell in <folder> ended." with a **New
-shell** button, and starts one by itself again only for another folder.
-The panel follows the focused agent from space to space: while it shows,
-a space the window moves to shows it too (the tab bar otherwise restores
-each space's own panel). It opens shells for this computer's agents only;
+person's login shell (`$SHELL -l`), started hidden on herdr-core, and
+only when the person asks for one (decision 2026-11-17, "The terminal
+panel stays in the space it was opened in and never starts shells by
+itself"): the Terminal button opening the panel (on the focused agent's
+folder), **Open shell** in its body, the Worktree | Project root switch
+(on the other folder), **New shell**. Focusing an agent whose folder has
+no shell shows "No shell here" with **Open shell**, and starts nothing;
+an agent whose folder has one shows it. A failed start says why, with
+Open shell to try again. One the person ends (`exit`) is dropped; the
+panel says "The shell in <folder> ended." with a **New shell** button.
+The panel stays in the space it was opened in: the tab bar remembers it
+per space, as Files and Changes, so another space shows its own panel,
+or none, and the terminal panel and its shell are there again on coming
+back. A space the window moves to whose panel is the terminal panel
+starts no shell either. It opens shells for this computer's agents only;
 another machine's agent gets a line saying so.
 
 A card whose folder has a shell ends its first line with a `>_` mark (18
@@ -781,10 +789,9 @@ The `projects` view fills its block on `chrome`, text 13 px:
   questions …` marker lines: just before the tab bar's `this.syncPanel(…)`
   call (and before any comment lines just above it, such as another
   installer's markers) lines add `corgi-questions` and `corgi-terminal` to
-  the panels it remembers per space, while the stack has them, and, while
-  the terminal panel shows and the window moves to another space, make it
-  that space's choice before the call restores the space's own (it reads
-  the call's `this.space` and `this.panels`, in a `try`); and just before
+  the panels it remembers per space, while the stack has them (an install
+  of 2026-11-16 also made the terminal panel the choice of every space
+  the window moved to; a reinstall's new lines leave that out); and just before
   the window buttons (`.when(w?.buttons,`) the buttons, the tab bar's own
   `panelButton("corgi-questions", "Questions", "mods/corgi/question.svg")`
   with the count, `shared("corgi.questions.count")`, as a pill, and

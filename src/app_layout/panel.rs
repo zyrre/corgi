@@ -26,12 +26,11 @@
 //! - just before the tab bar's call that remembers per space which panel
 //!   was open (`this.syncPanel(…)`, or the marked lines another installer
 //!   put in its place), lines add `corgi-questions` and `corgi-terminal` to
-//!   that call's list while the layout's stack has them, and make the
-//!   terminal panel, while it shows, the choice of a space the window
-//!   changes to, before the call restores that space's own: it follows the
-//!   focused agent into its space instead of closing there (it reads the
-//!   call's `this.space` and `this.panels`, inside a `try`, so a tab bar
-//!   without them keeps its own per-space choice);
+//!   that call's list while the layout's stack has them, so each is
+//!   remembered per space as Files and Changes are: the terminal panel
+//!   stays in the space it was opened in (decision 2026-11-17). Corgi's
+//!   lines once also made it the choice of every space the window changed
+//!   to; a reinstall replaces the whole marked block, so that line goes;
 //! - just before the window buttons (`.when(w?.buttons,`), the buttons: the
 //!   tab bar's own `panelButton`, as Files' and Changes', Questions' with
 //!   the count the Corgi mod publishes in `shared("corgi.questions.count")`
@@ -304,13 +303,6 @@ fn list_lines(indent: &str) -> String {
         ),
         add(QUESTIONS_BLOCK),
         add(TERMINAL_COLUMN),
-        // The terminal panel follows the focused agent from space to space:
-        // shown when the space changes, it is what the new space restores.
-        format!(
-            "try {{ const now = spaces().find(s => s.active); if (now && this.space !== undefined \
-             && now.id !== this.space && panel && !panel.hidden && body?.active === \"{TERMINAL_COLUMN}\") \
-             this.panels[now.id] = \"{TERMINAL_COLUMN}\"; }} catch (_) {{}}"
-        ),
         LIST_END.to_string(),
     ]
     .iter()

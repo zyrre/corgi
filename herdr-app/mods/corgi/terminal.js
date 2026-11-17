@@ -7,15 +7,17 @@
 //
 // The switch picks the folder: the agent's own (a worker's worktree, a
 // supervisor's project root) or its project's root, each a shell of its
-// own. Follows focus: the panel shows the focused agent's shell, and keeps
+// own, started only when asked (shells.js). Follows focus: the panel shows
+// the focused agent's shell, or "No shell here" when it has none, and keeps
 // the last one while a terminal that is no agent's (its own shell, the
 // person's) has the focus; Pinned keeps the agent it shows. To tab moves
 // the shell into a tab of the agent's space, for room. ✕ hides the panel;
 // every shell keeps running. Its timer is what follows, and only while the
 // panel shows.
 //
-// `terminal-hint`, the body while no shell shows: why, and a New shell
-// button where the person ended the last one or moved it to a tab.
+// `terminal-hint`, the body while no shell shows: why, with Open shell
+// where the focused agent's folder has none (no shell starts by itself),
+// and New shell where the person ended the last one or moved it to a tab.
 import { div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { theme, run, checking, agents } from "herdr";
@@ -115,7 +117,7 @@ function said(st) {
     case "problem":
       return st.problem || "The shell did not start.";
     default:
-      return "Focus an agent: its folder's shell opens here.";
+      return st.dir ? "No shell here" : "Focus an agent to open a shell in its folder here.";
   }
 }
 
@@ -123,15 +125,21 @@ export class TerminalHint {
   render() {
     const t = theme();
     const st = panelState();
-    const again = (st.note === "ended" || st.note === "moved") && local(st.agent ?? "") && Boolean(st.dir);
+    const here = local(st.agent ?? "") && Boolean(st.dir);
+    // Open shell where there is none yet, New shell where the last one went.
+    const button = !here ? null
+      : st.note === "ended" || st.note === "moved" ? { id: "terminal-new", label: "New shell" }
+        : st.note === "none" || st.note === "problem" ? { id: "terminal-open", label: "Open shell" }
+          : null;
     return v_flex().size_full().items_center().justify_center().gap(10).px(16).text_size(12).text_color(t.dim)
       .child(div().whitespace_normal().text_center().text_color(st.note === "problem" ? t.blocked : t.dim).child(said(st)))
-      .when(again, (el) => el.child(h_flex().id("terminal-new").h(24).px(10).gap(5).items_center().rounded(6).cursor_pointer()
+      .when(Boolean(button), (el) => el.child(h_flex().id(button.id).h(24).px(10).gap(5).items_center().rounded(6).cursor_pointer()
         .border_1().border_color(t.border).text_color(t.foreground).hover((s) => s.bg(t.hover))
+        .tooltip(`Start a shell in ${tildePaths(st.dir ?? "")}`)
         .on_click((_e, cx) => {
           newShell();
           cx.spawn(async () => follow());
         })
-        .child(svg("mods/corgi/terminal.svg").size(12)).child("New shell")));
+        .child(svg("mods/corgi/terminal.svg").size(12)).child(button.label)));
   }
 }

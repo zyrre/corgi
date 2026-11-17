@@ -38,7 +38,7 @@ herdr-core (hc), one core per session
   │    labels on each: corgi.project, corgi.role, corgi.request, corgi.task,
   │    corgi.harness, corgi.session, corgi.resume, corgi.pid, corgi.tag,
   │    corgi.tag.at, corgi.handover, corgi.baseline, herdr.space
-  └─ the terminal panel's shells ── one per folder, opened by the mod:
+  └─ the terminal panel's shells ── one per folder, opened by the mod when asked:
        corgi.shell (panel, or tab once moved into a tab), corgi.shell.dir
 
 corgi (target/release/corgi, linked as ~/.local/bin/corgi)
