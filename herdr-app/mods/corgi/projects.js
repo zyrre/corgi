@@ -266,6 +266,18 @@ const KEYS = ["Enter opens", "Tab completes", "Esc closes"];
 // Corgi's word for an agent's state as one of the app's, or null.
 const STATUS = { working: "working", blocked: "blocked", done: "done", idle: "idle" };
 
+// Where an agent's state puts it among its project's agents, after the
+// supervisor: blocked, working, done, idle, then the rest (paused, exited,
+// in no state). MERGE, a worker done and tagged, stands with done, so
+// tagging one does not move it.
+const PLACES = { blocked: 0, working: 1, done: 2, merge: 2, idle: 3 };
+const LAST_PLACE = 4;
+// How long a row keeps its state's place while its state is missing (a
+// refresh of the app's agents or of `corgi status` in between).
+const STATE_KEPT_MS = 10_000;
+// Two texts in code-point order, the same in every engine (no locale).
+const compare = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+
 // A build as `corgi status --json` names one ({ version, commit, dirty }),
 // in a few letters: its commit, else its release.
 const buildName = (b) => [b.commit ? b.commit.slice(0, 7) : `Corgi ${b.version}`, ...(b.dirty ? ["modified"] : [])].join(" · ");
@@ -323,6 +335,9 @@ export default class Projects {
     // The projects folded to their supervisor, by their repository (a
     // project's row's `g.repo`), kept across restarts as the machines are.
     this.foldedProjects = new Set(JSON.parse(localStorage.getItem("projects.folded") ?? "[]"));
+    // Each agent's last known state, by its terminal: { key, missing }, its
+    // badge's key and since when it has had none (see `placeOf`).
+    this.lastStates = new Map();
 
     // The store's version this copy drew last, and how many answers each
     // machine's Corgi had given then (see `sync`).
@@ -1466,8 +1481,14 @@ export default class Projects {
       const kids = [];
       while (rows[n + 1]?.tree) kids.push(rows[++n]);
       const members = [head, ...kids].flatMap((r) => (by[r.w.id] ?? []).map((a) => ({ a, r })));
-      // The supervisor first; the rest stay in the app's order.
-      members.sort((x, y) => Number(y.a.supervisor) - Number(x.a.supervisor));
+      // The supervisor first, the rest by state, then by name (decision
+      // 2026-09-28, "Agents within a project are ordered by state"), so a
+      // row moves only when its agent's state changes.
+      const now = Date.now();
+      const keyed = members.map((m) => ({ ...m, place: this.placeOf(m.a, now), name: (m.a.task ?? "").toLowerCase() }));
+      keyed.sort((x, y) => Number(y.a.supervisor) - Number(x.a.supervisor) || x.place - y.place
+        || compare(x.name, y.name) || compare(x.a.address, y.a.address));
+      members.splice(0, members.length, ...keyed);
       // A project (a repository's space) folds; a space outside any does not.
       const folded = Boolean(head.g) && this.foldedProjects.has(head.g.repo);
       const shown = folded ? members.filter(({ a }) => a.supervisor) : members;
@@ -1491,7 +1512,7 @@ export default class Projects {
       for (const [i, { a, r }] of shown.entries()) {
         // A worktree's space has no row of its own while agents stand for it:
         // shown, its first agent is lit unless another of its agents has the focus.
-        const mine = by[r.w.id] ?? [];
+        const mine = members.filter((m) => m.r === r).map((m) => m.a);
         const lit = a.focused || (r.tree && r.w.active && mine[0] === a && !mine.some((x) => x.focused));
         area.push(this.agent(a, r, lit, t, i === 0));
         if (this.merge?.terminal === a.address) {
@@ -1521,6 +1542,22 @@ export default class Projects {
       }
     }
     return { out, order };
+  }
+
+  // The place of `a`'s state among its project's agents (PLACES). While its
+  // state is missing, a row keeps the last one known for STATE_KEPT_MS from
+  // when it went missing (not from the last frame: the list may not draw for
+  // longer), so it does not drop to the end and back while its status is
+  // refreshed.
+  placeOf(a, now) {
+    let key = badgeKey(a);
+    const last = this.lastStates.get(a.address);
+    if (key) this.lastStates.set(a.address, { key, missing: null });
+    else if (last) {
+      last.missing ??= now;
+      if (now - last.missing < STATE_KEPT_MS) key = last.key;
+    }
+    return PLACES[key] ?? LAST_PLACE;
   }
 
   // A project's area (decision 2026-11-16): `els`, its row, its agents'
@@ -1558,6 +1595,11 @@ export default class Projects {
   grouped(t, collapsed, sp, ps) {
     const rows = this.ordered(sp, ps);
     const by = collapsed ? {} : this.agentsBySpace(sp, ps);
+    // The states of agents no longer listed are forgotten.
+    if (!collapsed) {
+      const listed = new Set(Object.values(by).flat().map((a) => a.address));
+      for (const address of this.lastStates.keys()) if (!listed.has(address)) this.lastStates.delete(address);
+    }
     this.current = this.currentOf(rows, by);
     const order = [];
     const draw = (mine) => {

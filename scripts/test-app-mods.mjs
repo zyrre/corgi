@@ -527,10 +527,11 @@ async function projects(w, props = {}, module = undefined) {
       // A project's row counts its agents by state: one working, one
       // blocked, two idle (the supervisor, and one in no state).
       'W', 'weather', '1', '1', '2',
+      // The supervisor first, then by state: blocked, working, …
       'Supervisor', 'IDLE',
-      'Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING',
       'Review the cache fix', 'BLOCKED',
-      // In no state: no badge.
+      'Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING',
+      // … and last one in no state: no badge.
       'Write the docs',
       'worktree-quiet-lake-0a1b',
       '~', '~',
@@ -539,9 +540,9 @@ async function projects(w, props = {}, module = undefined) {
     ],
     drawn.join(' | '),
   );
-  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7']);
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t4', 'agent-t3', 'agent-t5', 'agent-t7']);
   // agent.next and agent.prev follow the list.
-  assert.deepEqual(w.agentOrder, ['t2', 't3', 't4', 't5', 't7']);
+  assert.deepEqual(w.agentOrder, ['t2', 't4', 't3', 't5', 't7']);
 
   // Two lines each. The first: the task alone, the whole width, cut with an
   // ellipsis.
@@ -790,12 +791,13 @@ async function projects(w, props = {}, module = undefined) {
   const mod = await projects(w);
   const lit = (root, id) => byId(root, id).calls.bg[0] === '#selected';
   let root = mod.render();
-  assert.ok(lit(root, 'agent-t3'), 'the first agent of the shown worktree');
-  assert.ok(!lit(root, 'agent-t4'));
-  w.agents[2].focused = true;
-  root = mod.render();
+  // The first as listed: t4, blocked, before t3, working.
+  assert.ok(lit(root, 'agent-t4'), 'the first agent of the shown worktree');
   assert.ok(!lit(root, 'agent-t3'));
-  assert.ok(lit(root, 'agent-t4'), 'the agent with the focus');
+  w.agents[1].focused = true;
+  root = mod.render();
+  assert.ok(!lit(root, 'agent-t4'));
+  assert.ok(lit(root, 'agent-t3'), 'the agent with the focus');
 }
 
 // Each agent is a faintly shaded card with its state's color as a bar at
@@ -900,9 +902,9 @@ async function projects(w, props = {}, module = undefined) {
     click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
     click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
     root = mod.render();
-    assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7']);
+    assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t4', 'agent-t3', 'agent-t5', 'agent-t7']);
     assert.deepEqual(ids(root, 'pull-card-').length, 1);
-    assert.deepEqual(w.agentOrder, ['t2', 't3', 't4', 't5', 't7']);
+    assert.deepEqual(w.agentOrder, ['t2', 't4', 't3', 't5', 't7']);
     assert.deepEqual(JSON.parse(stored.get('projects.folded')), []);
 
     // A space outside any project is shown by a click.
@@ -912,6 +914,79 @@ async function projects(w, props = {}, module = undefined) {
   } finally {
     globalThis.localStorage = before;
   }
+}
+
+// Within a project, the supervisor first, then its agents by state:
+// blocked, working, done, idle, then the rest (here one in no state); by
+// name within a state, case-insensitive, and by terminal when two names
+// are the same. A row moves only when its agent's state changes, and keeps
+// its place while its state is missing for a moment.
+{
+  const w = window();
+  w.agents.push(
+    agent('sp-calm', 't13', 'blocked', '✳ Zap the bug'),
+    agent('sp-sunny', 't12', 'working', '✳ add tests'),
+    agent('sp-quiet', 't14', 'done', '✳ Check the docs'),
+    agent('sp-quiet', 't10', 'done', '✳ beta notes'),
+    agent('sp-sunny', 't15', 'idle', '✳ alpha task'),
+    agent('sp-calm', 't11', 'idle', '✳ Alpha task'),
+  );
+  const mod = await projects(w);
+  const listed = () => ids(mod.render(), 'agent-').map((id) => id.slice('agent-'.length));
+  const ORDER = [
+    't2', // the supervisor (idle)
+    't4', 't13', // blocked: Review the cache fix, Zap the bug
+    't12', 't3', // working: add tests, Fix the cache so that it holds
+    't10', 't14', // done: beta notes, Check the docs
+    't11', 't15', // idle: Alpha task, alpha task (by terminal)
+    't5', // in no state: Write the docs
+    't7', // the next space's
+  ];
+  assert.deepEqual(listed(), ORDER);
+  // agent.next and agent.prev follow the list.
+  assert.deepEqual(w.agentOrder, ORDER);
+
+  // Zap the bug starts working: it alone moves, among the working.
+  w.agents.find((a) => a.address === 't13').status = 'working';
+  const moved = ['t2', 't4', 't12', 't3', 't13', 't10', 't14', 't11', 't15', 't5', 't7'];
+  assert.deepEqual(listed(), moved);
+  assert.deepEqual(w.agentOrder, moved);
+  const without = (list) => list.filter((a) => a !== 't13');
+  assert.deepEqual(without(listed()), without(ORDER), 'the others keep their order');
+
+  // add tests's state is missing for a refresh: it keeps its place.
+  const tests = w.agents.find((a) => a.address === 't12');
+  tests.status = null;
+  assert.deepEqual(listed(), moved, 'a missing state keeps the row in place');
+  tests.status = 'working';
+  assert.deepEqual(listed(), moved);
+  // Missing for longer: it goes with those in no state, by name.
+  const realNow = Date.now;
+  try {
+    tests.status = null;
+    assert.deepEqual(listed(), moved);
+    const missingAt = realNow();
+    Date.now = () => missingAt + 9000;
+    assert.deepEqual(listed(), moved, 'kept for a few seconds');
+    Date.now = () => missingAt + 11000;
+    assert.deepEqual(listed(), ['t2', 't4', 't3', 't13', 't10', 't14', 't11', 't15', 't12', 't5', 't7'], 'then placed as in no state');
+  } finally {
+    Date.now = realNow;
+  }
+  tests.status = 'working';
+  assert.deepEqual(listed(), moved, 'and back with its state');
+
+  // Folded: the supervisor alone, and agent.next and agent.prev skip the rest.
+  let root = mod.render();
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
+  assert.deepEqual(listed(), ['t2', 't7']);
+  assert.deepEqual(w.agentOrder, ['t2', 't7']);
+  root = mod.render();
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
+  assert.deepEqual(listed(), moved);
+  assert.deepEqual(w.agentOrder, moved);
 }
 
 // Each project (a repository's space) sits in one rounded area: its row,
@@ -932,7 +1007,7 @@ async function projects(w, props = {}, module = undefined) {
   const avatar = kept(kept(byId(area, 'space-sp-weather').children.at(-1)).children[0]);
   assert.deepEqual([texts(avatar), avatar.calls.bg], [['W'], ['#5b8def']], 'the avatar in the same color');
   assert.deepEqual(ids(area, 'space-'), ['space-sp-weather', 'space-sp-quiet'], 'its row and its worktree\'s with no agent');
-  assert.deepEqual(ids(area, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5']);
+  assert.deepEqual(ids(area, 'agent-'), ['agent-t2', 'agent-t4', 'agent-t3', 'agent-t5']);
   assert.deepEqual(ids(root, 'space-'), ['space-sp-corgi', 'space-sp-weather', 'space-sp-quiet', 'space-sp-home'], 'the plain spaces stay in the list');
   // Folded: its row and supervisor.
   click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
@@ -980,7 +1055,8 @@ async function projects(w, props = {}, module = undefined) {
   assert.deepEqual(texts(byId(root, 'herd-card')), ['HERD', 'WORKING 1', 'BLOCKED 1', 'DONE 1', 'IDLE 1']);
   assert.deepEqual(
     drawn.slice(8),
-    ['W', 'weather', '1', '1', '1', 'Weather supervisor', 'IDLE', 'Fixing the cache', 'WORKING', 'Review the cache fix', 'BLOCKED', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code', 'DONE'],
+    // No supervisor without corgi: the agents by state alone.
+    ['W', 'weather', '1', '1', '1', 'Review the cache fix', 'BLOCKED', 'Fixing the cache', 'WORKING', 'Weather supervisor', 'IDLE', 'worktree-sunny-field-529d', 'worktree-quiet-lake-0a1b', '~', '~', 'Claude Code', 'DONE'],
     drawn.join(' | '),
   );
 }
@@ -2082,7 +2158,8 @@ const header = (root) => {
     assert.deepEqual([b.calls.h ?? b.calls.size, b.calls.rounded], [[26], [6]]);
   }
   assert.deepEqual(kept(byId(root, 'agents-pause').children[0]).calls.size, [14]);
-  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t20', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7']);
+  // The paused last in their project, by name: Fix the radar, Write the docs.
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t4', 'agent-t3', 'agent-t20', 'agent-t5', 'agent-t7']);
   assert.deepEqual(texts(kept(byId(root, 'agent-t5').children[0])), ['Write the docs']);
   assert.equal(markOf(root, 'agent-t5'), 'PAUSED');
   assertBadge(byId(root, 'badge-t5'), 'paused', 'PAUSED');
@@ -2216,7 +2293,7 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   assert.deepEqual(texts(byId(root, 'agent-t3')), ['Fix the cache so that it holds', 'Opus 5.5', '·', '33%', 'WORKING']);
   assert.deepEqual(ids(root, 'merge-'), ['merge-lab/t3']);
   // Under lab's header, after this computer's.
-  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7', 'agent-lab/t2', 'agent-lab/t3']);
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t4', 'agent-t3', 'agent-t5', 'agent-t7', 'agent-lab/t2', 'agent-lab/t3']);
   // Asked on lab: where corgi is (a shell there), then its status, once.
   const [look, status] = onLab(w);
   assert.deepEqual([look[0], look[1][0], look[2]], ['sh', '-c', { on: LAB, timeout: 20000 }]);
@@ -2352,7 +2429,7 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
   const root = again.render();
   assert.deepEqual(header(root), ['▶ Agents']);
   assert.match(byId(root, 'agents-pause').calls.tooltip[0], /^Resume the 2 paused agents/);
-  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t3', 'agent-t4', 'agent-t5', 'agent-t7', 'agent-lab/t2', 'agent-lab/t20', 'agent-lab/t3']);
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t4', 'agent-t3', 'agent-t5', 'agent-t7', 'agent-lab/t2', 'agent-lab/t20', 'agent-lab/t3']);
   assert.equal(markOf(root, 'agent-lab/t20'), 'PAUSED');
   click(root, 'agents-pause', again.cx);
   await again.settle();
