@@ -7,7 +7,8 @@
 //
 // The switch picks the folder: the agent's own (a worker's worktree, a
 // supervisor's project root) or its project's root, each a shell of its
-// own, started only when asked (shells.js). Follows focus: the panel shows
+// own, started only when asked (shells.js). It is the shown agent's choice,
+// kept for its folder; another agent shows its own (Worktree until picked). Follows focus: the panel shows
 // the focused agent's shell, or "No shell here" when it has none, and keeps
 // the last one while a terminal that is no agent's (its own shell, the
 // person's) has the focus; Pinned keeps the agent it shows. To tab moves

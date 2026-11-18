@@ -3090,6 +3090,93 @@ async function terminalPanel(w, module) {
   assert.equal(runs(w).length, tries + 1);
 }
 
+// The switch is the shown agent's: Project root picked for one worker
+// leaves every other agent on its own folder, in its own space, and that
+// worker on the root's shell when the panel comes back to it. Once kept
+// for every agent, each of a project's workers showed the one root shell
+// (2026-11-17).
+{
+  const w = terminalWindow();
+  const { head } = await terminalPanel(w, 'terminal-per-agent');
+  const hint = await start(w, { view: 'terminal-hint' }, 'terminal-per-agent');
+  const calm = `${TREES}/worktree-calm-forest-4f96`;
+  const sunny = `${TREES}/worktree-sunny-field-529d`;
+  // w-docs, in its worktree's space.
+  w.agents.push(agent('sp-sunny', 't5', 'working', '✳ Write the docs'));
+  const focusIn = (space, terminal) => {
+    w.spaces.forEach((s) => { s.active = s.id === space; });
+    w.focused = { space, tab: `tab-${space}`, pane: `pane-${terminal}`, terminal };
+  };
+  focusIn('sp-calm', 't3');
+  await head.tick(500);
+  click(hint.render(), 'terminal-open', hint.cx);
+  await hint.settle();
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  click(head.render(), 'terminal-root', head.cx);
+  await head.settle();
+  assert.deepEqual(bodyNow(w), { terminal: 't21' }, "w-cache's project root");
+  assert.equal(runs(w)[1][runs(w)[1].indexOf('--cwd') + 1], REPO);
+
+  // w-docs, in its own space: its own folder, which has no shell, not the
+  // root's shell picked for w-cache.
+  focusIn('sp-sunny', 't5');
+  await head.tick(500);
+  assert.equal(w.shared['corgi.terminal'].kind, 'worktree');
+  assert.equal(w.shared['corgi.terminal'].dir, sunny);
+  assert.deepEqual(bodyNow(w), { mod: 'corgi', props: { view: 'terminal-hint' } });
+  assert.ok(texts(head.render()).includes('worktree-sunny-field-529d'));
+  click(hint.render(), 'terminal-open', hint.cx);
+  await hint.settle();
+  assert.deepEqual(bodyNow(w), { terminal: 't22' });
+  assert.equal(runs(w)[2][runs(w)[2].indexOf('--cwd') + 1], sunny);
+
+  // Back to w-cache: the root's shell, as picked for it; both still run.
+  focusIn('sp-calm', 't3');
+  await head.tick(500);
+  assert.equal(w.shared['corgi.terminal'].kind, 'root');
+  assert.deepEqual(bodyNow(w), { terminal: 't21' });
+  // Its worktree's shell is there too, by the switch.
+  click(head.render(), 'terminal-worktree', head.cx);
+  await head.settle();
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  assert.equal(runs(w).length, 3, 'no shell started by the moves');
+  assert.ok(['t20', 't21', 't22'].every((a) => w.terminals.find((t) => t.address === a)?.state === 'live'));
+  // The other agent in w-cache's space (same worktree) follows its own choice: Worktree.
+  click(head.render(), 'terminal-root', head.cx);
+  await head.settle();
+  focus(w, 't4');
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't21' }, "the same folder's choice: it is w-cache's worktree too");
+  // A `>_` mark shows the worktree's shell, and keeps that choice.
+  const shells = await import(new URL('../herdr-app/mods/corgi/shells.js?module=terminal-per-agent', import.meta.url));
+  shells.showShellOf('t3');
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+  focusIn('sp-sunny', 't5');
+  await head.tick(500);
+  focusIn('sp-calm', 't3');
+  await head.tick(500);
+  assert.deepEqual(bodyNow(w), { terminal: 't20' });
+}
+
+// A panel state from before the choice was kept per folder (`kind` alone,
+// "root"): the root was picked for the agent it showed, and only for it.
+{
+  const w = terminalWindow();
+  const calm = `${TREES}/worktree-calm-forest-4f96`;
+  w.shared['corgi.terminal'] = { kind: 'root', follow: true, agent: 't3', home: calm, dir: REPO, address: null, note: 'none' };
+  const { head } = await terminalPanel(w, 'terminal-old-state');
+  w.agents.push(agent('sp-sunny', 't5', 'working', '✳ Write the docs'));
+  focus(w, 't5');
+  await head.tick(500);
+  assert.equal(w.shared['corgi.terminal'].kind, 'worktree');
+  assert.equal(w.shared['corgi.terminal'].dir, `${TREES}/worktree-sunny-field-529d`);
+  focus(w, 't3');
+  await head.tick(500);
+  assert.equal(w.shared['corgi.terminal'].kind, 'root');
+  assert.equal(w.shared['corgi.terminal'].dir, REPO);
+}
+
 // The Terminal button: the panel shown in the space it was hidden in (for
 // a while) is the person opening it, which asks for a shell. A space the
 // window moves to, whose panel the tab bar restores (the terminal panel
@@ -3189,7 +3276,7 @@ async function terminalPanel(w, module) {
   focus(w, 't4');
   await head.tick(500);
   assert.equal(w.shared['corgi.terminal'].dir, calm, "the checkout's top, not the folder it is in");
-  w.shared['corgi.terminal'] = { ...w.shared['corgi.terminal'], kind: 'root' };
+  w.shared['corgi.terminal'] = { ...w.shared['corgi.terminal'], kind: 'root', rooted: [calm] };
   await head.tick(500);
   assert.equal(w.shared['corgi.terminal'].dir, REPO);
   delete CHECKOUTS[`${calm}/src`];

@@ -638,6 +638,15 @@ it works; what its choices rest on, seen in the preview (2026-11-16):
   hidden. A Node test of it sets `Date.now`.
 - The header's timer follows the focus every 500 ms while the panel shows;
   hidden, it writes and starts nothing.
+- The Worktree | Project root switch is kept per agent folder (`rooted` in
+  the shared `corgi.terminal`, keyed by `home`), never as one `kind` for
+  the panel: the body block and that state are one for every space, so a
+  global "root" put the project root's one shell in every worker's panel,
+  in every space, and outlived restarts (2026-11-17: "opening it for a
+  second worker shows the first worker's shell"). For a "wrong shell"
+  report, read `corgi.terminal` in the app home's `shared.json` first
+  (`kind`, `agent`, `home`, `dir`, `address`): it says which folder the
+  panel took and why.
 - End shell (`endShell`) ends the shown shell as
   `corgi close` does: `hc kill`, which answers once the terminal finished
   (its background jobs end too), then `hc rm`, which refuses a live
