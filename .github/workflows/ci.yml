@@ -70,6 +70,9 @@ jobs:
       - name: Test the Media mod
         run: node herdr-app/mods/media/tests/test.mjs
 
+      - name: Test the Jira mod
+        run: node herdr-app/mods/jira/tests/test.mjs
+
       - name: Test the installers
         run: bash scripts/test-install
 
