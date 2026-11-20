@@ -1,9 +1,10 @@
 # Jira for the Herdr app
 
-A mod for the [Herdr](https://herdr.dev) app that shows a Jira board's
-active sprint and lets you act on its issues without leaving the window:
-your issues first, the rest grouped by status under headings that fold; an
-issue with its type, status, assignee, description (Jira's wiki markup made
+A mod for the [Herdr](https://herdr.dev) app that shows your team's work in
+Jira and lets you act on it without leaving the window: the active sprint
+as your board shows it (your issues first, the rest grouped by status),
+then your other open issues, then the other open issues of the board's
+project, each section and heading folding; an issue with its type, status, assignee, description (Jira's wiki markup made
 readable: headings, lists, code, quotes, tables, links), subtasks, links
 and comments; and four actions, each asked about first: change its status,
 assign it to you, add a comment, log work. Popups tell you when an issue is
@@ -140,11 +141,18 @@ shows them again.
 |---|---|
 | Jira URL | The base URL, such as `https://jira.example.com` |
 | Personal access token | A token of your Jira user (Jira: your profile, Personal Access Tokens) |
-| Board | A board's id (`42`, or the board's address with `rapidView=42` in it), or a project's key (`DEMO`): its first Scrum board |
+| Board | A board's id (`42`, or the board's address with `rapidView=42` in it), or a project's key (`DEMO`): the project's Scrum board |
 
 **Check** asks Jira who the token is and finds the board (`Authenticated as
 Jane Doe (jane) · board 42, DEMO board`, or why not) and saves nothing;
 **Save** saves and then checks.
+
+For a project's key, Jira lists every board whose filter finds an issue of
+the project, other teams' boards among them. The mod takes a Scrum board
+(one with sprints) before a Kanban one, and of those the board that lives
+in the project (newer Jiras say where a board lives) before the others,
+else the first. **Check** names the board it took: when it is not yours,
+give your board's id instead.
 
 They are kept in `jira/settings.json` in the app's home
 (`~/.config/herdr-app/jira/settings.json`), outside the mod's own folder,
@@ -157,17 +165,32 @@ environment, which an app started from the Dock usually has not.
 
 ## Use
 
-- **The list**: the board's active sprint (each, when it runs more than
-  one), with when it ends and how many issues it has. Under it, the issues
-  assigned to you, those at work first, then to do, then done; then
-  everyone else's, under a heading for each status: the statuses at work
-  first, then to do, then done. Each row shows the issue's type, key and
-  summary, and the assignee (or, among yours, the status). A click on a
-  heading folds it away or shows it again; the done ones start folded, and
-  the app remembers what you fold. A heading with more than 40 issues shows
-  40 and `Show all`. Read again every minute while the list shows (every
-  three minutes while an issue shows over it); the header's arrows read it
-  now.
+- **The list**, in three sections, each with a heading that says how many
+  issues it has and folds it away. An issue shows once, in the first
+  section that has it.
+  1. **Current sprint · <board>**: the board's active sprint (each, when it
+     runs more than one), with its name and when it ends, and only the
+     issues the board itself shows of it: a sprint that several teams'
+     boards share has the others' issues too, and those stay out. First the
+     issues assigned to you, those at work first, then to do, then done;
+     then everyone else's, under a heading for each status: the statuses at
+     work first, then to do, then done. A board without sprints (Kanban)
+     has no such section.
+  2. **Assigned to me**: your other open issues, in any project, the last
+     changed first.
+  3. **All <project> issues**: the other open issues of the board's
+     project (the project named in the settings; for a board given by its
+     id, the project it lives in, or else the projects its filter covers),
+     in the backlog's order under a heading for each status. The first 1000
+     are read, and a line says so when there are more.
+
+  Each row shows the issue's type, key and summary, and the assignee (or,
+  among yours, the status). A click on a heading folds it away or shows it
+  again; the done ones start folded, and the app remembers what you fold.
+  A heading with more than 40 issues shows 40 and `Show all`. While the
+  list shows, the sprint is read again every minute (every three while an
+  issue shows over it), your issues every two and the project's every five;
+  the header's arrows read all of it now.
 - **An issue**: click a row. Its summary, type, priority, assignee,
   reporter, when it changed, the work logged; its description with Jira's
   wiki markup made readable (headings, `*bold*` without its stars, lists,
@@ -257,11 +280,19 @@ others.
 
 Plain HTTP with the app's `fetch`, `Authorization: Bearer <token>`:
 `/rest/api/2/myself` (who the token is), the agile API's
-`/rest/agile/1.0/board/<id>` (or `board?projectKeyOrId=<KEY>`) and
-`board/<id>/sprint?state=active`, `/rest/api/2/search` with
-`sprint = <id> ORDER BY Rank ASC` (500 at a time; the agile API's
-`sprint/<id>/issue` gives the same but took twenty times as long on a
-sprint of 450 issues), `/rest/api/2/issue/<key>` and its
+`/rest/agile/1.0/board/<id>` (or `board?projectKeyOrId=<KEY>`), its
+`configuration` (the saved filter the board shows issues by), its `project`
+(when the board does not say where it lives) and
+`board/<id>/sprint?state=active`, and `/rest/api/2/search` (500 at a time)
+with `filter = <the board's filter> AND sprint = <id> ORDER BY Rank ASC`
+for the sprint, `assignee = currentUser() AND statusCategory != Done ORDER
+BY updated DESC` for your issues and `project in ("<KEY>") AND
+statusCategory != Done ORDER BY Rank ASC` for the project's. `sprint =
+<id>` alone would find every team's issues in a shared sprint. When Jira
+will not give the token the board's configuration, the sprint is read with
+the agile API's `board/<id>/sprint/<id>/issue` instead, which answers the
+same more slowly. Then
+`/rest/api/2/issue/<key>` and its
 `transitions?expand=transitions.fields`, and for the popups
 `search` with `assignee = currentUser() AND updated >= -<minutes>m` and
 `expand=changelog` (the history, for assignments and status changes, and
@@ -288,12 +319,14 @@ shellcheck herdr-app/mods/jira/install.sh
 The tests run the mod under Node against `tests/fake-jira.mjs`, a made-up
 Jira with a project DEMO: a Scrum board 7 whose active sprint has 64 issues
 (read in two pages, as the fake gives 50 at a time), a Kanban board 8,
-issues with descriptions, comments, subtasks, links, transitions (one,
+another team's board 6 (project OTHER) that shares the sprint and is listed
+first for DEMO, issues of both projects in no sprint, issues with descriptions, comments, subtasks, links, transitions (one,
 Approve, whose screen requires a resolution) and work logged, and two
 users (`fake-token` is Jane Doe, who may act; `viewer-token` may only
 read). `node tests/fake-jira.mjs 48766` serves it for a look at the mod in
 a window: point the settings at `http://127.0.0.1:48766`, token
-`fake-token`, board `7`. `curl -X POST
+`fake-token`, board `7` (`node tests/fake-jira.mjs 48766 1100` adds 1100
+backlog issues, past what the list reads). `curl -X POST
 'http://127.0.0.1:48766/__fake/assign?key=DEMO-104&to=jane&by=bob'` (or
 `/__fake/comment?key=DEMO-102&by=alice&body=Hello`,
 `/__fake/move?key=DEMO-103&to=In%20Review&by=bob`) makes a popup. It fails

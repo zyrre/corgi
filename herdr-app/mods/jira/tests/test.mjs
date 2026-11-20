@@ -349,7 +349,9 @@ function configured(fake, settings = {}) {
 }
 const acts = (fake) => fake.requests.filter((r) => r.method !== 'GET');
 const reads = (fake, re) => fake.requests.filter((r) => r.method === 'GET' && re.test(`${r.path}${decodeURIComponent(r.query)}`));
-const SPRINT = new RegExp(`sprint = ${SPRINT_ID} `);
+const SPRINT = new RegExp(`jql=filter = 507 AND sprint = ${SPRINT_ID} ORDER BY Rank ASC&`);
+const MINE = /jql=assignee = currentUser\(\) AND statusCategory != Done ORDER BY updated DESC&/;
+const PROJECT = /jql=project in \("DEMO"\) AND statusCategory != Done ORDER BY Rank ASC&/;
 // Ticks every two seconds for `ms`, as the app's timer does.
 const run = async (mods, ms) => {
   for (let at = 0; at < ms; at += 2_000) {
@@ -372,7 +374,7 @@ const panelLayout = ({ hidden = true, active = 'files' } = {}) => ({
 const SHOWN = { hidden: false, active: 'jira-panel' };
 const SELECT = ['layout.select', { stack: 'panel-body', child: 'jira-panel' }];
 
-test('the helpers: the board setting, keys, groups, time spent, days, transitions, errors', () => {
+test('the helpers: the board setting, a project\'s board, keys, groups, sections, time spent, days, transitions, errors', () => {
   assert.equal(util.normalizeBase(' jira.example.com/ '), 'https://jira.example.com');
   assert.deepEqual(util.parseBoard('42'), { id: 42 });
   assert.deepEqual(util.parseBoard('https://jira.example.com/secure/RapidBoard.jspa?rapidView=42&projectKey=DEMO'), { id: 42 });
@@ -395,6 +397,19 @@ test('the helpers: the board setting, keys, groups, time spent, days, transition
   ], me);
   assert.deepEqual(g.mine.map((i) => i.key), ['D-3', 'D-6', 'D-1'], 'at work, to do, done; else in rank order');
   assert.deepEqual(g.rest.map((s) => [s.name, s.issues.map((i) => i.key)]), [['Review', ['D-5']], ['Doing', ['D-7']], ['To Do', ['D-2']], ['Done', ['D-4']]]);
+
+  // A project's board: Scrum before Kanban; the one living in the project before one that does not say, before another project's.
+  const b = (id, type, at) => ({ id, type, ...(at ? { location: { projectKey: at } } : {}) });
+  assert.equal(util.pickBoard([b(1, 'kanban', 'DEMO'), b(2, 'scrum', 'OTHER'), b(3, 'scrum'), b(4, 'scrum', 'DEMO'), b(5, 'scrum', 'DEMO')], 'DEMO').id, 4);
+  assert.equal(util.pickBoard([b(1, 'kanban', 'DEMO'), b(2, 'scrum', 'OTHER'), b(3, 'scrum'), b(6, 'scrum')], 'DEMO').id, 3);
+  assert.equal(util.pickBoard([b(1, 'kanban'), b(2, 'scrum', 'OTHER')], 'DEMO').id, 2, 'the one with sprints');
+  assert.equal(util.pickBoard([b(1, 'kanban', 'OTHER'), b(2, 'kanban')], 'DEMO').id, 2);
+  assert.equal(util.pickBoard([], 'DEMO'), null);
+  // The sections: each issue once, in the first that has it.
+  const k = (...keys) => keys.map((key) => ({ key }));
+  const parts = util.sections([k('D-1', 'D-2'), k('D-3')], k('D-9', 'D-2', 'X-1', 'D-3'), k('D-1', 'D-4', 'D-9', 'D-5'));
+  assert.deepEqual([parts.mine.map((i) => i.key), parts.above, parts.project.map((i) => i.key)], [['D-9', 'X-1'], 2, ['D-4', 'D-5']]);
+  assert.deepEqual(util.sections([], undefined, undefined), { mine: [], above: 0, project: [] });
 
   for (const [typed, jira] of [['1h 30m', '1h 30m'], ['1h30m', '1h 30m'], ['90m', '90m'], ['1.5h', '1.5h'], ['1,5h', '1.5h'], [' 2d ', '2d'], ['1w 2d 3h 4m', '1w 2d 3h 4m'], ['1H', '1h']]) {
     assert.equal(util.parseTimeSpent(typed), jira, typed);
@@ -500,16 +515,25 @@ test('with nothing saved it takes JIRA_URL, JIRA_API_TOKEN and JIRA_BOARD, when 
   await fake.close();
 });
 
-test('the list: the active sprint, the token user\'s issues first, the rest by status, done folded, read in pages', async () => {
+test('the list: three sections, each issue once: the sprint as the board shows it, the token user\'s other issues, the project\'s others', async () => {
   const fake = await startFakeJira();
   const w = configured(fake);
   const mod = await start(w);
   await mod.tick();
+  // The sprint is read by the board's filter: the other team's issues in the same sprint stay out.
+  assert.equal(reads(fake, /\/board\/7\/configuration$/).length, 1);
   assert.equal(reads(fake, SPRINT).length, 2, 'two pages of the fake\'s 50');
+  assert.equal(reads(fake, /jql=sprint = /).length, 0, 'never the sprint without the board\'s filter');
+  assert.equal([...fake.jira.issues.values()].filter((i) => i.sprint === SPRINT_ID).length, 66, 'the sprint itself has two of another team\'s');
+  assert.equal(reads(fake, MINE).length, 1);
+  assert.equal(reads(fake, PROJECT).length, 2, 'two pages as well');
   assert.ok(mod.says('DEMO board · jane'));
-  assert.equal(row(mod, `ji-sprint-${SPRINT_ID}`), 'DEMO Sprint 12 64 ends in 4 days');
+  assert.deepEqual(ids(mod.render(), 'ji-sec-'), [`ji-sec-sprint-${SPRINT_ID}`, 'ji-sec-mine', 'ji-sec-project']);
+  assert.equal(row(mod, `ji-sec-sprint-${SPRINT_ID}`), 'Current sprint · DEMO board DEMO Sprint 12 · ends in 4 days 64');
+  assert.equal(row(mod, 'ji-sec-mine'), 'Assigned to me 7 more in the sprint above 3');
+  assert.equal(row(mod, 'ji-sec-project'), 'All DEMO issues open, and not shown above 2');
   const order = ids(mod.render(), 'ji-head-');
-  assert.deepEqual(order, [`ji-head-mine-${SPRINT_ID}`, `ji-head-status-${SPRINT_ID}-3`, `ji-head-status-${SPRINT_ID}-10001`, `ji-head-status-${SPRINT_ID}-1`, `ji-head-status-${SPRINT_ID}-10002`], 'at work (in the order their first issue comes), to do, done');
+  assert.deepEqual(order, [`ji-head-mine-${SPRINT_ID}`, `ji-head-status-${SPRINT_ID}-3`, `ji-head-status-${SPRINT_ID}-10001`, `ji-head-status-${SPRINT_ID}-1`, `ji-head-status-${SPRINT_ID}-10002`, 'ji-head-status-project-1'], 'at work (in the order their first issue comes), to do, done; then the project\'s');
   assert.equal(row(mod, `ji-head-mine-${SPRINT_ID}`), 'Assigned to you 10');
   const rows = ids(mod.render(), 'ji-row-');
   assert.deepEqual(rows.slice(0, 10), ['DEMO-101', 'DEMO-145', 'DEMO-102', 'DEMO-103', 'DEMO-112', 'DEMO-123', 'DEMO-156', 'DEMO-107', 'DEMO-134', 'DEMO-150'].map((k) => `ji-row-${k}`));
@@ -518,42 +542,120 @@ test('the list: the active sprint, the token user\'s issues first, the rest by s
   assert.match(row(mod, 'ji-row-DEMO-108'), /^DEMO-108 .* Bob Builder$/, 'the rest say whose');
   assert.match(row(mod, 'ji-row-DEMO-106'), /Unassigned$/);
   assert.ok(!rows.includes('ji-row-DEMO-104'), 'Done is folded at first');
-  assert.ok(!rows.includes('ji-row-DEMO-200'), 'not in the sprint');
-  // Folding: kept by the app; a click unfolds Done.
+  assert.ok(!rows.includes('ji-row-OTHER-2'), 'another team\'s issue in the same sprint: not the board\'s, not the user\'s, not the project\'s');
+  // Under the sprint: the user's open issues it does not show (any project, the last changed first), then the project's.
+  assert.deepEqual(rows.slice(rows.indexOf('ji-row-DEMO-151') + 1), ['OTHER-1', 'DEMO-201', 'OTHER-3', 'DEMO-200', 'DEMO-202'].map((k) => `ji-row-${k}`));
+  assert.equal(new Set(rows).size, rows.length, 'no issue twice');
+  assert.equal(row(mod, 'ji-row-OTHER-3'), 'OTHER-3 Review the other team\'s plan In Review');
+  assert.match(row(mod, 'ji-row-DEMO-202'), /Bob Builder$/);
+  assert.ok(!mod.says('DEMO-203'), 'done, in no sprint: nowhere');
+  // An issue opens from any section, and its bell mutes it.
+  await mod.click('ji-row-OTHER-3');
+  assert.ok(mod.says('Review the other team\'s plan') && mod.says('Assignee: Jane Doe'), mod.texts().join('|'));
+  await mod.key('escape');
+  byId(mod.render(), 'ji-row-DEMO-202').handlers.on_hover(true, mod.cx); // its bell shows under the pointer
+  await mod.click('ji-mute-DEMO-202');
+  assert.deepEqual(w.shared['jira.muted'], ['DEMO-202']);
+  // Folding: kept by the app; a click unfolds Done, and folds a section away.
   await mod.click(`ji-head-status-${SPRINT_ID}-10002`);
   assert.ok(ids(mod.render(), 'ji-row-').includes('ji-row-DEMO-104'));
   await mod.click(`ji-head-mine-${SPRINT_ID}`);
   assert.ok(!ids(mod.render(), 'ji-row-').includes('ji-row-DEMO-101'));
-  assert.deepEqual(w.shared['jira.folded'], { [`status-${SPRINT_ID}-10002`]: false, [`mine-${SPRINT_ID}`]: true });
-  // A large group shows ROWS, then "Show all".
-  const todo = `status-${SPRINT_ID}-1`;
-  const many = () => ids(mod.render(), 'ji-row-').length;
-  const before = many();
-  assert.ok(!byId(mod.render(), `ji-more-${todo}`), 'To Do has fewer than 40 here');
-  assert.ok(before > 30);
-  // Read every minute while the list shows.
-  const n = reads(fake, SPRINT).length;
+  await mod.click('ji-sec-project');
+  assert.ok(!ids(mod.render(), 'ji-row-').includes('ji-row-DEMO-200') && ids(mod.render(), 'ji-row-').includes('ji-row-DEMO-201'));
+  await mod.click(`ji-sec-sprint-${SPRINT_ID}`);
+  assert.deepEqual(ids(mod.render(), 'ji-row-'), ['OTHER-1', 'DEMO-201', 'OTHER-3'].map((k) => `ji-row-${k}`));
+  assert.deepEqual(ids(mod.render(), 'ji-sec-'), [`ji-sec-sprint-${SPRINT_ID}`, 'ji-sec-mine', 'ji-sec-project'], 'the headings stay');
+  assert.deepEqual(w.shared['jira.folded'], { [`status-${SPRINT_ID}-10002`]: false, [`mine-${SPRINT_ID}`]: true, 'sec-project': true, [`sec-sprint-${SPRINT_ID}`]: true });
+  await mod.click(`ji-sec-sprint-${SPRINT_ID}`);
+  assert.ok(!byId(mod.render(), `ji-more-status-${SPRINT_ID}-1`), 'To Do has fewer than 40 here');
+  // The sprint every minute while the list shows, the user's issues every two, the project's every five.
+  const n = [SPRINT, MINE, PROJECT].map((re) => reads(fake, re).length);
   await run([mod], 60_000);
-  assert.equal(reads(fake, SPRINT).length, n + 2);
+  assert.deepEqual([SPRINT, MINE, PROJECT].map((re) => reads(fake, re).length), [n[0] + 2, n[1], n[2]]);
+  await run([mod], 4 * 60_000);
+  assert.deepEqual([SPRINT, MINE, PROJECT].map((re) => reads(fake, re).length), [n[0] + 10, n[1] + 2, n[2] + 2]);
+  // What moves moves between the sections: an issue of the backlog given to the user is among theirs.
+  fake.jira.assign('DEMO-200', 'jane', 'bob');
+  await mod.click('ji-refresh');
+  assert.equal(row(mod, 'ji-sec-mine'), 'Assigned to me 7 more in the sprint above 4');
+  assert.equal(ids(mod.render(), 'ji-row-').filter((id) => id === 'ji-row-DEMO-200').length, 1);
   await mod.click('ji-board-open');
   assert.deepEqual(w.opened, [`${fake.url}/secure/RapidBoard.jspa?rapidView=7`]);
   await fake.close();
 });
 
-test('a board named by its project, one without sprints, one that is not there', async () => {
+test('the board: by its id or its project\'s key (the project\'s own Scrum board, not another team\'s); Kanban has no sprint section; one that is not there', async () => {
   const fake = await startFakeJira();
-  let mod = await start(configured(fake, { board: 'DEMO' }));
+  // By the project's key: Jira lists another team's board first, whose filter finds DEMO's issues too.
+  let mod = await start(configured(fake, { board: 'demo' }));
   await mod.tick();
-  assert.ok(mod.says('DEMO Sprint 12'));
+  assert.ok(mod.says('Current sprint · DEMO board') && !mod.says('OTHER team board'), mod.texts().join('|'));
+  assert.equal(reads(fake, /\/board\?projectKeyOrId=DEMO&/).length, 1);
+  assert.equal(reads(fake, SPRINT).length, 2);
+  assert.equal(reads(fake, PROJECT).length, 2, 'the project is the one named');
+  assert.equal(reads(fake, /\/board\/\d+\/project/).length, 0);
+  const byKey = ids(mod.render(), 'ji-row-');
+  // By its id: the same list, the project being where the board lives.
+  fake.requests.length = 0;
+  mod = await start(configured(fake, { board: '7' }));
+  await mod.tick();
+  assert.deepEqual(ids(mod.render(), 'ji-row-'), byKey);
+  assert.equal(reads(fake, PROJECT).length, 2);
+  assert.equal(reads(fake, /\/board\/\d+\/project/).length, 0, 'the board says where it lives');
+  // Another team's board, by its id: its filter, its project; the same sprint, other issues.
+  mod = await start(configured(fake, { board: '6' }));
+  await mod.tick();
+  assert.equal(reads(fake, new RegExp(`jql=filter = 506 AND sprint = ${SPRINT_ID} ORDER BY Rank ASC&`)).length, 2);
+  assert.equal(row(mod, `ji-sec-sprint-${SPRINT_ID}`), 'Current sprint · OTHER team board DEMO Sprint 12 · ends in 4 days 66');
+  assert.equal(row(mod, 'ji-sec-project'), 'All OTHER issues open, and not shown above 0');
+  assert.ok(mod.says('No other open issues.'));
+  assert.deepEqual(ids(mod.render(), 'ji-row-').slice(-2), ['ji-row-DEMO-201', 'ji-row-OTHER-3'], 'the user\'s, in no sprint');
+  // A Kanban board, which does not say where it lives (an older Jira): no sprint section, the project from its filter's.
+  fake.requests.length = 0;
   mod = await start(configured(fake, { board: '8' }));
   await mod.tick();
-  assert.ok(mod.says('DEMO kanban is a board without sprints (Kanban)'), mod.texts().join('|'));
+  assert.deepEqual(ids(mod.render(), 'ji-sec-'), ['ji-sec-mine', 'ji-sec-project'], mod.texts().join('|'));
+  assert.ok(mod.says('DEMO kanban · jane') && !mod.says('Current sprint') && !mod.says('Kanban'), mod.texts().join('|'));
+  assert.equal(reads(fake, /\/board\/8\/project/).length, 1);
+  assert.equal(reads(fake, /jql=.*sprint = /).length, 0);
+  assert.equal(row(mod, 'ji-sec-mine'), 'Assigned to me 10');
+  const kanban = ids(mod.render(), 'ji-row-');
+  assert.deepEqual(kanban.slice(0, 3), ['ji-row-OTHER-1', 'ji-row-DEMO-201', 'ji-row-DEMO-101'], 'the last changed first');
+  assert.equal(new Set(kanban).size, kanban.length, 'no issue twice');
+  assert.equal(row(mod, 'ji-sec-project'), `All DEMO issues open, and not shown above ${kanban.length - 10}`);
+  assert.ok(kanban.includes('ji-row-DEMO-105') && !kanban.includes('ji-row-OTHER-2') && !kanban.includes('ji-row-DEMO-104'), 'open, of the project');
   mod = await start(configured(fake, { board: '99' }));
   await mod.tick();
   assert.ok(mod.says('Could not find the board 99: Jira has nothing there'), mod.texts().join('|'));
+  assert.deepEqual(ids(mod.render(), 'ji-sec-'), ['ji-sec-mine'], 'the user\'s issues need no board');
   mod = await start(configured(fake, { board: '' }));
   await mod.tick();
   assert.ok(mod.says('Name a board (its id) or a project (its key) in the settings.'));
+  await fake.close();
+});
+
+test('a board whose filter Jira will not name: the sprint through the agile API, still the board\'s issues alone', async () => {
+  const fake = await startFakeJira();
+  fake.fail({ mode: 'status', status: 403, path: '/configuration$' });
+  const mod = await start(configured(fake));
+  await mod.tick();
+  assert.equal(reads(fake, new RegExp(`/board/7/sprint/${SPRINT_ID}/issue\\?fields=`)).length, 2, 'two pages');
+  assert.equal(reads(fake, /sprint = /).length, 0);
+  assert.equal(row(mod, `ji-sec-sprint-${SPRINT_ID}`), 'Current sprint · DEMO board DEMO Sprint 12 · ends in 4 days 64');
+  assert.ok(!ids(mod.render(), 'ji-row-').includes('ji-row-OTHER-2'));
+  await fake.close();
+});
+
+test('a project with more open issues than are read: the list says it is capped', async () => {
+  const fake = await startFakeJira(0, { backlog: 1010 });
+  const mod = await start(configured(fake));
+  await mod.tick();
+  assert.equal(reads(fake, PROJECT).length, 20, '1000 of them, 50 at a time');
+  assert.ok(mod.says('Capped: the first 1000 of 1066 open issues were read. The rest are in the browser.'), mod.texts().filter((t) => /Capped|open issues/.test(t)).join('|'));
+  assert.ok(byId(mod.render(), 'ji-more-status-project-1'), 'a long heading shows 40 and Show all');
+  const rows = ids(mod.render(), 'ji-row-');
+  assert.equal(new Set(rows).size, rows.length);
   await fake.close();
 });
 
@@ -848,7 +950,7 @@ test('popups: none at first, then one each for an assignment, a comment and a st
   const panel = await start(w);
   await run([panel], 4_000);
   assert.deepEqual(w.toasts, [], 'what is so already makes none');
-  const watchReads = () => reads(fake, /assignee = currentUser\(\)/).length;
+  const watchReads = () => reads(fake, /assignee = currentUser\(\) AND updated/).length;
   assert.equal(watchReads(), 1);
   fake.jira.assign('DEMO-104', 'jane', 'bob');
   skew += 1_000;

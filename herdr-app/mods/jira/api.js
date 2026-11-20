@@ -8,7 +8,7 @@
 
 import { appHome, readTextFile, writeTextFile, exec } from "herdr";
 import * as fs from "fs/promises";
-import { normalizeBase } from "./util.js";
+import { normalizeBase, pickBoard, PROJECT } from "./util.js";
 
 // --- settings --------------------------------------------------------------------
 
@@ -95,6 +95,13 @@ export const ISSUE_FIELDS = "summary,status,issuetype,assignee,reporter,priority
 const WATCH_FIELDS = "summary,status,assignee,comment,updated";
 const PAGE = 500; // issues a search asks for at once (Jira caps it at its own maximum, 1000 by default)
 const MOST = 2000; // a sprint's issues the list reads at most
+const MINE_MOST = 200; // the token user's open issues the list reads at most
+export const PROJECT_MOST = 1000; // a project's open issues the list reads at most: it says so when there are more
+const BOARDS_MOST = 200; // the boards showing a project that are looked through for its own
+const OPEN = "statusCategory != Done";
+
+// A failure that another try will not mend: Jira refuses, or has no such thing.
+const lasting = (e) => ["forbidden", "missing", "bad"].includes(e?.kind);
 
 // One Jira, as one set of settings reaches it.
 export class Client {
@@ -136,19 +143,62 @@ export class Client {
     return { name: me.name ?? "", key: me.key ?? "", accountId: me.accountId ?? "", displayName: me.displayName || me.name || "" };
   }
 
-  // The board the settings name: { id, name, type }. A project's is its
-  // first Scrum board (the one with sprints), else its first.
+  // The board the settings name: { id, name, type, filter, projects }.
+  // `filter` is the id of the saved filter the board shows issues by (null
+  // when Jira will not say), `projects` the keys of the projects it is for:
+  // the one the settings name, or the board's own (its location, or the
+  // projects its filter covers). A project's board is picked by `pickBoard`.
   async board(spec) {
     if (!spec) throw new JiraError("settings", "Name a board (its id) or a project (its key) in the settings.");
+    let b;
     if (spec.id) {
-      const b = await this.get(`/rest/agile/1.0/board/${spec.id}`);
-      return { id: b?.id ?? spec.id, name: b?.name ?? `Board ${spec.id}`, type: b?.type ?? "" };
+      b = (await this.get(`/rest/agile/1.0/board/${spec.id}`)) ?? {};
+    } else {
+      b = pickBoard(await this.boardsOf(spec.project), spec.project);
+      if (!b) throw new JiraError("missing", `Jira has no board of project ${spec.project}`, 404, `no board of ${spec.project}`);
     }
-    const found = await this.get(`/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(spec.project)}&maxResults=50`);
-    const boards = Array.isArray(found?.values) ? found.values : [];
-    const b = boards.find((x) => x?.type === "scrum") ?? boards[0];
-    if (!b) throw new JiraError("missing", `Jira has no board of project ${spec.project}`, 404, `no board of ${spec.project}`);
-    return { id: b.id, name: b.name ?? `Board ${b.id}`, type: b.type ?? "", project: spec.project };
+    const id = b.id ?? spec.id;
+    const filter = await this.boardFilter(id);
+    const projects = spec.project ? [spec.project] : await this.boardProjects(id, b);
+    return { id, name: b.name ?? `Board ${id}`, type: b.type ?? "", filter, projects };
+  }
+
+  // Every board that shows a project's issues, other teams' among them.
+  async boardsOf(project) {
+    const boards = [];
+    while (boards.length < BOARDS_MOST) {
+      const r = await this.get(`/rest/agile/1.0/board?projectKeyOrId=${encodeURIComponent(project)}&startAt=${boards.length}&maxResults=50`);
+      const page = Array.isArray(r?.values) ? r.values : [];
+      boards.push(...page);
+      if (!page.length || r?.isLast !== false) break;
+    }
+    return boards;
+  }
+
+  // The id of the saved filter a board shows issues by, or null when Jira
+  // will not give this token the board's configuration.
+  async boardFilter(boardId) {
+    try {
+      const id = Number((await this.get(`/rest/agile/1.0/board/${boardId}/configuration`))?.filter?.id);
+      return Number.isInteger(id) && id > 0 ? id : null;
+    } catch (e) {
+      if (lasting(e)) return null;
+      throw e;
+    }
+  }
+
+  // The keys of the projects a board is for: where it lives, when Jira says
+  // (newer versions), else the projects its filter covers.
+  async boardProjects(boardId, board) {
+    const at = board?.location?.projectKey;
+    if (PROJECT.test(at ?? "")) return [at];
+    try {
+      const r = await this.get(`/rest/agile/1.0/board/${boardId}/project?maxResults=50`);
+      return (Array.isArray(r?.values) ? r.values : []).map((p) => p?.key).filter((key) => PROJECT.test(key ?? ""));
+    } catch (e) {
+      if (lasting(e)) return [];
+      throw e;
+    }
   }
 
   // The board's active sprints: [{ id, name, state, startDate, endDate, goal }].
@@ -163,12 +213,13 @@ export class Client {
     }
   }
 
-  // Issues found by JQL, every page of them up to `most`: { issues, total }.
-  async search(jql, fields, { most = MOST, expand = "" } = {}) {
+  // The issues `path` lists (a search, or the agile API's issues of a
+  // sprint), every page of them up to `most`: { issues, total }.
+  async pages(path, most) {
     const issues = [];
     let total = 0;
     for (let at = 0; at < most;) {
-      const r = await this.get(`/rest/api/2/search?jql=${encodeURIComponent(jql)}&startAt=${at}&maxResults=${Math.min(PAGE, most - at)}&fields=${fields}${expand ? `&expand=${expand}` : ""}`);
+      const r = await this.get(`${path}&startAt=${at}&maxResults=${Math.min(PAGE, most - at)}`);
       const page = Array.isArray(r?.issues) ? r.issues : [];
       issues.push(...page);
       total = r?.total ?? issues.length;
@@ -178,11 +229,31 @@ export class Client {
     return { issues, total };
   }
 
-  // A sprint's issues in the board's order (its rank). The agile API's
-  // `sprint/<id>/issue` gives the same, but took 20 times as long on a
-  // sprint of 450 issues.
-  sprintIssues(sprintId) {
-    return this.search(`sprint = ${Number(sprintId)} ORDER BY Rank ASC`, LIST_FIELDS);
+  // Issues found by JQL.
+  search(jql, fields, { most = MOST, expand = "" } = {}) {
+    return this.pages(`/rest/api/2/search?jql=${encodeURIComponent(jql)}&fields=${fields}${expand ? `&expand=${expand}` : ""}`, most);
+  }
+
+  // A sprint's issues as the board shows them: those its filter finds, in
+  // its order (their rank). A sprint is often shared by several teams'
+  // boards, and `sprint = <id>` alone finds all of their issues. The agile
+  // API's `board/<id>/sprint/<id>/issue` gives the same more slowly, in
+  // smaller pages: the way when Jira will not say which filter the board has.
+  sprintIssues(sprintId, board) {
+    if (board?.filter) return this.search(`filter = ${Number(board.filter)} AND sprint = ${Number(sprintId)} ORDER BY Rank ASC`, LIST_FIELDS);
+    return this.pages(`/rest/agile/1.0/board/${Number(board?.id)}/sprint/${Number(sprintId)}/issue?fields=${LIST_FIELDS}`, MOST);
+  }
+
+  // The token user's open issues, in any project, the last changed first.
+  mine() {
+    return this.search(`assignee = currentUser() AND ${OPEN} ORDER BY updated DESC`, LIST_FIELDS, { most: MINE_MOST });
+  }
+
+  // The open issues of projects, by their keys, in their rank's order: the
+  // first PROJECT_MOST of them (`total` says how many there are).
+  projectIssues(keys) {
+    const list = keys.filter((key) => PROJECT.test(key)).map((key) => `"${key}"`).join(", ");
+    return this.search(`project in (${list}) AND ${OPEN} ORDER BY Rank ASC`, LIST_FIELDS, { most: PROJECT_MOST });
   }
 
   issue(key) {

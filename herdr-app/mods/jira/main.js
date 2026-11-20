@@ -1,5 +1,7 @@
-// Jira in the Herdr app: the active sprint of a board, the token user's issues
-// first and the rest grouped by status under headings that fold; an issue
+// Jira in the Herdr app: a list in three sections that fold, each issue once,
+// in the first that has it: the active sprint as a board shows it (the token
+// user's issues first, the rest grouped by status), the token user's other
+// open issues, and the other open issues of the board's project; an issue
 // (its summary, type, status, people, description with Jira's wiki markup
 // made readable, subtasks, links and comments); and four actions, each asked
 // about first: change its status (one of the transitions Jira offers the
@@ -29,7 +31,7 @@ import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui
 import { theme, home, nextCommand, settings as look, shared, setShared, props as given, notify, layout, run } from "herdr";
 import { Client, loadSettings, saveSettings, settingsPath, ready, blank } from "./api.js";
 import {
-  normalizeBase, hostOf, parseBoard, keyOf, isMe, nameOf, groups, categoryOf, ago, lastRead, timeOf, sprintEnds,
+  normalizeBase, hostOf, parseBoard, keyOf, isMe, nameOf, groups, sections, categoryOf, ago, lastRead, timeOf, sprintEnds,
   parseTimeSpent, parseDay, dayOf, startedOn, requiredFields, oneLine, explain,
 } from "./util.js";
 import { blocks } from "./wiki.js";
@@ -40,6 +42,8 @@ import { MUTED, OPEN, AT_ONCE, muted, toast, summary, panelBlock, panelSelected,
 const LIST_EVERY = 60000; // the sprint's issues while the list shows
 const BEHIND_EVERY = 180000; // the sprint's issues while another view shows over the list
 const SPRINTS_EVERY = 300000; // the board's active sprints
+const MINE_EVERY = 120000; // the token user's open issues
+const PROJECT_EVERY = 300000; // the project's open issues: many, and they matter least
 const ISSUE_EVERY = 30000; // the issue shown, and its transitions while they show
 const WATCH_EVERY = 60000; // the popups' read while the panel shows
 // While the panel does not show: the popups' read, and what the view shows
@@ -209,9 +213,12 @@ export default class Jira extends View {
   get me() { return this.entry("who")?.data ?? null; }
   meName() { return this.me?.displayName || this.me?.name || ""; }
 
-  // The board, once found: { id, name, type }.
+  // The board, once found: { id, name, type, filter, projects }.
   get board() { return this.entry("board", this.settings?.board ?? "")?.data ?? null; }
   sprints() { return this.board ? this.entry("sprints", String(this.board.id))?.data?.sprints ?? [] : []; }
+  // What a sprint's issues are kept by: they are the board's view of it.
+  sprintKey(sprint) { return `${this.board?.id}/${sprint.id}`; }
+  projectKey() { return (this.board?.projects ?? []).join(","); }
   issueOf(key) { return this.entry("issue", key)?.data ?? null; }
 
   // An entry's error as the view shows it: none while it fails quietly.
@@ -224,13 +231,14 @@ export default class Jira extends View {
     this.src?.read("who", "", (c) => c.myself(), cx, { every: this.me ? Infinity : 0, ...opts });
   }
 
-  // The board, then its sprints, then their issues: each good read starts
-  // the next when it is due, so a first look needs no second tick.
+  // The board, then its sprints and its project's issues, then the sprints'
+  // issues: each good read starts the next when it is due, so a first look
+  // needs no second tick.
   readBoard(cx, opts = {}) {
     const text = this.settings?.board ?? "", spec = parseBoard(text);
     if (!spec) return;
     this.src?.read("board", text, (c) => c.board(spec), cx, {
-      every: this.board ? Infinity : 0, ...opts, then: (_e, cx) => this.readSprints(cx),
+      every: this.board ? Infinity : 0, ...opts, then: (_e, cx) => { this.readSprints(cx); this.readProject(cx); },
     });
   }
 
@@ -244,9 +252,28 @@ export default class Jira extends View {
   }
 
   readIssues(sprint, cx, opts = {}) {
-    this.src?.read("issues", String(sprint.id), (c) => c.sprintIssues(sprint.id), cx, {
+    const board = this.board;
+    if (!board) return;
+    this.src?.read("issues", this.sprintKey(sprint), (c) => c.sprintIssues(sprint.id, board), cx, {
       every: this.slow(this.view().kind === "list" ? LIST_EVERY : BEHIND_EVERY), ...opts,
     });
+  }
+
+  // The token user's open issues, and the open issues of the board's
+  // project: read less often than the sprint, but as soon as it after a
+  // failure, so that an error does not outstay what caused it.
+  readMine(cx, opts = {}) {
+    this.src?.read("mine", "", (c) => c.mine(), cx, { every: this.pace("mine", "", MINE_EVERY), ...opts });
+  }
+
+  readProject(cx, opts = {}) {
+    const keys = this.board?.projects ?? [];
+    if (!keys.length) return;
+    this.src?.read("project", this.projectKey(), (c) => c.projectIssues(keys), cx, { every: this.pace("project", this.projectKey(), PROJECT_EVERY), ...opts });
+  }
+
+  pace(kind, key, every) {
+    return this.slow(this.entry(kind, key)?.failures ? Math.min(every, LIST_EVERY) : every);
   }
 
   // How often a thing is read that is read every `every` while the panel
@@ -283,7 +310,11 @@ export default class Jira extends View {
     if (!this.me) this.readWho(cx, force);
     if (!this.board) this.readBoard(cx, force);
     this.readSprints(cx, force);
-    if (view.kind === "list") for (const s of this.sprints()) this.readIssues(s, cx, force);
+    if (view.kind === "list") {
+      for (const s of this.sprints()) this.readIssues(s, cx, force);
+      this.readMine(cx, force);
+      this.readProject(cx, force);
+    }
     if (view.key) this.readIssue(view.key, cx, force);
     if (view.kind === "status") this.readTransitions(view.key, cx, force);
   }
@@ -299,6 +330,8 @@ export default class Jira extends View {
     this.readBoard(cx);
     this.readSprints(cx);
     for (const s of this.sprints()) this.readIssues(s, cx);
+    this.readMine(cx);
+    this.readProject(cx);
     if (view.key) this.readIssue(view.key, cx, { every: this.slow(ISSUE_EVERY) });
     if (view.kind === "status") this.readTransitions(view.key, cx, { every: this.slow(ISSUE_EVERY) });
   }
@@ -488,6 +521,8 @@ export default class Jira extends View {
     this.readIssue(key, cx, { force: true });
     this.readTransitions(key, cx, { force: true });
     for (const s of this.sprints()) this.readIssues(s, cx, { force: true });
+    this.readMine(cx, { force: true });
+    this.readProject(cx, { force: true });
   }
 
   // Runs an action against Jira: `busy` while it runs, then a notice of
@@ -628,7 +663,7 @@ export default class Jira extends View {
   }
 
   refreshButton(t) {
-    const loading = this.src?.busy(["issues", "issue", "sprints", "board", "transitions"]);
+    const loading = this.src?.busy(["issues", "mine", "project", "issue", "sprints", "board", "transitions"]);
     return div().id("ji-refresh").size(24).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim)
       .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Refresh")
       .on_click((_e, cx) => { this.refresh(cx); cx.notify(); })
@@ -709,19 +744,10 @@ export default class Jira extends View {
     cx.notify();
   }
 
-  // A heading of the list and its rows (the first ROWS, then "Show all").
-  group(id, title, category, issues, t, mutes, mine) {
-    const folded = this.isFolded(id, category), hid = `ji-head-${id}`;
-    const rows = [h_flex().id(hid).h(32).flex_none().mt(4).pl(4).pr(8).gap(8).items_center().rounded(7)
-      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(folded ? "Show these issues" : "Fold them away")
-      .on_click((_e, cx) => this.fold(id, category, cx))
-      .child(svg(icon(folded ? "chevron-right" : "chevron-down")).size(14).flex_none().text_color(t.muted))
-      .child(mine ? div().flex_none().font_semibold().child(title) : statusPill({ name: title, statusCategory: { key: category } }, t))
-      .child(div().flex_1())
-      .child(div().flex_none().text_size(12).text_color(t.dim).child(String(issues.length)))];
-    if (folded) return rows;
+  // The first ROWS of a heading's issues, then "Show all".
+  rowsOf(id, issues, t, mutes, mine) {
     const all = this.expanded.has(id), shown = all ? issues : issues.slice(0, ROWS);
-    rows.push(...shown.map((issue) => this.issueRow(issue, t, mutes, mine)));
+    const rows = shown.map((issue) => this.issueRow(issue, t, mutes, mine));
     if (!all && issues.length > ROWS) {
       rows.push(div().id(`ji-more-${id}`).h(28).flex_none().px(10).flex().items_center().text_size(12).text_color(t.accent).cursor_pointer()
         .hover((s) => s.bg(t.hover)).rounded(6)
@@ -731,27 +757,107 @@ export default class Jira extends View {
     return rows;
   }
 
-  // A sprint: its heading, then the token user's issues, then the rest by status.
-  sprintPart(sprint, t, now, mutes) {
-    const entry = this.entry("issues", String(sprint.id)), data = entry?.data;
-    const ends = sprintEnds(sprint, now);
-    const rows = [v_flex().id(`ji-sprint-${sprint.id}`).flex_none().mt(6).px(6).py(4).gap(1)
-      .when(Boolean(oneLine(sprint.goal)), (el) => el.tooltip(`Goal: ${oneLine(sprint.goal)}`))
-      .child(h_flex().gap(8).items_center()
-        .child(svg(icon("sprint")).size(15).flex_none().text_color(t.muted))
-        .child(div().flex_1().min_w(0).truncate().text_size(16).font_semibold().child(sprint.name ?? `Sprint ${sprint.id}`))
-        .when(Boolean(data), (el) => el.child(div().flex_none().text_size(12).text_color(t.dim).child(`${data.issues.length}${data.total > data.issues.length ? ` of ${data.total}` : ""}`))))
-      .when(Boolean(ends), (el) => el.child(div().pl(23).text_size(11).text_color(t.dim).child(ends)))];
-    rows.push(...this.status(entry, `read the issues of ${sprint.name ?? "the sprint"}`, t, now, `issues-${sprint.id}`, "Reading the sprint…"));
-    if (!data) return rows;
-    if (!data.issues.length) { rows.push(this.line("No issues in this sprint.", t)); return rows; }
-    const g = groups(data.issues, this.me);
-    if (this.me) {
-      rows.push(...(g.mine.length ? this.group(`mine-${sprint.id}`, "Assigned to you", "indeterminate", g.mine, t, mutes, true)
-        : [this.line(`None of it is assigned to you (${this.meName()}).`, t)]));
-    }
-    for (const s of g.rest) rows.push(...this.group(`status-${sprint.id}-${s.id}`, s.name, s.category, s.issues, t, mutes, false));
+  // A heading within a section and its rows.
+  group(id, title, category, issues, t, mutes, mine) {
+    const folded = this.isFolded(id, category), hid = `ji-head-${id}`;
+    const rows = [h_flex().id(hid).h(32).flex_none().mt(4).pl(4).pr(8).gap(8).items_center().rounded(7)
+      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(folded ? "Show these issues" : "Fold them away")
+      .on_click((_e, cx) => this.fold(id, category, cx))
+      .child(svg(icon(folded ? "chevron-right" : "chevron-down")).size(14).flex_none().text_color(t.muted))
+      .child(mine ? div().flex_none().font_semibold().child(title) : statusPill({ name: title, statusCategory: { key: category } }, t))
+      .child(div().flex_1())
+      .child(div().flex_none().text_size(12).text_color(t.dim).child(String(issues.length)))];
+    if (!folded) rows.push(...this.rowsOf(id, issues, t, mutes, mine));
     return rows;
+  }
+
+  // A section of the list: its heading (a title, a dim line under it, how
+  // many issues it has), which folds it, and under it what `rows()` gives.
+  section(id, { mark, title, sub = "", count = "", tip = "" }, t, rows) {
+    const fid = `sec-${id}`, folded = this.isFolded(fid, "");
+    const head = h_flex().id(`ji-sec-${id}`).flex_none().mt(8).pl(4).pr(8).py(5).gap(8).items_start().rounded(7)
+      .cursor_pointer().hover((s) => s.bg(t.hover)).tooltip(tip || (folded ? "Show this section" : "Fold it away"))
+      .on_click((_e, cx) => this.fold(fid, "", cx))
+      .child(svg(icon(folded ? "chevron-right" : "chevron-down")).size(14).mt(3).flex_none().text_color(t.muted))
+      .child(svg(icon(mark)).size(14).mt(3).flex_none().text_color(t.muted))
+      .child(v_flex().flex_1().min_w(0).gap(1)
+        .child(div().truncate().text_size(14).font_semibold().child(title))
+        .when(Boolean(sub), (el) => el.child(div().truncate().text_size(11).text_color(t.dim).child(sub))))
+      .child(div().flex_none().mt(2).text_size(12).text_color(t.dim).child(String(count)));
+    return folded ? [head] : [head, ...rows()];
+  }
+
+  // The sprint as the board shows it: the token user's issues, then the rest by status.
+  sprintPart(sprint, t, now, mutes) {
+    const entry = this.entry("issues", this.sprintKey(sprint)), data = entry?.data, board = this.board;
+    const name = sprint.name ?? `Sprint ${sprint.id}`, goal = oneLine(sprint.goal);
+    return this.section(`sprint-${sprint.id}`, {
+      mark: "sprint", title: `Current sprint · ${board.name}`, sub: [name, sprintEnds(sprint, now)].filter(Boolean).join(" · "),
+      count: data ? `${data.issues.length}${data.total > data.issues.length ? ` of ${data.total}` : ""}` : "",
+      tip: goal ? `Goal: ${goal}` : "",
+    }, t, () => {
+      const rows = this.status(entry, `read the issues of ${name}`, t, now, `issues-${sprint.id}`, "Reading the sprint…");
+      if (!data) return rows;
+      if (!data.issues.length) { rows.push(this.line(`${board.name} shows no issues in this sprint.`, t)); return rows; }
+      const g = groups(data.issues, this.me);
+      if (this.me) {
+        rows.push(...(g.mine.length ? this.group(`mine-${sprint.id}`, "Assigned to you", "indeterminate", g.mine, t, mutes, true)
+          : [this.line(`None of it is assigned to you (${this.meName()}).`, t)]));
+      }
+      for (const s of g.rest) rows.push(...this.group(`status-${sprint.id}-${s.id}`, s.name, s.category, s.issues, t, mutes, false));
+      return rows;
+    });
+  }
+
+  // The issues the sprint sections show, a list for each sprint, or null
+  // while that is not known yet: the sections under them wait for it, so
+  // that no issue shows there first and moves up after.
+  shownAbove() {
+    const settled = (entry) => (entry?.data ? true : Boolean(entry?.loud()));
+    if (!parseBoard(this.settings.board)) return [];
+    const board = this.board;
+    if (!board) return settled(this.entry("board", this.settings.board)) ? [] : null;
+    const sprints = this.entry("sprints", String(board.id));
+    if (!settled(sprints)) return null;
+    const lists = [];
+    for (const sprint of this.sprints()) {
+      const entry = this.entry("issues", this.sprintKey(sprint));
+      if (!settled(entry)) return null;
+      lists.push(entry.data?.issues ?? []);
+    }
+    return lists;
+  }
+
+  // The token user's open issues that no sprint above shows, the last changed first.
+  minePart(issues, above, t, now, mutes) {
+    const entry = this.entry("mine");
+    return this.section("mine", {
+      mark: "user", title: "Assigned to me", count: entry?.data ? issues.length : "",
+      sub: above ? `${above} more in the sprint above` : "",
+    }, t, () => {
+      const rows = this.status(entry, "read the issues assigned to you", t, now, "mine", "Reading your issues…");
+      if (entry?.data && !issues.length) rows.push(this.line(above ? "Nothing else that is open is assigned to you." : "No open issue is assigned to you.", t));
+      rows.push(...this.rowsOf("mine", issues, t, mutes, true));
+      if (entry?.data?.total > entry?.data?.issues.length) rows.push(this.line(`The ${entry.data.issues.length} last changed of your ${entry.data.total} open issues.`, t));
+      return rows;
+    });
+  }
+
+  // The project's open issues that no section above shows, by status.
+  projectPart(issues, t, now, mutes) {
+    const board = this.board, keys = board.projects ?? [];
+    if (!keys.length) return [this.line(`Jira names no project for ${board.name}: its other issues are not listed.`, t)];
+    const entry = this.entry("project", this.projectKey()), data = entry?.data;
+    return this.section("project", {
+      mark: "task", title: `All ${keys.join(", ")} issues`, sub: "open, and not shown above", count: data ? issues.length : "",
+    }, t, () => {
+      const rows = this.status(entry, `read the issues of ${keys.join(", ")}`, t, now, "project", "Reading the project…");
+      if (!data) return rows;
+      if (data.total > data.issues.length) rows.push(this.line(`Capped: the first ${data.issues.length} of ${data.total} open issues were read. The rest are in the browser.`, t, t.ansi3));
+      if (!issues.length) rows.push(this.line("No other open issues.", t));
+      for (const s of groups(issues, null).rest) rows.push(...this.group(`status-project-${s.id}`, s.name, s.category, s.issues, t, mutes, false));
+      return rows;
+    });
   }
 
   body(id, rows) {
@@ -763,7 +869,7 @@ export default class Jira extends View {
 
   renderList(t, now) {
     const host = hostOf(this.settings.url), board = this.board, me = this.me;
-    const rows = [...this.cards(t)];
+    const rows = [...this.cards(t)], mutes = this.mutes();
     const whoError = this.errorOf(this.entry("who"), "ask who this token is");
     if (whoError) rows.push(this.line(whoError, t, t.blocked));
     const spec = parseBoard(this.settings.board);
@@ -774,10 +880,15 @@ export default class Jira extends View {
     } else {
       const entry = this.entry("sprints", String(board.id));
       rows.push(...this.status(entry, `read the sprints of ${board.name}`, t, now, "sprints", "Reading the sprint…"));
-      if (entry?.data?.none) rows.push(this.line(`${board.name} is a board without sprints (Kanban): name a Scrum board, or its project, in the settings.`, t, t.ansi3));
-      else if (entry?.data && !entry.data.sprints.length) rows.push(this.line(`${board.name} has no active sprint.`, t));
-      const mutes = this.mutes();
+      // A board without sprints (Kanban) has no sprint section.
+      if (entry?.data && !entry.data.none && !entry.data.sprints.length) rows.push(this.line(`${board.name} has no active sprint.`, t));
       for (const sprint of this.sprints()) rows.push(...this.sprintPart(sprint, t, now, mutes));
+    }
+    const above = this.shownAbove();
+    if (above) {
+      const parts = sections(above, this.entry("mine")?.data?.issues, board ? this.entry("project", this.projectKey())?.data?.issues : []);
+      rows.push(...this.minePart(parts.mine, parts.above, t, now, mutes));
+      if (board) rows.push(...this.projectPart(parts.project, t, now, mutes));
     }
     return [
       this.header(t, [
