@@ -1692,10 +1692,18 @@ async function merged(outcome, state) {
   assert.deepEqual(panel(mod).calls.border_color, ['#blocked']);
 }
 
-// A failed push: the branch is merged; a running supervisor can be asked
-// about the push, with the commit the merge landed at.
+// A failed push that Corgi told the running supervisor of: the card says so,
+// and offers no second line.
 {
-  const outcome = { result: 'push-failed', message: `Merged ${BRANCH} into main, but the push failed: main is protected`, commit: 'abc1234', reason: null, error: 'main is protected' };
+  const outcome = { result: 'push-failed', message: `Merged ${BRANCH} into main, but the push failed: main is protected`, commit: 'abc1234', reason: null, error: 'main is protected', supervisor: null, told: 'supervisor' };
+  const { mod } = await merged(outcome);
+  assert.deepEqual(texts(panel(mod)), ['w-cache: push-failed', outcome.message, 'The supervisor has been told.', 'Dismiss']);
+}
+
+// A failed push whose line Corgi could not write: the running supervisor can
+// be asked about the push, with the commit the merge landed at.
+{
+  const outcome = { result: 'push-failed', message: `Merged ${BRANCH} into main, but the push failed: main is protected`, commit: 'abc1234', reason: null, error: 'main is protected', told: 'failed' };
   const { w, mod } = await merged(outcome);
   assert.deepEqual(texts(panel(mod)), ['w-cache: push-failed', outcome.message, 'Ask supervisor to fix', 'Dismiss']);
   assert.deepEqual(panel(mod).calls.border_color, ['#ansi3'], 'merged, but not pushed');
@@ -2393,7 +2401,7 @@ const localRuns = (w, verb) => w.calls.filter((c) => c.command === CORGI && c.ar
 
   // A push that failed: lab's supervisor runs (this computer's does not),
   // so it can be asked, on lab.
-  const failed = { result: 'push-failed', message: 'Merged, but the push failed', commit: 'def5678', reason: null, error: 'rejected: fetch first', supervisor: null };
+  const failed = { result: 'push-failed', message: 'Merged, but the push failed', commit: 'def5678', reason: null, error: 'rejected: fetch first', supervisor: null, told: 'failed' };
   const v = labWindow({ answers: { merge: (args) => (args.includes('--ask-supervisor') ? { result: 'asked', message: 'Asked weather-supervisor' } : failed) } });
   const other = await projects(v);
   click(other.render(), 'merge-lab/t3', other.cx);

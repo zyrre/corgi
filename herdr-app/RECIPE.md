@@ -405,7 +405,9 @@ The `projects` view fills its block on `chrome`, text 13 px:
     outline's color, semibold, Corgi's message, and its buttons, 22 px
     high: `Pull, merge + push` or `Merge + push without fetching` when
     Corgi offers it, `Ask supervisor to fix` when it failed and the
-    project's supervisor runs, and `Dismiss`.
+    project's supervisor runs (not after a push that failed, which Corgi
+    told the supervisor of: `The supervisor has been told.` shows then), and
+    `Dismiss`.
     After `merged` it asks, under Corgi's message, `Close <worker> and
     remove its worktree?` with `Keep` (`raised`) and `Close` (`solid`, with
     a 1 px outline in `solid` that turns `foreground` while it holds the
@@ -603,7 +605,12 @@ The `projects` view fills its block on `chrome`, text 13 px:
   refusal) ends it too: the card goes at once and nothing is closed. After
   a close the status is read again. `corgi close` refuses a supervisor and
   an agent Corgi did not start.
-- `Ask supervisor to fix` is offered on a failed push, a failed fetch, and
+- A failed push (`push-failed`) is told to the project's supervisor by
+  Corgi itself. When `told` is `supervisor` the card adds `The supervisor
+  has been told.` and offers no `Ask supervisor to fix`, which would send the
+  same line twice; `Dismiss` stays.
+- `Ask supervisor to fix` is offered on a failed push whose line Corgi could
+  not write (`told` is not `supervisor`), a failed fetch, and
   a merge that failed or was refused before it started (uncommitted changes
   in the primary checkout, say): whenever Corgi's answer has an `error`,
   and the project's supervisor is running (`supervisor` in the status of
@@ -742,7 +749,11 @@ The `projects` view fills its block on `chrome`, text 13 px:
   | asked, message, commit, reason, error}`: `reason` is why it was refused
   (`unavailable`, `behind`, `fetch-failed`, `failed`, `no-agent`,
   `no-supervisor`), `error` the failure alone when a supervisor could fix
-  it, and `asked` what `--ask-supervisor` answers. `corgi --version` prints
+  it, and `asked` what `--ask-supervisor` answers. `told`, on `push-failed`
+  only, says where Corgi's own line about the push went: `supervisor` (a
+  running supervisor's inbox), `kept` (a supervisor that does not run now has
+  it for its next turn), `nobody` (the project has none) or `failed` (it
+  could not be written); it is null for every other result. `corgi --version` prints
   `corgi 0.2.3 (5b50895)`, and `--version --json` `{version, commit, dirty,
   source}`.
 
