@@ -27,6 +27,24 @@ export function parseBoard(text) {
   return null;
 }
 
+// A project's key, as it stands in JQL.
+export const PROJECT = /^[A-Z][A-Z0-9_]*$/;
+
+// A project's board, of the boards Jira lists for it (every board whose
+// filter finds an issue of the project, other teams' among them): a Scrum
+// board (the one with sprints) before another, and of those the one that
+// lives in the project (`location.projectKey`, which newer Jiras give) before
+// one that says nothing, before one that lives elsewhere; else the first.
+export function pickBoard(boards, project) {
+  const score = (b) => {
+    const at = b?.location?.projectKey;
+    return (b?.type === "scrum" ? 3 : 0) + (at ? (String(at).toUpperCase() === project ? 1 : -1) : 0);
+  };
+  let best = null;
+  for (const b of boards ?? []) if (b && (!best || score(b) > score(best))) best = b;
+  return best;
+}
+
 // --- issue keys ------------------------------------------------------------------
 
 export const KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
@@ -82,6 +100,18 @@ export function groups(issues, me) {
   const sortedMine = mine.map((issue, i) => ({ issue, i })).sort((a, b) => rank(categoryOf(a.issue)) - rank(categoryOf(b.issue)) || a.i - b.i).map((x) => x.issue);
   const sortedRest = [...rest.values()].map((g, i) => ({ g, i })).sort((a, b) => rank(a.g.category) - rank(b.g.category) || a.i - b.i).map((x) => x.g);
   return { mine: sortedMine, rest: sortedRest };
+}
+
+// The list's three sections, each issue once, in the first that has it: the
+// sprints' issues as they are, then of the token user's those in no sprint
+// shown, then of the project's those in neither. { mine, project, above }:
+// `above` counts the token user's open issues the sprints show already.
+export function sections(sprints, mine, project) {
+  const seen = new Set();
+  for (const issues of sprints ?? []) for (const issue of issues ?? []) if (issue?.key) seen.add(issue.key);
+  const fresh = (issues) => (issues ?? []).filter((issue) => issue?.key && !seen.has(issue.key) && seen.add(issue.key));
+  const own = fresh(mine);
+  return { mine: own, above: (mine ?? []).filter((issue) => issue?.key).length - own.length, project: fresh(project) };
 }
 
 // --- time --------------------------------------------------------------------------

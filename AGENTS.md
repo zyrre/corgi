@@ -962,7 +962,10 @@ that check fail, or the copy does not reach it.
 The test runs the mod under Node with stand-ins as the Jenkins mod's does,
 against `tests/fake-jira.mjs`: project `DEMO`, Scrum board 7 with sprint
 41 (64 issues, served 50 at a time, so the list reads two pages), Kanban
-board 8, transitions with one (`Approve`) whose screen requires a
+board 8 (which, as an older Jira's, does not say where it lives), another
+team's Scrum board 6 of project `OTHER` (listed first for `DEMO`, sharing
+sprint 41 with two issues of its own), issues of both projects in no
+sprint (`startFakeJira(0, { backlog: n })` adds n more), transitions with one (`Approve`) whose screen requires a
 resolution, and two tokens (`fake-token`, Jane Doe, may act;
 `viewer-token` only reads; an assignment it may not make is 401, as Jira
 Server answers one). `assign`, `comment` and `move` (and `POST
@@ -978,10 +981,32 @@ brief may permit a read-only check with the person's token from `zsh
 
 What its choices rest on:
 
-- The list reads a sprint with `/rest/api/2/search?jql=sprint = <id> ORDER
-  BY Rank ASC`, not the agile API's `sprint/<id>/issue`: on a real sprint
-  of 449 issues (2026-11-17) the agile one took 5 s per 200, the search
-  0.3 s for all of them.
+- The list has three sections, each issue once, in the first that has it
+  (`util.js` `sections`): the sprint as the board shows it, the token
+  user's other open issues, the other open issues of the board's project.
+  The lower two wait until the sprint's issues are read or have failed
+  (`shownAbove`), so no issue shows below first and moves up.
+- The list reads a sprint with `/rest/api/2/search?jql=filter = <the
+  board's filter> AND sprint = <id> ORDER BY Rank ASC`. The filter's id
+  comes from `board/<id>/configuration`, read once with the board. `sprint
+  = <id>` alone is every board's view of the sprint at once: on a real
+  Jira (2026-11-20) one active sprint held 496 issues of 18 projects, of
+  which the configured board shows 37, all of one project. The search is
+  used, not the agile API's `sprint/<id>/issue`, for its speed (2026-11-17,
+  449 issues: 5 s per 200 against 0.3 s for all); the agile API's
+  `board/<id>/sprint/<id>/issue` is the fallback when Jira refuses the
+  configuration.
+- That real Jira (Server 11.3) gives a board no `location`: a project's
+  board cannot be told from another team's there (`pickBoard` falls back
+  to the first Scrum board), and a board given by id gets its project from
+  `board/<id>/project`. Test both shapes: the fake's boards 6 and 7 have a
+  location, board 8 has none.
+- An entry of a sprint's issues is kept by board and sprint
+  (`sprintKey`): two boards show different issues of one sprint.
+- The token user's issues are read every 2 minutes and the project's every
+  5 (up to 1000, a line says when capped), but every minute while failing
+  (`pace`): a failed read waits at least its usual time, and an error that
+  stays five minutes after Jira is back reads as broken.
 - Its tab bar lines go in as the Media mod's do: a list line above
   `this.syncPanel(…)`, which stays as it was, and the button before the
   window buttons. So Jira, Jenkins and Media install in any order, each

@@ -1,15 +1,21 @@
 // A made-up Jira (Server and Data Center's REST API) for the Jira mod's tests
 // and for looking at the mod in a window: a project DEMO with a Scrum board
-// (7) whose active sprint has 64 issues, a Kanban board (8) without sprints,
-// issues with descriptions in wiki markup, comments, subtasks, links,
-// transitions (one whose screen requires a field) and work logged, behind
-// the paths the mod asks a real Jira for: `/rest/api/2/myself`, `search`
-// (by sprint, and the token user's issues updated lately with their
-// changelog), `issue/<key>`, its `transitions`, `assignee`, `comment` and
-// `worklog`, and the agile API's `board` and `board/<id>/sprint`. Nothing
-// here reaches a real Jira.
+// (7) whose filter is the project and whose active sprint has 64 issues of
+// it, a Kanban board (8) without sprints, and another team's Scrum board (6,
+// of project OTHER, whose filter finds DEMO's issues too and which Jira
+// lists first for DEMO) sharing that sprint, in which OTHER has two issues;
+// a few issues of both projects in no sprint; issues with descriptions in
+// wiki markup, comments, subtasks, links, transitions (one whose screen
+// requires a field) and work logged, behind the paths the mod asks a real
+// Jira for: `/rest/api/2/myself`, `search` (a board's filter and a sprint,
+// the token user's open issues, a project's open issues, and the token
+// user's issues updated lately with their changelog), `issue/<key>`, its
+// `transitions`, `assignee`, `comment` and `worklog`, and the agile API's
+// `board`, `board/<id>`, its `configuration`, `project`, `sprint` and
+// `sprint/<id>/issue`. Boards 7 and 6 say where they live (`location`),
+// board 8 does not, as an older Jira's. Nothing here reaches a real Jira.
 //
-//   node fake-jira.mjs [port]     serves until stopped; prints its address
+//   node fake-jira.mjs [port] [backlog]   serves until stopped; prints its address
 //
 // Two users, by a personal access token as Bearer auth:
 //   jane / fake-token      may read, move, assign, comment and log work
@@ -69,10 +75,13 @@ const TYPE = {
 };
 const PRIORITY = ['Highest', 'High', 'Medium', 'Low'].map((name, i) => ({ id: String(i + 1), name }));
 
+// `projects`: those its filter (`filter`, a saved filter's id) finds issues of.
 export const BOARDS = [
-  { id: 7, name: 'DEMO board', type: 'scrum', project: 'DEMO' },
-  { id: 8, name: 'DEMO kanban', type: 'kanban', project: 'DEMO' },
+  { id: 6, name: 'OTHER team board', type: 'scrum', projects: ['OTHER', 'DEMO'], filter: 506, location: 'OTHER' },
+  { id: 7, name: 'DEMO board', type: 'scrum', projects: ['DEMO'], filter: 507, location: 'DEMO' },
+  { id: 8, name: 'DEMO kanban', type: 'kanban', projects: ['DEMO'], filter: 508 },
 ];
+const PROJECTS = { DEMO: { id: '10100', key: 'DEMO', name: 'Demo' }, OTHER: { id: '10200', key: 'OTHER', name: 'Other team' } };
 export const SPRINT_ID = 41;
 
 const SUMMARIES = [
@@ -108,22 +117,23 @@ Nothing here is real (/)
 {panel}`;
 
 // The made-up Jira, with its own clock (Date.now, which the tests move).
-export function makeJira() {
+// `backlog`: so many more open DEMO issues in no sprint (DEMO-1001 and on).
+export function makeJira({ backlog = 0 } = {}) {
   const issues = new Map();
   let ids = 10000, histories = 500, comments = 900, worklogs = 300;
   const now = () => Date.now();
   const stamp = (ms) => new Date(ms).toISOString().replace('Z', '+0000');
   const base = now();
 
-  const add = (n, { type = 'Story', status = 'To Do', assignee = null, reporter = 'alice', summary, description = '', parent = null, priority = 2, age = 3 } = {}) => {
-    const key = `DEMO-${n}`;
+  const add = (n, { type = 'Story', status = 'To Do', assignee = null, reporter = 'alice', summary, description = '', parent = null, priority = 2, age = 3, project = 'DEMO', sprint = SPRINT_ID } = {}) => {
+    const key = `${project}-${n}`;
     const issue = {
-      id: String(ids++), key, sprint: SPRINT_ID,
+      id: String(ids++), key, sprint,
       fields: {
         summary: summary ?? SUMMARIES[n % SUMMARIES.length], issuetype: TYPE[type], status: STATUS[status],
         assignee: user(assignee), reporter: user(reporter), priority: PRIORITY[priority],
         description: description || null, created: stamp(base - age * DAY), updated: stamp(base - age * DAY / 2),
-        project: { id: '10100', key: 'DEMO', name: 'Demo' },
+        project: PROJECTS[project],
         parent: parent ? { id: '', key: parent } : undefined,
       },
       links: [], comments: [], histories: [], worklogs: [],
@@ -155,9 +165,16 @@ export function makeJira() {
     { id: String(comments++), author: user('jane'), body: 'Yes: see the second step.\n{noformat}folded by default{noformat}', created: stamp(base - DAY) },
   );
   main.worklogs.push({ id: String(worklogs++), author: user('jane'), timeSpent: '2h', timeSpentSeconds: 7200, started: stamp(base - DAY), comment: '' });
-  // One issue in no sprint, assigned to nobody.
-  const outside = add(200, { status: 'To Do', summary: 'An issue in no sprint' });
-  outside.sprint = null;
+  // In no sprint: one of nobody's, one of Jane's at work, one of Bob's, one done.
+  add(200, { sprint: null, summary: 'An issue in no sprint' });
+  add(201, { sprint: null, status: 'In Progress', assignee: 'jane', summary: 'Tidy the backlog', age: 2 });
+  add(202, { sprint: null, assignee: 'bob', type: 'Bug', summary: 'The export misses the last row' });
+  add(203, { sprint: null, status: 'Done', assignee: 'jane', summary: 'Done long ago, in no sprint' });
+  // Another team's, two of them in the same sprint, which board 7 does not show.
+  add(1, { project: 'OTHER', assignee: 'jane', summary: 'Help the other team with their import', age: 1 });
+  add(2, { project: 'OTHER', assignee: 'bob', status: 'In Progress', summary: 'The other team\'s own work' });
+  add(3, { project: 'OTHER', sprint: null, assignee: 'jane', status: 'In Review', summary: 'Review the other team\'s plan', age: 4 });
+  for (let n = 1001; n <= 1000 + backlog; n++) add(n, { sprint: null, assignee: n % 3 ? 'bob' : null, summary: `Backlog item ${n}` });
 
   const LINK = { Blocks: { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' } };
   const brief = (key) => {
@@ -201,6 +218,19 @@ export function makeJira() {
     touch(i);
   };
 
+  // A board as the agile API gives it: where it lives only when it says.
+  const boardOf = (b) => ({ id: b.id, self: '', name: b.name, type: b.type, ...(b.location ? { location: { projectId: Number(PROJECTS[b.location].id), projectKey: b.location, projectTypeKey: 'software', name: `${PROJECTS[b.location].name} (${b.location})` } } : {}) });
+  // What a board's saved filter finds: the issues of its projects, in their rank's order.
+  const inFilter = (id) => {
+    const b = BOARDS.find((x) => x.filter === id);
+    return [...issues.values()].filter((i) => b?.projects.includes(i.fields.project.key));
+  };
+  // A page of issues, 50 at most, as a search and the agile API give one.
+  const paged = (found, q) => {
+    const startAt = Number(q.get('startAt') ?? 0), max = Math.min(Number(q.get('maxResults') ?? 50), 50);
+    return { expand: 'schema,names', startAt, maxResults: max, total: found.length, issues: found.slice(startAt, startAt + max).map((i) => shape(i, q.get('fields'), q.get('expand'))) };
+  };
+
   return {
     issues,
     stamp,
@@ -231,12 +261,23 @@ export function makeJira() {
       if (method === 'GET' && p === '/rest/api/2/serverInfo') return json(200, { version: '11.3.0', deploymentType: 'Server' });
       if (method === 'GET' && (m = /^\/rest\/agile\/1\.0\/board\/(\d+)$/.exec(p))) {
         const b = BOARDS.find((x) => x.id === Number(m[1]));
-        return b ? json(200, { id: b.id, self: '', name: b.name, type: b.type }) : refuse(404, `Board does not exist or you do not have permission to see it.`);
+        return b ? json(200, boardOf(b)) : refuse(404, `Board does not exist or you do not have permission to see it.`);
+      }
+      if (method === 'GET' && (m = /^\/rest\/agile\/1\.0\/board\/(\d+)\/(configuration|project)$/.exec(p))) {
+        const b = BOARDS.find((x) => x.id === Number(m[1]));
+        if (!b) return refuse(404, 'Board does not exist or you do not have permission to see it.');
+        if (m[2] === 'configuration') return json(200, { id: b.id, name: b.name, type: b.type, self: '', filter: { id: String(b.filter), self: '' }, columnConfig: { columns: [] }, ranking: { rankCustomFieldId: 10005 } });
+        return json(200, { maxResults: 50, startAt: 0, total: b.projects.length, isLast: true, values: b.projects.map((key) => ({ self: '', ...PROJECTS[key], projectTypeKey: 'software' })) });
+      }
+      if (method === 'GET' && (m = /^\/rest\/agile\/1\.0\/board\/(\d+)\/sprint\/(\d+)\/issue$/.exec(p))) {
+        const b = BOARDS.find((x) => x.id === Number(m[1]));
+        if (!b) return refuse(404, 'Board does not exist or you do not have permission to see it.');
+        return json(200, paged(inFilter(b.filter).filter((i) => i.sprint === Number(m[2])), q));
       }
       if (method === 'GET' && p === '/rest/agile/1.0/board') {
         const project = q.get('projectKeyOrId');
-        const found = BOARDS.filter((b) => !project || b.project === project.toUpperCase());
-        return json(200, { maxResults: 50, startAt: 0, total: found.length, isLast: true, values: found.map((b) => ({ id: b.id, self: '', name: b.name, type: b.type })) });
+        const found = BOARDS.filter((b) => !project || b.projects.includes(project.toUpperCase()));
+        return json(200, { maxResults: 50, startAt: 0, total: found.length, isLast: true, values: found.map(boardOf) });
       }
       if (method === 'GET' && (m = /^\/rest\/agile\/1\.0\/board\/(\d+)\/sprint$/.exec(p))) {
         const b = BOARDS.find((x) => x.id === Number(m[1]));
@@ -245,16 +286,25 @@ export function makeJira() {
         return json(200, { maxResults: 50, startAt: 0, isLast: true, values: [{ id: SPRINT_ID, self: '', state: 'active', name: 'DEMO Sprint 12', startDate: stamp(base - 6 * DAY), endDate: stamp(base + 4 * DAY + 3_600_000), originBoardId: 7, goal: 'The sprint in the side panel' }] });
       }
       if (method === 'GET' && p === '/rest/api/2/search') {
-        const jql = q.get('jql') ?? '', startAt = Number(q.get('startAt') ?? 0), max = Math.min(Number(q.get('maxResults') ?? 50), 50);
+        const jql = q.get('jql') ?? '';
+        const open = (i) => i.fields.status.statusCategory.key !== 'done';
         let found;
         if ((m = /^sprint = (\d+) ORDER BY Rank ASC$/.exec(jql))) found = [...issues.values()].filter((i) => i.sprint === Number(m[1]));
-        else if ((m = /^assignee = currentUser\(\) AND updated >= -(\d+)m ORDER BY updated DESC$/.exec(jql))) {
+        else if ((m = /^filter = (\d+) AND sprint = (\d+) ORDER BY Rank ASC$/.exec(jql))) {
+          if (!BOARDS.some((b) => b.filter === Number(m[1]))) return refuse(400, `A value with ID '${m[1]}' does not exist for the field 'filter'.`);
+          found = inFilter(Number(m[1])).filter((i) => i.sprint === Number(m[2]));
+        } else if (jql === 'assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC') {
+          found = [...issues.values()].filter((i) => i.fields.assignee?.name === who && open(i))
+            .sort((a, b) => Date.parse(b.fields.updated) - Date.parse(a.fields.updated));
+        } else if ((m = /^project in \(("[A-Z]+"(?:, "[A-Z]+")*)\) AND statusCategory != Done ORDER BY Rank ASC$/.exec(jql))) {
+          const keys = m[1].split(', ').map((k) => k.slice(1, -1));
+          found = [...issues.values()].filter((i) => keys.includes(i.fields.project.key) && open(i));
+        } else if ((m = /^assignee = currentUser\(\) AND updated >= -(\d+)m ORDER BY updated DESC$/.exec(jql))) {
           const since = now() - Number(m[1]) * MIN;
           found = [...issues.values()].filter((i) => i.fields.assignee?.name === who && Date.parse(i.fields.updated) >= since)
             .sort((a, b) => Date.parse(b.fields.updated) - Date.parse(a.fields.updated));
         } else return refuse(400, `The fake does not know this JQL: ${jql}`);
-        const page = found.slice(startAt, startAt + max);
-        return json(200, { expand: 'schema,names', startAt, maxResults: max, total: found.length, issues: page.map((i) => shape(i, q.get('fields'), q.get('expand'))) });
+        return json(200, paged(found, q));
       }
       if ((m = /^\/rest\/api\/2\/issue\/([A-Z]+-\d+)(\/[a-z]+)?$/.exec(p))) {
         const i = issues.get(m[1]), what = m[2] ?? '';
@@ -306,8 +356,8 @@ export function makeJira() {
 }
 
 // The made-up Jira on a local port: `{ url, jira, requests, fail, recover, release, close }`.
-export async function startFakeJira(port = 0) {
-  const jira = makeJira();
+export async function startFakeJira(port = 0, options = {}) {
+  const jira = makeJira(options);
   const requests = [];
   let failing = null; // { mode, status, count, path }
   const held = [];
@@ -376,6 +426,6 @@ export async function startFakeJira(port = 0) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const fake = await startFakeJira(Number(process.argv[2] ?? 0));
+  const fake = await startFakeJira(Number(process.argv[2] ?? 0), { backlog: Number(process.argv[3] ?? 0) });
   console.log(`fake Jira at ${fake.url} (tokens: fake-token, viewer-token)`);
 }
