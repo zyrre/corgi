@@ -65,6 +65,10 @@ pub struct CodexScan {
     effort: Option<String>,
     /// The newest request that read or wrote the prompt cache.
     cache_hit: Option<CodexCacheHit>,
+    /// When the newest request's usage was recorded, whether or not it
+    /// touched the prompt cache: the agent's latest call. For a request that
+    /// read or wrote the cache it is the moment `cache_hit` holds.
+    called_at: Option<u64>,
     /// When the newest record was written.
     written_at: Option<u64>,
 }
@@ -105,7 +109,9 @@ impl CodexScan {
         }
         scan.model = field(record, "model").map(str::to_string);
         scan.effort = record_effort(record).map(str::to_string);
-        scan.cache_hit = codex_cache_usage(record)
+        let usage = codex_cache_usage(record);
+        scan.called_at = usage.and(scan.written_at);
+        scan.cache_hit = usage
             .filter(|usage| {
                 usage["cached_input_tokens"].as_u64().unwrap_or(0) > 0
                     || usage["cache_write_input_tokens"].as_u64().unwrap_or(0) > 0
@@ -124,6 +130,7 @@ impl CodexScan {
             context_percent: self.usage.as_ref().and_then(|usage| usage.context_percent),
             context_tokens: self.usage.as_ref().map(|usage| usage.tokens),
             cache: self.prompt_cache(),
+            last_call: self.called_at,
             task,
             report: self.conversation.report(),
             turn: self.conversation.turn(),
@@ -156,6 +163,7 @@ impl Fold for CodexScan {
             model: self.model.or(older.model),
             effort: self.effort.or(older.effort),
             cache_hit: self.cache_hit.or(older.cache_hit),
+            called_at: self.called_at.or(older.called_at),
             written_at: self.written_at.or(older.written_at),
         }
     }

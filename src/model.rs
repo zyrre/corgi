@@ -120,6 +120,9 @@ pub struct Agent {
     /// let Corgi derive a conservative minimum lifetime from a cache hit or
     /// write in the rollout.
     pub cache: Option<PromptCache>,
+    /// When the session's newest real API request went out (Unix seconds),
+    /// when its harness's session file says: the agent's latest call.
+    pub last_call: Option<u64>,
     /// The project's supervisor (`corgi.role=supervisor`), first in its
     /// project.
     pub supervisor: bool,

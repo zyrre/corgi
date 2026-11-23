@@ -101,6 +101,21 @@ impl LocalTime {
     }
 }
 
+/// `at` as an RFC 3339 timestamp on its local clock, with its offset from UTC,
+/// such as `2026-11-20T14:32:05+01:00`, which [`parse_rfc3339`] reads back.
+pub fn rfc3339_local(at: LocalTime) -> String {
+    let local = u64::try_from(at.secs as i64 + at.offset).unwrap_or_default();
+    let utc = rfc3339_utc(local);
+    let sign = if at.offset < 0 { '-' } else { '+' };
+    let minutes = at.offset.unsigned_abs() / 60;
+    format!(
+        "{}{sign}{:02}:{:02}",
+        utc.trim_end_matches('Z'),
+        minutes / 60,
+        minutes % 60
+    )
+}
+
 /// Seconds the local clock was ahead of UTC at `secs`, by the system's time
 /// zone rules (`TZ`, else `/etc/localtime`), so a moment across a daylight
 /// saving change gets the offset it had then. Zero when the system cannot say.
@@ -154,7 +169,8 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalTime, civil_from_days, days_from_civil, parse_rfc3339, rfc3339_utc, utc_stamp,
+        LocalTime, civil_from_days, days_from_civil, parse_rfc3339, rfc3339_local, rfc3339_utc,
+        utc_stamp,
     };
 
     fn at(text: &str) -> u64 {
@@ -186,6 +202,22 @@ mod tests {
         );
         let at = parse_rfc3339("2026-10-03T07:08:09Z").expect("timestamp");
         assert_eq!(rfc3339_utc(at), "2026-10-03T07:08:09Z");
+    }
+
+    #[test]
+    fn a_local_timestamp_carries_its_offset_and_reads_back_as_the_same_moment() {
+        let secs = at("2026-11-20T13:32:05Z");
+        for (offset, text) in [
+            (3_600, "2026-11-20T14:32:05+01:00"),
+            (0, "2026-11-20T13:32:05+00:00"),
+            (-(9 * 3_600 + 30 * 60), "2026-11-20T04:02:05-09:30"),
+            // Across midnight, the date is the local one.
+            (11 * 3_600, "2026-11-21T00:32:05+11:00"),
+        ] {
+            let local = rfc3339_local(LocalTime { secs, offset });
+            assert_eq!(local, text);
+            assert_eq!(parse_rfc3339(&local), Some(secs));
+        }
     }
 
     #[test]

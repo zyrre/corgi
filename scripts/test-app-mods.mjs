@@ -755,6 +755,173 @@ async function projects(w, props = {}, module = undefined) {
   }
 }
 
+// The time of the latest call, after the cache figure: the clock alone for a
+// call of today, the date before it for another day's, the year too for
+// another year's, on the local 24-hour clock whatever the zone the test
+// runs in; nothing when unknown; the first thing a narrow sidebar leaves
+// out. The clock is the test's, so that midnight can pass.
+{
+  const realNow = Date.now;
+  // Local times, as `corgi status --json` writes them (UTC).
+  const local = (...at) => new Date(...at);
+  const iso = (...at) => local(...at).toISOString().replace(/\.\d+Z$/, 'Z');
+  let clock = local(2026, 10, 23, 16, 5, 0).getTime();
+  Date.now = () => clock;
+  try {
+    const warm = { state: 'warm', minutes_left: 42, tokens: 180000, estimated: false };
+    const card = async (last_call, extra = {}) => {
+      const status = structuredClone(STATUS);
+      Object.assign(status.projects[0].agents[0], { cache: warm, last_call, ...extra });
+      const w = window({ status });
+      // Room for a date and a year: the widths are the narrow case's, below.
+      w.sidebar = 400;
+      const mod = await projects(w);
+      await mod.tick(1000);
+      const line = () => {
+        const root = mod.render();
+        return { texts: texts(kept(byId(root, 'agent-t3').children[1])), figure: byId(root, 'call-t3') };
+      };
+      return { w, mod, line };
+    };
+
+    // Today: the clock alone, after the cache figure, with the whole date
+    // and time, to the second, in its tooltip.
+    let { w, mod, line } = await card(iso(2026, 10, 23, 14, 32, 5));
+    let now = line();
+    assert.deepEqual(now.texts, ['Opus 5.5', '·', '33%', '·', '42m', '·', '14:32', 'WORKING']);
+    assert.deepEqual(now.figure.calls.tooltip, ['Latest call: 2026-11-23 14:32:05']);
+    assert.ok('flex_none' in now.figure.calls, 'the time stays whole');
+    assert.equal(now.figure.calls.text_color, undefined, 'dim, as the line');
+    // 24 hours, each part two digits; the first and the last minute of today.
+    ({ line } = await card(iso(2026, 10, 23, 0, 0, 0)));
+    assert.equal(line().texts[6], '00:00');
+    assert.deepEqual(line().figure.calls.tooltip, ['Latest call: 2026-11-23 00:00:00']);
+    ({ line } = await card(iso(2026, 10, 23, 9, 5, 59)));
+    assert.equal(line().texts[6], '09:05');
+
+    // Another day: the date before the clock; the year only when it is not
+    // this one.
+    ({ line } = await card(iso(2026, 10, 20, 14, 32, 5)));
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', '·', '42m', '·', '20 Nov 14:32', 'WORKING']);
+    assert.deepEqual(line().figure.calls.tooltip, ['Latest call: 2026-11-20 14:32:05']);
+    ({ line } = await card(iso(2026, 10, 22, 23, 59, 59)));
+    assert.equal(line().texts[6], '22 Nov 23:59', 'a minute before midnight is yesterday');
+    ({ line } = await card(iso(2026, 9, 23, 14, 32, 0)));
+    assert.equal(line().texts[6], '23 Oct 14:32', 'the same day of another month');
+    ({ line } = await card(iso(2026, 0, 3, 7, 8, 9)));
+    assert.equal(line().texts[6], '3 Jan 07:08');
+    ({ line } = await card(iso(2025, 10, 23, 14, 32, 5)));
+    assert.equal(line().texts[6], '23 Nov 2025 14:32', 'the same day of another year');
+    assert.deepEqual(line().figure.calls.tooltip, ['Latest call: 2025-11-23 14:32:05']);
+
+    // Unknown, or nothing a time can be read from: nothing, and no dot for it.
+    for (const none of [null, undefined, '', 'soon', 1795444325]) {
+      ({ line } = await card(none));
+      assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', '·', '42m', 'WORKING'], String(none));
+      assert.equal(line().figure, null);
+    }
+
+    // Known while the cache is not: it follows whatever comes before it,
+    // with a dot only between two things shown.
+    const unknown = { state: 'unknown', minutes_left: null, tokens: null, estimated: false };
+    ({ line } = await card(iso(2026, 10, 23, 14, 32, 5), { cache: unknown }));
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', '·', '14:32', 'WORKING']);
+    ({ line } = await card(iso(2026, 10, 23, 14, 32, 5), { cache: unknown, ctx_pct: null }));
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '14:32', 'WORKING']);
+    ({ line } = await card(iso(2026, 10, 23, 14, 32, 5), { cache: unknown, ctx_pct: null, model: null }));
+    assert.deepEqual(line().texts, ['14:32', 'WORKING']);
+    ({ line } = await card(iso(2026, 10, 23, 14, 32, 5), { ctx_pct: null, model: null }));
+    assert.deepEqual(line().texts, ['42m', '·', '14:32', 'WORKING']);
+
+    // The day turns over between reads: today's clock becomes yesterday's
+    // date, and the 1-second timer draws the card again for it.
+    ({ mod, line } = await card(iso(2026, 10, 23, 14, 32, 5), { cache: unknown }));
+    clock = local(2026, 10, 23, 23, 59, 58).getTime();
+    await mod.tick(1000);
+    assert.equal(line().texts[4], '14:32');
+    let drawn = mod.cx.notified;
+    clock = local(2026, 10, 23, 23, 59, 59).getTime();
+    await mod.tick(1000);
+    assert.equal(mod.cx.notified, drawn, 'nothing to draw while the day holds');
+    clock = local(2026, 10, 24, 0, 0, 1).getTime();
+    await mod.tick(1000);
+    assert.ok(mod.cx.notified > drawn, 'midnight draws the card again');
+    assert.equal(line().texts[4], '23 Nov 14:32');
+    clock = local(2026, 10, 23, 16, 5, 0).getTime();
+
+    // A sidebar running out of room. The model gives way to the time: under
+    // 300 px, where it would be cut, the line leaves it out and the icon's
+    // tooltip names it. Under 226 px the time goes too, whole, with its dot,
+    // and the model has its place back, cut as before; the fill, the cache
+    // figure and the badge stay throughout.
+    ({ w, mod, line } = await card(iso(2026, 10, 23, 14, 32, 5)));
+    const whole = ['Opus 5.5', '·', '33%', '·', '42m', 'WORKING'];
+    const timed = (time, badge = 'WORKING') => ['33%', '·', '42m', '·', time, badge];
+    w.sidebar = 300;
+    assert.deepEqual(line().texts, [...whole.slice(0, 5), '·', '14:32', 'WORKING']);
+    assert.equal(byId(mod.render(), 'model-t3'), null);
+    for (const px of [299, 268, 226]) {
+      w.sidebar = px;
+      assert.deepEqual(line().texts, timed('14:32'), `${px} px`);
+      const named = byId(mod.render(), 'model-t3');
+      assert.deepEqual(named.calls.tooltip, ['Opus 5.5']);
+      assert.deepEqual(kept(named.children[0]).args, ['icons/claude.svg'], 'the icon, with the model as its tooltip');
+      assert.ok('flex_none' in line().figure.calls);
+    }
+    w.sidebar = 225;
+    assert.deepEqual(line().texts, whole);
+    assert.equal(line().figure, null);
+    assert.equal(byId(mod.render(), 'model-t3'), null, 'the model has its place back once the time is out');
+    w.sidebar = 190;
+    assert.deepEqual(line().texts, ['33%', '·', '42m', 'WORKING'], 'then the model, for the cache figure, as before');
+
+    // A date needs more room than the clock alone, a year more again: each
+    // goes, and brings the model back, where the clock would still show.
+    ({ w, line } = await card(iso(2026, 10, 20, 14, 32, 5)));
+    for (const [px, texts] of [
+      [349, [...whole.slice(0, 5), '·', '20 Nov 14:32', 'WORKING']],
+      [348, timed('20 Nov 14:32')],
+      [275, timed('20 Nov 14:32')],
+      [274, whole],
+    ]) {
+      w.sidebar = px;
+      assert.deepEqual(line().texts, texts, `a date at ${px} px`);
+    }
+    ({ w, line } = await card(iso(2025, 10, 20, 14, 32, 5)));
+    w.sidebar = 310;
+    assert.deepEqual(line().texts, timed('20 Nov 2025 14:32'));
+    w.sidebar = 309;
+    assert.deepEqual(line().texts, whole);
+
+    // A narrower badge leaves the time more room: a worker tagged to merge
+    // shows another day's date at the sidebar's own width, where a working
+    // one has no room for it.
+    ({ w, line } = await card(iso(2026, 10, 20, 14, 32, 5), { tag: 'merge' }));
+    w.sidebar = 268;
+    assert.deepEqual(line().texts, timed('20 Nov 14:32', 'MERGE'));
+    w.sidebar = 260;
+    assert.deepEqual(line().texts, [...whole.slice(0, 5), 'MERGE']);
+    // So does a line with less on it: without a cache figure the model
+    // stays beside the time from 266 px, and the time shows down to 192.
+    ({ w, mod, line } = await card(iso(2026, 10, 23, 14, 32, 5), { cache: unknown }));
+    w.sidebar = 266;
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', '·', '14:32', 'WORKING']);
+    w.sidebar = 192;
+    assert.deepEqual(line().texts, ['33%', '·', '14:32', 'WORKING']);
+    assert.deepEqual(byId(mod.render(), 'model-t3').calls.tooltip, ['Opus 5.5']);
+    w.sidebar = 190;
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '33%', 'WORKING'], 'the time goes, the rest is as it was');
+    // Wider figures count: `100%` and `cold?` take the room of three characters.
+    ({ w, line } = await card(iso(2026, 10, 23, 14, 32, 5), { ctx_pct: 100, cache: { state: 'cold', minutes_left: 0, tokens: 180000, estimated: true } }));
+    w.sidebar = 247;
+    assert.deepEqual(line().texts, ['100%', '·', 'cold?', '·', '14:32', 'WORKING']);
+    w.sidebar = 246;
+    assert.deepEqual(line().texts, ['Opus 5.5', '·', '100%', '·', 'cold?', 'WORKING']);
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 // What is lit: only the agent with the focus, never a project's row with
 // it; a project's row is not lit at all; a space outside any project is
 // while none of its agents has the focus.

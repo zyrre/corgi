@@ -85,6 +85,28 @@ const CARD_ROOMY = 230;
 // context fill and the prompt cache (`agent`): under it the model would be
 // cut to a letter or to nothing.
 const MODEL_ROOMY = 200;
+// The room the time of an agent's latest call (`callFigure`) needs on its
+// card's second line, measured in the window with the line `62% · 55m ·
+// 14:32` and the widest badge, `WORKING`. CALL_ROOMY: the narrowest sidebar
+// that holds it after the context fill and the cache figure, the model
+// left out; under it the time is left out, whole. CALL_MODEL_ROOMY: the
+// narrowest that holds a model of ordinary length (`Opus 5.5`) beside
+// them; under it the model is left out for the time, as under MODEL_ROOMY
+// for the cache figure. Both move by what the line holds more or less than
+// the measured one (`callMore`): CALL_CHAR a character of a figure or of
+// the badge (another day's date, `100%`, `cold?`, `IDLE`; the widest are
+// 7 px, so a line never needs more than is counted), CALL_DOT a figure
+// with its `·`, CALL_BADGE a badge's padding and the gap before it.
+const CALL_ROOMY = 226;
+const CALL_MODEL_ROOMY = 300;
+const CALL_CHAR = 7;
+const CALL_DOT = 13;
+const CALL_BADGE = 15;
+const CALL_MEASURED = { figures: "62%55m14:32".length, badge: "WORKING".length };
+function callMore(figures, badge) {
+  return (figures.join("").length - CALL_MEASURED.figures) * CALL_CHAR + (figures.length - 3) * CALL_DOT
+    + ((badge?.length ?? 0) - CALL_MEASURED.badge) * CALL_CHAR - (badge ? 0 : CALL_BADGE);
+}
 const RAIL_CELL = 32;
 // An agent's prompt cache as its card's second line shows it, from `cache`
 // in `corgi status --json` (`c`, the agent's entry, with `read_at`, when
@@ -118,6 +140,27 @@ function cacheFigure(c, now = Date.now()) {
   const rereads = tokens ? `the next prompt re-reads ${tokens} tokens` : "the next prompt re-reads the whole context";
   const tip = cache.estimated ? `Cache likely cold: ${rereads}` : `Cache cold: ${rereads}`;
   return { text: `cold${mark}`, tip, soon: false };
+}
+// The time of an agent's latest call as its card's second line shows it,
+// from `last_call` in `corgi status --json` (`c`, the agent's entry; when
+// its newest real API request went out): { text, tip }, on the local
+// 24-hour clock, `14:32` for a call of today, `20 Nov 14:32` for another
+// day's, `20 Nov 2025 14:32` for another year's, and the whole date and
+// time in its tooltip. Null when unknown.
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function callFigure(c, now = Date.now()) {
+  if (typeof c?.last_call !== "string") return null;
+  const at = new Date(c.last_call);
+  if (Number.isNaN(at.getTime())) return null;
+  const today = new Date(now);
+  const two = (n) => String(n).padStart(2, "0");
+  const [year, month, day] = [at.getFullYear(), at.getMonth(), at.getDate()];
+  const clock = `${two(at.getHours())}:${two(at.getMinutes())}`;
+  const sameYear = year === today.getFullYear();
+  const date = sameYear && month === today.getMonth() && day === today.getDate()
+    ? ""
+    : `${day} ${MONTHS[month]}${sameYear ? "" : ` ${year}`} `;
+  return { text: date + clock, tip: `Latest call: ${year}-${two(month + 1)}-${two(day)} ${clock}:${two(at.getSeconds())}` };
 }
 // A token count as `corgi fleet` writes one (`compact_tokens`): `40k`, `1.2M`.
 function compactTokens(n) {
@@ -458,11 +501,13 @@ export default class Projects {
     if (!worker || (m.phase === "confirm" && worker.tag !== "merge")) this.merge = null;
   }
 
-  // Whether a card's prompt cache figure changed since the last look (a
-  // minute counted down, a cache gone cold), which no read redraws.
+  // Whether a card's prompt cache figure or the time of its latest call
+  // changed since the last look (a minute counted down, a cache gone cold,
+  // today's `14:32` become another day's at midnight), which no read
+  // redraws.
   cacheTurned() {
     const now = Date.now();
-    const key = [...this.corgiAgents].map(([address, c]) => `${address}:${cacheFigure(c, now)?.text ?? ""}`).join(",");
+    const key = [...this.corgiAgents].map(([address, c]) => `${address}:${cacheFigure(c, now)?.text ?? ""}:${callFigure(c, now)?.text ?? ""}`).join(",");
     if (key === this.cacheKey) return false;
     this.cacheKey = key;
     return true;
@@ -1885,14 +1930,18 @@ export default class Projects {
 
   // One agent, on two lines. The first: its task, the whole width, cut with
   // `…`. The second, dim and smaller: its harness's icon, its model, how
-  // full its context is and how long its prompt cache stays warm
-  // (`cacheFigure`), each only when known, and at the right edge its
+  // full its context is, how long its prompt cache stays warm
+  // (`cacheFigure`) and when its latest call was (`callFigure`), each only
+  // when known, and at the right edge its
   // state's badge (`badge`; for a worker tagged ready to merge, the MERGE
   // mark that opens the merge question). The worktree it works in is the
-  // row's tooltip. As the line runs out of room the model is cut first; in
-  // a sidebar under MODEL_ROOMY, where it would be cut to a letter or to
-  // nothing, a line with a cache figure leaves it out, and the icon's
-  // tooltip names it. The badge, the fill and the cache figure stay whole.
+  // row's tooltip. As the line runs out of room the model goes first: it
+  // is cut, and where it would be cut to a letter or to nothing the line
+  // leaves it out and the icon's tooltip names it, for the time of the
+  // latest call under CALL_MODEL_ROOMY and for a cache figure under
+  // MODEL_ROOMY. Then the time goes, whole (under CALL_ROOMY; a date
+  // needs more room than a clock), and the model has its place back while
+  // the line holds it. The badge, the fill and the cache figure stay whole.
   // Each is a faintly shaded card with its state's color as a full-height
   // bar at its left: the card reaches past the bar by its rounding, so its
   // corners round beside the bar and never cut into it. Cards stand 4 px
@@ -1907,8 +1956,13 @@ export default class Projects {
     const model = oneLine(a.corgi?.model);
     const ctx = Number.isFinite(a.corgi?.ctx_pct) ? `${Math.round(a.corgi.ctx_pct)}%` : "";
     const cache = cacheFigure(a.corgi);
-    const modelOut = Boolean(cache && model && pic) && sidebarPx() < MODEL_ROOMY;
+    // The time of its latest call, where the line has room for it, and
+    // then the model only where it has room beside the time.
+    const called = callFigure(a.corgi);
     const key = badgeKey(a);
+    const more = callMore([ctx, cache?.text, called?.text].filter(Boolean), BADGES[key]);
+    const call = called && sidebarPx() >= CALL_ROOMY + more ? called : null;
+    const modelOut = Boolean(model && pic) && (call ? sidebarPx() < CALL_MODEL_ROOMY + more : Boolean(cache) && sidebarPx() < MODEL_ROOMY);
     // A supervisor's open questions, as a pill at the right of its first line.
     const asked = a.supervisor ? this.openQuestions(a) : 0;
     const shell = this.shellMark(a, t);
@@ -1946,6 +2000,8 @@ export default class Projects {
         .when(Boolean(((model && !modelOut) || ctx) && cache), (el) => el.child(div().flex_none().child("·")))
         .when(Boolean(cache), (el) => el.child(div().id(`cache-${a.address}`).flex_none().child(cache.text).tooltip(cache.tip)
           .when(cache.soon, (c) => c.text_color(t.ansi3))))
+        .when(Boolean(((model && !modelOut) || ctx || cache) && call), (el) => el.child(div().flex_none().child("·")))
+        .when(Boolean(call), (el) => el.child(div().id(`call-${a.address}`).flex_none().child(call.text).tooltip(call.tip)))
         .when(Boolean(key), (el) => el.child(div().flex_1()).child(key === "merge" ? this.mergeMark(a, t) : badge(t, key).id(`badge-${a.address}`))))
       // Inside the border, past the corners' rounding: whole from top to bottom.
       .child(div().id(`edge-${a.address}`).absolute().left(CARD_RADIUS - 1).top(0).bottom(0).w(CARD_EDGE).bg(stateColor(t, key ?? "idle")));

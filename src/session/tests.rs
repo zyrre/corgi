@@ -739,6 +739,107 @@ fn a_gpt_5_6_rollout_estimates_cache_warmth_from_the_newest_hit() {
     assert!(!codex_has_documented_cache_minimum("gpt-5-codex"));
 }
 
+#[test]
+fn a_claude_transcript_says_when_its_newest_real_request_went_out() {
+    let directory = TempDir::new("claude-last-call");
+    let path = directory.join("session.jsonl");
+    let last_call = |lines: &[String]| {
+        write(&path, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+        claude_facts(&path, None).last_call
+    };
+    let prompt = r#"{"type":"user","isSidechain":false,"timestamp":"2026-11-16T12:00:00Z","message":{"role":"user","content":"Fix the uploader"}}"#.to_string();
+
+    // The moment the cache counts from: when the request went out, not when
+    // its answer came, and no bookkeeping record after it moves it.
+    let mut lines = vec![
+        prompt.clone(),
+        api_request("2026-11-16T12:00:01Z", "repl_main_thread", "1h"),
+        reply("2026-11-16T12:04:00Z", 1000, 19000),
+    ];
+    lines.extend(BOOKKEEPING_AFTER_THE_TURN.map(str::to_string));
+    assert_eq!(last_call(&lines), Some(at("2026-11-16T12:00:01Z")));
+    assert_eq!(
+        cache_expiry(&path),
+        Some(at("2026-11-16T12:00:01Z") + CLAUDE_CACHE_1H)
+    );
+
+    // Without `api-request` records the newest reply stands in, as for the
+    // cache.
+    lines.remove(1);
+    assert_eq!(last_call(&lines), Some(at("2026-11-16T12:04:00Z")));
+
+    // Known while the cache is not: a first prompt whose request is in
+    // flight has no usage yet, and a side query is no call of the agent's.
+    assert_eq!(
+        last_call(&[
+            prompt.clone(),
+            api_request("2026-11-16T12:00:01Z", "repl_main_thread", "1h"),
+            api_request("2026-11-16T12:00:02Z", "generate_session_title", "1h"),
+        ]),
+        Some(at("2026-11-16T12:00:01Z"))
+    );
+    assert_eq!(claude_facts(&path, None).cache, None);
+    assert_eq!(last_call(&[prompt]), Some(at("2026-11-16T12:00:00Z")));
+
+    // Records without a time say nothing.
+    assert_eq!(
+        last_call(&[r#"{"type":"user","message":{"role":"user"}}"#.to_string()]),
+        None
+    );
+}
+
+#[test]
+fn a_codex_rollout_says_when_its_newest_request_was_recorded() {
+    let directory = TempDir::new("codex-last-call");
+    let path = directory.join("rollout-2026-09-11T18-00-00-thread.jsonl");
+    let hit = r#"{"timestamp":"2026-09-11T18:03:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":12000,"cached_input_tokens":9984}}}}"#;
+    // A count without usage (rate limits alone) and what the agent said
+    // after it are no requests.
+    let after = [
+        r#"{"timestamp":"2026-09-11T18:04:00Z","type":"event_msg","payload":{"type":"token_count","info":null}}"#,
+        r#"{"timestamp":"2026-09-11T18:05:00Z","type":"event_msg","payload":{"type":"agent_message","message":"Done."}}"#,
+    ];
+
+    // The moment the estimated cache counts from.
+    write(
+        &path,
+        &[
+            r#"{"type":"session_meta","payload":{"id":"thread","model":"gpt-5.6-terra"}}"#,
+            hit,
+            after[0],
+            after[1],
+        ],
+    );
+    let facts = codex_facts(&path);
+    assert_eq!(facts.last_call, Some(at("2026-09-11T18:03:00Z")));
+    assert_eq!(
+        facts.cache.map(|cache| cache.expires_at),
+        Some(at("2026-09-11T18:03:00Z") + CODEX_CACHE_5_6)
+    );
+
+    // Known while the cache is not: a model with no documented lifetime, and
+    // a request that touched no cache.
+    write(
+        &path,
+        &[
+            r#"{"type":"session_meta","payload":{"id":"thread","model":"gpt-5-codex"}}"#,
+            hit,
+            r#"{"timestamp":"2026-09-11T18:06:00Z","type":"token_usage_record","payload":{"usage":{"input_tokens":10000,"cached_input_tokens":0}}}"#,
+            after[1],
+        ],
+    );
+    let facts = codex_facts(&path);
+    assert_eq!(facts.cache, None);
+    assert_eq!(facts.last_call, Some(at("2026-09-11T18:06:00Z")));
+
+    // A rollout that records no request yet has none.
+    write(
+        &path,
+        &[r#"{"type":"session_meta","payload":{"id":"thread","model":"gpt-5.6-terra"}}"#],
+    );
+    assert_eq!(codex_facts(&path).last_call, None);
+}
+
 fn activity(kind: ActivityKind, text: &str) -> Option<Activity> {
     Some(Activity {
         kind,

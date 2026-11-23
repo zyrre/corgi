@@ -101,6 +101,10 @@ pub struct SessionFacts {
     /// When the prompt cache holding that context lapses, and how much it then
     /// costs to rebuild. Only Claude Code records enough to say.
     pub cache: Option<PromptCache>,
+    /// When the newest real API request of the session went out, in Unix
+    /// seconds: the moment an exact cache's lifetime counts from, known also
+    /// when the cache is not.
+    pub last_call: Option<u64>,
     /// The first human prompt in this session. This is a cross-harness fallback
     /// for a generated task title that is not available yet.
     pub task: Option<String>,

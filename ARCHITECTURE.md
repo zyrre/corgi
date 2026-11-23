@@ -99,7 +99,7 @@ every item. Code no command reaches fails `cargo clippy -- -D warnings`.
 | `merge.rs`, `tag.rs`, `git.rs` | The Git work of `corgi merge` and the lines it leaves the supervisor; the checks of `corgi tag`; the plain Git commands. |
 | `launch.rs` | What a launch is made of: `LaunchPlan`, `Checkout`, `Role`, the agent CLI's arguments, the supervisor's plan. |
 | `harness.rs` | The one place that knows a harness (Claude Code, Codex, OpenCode, …): its CLI, flags, supervisor arguments, exit command, session file format, the default harness. |
-| `session/` | Reads each agent's session file: model, effort, context, prompt cache, task, and the newest reply (its report). `locate.rs` finds the file, `tail.rs` reads it incrementally, `claude.rs` and `codex.rs` parse it, `text.rs` holds what they share. |
+| `session/` | Reads each agent's session file: model, effort, context, prompt cache, the time of its newest real API request (its latest call, the moment the cache counts from; `corgi status --json`'s `last_call`, `corgi fleet`'s CALLED), task, and the newest reply (its report). `locate.rs` finds the file, `tail.rs` reads it incrementally, `claude.rs` and `codex.rs` parse it, `text.rs` holds what they share. |
 | `model.rs`, `rows.rs` | `Agent` and `AgentInfo`; an agent's task summary. |
 | `projects.rs`, `choices.rs` | The projects Corgi knows and remembers; the filtered list behind `corgi projects`. |
 | `usage.rs`, `usage_cache.rs` | Plan usage per provider, and the cache every process shares. |
@@ -157,7 +157,8 @@ supervisor session's handover request and context baseline), and
 (`done` and `idle` both rest; `error` reads as blocked; a shell in front of
 a kept supervisor terminal is unknown, and the agent `exited`), hc's `turn`
 as `state_change_seq`, the project, whether it works in a linked worktree,
-and what its session file says (model, effort, context, prompt cache, task).
+and what its session file says (model, effort, context, prompt cache,
+latest call, task).
 
 ### Spaces
 
