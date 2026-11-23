@@ -726,10 +726,15 @@ export default class Projects {
     const retry = o.reason === "behind" ? ["Pull, merge + push", ["--pull"]] : o.reason === "fetch-failed" ? ["Merge + push without fetching", ["--skip-upstream"]] : null;
     // What failed, for a supervisor that runs to fix. A conflict went to it
     // already: `corgi merge` aborts one and hands it over by itself.
-    const askable = Boolean(o.error) && this.supervised(m.machine ?? null, m.dir);
+    // A push that failed was told to a running supervisor by Corgi itself
+    // (`told`): asking would send the same facts twice. It stays the way
+    // when that line could not be written.
+    const told = o.result === "push-failed" && o.told === "supervisor";
+    const askable = Boolean(o.error) && !told && this.supervised(m.machine ?? null, m.dir);
     return panel
       .child(title)
       .child(said)
+      .when(told, (el) => el.child(div().whitespace_normal().child("The supervisor has been told.")))
       .when(Boolean(m.problem), (el) => el.child(div().text_color(t.blocked).whitespace_normal().child(m.problem)))
       .when(m.phase === "asking", (el) => el.child(waiting("Asking the supervisor…")))
       .when(m.phase === "result", (el) =>

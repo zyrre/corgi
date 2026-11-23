@@ -187,6 +187,17 @@ pub fn failed_form(agent: &Agent) -> Option<MergeWorktreeForm> {
     })
 }
 
+/// Where the line about a merge went ([`tell_supervisor_about_merge`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Told {
+    /// To the inbox of a supervisor that runs.
+    Running,
+    /// To the inbox of a supervisor that does not run now, for its next turn.
+    Kept,
+    /// Nowhere: the project has no supervisor and never had one.
+    Nobody,
+}
+
 /// Adds a line to the inbox of the project's supervisor saying that `form`'s
 /// branch was merged into its base at `commit`, and that the push failed
 /// with `push_error` when it did, so the supervisor records it and goes on
@@ -198,11 +209,11 @@ pub fn tell_supervisor_about_merge(
     form: &MergeWorktreeForm,
     commit: &str,
     push_error: Option<&str>,
-) -> Result<()> {
+) -> Result<Told> {
     let project = form.project_root.to_string_lossy().into_owned();
-    if project_supervisor(agents, &form.project_root).is_none() && !inboxes.has_supervisor(&project)
-    {
-        return Ok(());
+    let running = project_supervisor(agents, &form.project_root).is_some();
+    if !running && !inboxes.has_supervisor(&project) {
+        return Ok(Told::Nobody);
     }
     let item = merge_item(
         form,
@@ -210,7 +221,8 @@ pub fn tell_supervisor_about_merge(
         merged_key(form),
         supervisor::merge_landed_message(&landed(form, commit, push_error)),
     );
-    inboxes.notify(item)
+    inboxes.notify(item)?;
+    Ok(if running { Told::Running } else { Told::Kept })
 }
 
 /// The inbox line that hands `form`'s conflict in `files` to the project's
@@ -731,7 +743,7 @@ mod tests {
         let worker = agent("w-reviewed-agent", false);
 
         // No supervisor runs, and none ever did: nothing is written.
-        tell_supervisor_about_merge(
+        let told = tell_supervisor_about_merge(
             &inboxes,
             std::slice::from_ref(&worker),
             &form,
@@ -739,10 +751,12 @@ mod tests {
             None,
         )
         .unwrap();
+        assert_eq!(told, Told::Nobody);
         assert!(inboxes.pending_for(root).is_empty());
 
         let agents = [agent("supervisor-corgi", true), worker];
-        tell_supervisor_about_merge(&inboxes, &agents, &form, "abc1234", None).unwrap();
+        let told = tell_supervisor_about_merge(&inboxes, &agents, &form, "abc1234", None).unwrap();
+        assert_eq!(told, Told::Running);
         let pending = inboxes.pending_for(root);
         assert_eq!(pending.len(), 1, "{pending:?}");
         assert!(

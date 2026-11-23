@@ -39,7 +39,7 @@ use crate::{
 use crate::{
     launch::CORGI_REQUEST_TOKEN,
     merge::{
-        MergeError, Upstream, abort_merge, conflict_item, failed_form, merge_failed_item,
+        MergeError, Told, Upstream, abort_merge, conflict_item, failed_form, merge_failed_item,
         merge_form, project_supervisor, push_failed_item, run_merge, tell_supervisor_about_merge,
     },
 };
@@ -124,7 +124,10 @@ or asked for --ask-supervisor; reason says why a refusal was (unavailable,
 behind, fetch-failed, failed, no-agent, no-supervisor); error is the failure
 alone, when there is one a supervisor could fix, as --ask-supervisor takes it;
 supervisor names the supervisor that has it now, asked or handed a conflict,
-or is null. A refusal as behind is merged with --pull, one as fetch-failed
+or is null; told, for push-failed, is where Corgi's own line about the push
+went: supervisor (a running one's inbox), kept (a supervisor that does not
+run now has it for its next turn), nobody (the project has none) or failed
+(it could not be written), and null for every other result. A refusal as behind is merged with --pull, one as fetch-failed
 with --skip-upstream. It
 exits 0 only when the branch was merged and pushed, or the supervisor asked.
 A core that is not running is not started: the merge is refused as
@@ -456,6 +459,11 @@ pub(crate) struct MergeOutcome {
     /// The supervisor that has the merge now: the one asked to fix it, or
     /// the one a conflict was handed to. Nothing is left for the user then.
     pub(crate) supervisor: Option<String>,
+    /// For `push-failed`: where Corgi's own line about it went: `supervisor`
+    /// (a running supervisor's inbox), `kept` (a supervisor that does not run
+    /// now has it for its next turn), `nobody` (the project has none), or
+    /// `failed` (it could not be written). Null for every other result.
+    pub(crate) told: Option<&'static str>,
 }
 
 impl MergeOutcome {
@@ -467,6 +475,7 @@ impl MergeOutcome {
             reason: Some(reason),
             error: None,
             supervisor: None,
+            told: None,
         }
     }
 
@@ -486,6 +495,7 @@ impl MergeOutcome {
             "reason": self.reason,
             "error": self.error,
             "supervisor": self.supervisor,
+            "told": self.told,
         })
     }
 }
@@ -676,6 +686,7 @@ pub(crate) fn ask_supervisor(
             reason: None,
             error: None,
             supervisor: Some(supervisor),
+            told: None,
         },
         Err(error) => MergeOutcome::refused(
             "failed",
@@ -731,16 +742,22 @@ pub(crate) fn merge_agent(
                 reason: None,
                 error: None,
                 supervisor: None,
+                told: None,
             }
         }
         Err(MergeError::PushFailed { commit, error }) => {
             let mut message = format!("Merged {what}, but the push failed: {error}");
             clear_tag(client, &mut agents[index], &mut message);
-            if let Err(error) =
-                tell_supervisor_about_merge(inboxes, agents, &form, &commit, Some(&error))
-            {
-                message.push_str(&format!("; the supervisor could not be told: {error:#}"));
-            }
+            let told =
+                match tell_supervisor_about_merge(inboxes, agents, &form, &commit, Some(&error)) {
+                    Ok(Told::Running) => "supervisor",
+                    Ok(Told::Kept) => "kept",
+                    Ok(Told::Nobody) => "nobody",
+                    Err(error) => {
+                        message.push_str(&format!("; the supervisor could not be told: {error:#}"));
+                        "failed"
+                    }
+                };
             MergeOutcome {
                 result: "push-failed",
                 message,
@@ -748,6 +765,7 @@ pub(crate) fn merge_agent(
                 reason: None,
                 error: Some(error),
                 supervisor: None,
+                told: Some(told),
             }
         }
         Err(MergeError::Conflicts(files)) => {
@@ -784,6 +802,7 @@ pub(crate) fn merge_agent(
                 reason: None,
                 error: None,
                 supervisor: handed,
+                told: None,
             }
         }
         Err(MergeError::Behind(commits)) => MergeOutcome::refused(
@@ -1274,13 +1293,15 @@ mod tests {
                 reason: None,
                 error: None,
                 supervisor: None,
+                told: None,
             }
         );
         assert_eq!(project.head("origin/main"), commit);
         assert_eq!(
             outcome.json(),
             json!({"result": "merged", "message": "Merged and pushed worktree/fix into main",
-                   "commit": commit, "reason": null, "error": null, "supervisor": null})
+                   "commit": commit, "reason": null, "error": null, "supervisor": null,
+                   "told": null})
         );
         let pending = project.pending();
         assert_eq!(pending.len(), 1, "{pending:?}");
@@ -1428,6 +1449,7 @@ mod tests {
                 reason: None,
                 error: None,
                 supervisor: Some("app-supervisor".into()),
+                told: None,
             }
         );
         let pending = project.pending();
@@ -1529,7 +1551,10 @@ mod tests {
         let mut permissions = fs::metadata(&hook).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
         fs::set_permissions(&hook, permissions).unwrap();
-        let mut agents = vec![project.worker()];
+        let mut agents = vec![
+            project.worker(),
+            agent("app-supervisor", &project.repo, true),
+        ];
         let outcome = project.merge(&mut agents, Upstream::checked);
         assert_eq!(outcome.result, "push-failed", "{}", outcome.message);
         assert_eq!(outcome.commit, Some(project.head("main")));
@@ -1541,9 +1566,27 @@ mod tests {
         let error = outcome.error.clone().expect("the push's error");
         assert!(error.contains("main is protected"), "{error}");
         assert!(!error.contains("Merged"), "the failure alone: {error}");
+        assert_eq!(outcome.told, Some("supervisor"));
+        assert_eq!(outcome.json()["told"], json!("supervisor"));
         let pending = project.pending();
         assert_eq!(pending.len(), 1, "{pending:?}");
         assert!(pending[0].contains("push"), "{pending:?}");
+    }
+
+    #[test]
+    fn a_failed_push_says_where_the_line_went() {
+        // No supervisor ever: nothing was written, nobody was told.
+        let project = Mergeable::new("status-merge-push-nobody");
+        let hook = project.remote.join("hooks/pre-receive");
+        fs::write(&hook, "#!/bin/sh\necho 'main is protected' >&2\nexit 1\n").unwrap();
+        let mut permissions = fs::metadata(&hook).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        fs::set_permissions(&hook, permissions).unwrap();
+        let mut agents = vec![project.worker()];
+        let outcome = project.merge(&mut agents, Upstream::checked);
+        assert_eq!(outcome.result, "push-failed", "{}", outcome.message);
+        assert_eq!(outcome.told, Some("nobody"));
+        assert!(project.pending().is_empty());
     }
 
     #[test]
