@@ -405,9 +405,11 @@ space's git is read, the worktrees' spaces show as rows of their own.
 On a fresh home's first start the Projects list can stay empty of
 Corgi's tasks and marks for 10 seconds and more, although the mod reads
 `corgi status` every 5: take a shot that looks empty again.
-Every agent's prompt cache in the canned status is `warm 55m`: for
-other cache states, edit the agents' `cache` in `fake/status.json` after
-`start`. Change the made-up projects in `start_fakes` when a view needs
+Every agent's prompt cache in the canned status is `warm 55m`, and the
+latest call of each with a model is the moment the status is read
+(`w-cache`'s is 20 Nov 2026, for a date on a card): for other cache states
+or times, edit the agents' `cache` and `last_call` in `fake/status.json`
+after `start`. Change the made-up projects in `start_fakes` when a view needs
 a state they lack. `scripts/test-app-preview` runs the script against a
 fake app, hc, AeroSpace and corgi, opening nothing: run it, and
 `shellcheck scripts/app-preview scripts/test-app-preview`, after changing

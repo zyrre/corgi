@@ -1382,6 +1382,11 @@ mod tests {
              --task-file /state/supervisors/corgi/briefs/<brief id>.md"
         ));
         assert!(role.contains("`/opt/corgi/corgi fleet`"));
+        // The columns of `corgi fleet`, in its header's order.
+        assert!(
+            role.contains("name, role, state, task, model, context %, cache, called, cwd, tag")
+        );
+        assert!(role.contains("Called: latest API request, local ISO time."));
         assert!(role.contains("Run `/opt/corgi/corgi digest <project dir>`"));
         assert!(role.contains("`/opt/corgi/corgi digest <project dir> --decision"));
         assert!(!role.contains("read ARCHITECTURE.md"));

@@ -431,6 +431,9 @@ fn agent_value(agent: &Agent, now: u64) -> Value {
         "harness": info.kind(),
         "ctx_pct": agent.context_percent,
         "cache": cache,
+        // When the agent's newest real API request went out: the moment an
+        // exact cache counts from, known also when the cache is not.
+        "last_call": agent.last_call.map(rfc3339_utc),
         "cwd": cwd,
         "branch": (!cwd.is_empty())
             .then(|| git_current_branch(Path::new(cwd)).ok())
@@ -1083,6 +1086,9 @@ mod tests {
             tokens: 1200,
             kind: PromptCacheKind::Exact,
         });
+        // A cache that lapses in under 55 minutes of its hour was last
+        // warmed five minutes ago: the worker's latest call.
+        worker.last_call = Some(NOW - 5 * 60);
         let mut scratch_agent = agent("scratch", &scratch, false);
         scratch_agent.scratch = true;
         let remembered: Vec<String> = [&idle, &never, &app]
@@ -1144,6 +1150,7 @@ mod tests {
                 "harness": "claude",
                 "ctx_pct": 18,
                 "cache": {"state": "warm", "minutes_left": 55, "tokens": 1200, "estimated": false},
+                "last_call": "2027-01-15T07:55:00Z",
                 "cwd": app.to_string_lossy(),
                 "branch": "main",
                 "worktree": null,
@@ -1153,6 +1160,7 @@ mod tests {
             })
         );
         assert_eq!(agents[0]["cache"]["state"], "unknown");
+        assert_eq!(agents[0]["last_call"], json!(null));
         assert_eq!(agents[0]["tag"], json!(null));
 
         let idle_project = &projects[1];

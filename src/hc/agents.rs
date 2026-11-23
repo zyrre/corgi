@@ -206,6 +206,7 @@ fn agent_of(terminal: &Terminal, info: AgentInfo, sessions: &mut SessionReader) 
         context_percent: facts.context_percent,
         context_tokens: facts.context_tokens,
         cache: facts.cache,
+        last_call: facts.last_call,
         supervisor,
         scratch,
         exited: supervisor && shell_in_front(terminal),

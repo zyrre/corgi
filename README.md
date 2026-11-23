@@ -33,7 +33,7 @@ Each project can have one supervisor: a long-lived Claude Code or Codex session 
 - **Memory that outlives its context**: a decision log, a ledger of every worker, and every brief, kept outside the repository. `corgi digest` gives it a bounded summary at the start of each session; `--search` finds older history, including the report of every worker it spawned, and `--show`, `--ledger` and `--brief` print what it finds in full.
 - **Handover to a fresh session**: when its context is past 50% (on Claude Code, or 200k tokens) and it has idled nearly until its prompt cache expires, Corgi has it write a handover note and starts a fresh supervisor in the same terminal that picks up from it. With a smaller context, it also does this once the supervisor has idled that long and its context has doubled.
 - **Lessons kept in the repo**: what a worker learned the hard way goes into `AGENTS.md` or `ARCHITECTURE.md` as a commit on that worker's branch, so the next worker knows it.
-- **Cost-aware**: `corgi fleet` lists its agents with their context use and prompt cache, warm with the minutes left or cold with the tokens a follow-up would re-read, so it can start a fresh worker instead.
+- **Cost-aware**: `corgi fleet` lists its agents with their context use, their prompt cache, warm with the minutes left or cold with the tokens a follow-up would re-read, and the time of their latest call, so it can start a fresh worker instead.
 - **Out of your way**: agents you start or steer yourself are yours; it only notes significant decisions made there, silently.
 
 ```mermaid

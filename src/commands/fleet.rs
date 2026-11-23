@@ -12,7 +12,7 @@ use crate::{
     paths::corgi_state_dir,
     session::SessionReader,
     tag::TagOptions,
-    time::unix_now,
+    time::{LocalTime, rfc3339_local, unix_now},
 };
 
 use super::{existing_project_dir, print_inbox_footer, project_root, project_root_of};
@@ -55,11 +55,14 @@ Usage: corgi fleet [PROJECT]
 
 Lists the agents of PROJECT (default: the project containing the current
 directory), one tab-separated row each under a header line:
-NAME, ROLE (supervisor or worker), STATE, TASK, MODEL, CTX, CACHE, CWD and TAG.
+NAME, ROLE (supervisor or worker), STATE, TASK, MODEL, CTX, CACHE, CALLED, CWD
+and TAG.
 CACHE is the agent's prompt cache: warm 42m while it holds, with the time left;
 cold 180k once it has lapsed, with the context tokens the next prompt re-reads
 at the full input price; warm? and cold? when the lifetime is only estimated
-(Codex), so the cache may outlive it; - when unknown. TAG is merge for an agent
+(Codex), so the cache may outlive it; - when unknown. CALLED is when the
+agent's newest API request went out, its latest call, in local time with the
+offset from UTC (2026-11-20T14:32:05+01:00); - when unknown. TAG is merge for an agent
 a supervisor tagged ready to merge (corgi tag) that still rests where it was
 tagged, else -. When the project's supervisor has missed inbox items, a line
 on stderr says so.";
@@ -71,7 +74,7 @@ pub fn fleet_command(args: &[String]) -> Result<()> {
     let project = existing_project_dir(args.first().map(String::as_str))?;
     let seen = seen()?;
     let root = project_root_of(&project);
-    println!("NAME\tROLE\tSTATE\tTASK\tMODEL\tCTX\tCACHE\tCWD\tTAG");
+    println!("NAME\tROLE\tSTATE\tTASK\tMODEL\tCTX\tCACHE\tCALLED\tCWD\tTAG");
     for row in fleet_rows(&seen.agents, &root) {
         println!("{row}");
     }
@@ -89,7 +92,7 @@ fn fleet_rows(agents: &[Agent], root: &str) -> Vec<String> {
         .filter(|agent| agent.project_root == root)
         .map(|agent| {
             format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 field(agent.info.display_name()),
                 if agent.supervisor {
                     "supervisor"
@@ -105,6 +108,7 @@ fn fleet_rows(agents: &[Agent], root: &str) -> Vec<String> {
                 agent
                     .cache
                     .map_or_else(|| "-".to_string(), |cache| fleet_cache(&cache, now)),
+                fleet_called(agent.last_call.map(LocalTime::at)),
                 field(agent.info.cwd()),
                 if agent.ready_to_merge() { "merge" } else { "-" },
             )
@@ -125,6 +129,13 @@ fn fleet_cache(cache: &PromptCache, now: u64) -> String {
         0 => format!("cold{mark} {}", compact_tokens(cache.tokens)),
         remaining => format!("warm{mark} {}", cache_countdown(remaining)),
     }
+}
+
+/// The CALLED column of `corgi fleet`: when the agent's newest real API
+/// request went out, as an RFC 3339 timestamp on the local clock with its
+/// offset, which a script parses and a reader reads as the wall clock.
+fn fleet_called(at: Option<LocalTime>) -> String {
+    at.map_or_else(|| "-".to_string(), rfc3339_local)
 }
 
 pub const TAG_USAGE: &str = "\
@@ -312,6 +323,42 @@ mod tests {
         assert_eq!(row(Some(cache(NOW + 2 * 3_600, Estimated))), "warm? 2h");
         assert_eq!(row(Some(cache(NOW - 1, Estimated))), "cold? 180k");
         assert_eq!(row(None), "-");
+    }
+
+    #[test]
+    fn fleet_lists_the_latest_call_after_the_cache_in_local_time() {
+        let called = crate::time::parse_rfc3339("2026-11-20T13:32:05Z").unwrap();
+        assert_eq!(
+            fleet_called(Some(LocalTime {
+                secs: called,
+                offset: 3_600
+            })),
+            "2026-11-20T14:32:05+01:00"
+        );
+        assert_eq!(fleet_called(None), "-");
+
+        let agent = |name: &str, last_call: Option<u64>| Agent {
+            info: crate::model::AgentInfo {
+                name: Some(name.into()),
+                cwd: Some("/repos/web".into()),
+                ..Default::default()
+            },
+            project_root: "/repos/web".into(),
+            task: "Fix it".into(),
+            last_call,
+            ..Default::default()
+        };
+        let rows = fleet_rows(
+            &[agent("w-a", Some(called)), agent("w-b", None)],
+            "/repos/web",
+        );
+        let columns: Vec<Vec<&str>> = rows.iter().map(|row| row.split('\t').collect()).collect();
+        // Whatever this machine's zone, the column reads back as the moment.
+        assert_eq!(columns[0].len(), 10);
+        assert_eq!(columns[0][6], "-");
+        assert_eq!(crate::time::parse_rfc3339(columns[0][7]), Some(called));
+        assert_eq!(columns[0][8], "/repos/web");
+        assert_eq!(columns[1][6..], ["-", "-", "/repos/web", "-"]);
     }
 
     #[test]

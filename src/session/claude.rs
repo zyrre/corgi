@@ -151,6 +151,7 @@ impl ClaudeScan {
             task,
             report: self.conversation.report(),
             turn: self.conversation.turn(),
+            last_call: self.requested_at(),
             ..SessionFacts::default()
         };
         let Some(request) = &self.request else {
@@ -179,15 +180,24 @@ impl ClaudeScan {
     /// out. Without `api-request` records, the newest reply or user turn
     /// stands in for that request.
     pub fn prompt_cache(&self, tokens: u64) -> Option<PromptCache> {
-        let (at, lifetime) = match self.sent {
-            Some(sent) => (sent.at, sent.lifetime.or(self.lifetime)),
-            None => (self.turn_at?, self.lifetime),
+        let lifetime = match self.sent {
+            Some(sent) => sent.lifetime.or(self.lifetime),
+            None => self.lifetime,
         };
         Some(PromptCache {
-            expires_at: at + lifetime?,
+            expires_at: self.requested_at()? + lifetime?,
             tokens,
             kind: PromptCacheKind::Exact,
         })
+    }
+
+    /// When the newest real API request of the main conversation went out:
+    /// the moment the cache's lifetime counts from, and the agent's latest
+    /// call, known also while the cache is not (no usage or no lifetime
+    /// recorded yet). Without `api-request` records, the newest reply or
+    /// user turn stands in for it.
+    pub fn requested_at(&self) -> Option<u64> {
+        self.sent.map(|sent| sent.at).or(self.turn_at)
     }
 }
 
