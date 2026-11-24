@@ -103,7 +103,7 @@ Corgi sends no telemetry. It keeps no terminal output or prompt history; what it
 ## More
 
 - Architecture: [ARCHITECTURE.md](ARCHITECTURE.md) says how Corgi works on herdr-core, and why.
-- Supervisor: [`supervisor/ROLE.md`](supervisor/ROLE.md) is the role every supervisor runs by, and [`supervisor/HANDOVER.md`](supervisor/HANDOVER.md) the part `corgi role handover` prints when it hands over.
+- Supervisor: [`supervisor/ROLE.md`](supervisor/ROLE.md) is the role every supervisor runs by, [`supervisor/HANDOVER.md`](supervisor/HANDOVER.md) the part `corgi role handover` prints when it hands over, and [`supervisor/BOOTSTRAP.md`](supervisor/BOOTSTRAP.md) the part `corgi role bootstrap` prints for a project without a first commit.
 - The mods: [`herdr-app/RECIPE.md`](herdr-app/RECIPE.md).
 
 ## Contributing

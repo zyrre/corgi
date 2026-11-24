@@ -29,10 +29,12 @@ project containing the current directory), for the start of a supervisor's
 session: the base branch, the handover note if there is one (else the open
 threads of the newest archived one), open ledger work joined with the
 running agents (about 4 KB; `reported` work whose agent is gone and whose
-newest line is 2+ days old is counted on one line), recently finished work,
-the newest decisions in full (about 8 KB, at least 3) and the titles of
-older ones (about 3 KB, and a line counting the rest). Decisions named by a later entry's `Supersedes:` line are left
-out, and unreadable ledger lines are warned about. Reads only; it never
+newest line is 2+ days old is counted on one line that names the three
+oldest), recently finished work, the headings of the backlog, the newest
+decisions in full (about 4 KB, at least 3) and the titles of older ones
+(about 7 KB, and a line counting the rest). Decisions named by a later
+entry's `Supersedes:` line are left out, and unreadable ledger lines are
+warned about. Reads only; it never
 changes the state directory. When the supervisor has missed inbox items, a
 line on stderr says so.
 
@@ -46,9 +48,10 @@ Options:
                      kept reports (reports/), notes (notes/), handover.md
                      and archived handover notes. A word matches the start of
                      a word, ignoring case. Hits with WORDS as a phrase come
-                     first, then those with the most of them, then the
+                     first, then those with the most of them, then any
+                     other source before an archived handover note, then the
                      newest; near-duplicates fold into one, which names the
-                     others. Each hit is a file:line, its date and the lines
+                     others. The header counts the hits that have every word. Each hit is a file:line, its date and the lines
                      around it, about 7 KB at most
   --show FILE[:LINE] Print whole the block of the state file FILE (relative
                      to the state directory, as --search names it) that
@@ -137,6 +140,12 @@ fn digest_summary(root: &str, state_dir: &Path, agents: &[Agent]) -> String {
         .last()
         .map(|(name, text)| (name.as_str(), text.as_str()));
     let ledger = read(digest::lookup::LEDGER_FILE).unwrap_or_default();
+    let backlog: Vec<String> = crate::backlog::read_text(state_dir)
+        .map(|(text, cut)| crate::backlog::entries_of(&text, cut))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.heading)
+        .collect();
     digest::render(&digest::DigestInput {
         project: root,
         branch: &branch,
@@ -147,6 +156,7 @@ fn digest_summary(root: &str, state_dir: &Path, agents: &[Agent]) -> String {
         decisions: &decisions,
         ledger: &ledger,
         fleet: &fleet,
+        backlog: &backlog,
         now: crate::time::unix_now(),
         decision_command: &decision_command,
         search_command: &search_command,
@@ -368,31 +378,56 @@ fn notify_text(text: &str) -> String {
 
 pub const ROLE_USAGE: &str = "\
 Usage: corgi role handover [PROJECT]
+       corgi role bootstrap
 
-Prints the part of the supervisor's role it reads only when it needs it.
+Prints a part of the supervisor's role it reads only when it needs it.
 handover: how a supervisor hands over to a fresh session when Corgi asks it
 to, with the paths of the state directory of PROJECT's
 supervisor (default: the project containing the current directory) and of
-this Corgi binary filled in. Reads only.";
+this Corgi binary filled in.
+bootstrap: what a supervisor may do itself in a project that is not a Git
+repository yet, or has no commit, so that workers can get worktrees.
+Reads only.";
 
-/// `corgi role handover [PROJECT]`: the project, if one is named.
-fn role_args(args: &[String]) -> Result<Option<&str>> {
-    match args {
-        [part, rest @ ..] if part == "handover" => match rest {
-            [] => Ok(None),
-            [option] if option.starts_with('-') => {
-                bail!("unknown option {option:?}\n\n{ROLE_USAGE}")
-            }
-            [project] => Ok(Some(project.as_str())),
-            _ => bail!("{ROLE_USAGE}"),
-        },
+/// A part of the role that `corgi role` prints.
+#[derive(Debug, PartialEq, Eq)]
+enum RolePart<'a> {
+    /// For the project named, if one is.
+    Handover(Option<&'a str>),
+    Bootstrap,
+}
+
+/// `corgi role handover [PROJECT]` or `corgi role bootstrap`. The bootstrap
+/// is the same for every project, and its project may not be one Corgi can
+/// resolve yet, so a directory named after it is taken and not looked at.
+fn role_args(args: &[String]) -> Result<RolePart<'_>> {
+    let [part, rest @ ..] = args else {
+        bail!("{ROLE_USAGE}");
+    };
+    let project = match rest {
+        [] => None,
+        [option] if option.starts_with('-') => {
+            bail!("unknown option {option:?}\n\n{ROLE_USAGE}")
+        }
+        [project] => Some(project.as_str()),
+        _ => bail!("{ROLE_USAGE}"),
+    };
+    match part.as_str() {
+        "handover" => Ok(RolePart::Handover(project)),
+        "bootstrap" => Ok(RolePart::Bootstrap),
         _ => bail!("{ROLE_USAGE}"),
     }
 }
 
 /// `corgi role`: a part of the supervisor's role, printed on demand.
 pub fn role_command(args: &[String]) -> Result<()> {
-    let project = role_args(args)?;
+    let project = match role_args(args)? {
+        RolePart::Handover(project) => project,
+        RolePart::Bootstrap => {
+            print!("{}", crate::supervisor::BOOTSTRAP);
+            return Ok(());
+        }
+    };
     let root = project_root(project)?;
     let state_dir = crate::supervisor::state_dir(&root)?;
     let corgi_bin = env::current_exe().context("find the Corgi binary")?;
@@ -408,13 +443,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn corgi_role_prints_only_the_handover_part_for_at_most_one_project() {
+    fn corgi_role_prints_the_handover_part_for_at_most_one_project_or_the_bootstrap() {
         let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
-        assert_eq!(role_args(&args(&["handover"])).unwrap(), None);
+        assert_eq!(
+            role_args(&args(&["handover"])).unwrap(),
+            RolePart::Handover(None)
+        );
         assert_eq!(
             role_args(&args(&["handover", "/repos/weather"])).unwrap(),
-            Some("/repos/weather")
+            RolePart::Handover(Some("/repos/weather"))
         );
+        for bootstrap in [&["bootstrap"][..], &["bootstrap", "/not/a/repository/yet"]] {
+            assert_eq!(role_args(&args(bootstrap)).unwrap(), RolePart::Bootstrap);
+        }
         for wrong in [
             &[][..],
             &["merge"],
@@ -497,6 +538,9 @@ mod tests {
         let (text, shown) = inbox_text(&read, &dir, "", false);
         assert_eq!(shown.len(), 8);
         assert!(text.len() < INBOX_REPORT_BUDGET + 4_096, "{}", text.len());
-        assert_eq!(text.matches("(report: run ").count(), 4);
+        assert_eq!(
+            text.matches("(report: run ").count(),
+            8 - INBOX_REPORT_BUDGET / inbox::INLINE_REPORT_MAX
+        );
     }
 }

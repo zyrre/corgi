@@ -39,6 +39,11 @@ pub(crate) const ROLE: &str = include_str!("../supervisor/ROLE.md");
 /// time. The same placeholders as [`ROLE`].
 const HANDOVER: &str = include_str!("../supervisor/HANDOVER.md");
 
+/// What a supervisor may do itself in a project without a Git repository or
+/// a first commit, which `corgi role bootstrap` prints: few sessions ever
+/// meet such a project. It has no placeholders.
+pub const BOOTSTRAP: &str = include_str!("../supervisor/BOOTSTRAP.md");
+
 /// Where one project's supervisor keeps its decisions, briefs, and ledger:
 /// `supervisors/<project>` in Corgi's state directory.
 pub fn state_dir(project_root: &str) -> Result<PathBuf> {
@@ -250,24 +255,54 @@ fn filled(text: &str, corgi_bin: &Path, state_dir: &Path) -> String {
     text
 }
 
+/// How many things the digest warns about in the state files in `state_dir`
+/// (see [`crate::digest::state_warnings`]): what a first prompt asks the
+/// session to mend.
+pub fn state_warnings(state_dir: &Path) -> usize {
+    let read = |name: &str| fs::read_to_string(state_dir.join(name)).unwrap_or_default();
+    crate::digest::state_warnings(
+        &read("decisions.md"),
+        &read("ledger.jsonl"),
+        &state_dir.to_string_lossy(),
+    )
+    .len()
+}
+
+/// What a first prompt says of `warnings` things the digest warns about, or
+/// nothing without any. In the digest alone such a warning was read at the
+/// start of twenty sessions in a row and never acted on.
+fn mend_warnings(warnings: usize) -> String {
+    match warnings {
+        0 => String::new(),
+        1 => " The digest ends with a warning about your state files: mend what it names \
+              before anything else, and tell the user in one line that you did."
+            .into(),
+        _ => format!(
+            " The digest ends with {warnings} warnings about your state files: mend what each \
+             names before anything else, and tell the user in one line that you did."
+        ),
+    }
+}
+
 /// The supervisor's first prompt. With a task from the user, the supervisor
 /// skips its greeting and takes that task up; without one it greets with the
-/// state of the project.
-pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String {
+/// state of the project. `warnings` is [`state_warnings`] of its state.
+pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str, warnings: usize) -> String {
     let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
     let state = state_dir.display();
     let task = task.trim();
+    let mend = mend_warnings(warnings);
     if task.is_empty() {
         format!(
             "Start your supervisor session for {project}. Project directory: {project_root}. \
-             State directory: {state}. Follow the start-of-session steps in your role."
+             State directory: {state}. Follow the start-of-session steps in your role.{mend}"
         )
     } else {
         format!(
             "Start your supervisor session for {project}. Project directory: {project_root}. \
              State directory: {state}. Do the start-of-session reading, but skip the \
              greeting: the user started this project's session with the request below, \
-             so take it up with them.\n\n{task}"
+             so take it up with them.{mend}\n\n{task}"
         )
     }
 }
@@ -276,7 +311,13 @@ pub fn first_prompt(project_root: &str, state_dir: &Path, task: &str) -> String 
 /// the usual start-of-session reading, whose digest includes the note that
 /// session left, which it archives as `archive`. Instead of the greeting it
 /// tells the user it took over, then restates the questions it inherited.
-pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> String {
+/// `warnings` is [`state_warnings`] of its state.
+pub fn takeover_prompt(
+    project_root: &str,
+    state_dir: &Path,
+    archive: &Path,
+    warnings: usize,
+) -> String {
     let project = dir_name(project_root).unwrap_or(UNNAMED_PROJECT);
     let state = state_dir.display();
     format!(
@@ -285,9 +326,10 @@ pub fn takeover_prompt(project_root: &str, state_dir: &Path, archive: &Path) -> 
          Do the start-of-session reading; the digest shows the note it left, \
          {}: move it to {}, as your role says. Skip the greeting: tell the user in \
          one line that you took over, then restate in full each open question the note \
-         hands on, in your role's question form, then what else is open in a few lines.",
+         hands on, in your role's question form, then what else is open in a few lines.{}",
         state_dir.join(HANDOVER_NOTE).display(),
-        archive.display()
+        archive.display(),
+        mend_warnings(warnings)
     )
 }
 
@@ -1407,7 +1449,7 @@ mod tests {
     fn the_role_and_the_handover_speak_of_the_herdr_app_not_the_dashboard() {
         // The TUI's dashboard, panes, workspaces and `m` key are gone; the
         // Herdr app has spaces, terminals and the Projects list.
-        for text in [ROLE, HANDOVER] {
+        for text in [ROLE, HANDOVER, BOOTSTRAP] {
             for word in [
                 "dashboard",
                 "pane",
@@ -1671,12 +1713,48 @@ mod tests {
     #[test]
     fn a_first_task_replaces_the_greeting() {
         let state = Path::new("/state/supervisors/weather");
-        let greeting = first_prompt("/repos/weather", state, "  ");
-        assert!(greeting.contains("Follow the start-of-session steps"));
-        let task = first_prompt("/repos/weather", state, "Build a forecast CLI\nin Rust");
+        let greeting = first_prompt("/repos/weather", state, "  ", 0);
+        assert!(greeting.ends_with("Follow the start-of-session steps in your role."));
+        let task = first_prompt("/repos/weather", state, "Build a forecast CLI\nin Rust", 0);
         assert!(task.contains("skip the greeting"));
-        assert!(task.ends_with("\n\nBuild a forecast CLI\nin Rust"));
+        assert!(task.ends_with("take it up with them.\n\nBuild a forecast CLI\nin Rust"));
         assert!(task.contains("Project directory: /repos/weather."));
+    }
+
+    #[test]
+    fn a_first_prompt_asks_for_the_digests_warnings_to_be_mended() {
+        let state = Path::new("/state/supervisors/weather");
+        let one = first_prompt("/repos/weather", state, "", 1);
+        assert!(one.ends_with(
+            "in your role. The digest ends with a warning about your state files: mend what it \
+             names before anything else, and tell the user in one line that you did."
+        ));
+        // Before the user's task, which stays last.
+        let task = first_prompt("/repos/weather", state, "Build it", 2);
+        assert!(task.ends_with(
+            "The digest ends with 2 warnings about your state files: mend what each names before \
+             anything else, and tell the user in one line that you did.\n\nBuild it"
+        ));
+        let archive = handover_archive(state, 1_790_262_245);
+        assert!(
+            takeover_prompt("/repos/weather", state, &archive, 2).ends_with(
+                "in a few lines. The digest ends with 2 warnings about your state \
+                            files: mend what each names before anything else, and tell the user \
+                            in one line that you did."
+            )
+        );
+
+        let dir = env::temp_dir().join(format!("supervisor-warnings-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("create state dir");
+        assert_eq!(state_warnings(&dir), 0);
+        fs::write(dir.join("ledger.jsonl"), "not json\n").expect("write ledger");
+        fs::write(
+            dir.join("decisions.md"),
+            "## 2026-09-02: New\nDecision: x\nSupersedes: 2026-09-01: Gone\n",
+        )
+        .expect("write decisions");
+        assert_eq!(state_warnings(&dir), 2);
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// The 50% threshold with a prompt cache that is always about to expire,
@@ -2600,7 +2678,7 @@ mod tests {
             archive,
             Path::new("/state/supervisors/weather/handovers/20260924-150405.md")
         );
-        let prompt = takeover_prompt("/repos/weather", state, &archive);
+        let prompt = takeover_prompt("/repos/weather", state, &archive, 0);
         assert!(prompt.contains("State directory: /state/supervisors/weather."));
         assert!(prompt.contains(
             "the note it left, /state/supervisors/weather/handover.md: move it to \
@@ -2649,6 +2727,12 @@ mod tests {
         assert!(!handover.contains("{{"));
         assert!(handover.contains("write `/state/handover.md`"));
         assert!(handover.contains("under 6 KB"));
+        // Rules and ideas have files of their own, and a promise that only
+        // travels from note to note shows as one.
+        assert!(handover.contains("is a decision, so log it if it is missing"));
+        assert!(handover.contains("`(carried since <date>)`"));
+        assert!(handover.contains("add it to `backlog.md`,\n  whose headings the digest lists"));
+        assert!(role.contains("ask the user whether a\n   promise marked `carried` still stands."));
         assert!(handover.contains("do not run\n`/opt/corgi/corgi inbox --take`"));
         assert!(handover.contains("do not check the\nnumbers"));
         assert!(handover.contains("bring the note up to date"));
@@ -2660,6 +2744,40 @@ mod tests {
         ] {
             assert!(handover.contains(section), "{section}");
         }
+    }
+
+    #[test]
+    fn the_role_leaves_bootstrapping_to_a_command() {
+        let role = role(Path::new("/opt/corgi/corgi"), Path::new("/state"));
+        assert!(role.contains(
+            "no commit, you may set up yourself: run `/opt/corgi/corgi role bootstrap` and do\n\
+             what it prints."
+        ));
+        assert!(role.contains("| `/opt/corgi/corgi role bootstrap` |"));
+        assert!(
+            role.contains("you write only your state files, and what `role bootstrap` allows.")
+        );
+        assert!(!role.contains("run `git init`"));
+        assert!(BOOTSTRAP.starts_with("# Bootstrapping a new project\n"));
+        assert!(BOOTSTRAP.contains("1. run `git init` in it;"));
+        assert!(BOOTSTRAP.contains("3. commit them as the first commit."));
+        assert!(!BOOTSTRAP.contains("{{"));
+    }
+
+    #[test]
+    fn the_role_says_to_search_before_asking_and_what_the_digest_counts() {
+        assert!(ROLE.contains(
+            "Nor is one your memory may\n  already answer: run `--search` with a few of its \
+             words first, and when a\n  decision settles it, say which and go on."
+        ));
+        assert!(ROLE.contains(
+            "the digest only counts such\n  work whose agent is gone and whose newest line is \
+             two days old, and names\n  the three oldest."
+        ));
+        assert!(ROLE.contains("your backlog's headings, the newest decisions in full"));
+        // Nothing reads a judgement of the model in an outcome.
+        assert!(ROLE.contains("Record the choice in the ledger.\n"));
+        assert!(!ROLE.contains("cost policy"));
     }
 
     #[test]

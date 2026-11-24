@@ -9,8 +9,9 @@
 //! under it. A query word hits a block when the block has a word starting
 //! with it, ignoring case, so `reject` finds "rejected" but `pi` does not
 //! find "api". Blocks that have the words as a phrase come first, then those
-//! with the most words, then those with the most of them on one line, then
-//! the newest. Blocks with nearly the same words, such as a paragraph that
+//! with the most words, then anything else before an archived handover note
+//! (a past session's summary of the rest, dense enough to win otherwise),
+//! then those with the most of the words on one line, then the newest. Blocks with nearly the same words, such as a paragraph that
 //! daily briefs repeat, fold into the best of them, which names the others.
 //! Past its first two hits, a file's other hits come after everything else,
 //! so one long brief cannot fill the output. Each hit is named by its
@@ -229,6 +230,10 @@ struct Hit {
     foldable: bool,
     /// The places of the near-duplicates folded into this one, best first.
     similar: Vec<String>,
+    /// Whether it is from an archived handover note: a past session's view
+    /// of what the other sources record, so it ranks after an equal hit of
+    /// theirs.
+    secondhand: bool,
 }
 
 impl Hit {
@@ -261,6 +266,7 @@ impl Hit {
             line_hits,
             foldable: true,
             similar: Vec::new(),
+            secondhand: false,
         })
     }
 
@@ -573,6 +579,7 @@ fn handover_hits(input: &SearchInput, query: &Query, hits: &mut Vec<Hit>) {
                 &when
             }
         );
+        let from = hits.len();
         markdown_hits(
             &format!("{}/{name}", crate::supervisor::HANDOVERS_DIR),
             text,
@@ -581,6 +588,9 @@ fn handover_hits(input: &SearchInput, query: &Query, hits: &mut Vec<Hit>) {
             |section| with_section(what.clone(), section),
             hits,
         );
+        for hit in &mut hits[from..] {
+            hit.secondhand = true;
+        }
     }
 }
 
@@ -633,7 +643,15 @@ fn ranked(input: &SearchInput, query: &Query) -> Vec<Hit> {
     // reversing that order puts the later one first.
     hits.reverse();
     hits.sort_by(|a, b| {
-        (b.phrase, b.hits, b.line_hits, &b.when).cmp(&(a.phrase, a.hits, a.line_hits, &a.when))
+        // A handover note packs a day into a few lines, so it would win on
+        // words in one line: where it stands is settled before that.
+        (b.phrase, b.hits, !b.secondhand, b.line_hits, &b.when).cmp(&(
+            a.phrase,
+            a.hits,
+            !a.secondhand,
+            a.line_hits,
+            &a.when,
+        ))
     });
 
     // Each near-duplicate folds into the best hit it is like.
@@ -674,11 +692,24 @@ pub fn search(input: &SearchInput, words: &str) -> String {
         return out;
     }
     let folded: usize = hits.iter().map(|hit| hit.similar.len()).sum();
+    // Any one word makes a hit, so with several words the count that tells
+    // how much there is to read is of the hits that have them all.
+    let whole = hits
+        .iter()
+        .filter(|hit| hit.hits == query.words.len())
+        .count();
+    let counted = if whole == hits.len() {
+        format!("{whole} hit{}", if whole == 1 { "" } else { "s" })
+    } else {
+        format!(
+            "{whole} hit{} with every word and {} with some of them",
+            if whole == 1 { "" } else { "s" },
+            hits.len() - whole
+        )
+    };
     let _ = writeln!(
         out,
-        "# Search \"{words_shown}\": {} hit{}{} in {SOURCES}",
-        hits.len(),
-        if hits.len() == 1 { "" } else { "s" },
+        "# Search \"{words_shown}\": {counted}{} in {SOURCES}",
         if folded > 0 {
             format!(", and {folded} near-duplicates folded into them")
         } else {
@@ -688,7 +719,8 @@ pub fn search(input: &SearchInput, words: &str) -> String {
     let _ = writeln!(
         out,
         "Best first: the words as a phrase, then the most of them (a word matches the start of \
-         a word, ignoring case), then newest. Paths are in {}.\n\
+         a word, ignoring case), then anything else before a past handover note, then newest. \
+         Paths are in {}.\n\
          Print a hit's whole block (decision, ledger id, brief, report or section): {}",
         input.state_dir, input.show_command
     );
@@ -798,13 +830,44 @@ mod tests {
                 "decisions.md:1",
             ]
         );
-        assert!(out.starts_with("# Search \"pi durable rejected\": 6 hits in decisions"));
+        assert!(out.starts_with(
+            "# Search \"pi durable rejected\": 4 hits with every word and 2 with some of them in \
+             decisions"
+        ));
+        // One word, or every hit with them all: only the number.
+        assert!(
+            search(&input(decisions, ledger, &briefs, &[]), "wakes")
+                .starts_with("# Search \"wakes\": 3 hits in decisions")
+        );
         assert!(out.contains(
             "\n[3] ledger.jsonl:1  2026-09-10  all 3 words  ledger 20260910-w-pi [abandoned]\n  \
              summary: Try Pi Durable\n  outcome: rejected, too slow\n"
         ));
         assert!(out.contains("[1] decisions.md:11  2026-08-01  phrase  decision \"Old\"\n"));
         assert!(out.contains("--show <file:line>\n"));
+    }
+
+    #[test]
+    fn an_archived_handover_note_ranks_after_an_equal_hit_of_another_source() {
+        let decisions = "## 2026-09-01: Wakes are durable\nDecision: the inbox keeps each wake.\n";
+        let handovers = [(
+            "20261002-132035.md".to_string(),
+            "## Open threads\n\nLogged that wakes are durable through the inbox, after the user \
+             asked about a report lost on Friday; its worker is gone.\n"
+                .to_string(),
+        )];
+        let out = search(
+            &input(decisions, "", &[], &handovers),
+            "wakes durable inbox",
+        );
+        // The note is newer and says as much, but it retells the decision.
+        assert_eq!(
+            places(&out),
+            ["decisions.md:1", "handovers/20261002-132035.md:3"]
+        );
+        // A better match still comes first, wherever it is.
+        let out = search(&input(decisions, "", &[], &handovers), "logged wakes");
+        assert_eq!(places(&out)[0], "handovers/20261002-132035.md:3");
     }
 
     #[test]
@@ -847,7 +910,8 @@ mod tests {
             ]
         );
         assert!(out.starts_with(
-            "# Search \"grpc telemetry alarm weathermap\": 3 hits, and 2 near-duplicates folded"
+            "# Search \"grpc telemetry alarm weathermap\": 1 hit with every word and 2 with some \
+             of them, and 2 near-duplicates folded"
         ));
         assert!(out.contains(
             "  (+2 near-duplicates: briefs/20261021-w-morning.md:6, briefs/20261020-w-morning.md:6)\n"

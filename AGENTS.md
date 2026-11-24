@@ -87,8 +87,15 @@ what went wrong and what to do about it, without a key or a flag. Line
 breaks in `supervisor/ROLE.md` and `supervisor/HANDOVER.md` matter, since
 those tests match their text with `contains`. Another test there
 (`the_role_is_a_third_shorter_than_before_the_on_demand_parts_left_it`)
-caps `ROLE.md` at three quarters of 34,516 bytes, 25,887, and under 100 bytes
-are left: a role addition must trim something else.
+caps `ROLE.md` at three quarters of 34,516 bytes, 25,887, and under 600 bytes
+are left: a larger role addition must trim something else, or move a part
+a session rarely needs behind `corgi role <part>`, as the handover and the
+bootstrap were.
+
+A test that needs a report too long to be typed in with its wake sizes it
+from `inbox::INLINE_REPORT_MAX`, not with a number: a fixed 7,500 bytes was
+long until the limit went from 4 KB to 8 KB, and then the test failed on a
+file that was never written.
 
 The daemon's records are read by the next daemon, and the inbox by every
 Corgi: `AgentState`, `supervisor::Transitions`, `supervisor::Handover`,

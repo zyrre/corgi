@@ -11,11 +11,13 @@ pub mod memory;
 pub mod search;
 
 /// Full decision entries, newest first, are shown up to this many bytes...
-pub const RECENT_DECISION_BYTES: usize = 8 * 1024;
+pub const RECENT_DECISION_BYTES: usize = 4 * 1024;
 /// ...but always at least this many, however long they are.
 pub const MIN_RECENT_DECISIONS: usize = 3;
 /// Titles of older decisions, newest first, are shown up to this many bytes.
-pub const DECISION_TITLE_BYTES: usize = 3 * 1024;
+/// More than the full entries get: a title is what sends a supervisor to
+/// look a decision up, and one it never sees it does not look for.
+pub const DECISION_TITLE_BYTES: usize = 7 * 1024;
 /// Finished ledger ids shown.
 pub const RECENT_FINISHED: usize = 10;
 /// Open work entries are shown up to this many bytes, newest first; those of
@@ -27,8 +29,13 @@ pub const LEDGER_TEXT_CHARS: usize = 200;
 /// A `reported` entry whose agent is not running and whose newest line is at
 /// least this old is counted on one line instead of shown in full.
 pub const STALE_REPORTED_SECS: u64 = 2 * 24 * 3600;
+/// Stale `reported` entries named on their one line, the oldest; the rest are
+/// counted. Closing those brings the next ones up.
+const STALE_NAMED: usize = 3;
 /// A list of ids in the digest stops near this many bytes.
 const ID_LIST_BYTES: usize = 2 * 1024;
+/// Backlog headings are shown up to this many bytes; the rest are counted.
+const BACKLOG_HEADING_BYTES: usize = 1024;
 
 const SUPERSEDES: &str = "Supersedes:";
 
@@ -431,6 +438,8 @@ pub struct DigestInput<'a> {
     pub decisions: &'a str,
     pub ledger: &'a str,
     pub fleet: &'a [LiveAgent],
+    /// The headings of `backlog.md`'s entries, in file order.
+    pub backlog: &'a [String],
     /// The wall clock in Unix seconds, to tell stale ledger entries.
     pub now: u64,
     /// The command that prints one decision in full, with `<words>` in it.
@@ -483,7 +492,21 @@ pub fn open_threads(note: &str) -> Option<&str> {
     start.map(|(from, _)| note[from..].trim())
 }
 
-/// The digest, its seven sections in order.
+/// What is wrong with the state files that the supervisor should mend: each
+/// `Supersedes:` line of `decisions` that names no earlier heading, and each
+/// line of `ledger` that cannot be read. `state_dir` names the ledger.
+pub fn state_warnings(decisions: &str, ledger: &str, state_dir: &str) -> Vec<String> {
+    let (_, mut warnings) = superseded(&parse_decisions(decisions));
+    for (line, why) in unreadable_ledger_lines(ledger) {
+        warnings.push(format!(
+            "{state_dir}/ledger.jsonl:{line} {why}, so it is skipped; append a corrected line \
+             for its id"
+        ));
+    }
+    warnings
+}
+
+/// The digest, its sections in order.
 pub fn render(input: &DigestInput) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# Project {}", input.project);
@@ -542,6 +565,23 @@ pub fn render(input: &DigestInput) -> String {
         );
     }
 
+    if !input.backlog.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n# Backlog ({}, in backlog.md; raise them when the user asks what is next)",
+            input.backlog.len()
+        );
+        let mut bytes = 0;
+        for (index, heading) in input.backlog.iter().enumerate() {
+            if index > 0 && bytes + heading.len() > BACKLOG_HEADING_BYTES {
+                let _ = writeln!(out, "... and {} more", input.backlog.len() - index);
+                break;
+            }
+            bytes += heading.len() + 3;
+            let _ = writeln!(out, "- {heading}");
+        }
+    }
+
     let decisions = parse_decisions(input.decisions);
     let view = decision_view(&decisions);
     let _ = writeln!(out, "\n# Recent decisions (full text, newest first)");
@@ -581,16 +621,8 @@ pub fn render(input: &DigestInput) -> String {
          before you say something is unknown or never happened: {}",
         input.search_command
     );
-    for warning in &view.warnings {
+    for warning in state_warnings(input.decisions, input.ledger, input.state_dir) {
         let _ = writeln!(out, "warning: {warning}");
-    }
-    for (line, why) in unreadable_ledger_lines(input.ledger) {
-        let _ = writeln!(
-            out,
-            "warning: {}/ledger.jsonl:{line} {why}, so it is skipped; append a \
-             corrected line for its id",
-            input.state_dir
-        );
     }
     out
 }
@@ -598,7 +630,7 @@ pub fn render(input: &DigestInput) -> String {
 /// The entries of the "Open work" section, `open` in ledger order. A
 /// `reported` entry whose agent is not running and whose newest line is
 /// [`STALE_REPORTED_SECS`] old is only counted, on one line with the others
-/// like it. The rest are shown in full, newest first while they fit in
+/// like it, which names the [`STALE_NAMED`] oldest. The rest are shown in full, newest first while they fit in
 /// [`OPEN_WORK_BYTES`] (an entry of a running agent, or one `needs-answer` or
 /// `blocked`, always), and listed in ledger order; one more line names those
 /// left out.
@@ -655,12 +687,23 @@ fn open_work(
         }
     }
     if !stale.is_empty() {
+        let named: Vec<&str> = stale
+            .iter()
+            .take(STALE_NAMED)
+            .map(|entry| entry.id.as_str())
+            .collect();
+        let rest = stale.len() - named.len();
         let _ = writeln!(
             out,
             "- {} more `reported`, agent not running, newest line 2+ days old (set each \
-             `done` if it needs nothing more): {}",
+             `done` if it needs nothing more): {}{}",
             stale.len(),
-            id_list(stale.iter().map(|entry| entry.id.as_str()))
+            named.join(", "),
+            if rest > 0 {
+                format!(", … and {rest} more")
+            } else {
+                String::new()
+            }
         );
     }
     let left_out: Vec<_> = listed
@@ -803,13 +846,13 @@ mod tests {
     }
 
     #[test]
-    fn recent_decisions_fill_eight_kilobytes_but_never_fewer_than_three() {
-        let big = "x".repeat(3000);
+    fn recent_decisions_fill_four_kilobytes_but_never_fewer_than_three() {
+        let big = "x".repeat(1500);
         let text: String = (1..=6)
             .map(|day| entry(&format!("2026-09-0{day}: Big {day}"), &big))
             .collect();
         let view = decision_view(&parse_decisions(&text));
-        // Two fit in 8 KB; the third is shown anyway.
+        // Two fit in 4 KB; the third is shown anyway.
         assert_eq!(view.recent.len(), 3);
         assert!(view.recent[0].contains("Big 6"));
         assert_eq!(
@@ -836,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn older_titles_fill_three_kilobytes_and_a_line_counts_the_rest() {
+    fn older_titles_fill_seven_kilobytes_and_a_line_counts_the_rest() {
         let text: String = (0..600)
             .map(|n| entry(&format!("2026-01-01: D{n:03}"), &"z".repeat(5000)))
             .collect();
@@ -844,17 +887,17 @@ mod tests {
         let view = decision_view(&decisions);
         assert_eq!(view.recent.len(), 3);
         assert_eq!(view.titles[0], "2026-01-01  D596");
-        // Each title and its newline is 17 bytes: 180 make 3060, 181 too many.
-        assert_eq!(view.titles.len(), 180);
+        // Each title and its newline is 17 bytes: 421 make 7157, 422 too many.
+        assert_eq!(view.titles.len(), 421);
         assert_eq!(
             view.titles.last().map(String::as_str),
-            Some("2026-01-01  D417")
+            Some("2026-01-01  D176")
         );
-        assert_eq!(view.titles_left_out, 417);
+        assert_eq!(view.titles_left_out, 176);
         let shown: usize = view.titles.iter().map(|title| title.len() + 1).sum();
         assert!(shown <= DECISION_TITLE_BYTES);
         let rendered = render(&input(&text, "", &[]));
-        assert!(rendered.contains("\n2026-01-01  D417\n... and 417 older titles left out\n"));
+        assert!(rendered.contains("\n2026-01-01  D176\n... and 176 older titles left out\n"));
     }
 
     #[test]
@@ -1237,6 +1280,55 @@ not json
         assert_eq!(compact_ledger("not json\n"), None);
     }
 
+    #[test]
+    fn many_stale_reported_entries_name_only_the_three_oldest() {
+        let ledger: Vec<String> = (1..=5)
+            .map(|n| {
+                line(
+                    &format!("old-{n}"),
+                    &format!("2026-10-2{n}T09:00:00Z"),
+                    &format!("w-{n}"),
+                    "reported",
+                    "x",
+                )
+            })
+            .collect();
+        let rendered = render(&input("", &ledger.join("\n"), &[]));
+        assert!(rendered.contains(
+            "if it needs nothing more): old-1, old-2, old-3, … and 2 more\n\n# Recently finished"
+        ));
+    }
+
+    #[test]
+    fn the_backlogs_headings_are_listed_and_an_empty_backlog_has_no_section() {
+        assert!(!render(&input("", "", &[])).contains("# Backlog"));
+        let backlog = ["Pause for Codex".to_string(), "Rows polish".to_string()];
+        let mut with = input("", "", &[]);
+        with.backlog = &backlog;
+        assert!(render(&with).contains(
+            "\n# Backlog (2, in backlog.md; raise them when the user asks what is next)\n\
+             - Pause for Codex\n- Rows polish\n\n# Recent decisions"
+        ));
+        let many: Vec<String> = (0..40)
+            .map(|n| format!("Entry {n:02} {}", "y".repeat(60)))
+            .collect();
+        with.backlog = &many;
+        let rendered = render(&with);
+        // Each line is 72 bytes: 14 fit in 1 KB.
+        assert!(rendered.contains("- Entry 13 "));
+        assert!(rendered.contains("\n... and 26 more\n") && !rendered.contains("- Entry 14 "));
+    }
+
+    #[test]
+    fn state_warnings_name_what_to_mend_in_the_decisions_and_the_ledger() {
+        let decisions = "## 2026-09-02: New\nDecision: x\nSupersedes: 2026-09-01: Gone\n";
+        let warnings = state_warnings(decisions, "not json\n", "/state");
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("matches no earlier heading"));
+        assert!(warnings[1].starts_with("/state/ledger.jsonl:1 is not valid JSON"));
+        assert!(state_warnings("", "", "/state").is_empty());
+    }
+
     fn input<'a>(decisions: &'a str, ledger: &'a str, fleet: &'a [LiveAgent]) -> DigestInput<'a> {
         DigestInput {
             project: "/repos/weather",
@@ -1248,6 +1340,7 @@ not json
             decisions,
             ledger,
             fleet,
+            backlog: &[],
             decision_command: "corgi digest /repos/weather --decision \"<words>\"",
             search_command: "corgi digest /repos/weather --search \"<words>\"",
             now: NOW,
