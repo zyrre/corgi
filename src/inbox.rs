@@ -46,11 +46,13 @@ pub const KEPT_REPORTS_DIR: &str = crate::digest::lookup::REPORTS_DIR;
 const LOCK_FILE: &str = "inbox.lock";
 /// The longest report an item keeps inline, in bytes; a longer one goes to
 /// its own file in [`REPORTS_DIR`]. Only an inline report is typed into the
-/// supervisor's box with its wake.
-pub const INLINE_REPORT_MAX: usize = 4 * 1024;
+/// supervisor's box with its wake. Nearly every report fits: at 4 KB a third
+/// of one project's wakes sent the supervisor to `corgi report` instead.
+pub const INLINE_REPORT_MAX: usize = 8 * 1024;
 /// The most report text, quoted, one prompt into the supervisor's box carries;
-/// past it, a wake names the command that prints its report instead.
-pub const PROMPT_REPORT_BUDGET: usize = 12 * 1024;
+/// past it, a wake names the command that prints its report instead. Two of
+/// the longest inline reports.
+pub const PROMPT_REPORT_BUDGET: usize = 16 * 1024;
 /// How long an item has waited undelivered before the footer of the
 /// command-line tools counts it while a daemon delivers: until then it
 /// is only waiting for the supervisor's turn to end.
@@ -674,7 +676,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        let long = "private report\n".repeat(500);
+        let long = "private report\n".repeat(INLINE_REPORT_MAX / 15 + 1);
         let spilled = append(
             &dir,
             Item {

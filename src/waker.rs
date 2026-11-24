@@ -2137,10 +2137,11 @@ mod tests {
         );
     }
 
-    /// Nothing bounds the one prompt typed into the supervisor's box: every own
-    /// worker's report up to 4 KB each goes inline. Eight workers stopping
-    /// during one long supervisor turn (or one daemon downtime) make a ~33 KB
-    /// agent.prompt. `corgi inbox` caps itself at 16 KB of reports.
+    /// Without a budget, every own worker's report up to
+    /// [`inbox::INLINE_REPORT_MAX`] would go inline: eight workers stopping
+    /// during one long supervisor turn (or one daemon downtime) would make
+    /// one agent.prompt of some 65 KB. `corgi inbox` caps itself at 16 KB of
+    /// reports too.
     #[test]
     fn the_typed_prompt_stays_within_a_budget() {
         use AgentState::{Done, Idle, Working};
@@ -2159,7 +2160,7 @@ mod tests {
         let sent = wake_pass(&mut waker, &agents(Idle, Done, 2), Some(&report), false);
         assert_eq!(sent.len(), 1);
         assert!(
-            sent[0].len() <= 16 * 1024,
+            sent[0].len() <= inbox::PROMPT_REPORT_BUDGET + 4 * 1024,
             "one agent.prompt of {} bytes",
             sent[0].len()
         );

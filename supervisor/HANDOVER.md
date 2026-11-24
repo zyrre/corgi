@@ -24,11 +24,17 @@ those files and `briefs/` do not hold, in short sections:
   the user*, with its number, so your successor restates it unchanged and
   goes on numbering after the highest.
 - **Proposed plans not yet approved**: each plan as you proposed it, enough
-  to put to the user again without redoing the work.
+  to put to the user again without redoing the work. Something to build
+  later that nobody asked you to plan is no plan: add it to `backlog.md`,
+  whose headings the digest lists, and leave it out.
 - **`[supervisor]` prompts since each worker's last wake**: per worker, what
   you asked it and when, so your successor can tell your turns from the
   user's.
-- **Promises to the user**: anything you said you would do or check.
+- **Promises to the user**: anything you said you would do or check. Leave
+  out what `decisions.md` holds: a rule for every time, such as what to do
+  after each merge, is a decision, so log it if it is missing. Mark a
+  promise that the note you took over from already listed
+  `(carried since <date>)`.
 
 Write "none" under a heading with nothing in it. Keep the note under 6 KB:
 your successor reads it whole, so summarise rather than quote. Then end your

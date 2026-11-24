@@ -308,12 +308,13 @@ pub(super) fn start_supervisor_with(
         },
     )?;
     let prompt_file = prepared.state_dir.join(FIRST_PROMPT_FILE);
+    let warnings = supervisor::state_warnings(&prepared.state_dir);
     let prompt = match &plan.role {
         Role::Supervisor { takes_over: true } => {
             let archive = supervisor::handover_archive(&prepared.state_dir, unix_now());
-            supervisor::takeover_prompt(&root, &prepared.state_dir, &archive)
+            supervisor::takeover_prompt(&root, &prepared.state_dir, &archive, warnings)
         }
-        _ => supervisor::first_prompt(&root, &prepared.state_dir, &plan.prompt),
+        _ => supervisor::first_prompt(&root, &prepared.state_dir, &plan.prompt, warnings),
     };
     fs::write(&prompt_file, &prompt).with_context(|| format!("write {}", prompt_file.display()))?;
     let role_args = supervisor_role_args(&plan.harness, &prepared)?;

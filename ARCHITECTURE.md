@@ -224,9 +224,10 @@ the project's state directory at launch with the path of the Corgi binary
 (`CORGI_BIN` chooses another) and the `hc` commands for steering workers
 (`hc send`, `hc read`, `hc keys`). It is loaded into every turn, so what a
 supervisor needs only at one moment is not in it: how to hand over is
-`supervisor/HANDOVER.md`, which `corgi role handover` prints, and what to do
-after a merge, a conflict or a failed push is in the `[Corgi]` line that
-reports it. Tests in `src/supervisor.rs` pin the role's wording and cap its
+`supervisor/HANDOVER.md`, which `corgi role handover` prints, what it may do
+in a project without a first commit is `supervisor/BOOTSTRAP.md`, which
+`corgi role bootstrap` prints, and what to do after a merge, a conflict or a
+failed push is in the `[Corgi]` line that reports it. Tests in `src/supervisor.rs` pin the role's wording and cap its
 size.
 
 A supervisor's memory is plain files in `supervisors/<project>/`, outside
@@ -241,11 +242,18 @@ reading its files raw, since `decisions.md` and `ledger.jsonl` only grow.
 The digest reads only, and prints, bounded: the base branch and HEAD; the
 handover note, else the open threads of the newest archived one; every
 unfinished ledger id joined with the running agents (by name, else by
-request id); the last finished ids; the newest decisions in full (about
-8 KB, at least 3) and the titles of the rest; and warnings. `--search`
+request id); the last finished ids; the backlog's headings; the newest
+decisions in full (about 4 KB, at least 3) and the titles of older ones
+(about 7 KB); and warnings. The titles get the larger share because a
+title is what sends a supervisor to look a decision up: over five weeks,
+seven look-ups in ten were of a decision the digest showed as a title and
+one in twelve of one it showed in full (`research/artifact-usage.md`). A session reads a warning in the
+digest and goes on, so the supervisor's first prompt also asks for what the
+warnings name to be mended. `--search`
 looks in all of the memory (decisions, the ledger and its archive, briefs,
 kept reports, notes, handover notes), best hits first with near-duplicates
-folded; `--show`, `--ledger`, `--brief` and `--decision` print one item
+folded and an archived handover note after an equal hit of any other
+source, since it retells them; `--show`, `--ledger`, `--brief` and `--decision` print one item
 whole. The lookups read the state directory alone and need no running
 core; the summary needs one, for the agents.
 
@@ -280,7 +288,9 @@ item names its project root, and a supervisor gets only its own project's.
 
 When an agent rests, its report goes into the item: the newest reply in its
 transcript, when it comes after the turn's prompt and its last tool call,
-else its screen. A transcript that does not yet show how the turn ended is
+else its screen. A report of up to 8 KB is typed in with the wake, quoted,
+and one prompt carries 16 KB of reports at most; past either, the wake
+names `corgi report` instead. A transcript that does not yet show how the turn ended is
 read again over two seconds, then the wake goes without a report rather
 than with an older turn's. For a worker the supervisor spawned, a report
 from its transcript is also kept for good in `reports/`, where `corgi
