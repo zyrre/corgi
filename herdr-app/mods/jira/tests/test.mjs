@@ -94,6 +94,7 @@ const kit = {
   TextareaState,
   Input: { new: (state) => element('input', [state]) },
   Textarea: { new: (state) => element('textarea', [state]) },
+  ScrollHandle: { new: () => ({ scroll_to_item() {}, release: () => true }) },
 };
 
 // The app around the mod: its home (a scratch folder), what the environment
@@ -165,7 +166,7 @@ function world(overrides = {}) {
 
 const sources = {
   'gpui-kit': 'const k = globalThis.__kit; export const View = k.View, div = k.div, svg = k.svg;',
-  'gpui-base': 'const k = globalThis.__kit; export const v_flex = k.v_flex, h_flex = k.h_flex, InputState = k.InputState, Input = k.Input, TextareaState = k.TextareaState, Textarea = k.Textarea;',
+  'gpui-base': 'const k = globalThis.__kit; export const v_flex = k.v_flex, h_flex = k.h_flex, InputState = k.InputState, Input = k.Input, TextareaState = k.TextareaState, Textarea = k.Textarea, ScrollHandle = k.ScrollHandle;',
   herdr: ['theme', 'settings', 'home', 'appHome', 'nextCommand', 'props', 'notify', 'layout', 'run', 'shared', 'setShared', 'readTextFile', 'writeTextFile', 'exec']
     .map((name) => `export const ${name} = (...a) => globalThis.__world.api.${name}(...a);`).join('\n'),
   'fs/promises': 'export const mkdir = (...a) => import("node:fs/promises").then((m) => m.mkdir(...a));',
@@ -1249,6 +1250,224 @@ function appHome(bar = 'tabs') {
   };
 }
 const find = (node, id) => (node?.id === id ? node : (node?.children ?? []).map((c) => find(c, id)).find(Boolean) ?? null);
+
+test('the search\'s helpers: a query as keys and words, and its text quoted and escaped for JQL and Lucene', () => {
+  const q = (text, projects = ['DEMO']) => util.parseQuery(text, projects);
+  assert.equal(q(''), null);
+  assert.equal(q('   \n '), null);
+  assert.deepEqual(q('pm-1234'), { keys: ['PM-1234'], open: true, words: '', number: '' }, 'a key, any case');
+  assert.deepEqual(q(' 1234 '), { keys: ['DEMO-1234'], open: true, words: '', number: '1234' }, 'a bare number: a key of the board\'s project');
+  assert.deepEqual(q('0042', ['DEMO', 'OTHER']), { keys: ['DEMO-42', 'OTHER-42'], open: true, words: '', number: '42' }, 'of each of its projects');
+  assert.deepEqual(q('1234', []), { keys: [], open: false, words: '1234', number: '' }, 'no project known: words');
+  assert.deepEqual(q('PM-12 timeout'), { keys: ['PM-12'], open: false, words: 'timeout', number: '' });
+  assert.deepEqual(q('PM-12 pm-12 PM-13'), { keys: ['PM-12', 'PM-13'], open: false, words: '', number: '' }, 'each key once; more than one is a list');
+  assert.deepEqual(q('fix 404 errors'), { keys: [], open: false, words: 'fix 404 errors', number: '' }, 'a number among words is a word');
+  assert.deepEqual(q('PM-'), { keys: [], open: false, words: 'PM-', number: '' });
+  assert.equal(q(Array.from({ length: 15 }, (_, i) => `A-${i + 1}`).join(' ')).keys.length, 10, 'ten keys at most');
+
+  assert.equal(util.textJql('sprint panel'), 'text ~ "sprint panel" ORDER BY updated DESC');
+  assert.equal(util.textJql('say "hi"'), 'text ~ "say \\\\\\"hi\\\\\\"" ORDER BY updated DESC', 'a quote: escaped for Lucene, then both for JQL');
+  assert.equal(util.textJql('a\\b'), 'text ~ "a\\\\\\\\b" ORDER BY updated DESC', 'a backslash: four in the JQL');
+  assert.equal(util.textJql('c++ (x)'), 'text ~ "c\\\\+\\\\+ \\\\(x\\\\)" ORDER BY updated DESC');
+  assert.equal(util.textJql('this AND that OR NOT TO'), 'text ~ "this and that or not to" ORDER BY updated DESC', 'Lucene\'s operators as words');
+  assert.equal(util.textJql('  two\n\tlines  '), 'text ~ "two lines" ORDER BY updated DESC');
+  for (const none of ['', '   ', '()[]{}', '*?', '"', '\\', '+-&|!^~:/', '" * "']) assert.equal(util.textJql(none), null, none);
+  assert.equal(util.textJql('x'.repeat(500)).length, 'text ~ "" ORDER BY updated DESC'.length + 300, 'cut at 300 characters');
+});
+
+// Types `text` into the search field and presses Enter.
+const search = async (mod, text) => {
+  mod.type(mod.view.query, text);
+  await mod.submit(mod.view.query);
+};
+const TEXT = /jql=text ~ /;
+
+test('the search field: a key or a bare number opens the issue, a missing one says so; Esc and back go back as they came', async () => {
+  const fake = await startFakeJira();
+  const w = configured(fake);
+  const mod = await start(w);
+  await mod.tick();
+  assert.ok(byId(mod.render(), 'ji-search'), 'the field is over the sections');
+  assert.ok(!byId(mod.render(), 'ji-search-clear'), 'no × while it is empty');
+  // Folds and the list's scroll, to see them come back.
+  await mod.click('ji-sec-project');
+  const sections = ids(mod.render(), 'ji-');
+  const list = kept(byId(mod.render(), 'ji-list'));
+  assert.equal(list.calls.track_scroll[0], mod.view.listScroll, 'the sections keep their place in a handle of the view');
+
+  // A full key, any case: Enter opens it, read once.
+  await search(mod, 'demo-120');
+  assert.equal(mod.view.view().kind, 'issue');
+  assert.equal(mod.view.view().key, 'DEMO-120');
+  assert.ok(mod.says('Assignee:'), mod.texts().join('|'));
+  assert.equal(reads(fake, /\/issue\/DEMO-120\?/).length, 1, 'the search\'s read is the view\'s');
+  assert.equal(reads(fake, TEXT).length, 0, 'a key alone searches no text');
+  // Back: the results, the key in them; the field keeps the query.
+  await mod.key('escape');
+  assert.equal(mod.view.view().kind, 'list');
+  assert.ok(!byId(mod.render(), 'ji-list') && byId(mod.render(), 'ji-results'));
+  assert.equal(row(mod, 'ji-found-keys'), 'Key match 1');
+  assert.deepEqual(ids(mod.render(), 'ji-row-'), ['ji-row-DEMO-120']);
+  assert.equal(mod.view.query.value(), 'demo-120');
+  assert.ok(byId(mod.render(), 'ji-search-clear'));
+  // Esc again: the sections as they were.
+  await mod.key('escape');
+  assert.equal(mod.view.search, null);
+  assert.equal(mod.view.query.value(), '');
+  assert.deepEqual(ids(mod.render(), 'ji-'), sections);
+  assert.equal(kept(byId(mod.render(), 'ji-list')).calls.track_scroll[0], mod.view.listScroll);
+
+  // A bare number: a key of the board's project.
+  await search(mod, '130');
+  assert.equal(mod.view.view().key, 'DEMO-130');
+  await mod.key('escape');
+  // A key that is not there: said, and no text searched.
+  await search(mod, 'DEMO-999');
+  assert.equal(mod.view.view().kind, 'list');
+  assert.ok(mod.says('DEMO-999 does not exist, or this token may not see it.'), mod.texts().join('|'));
+  assert.ok(!mod.says('No issue matches'));
+  await search(mod, '999');
+  assert.ok(mod.says('DEMO-999 does not exist, or this token may not see it.'));
+  assert.equal(reads(fake, TEXT).length, 0);
+  // The ×: the sections as they were.
+  await mod.click('ji-search-clear');
+  assert.deepEqual(ids(mod.render(), 'ji-'), sections);
+  // Emptying the field does the same.
+  await search(mod, 'DEMO-999');
+  assert.ok(byId(mod.render(), 'ji-results'));
+  mod.type(mod.view.query, '');
+  assert.deepEqual(ids(mod.render(), 'ji-'), sections);
+  await fake.close();
+});
+
+test('the search field: words search every issue\'s text, closed ones dimmed; with a key, the key first and each issue once; no hits; capped at 50', async () => {
+  const fake = await startFakeJira(0, { backlog: 60 });
+  const w = configured(fake);
+  const mod = await start(w);
+  await mod.tick();
+  // Free text, in another project too.
+  await search(mod, 'other team');
+  assert.equal(mod.view.view().kind, 'list');
+  assert.equal(row(mod, 'ji-found-text'), 'Text matches 3');
+  assert.deepEqual(ids(mod.render(), 'ji-row-').sort(), ['ji-row-OTHER-1', 'ji-row-OTHER-2', 'ji-row-OTHER-3']);
+  assert.ok(!byId(mod.render(), 'ji-found-keys'));
+  assert.ok(!byId(mod.render(), 'ji-sec-mine'), 'the results replace the sections');
+  // A closed one: found, and dimmed; its row shows its status.
+  await search(mod, 'long ago');
+  assert.deepEqual(ids(mod.render(), 'ji-row-'), ['ji-row-DEMO-203']);
+  assert.equal(kept(byId(mod.render(), 'ji-row-DEMO-203')).calls.opacity?.[0], 0.6);
+  assert.match(row(mod, 'ji-row-DEMO-203'), /Done$/);
+  await search(mod, 'other team');
+  assert.equal(kept(byId(mod.render(), 'ji-row-OTHER-2')).calls.opacity, undefined, 'an open one is not');
+  // A key and words: the key first, then the text's, without it again.
+  await search(mod, 'DEMO-101 sprint');
+  const rows = ids(mod.render(), 'ji-row-');
+  assert.equal(rows[0], 'ji-row-DEMO-101');
+  assert.equal(rows.filter((id) => id === 'ji-row-DEMO-101').length, 1, 'each issue once');
+  assert.ok(rows.length > 3 && rows.includes('ji-row-DEMO-112'), rows.join(' '));
+  assert.deepEqual(ids(mod.render(), 'ji-found-'), ['ji-found-keys', 'ji-found-text']);
+  assert.equal(mod.view.view().kind, 'list', 'a key with words opens nothing');
+  // A key that is not there, with words: said, and the words searched.
+  await search(mod, 'DEMO-999 sprint');
+  assert.ok(mod.says('DEMO-999 does not exist, or this token may not see it.') && rows.length > 3);
+  // No hits.
+  await search(mod, 'zebra');
+  assert.ok(mod.says('No issue matches “zebra”.'), mod.texts().join('|'));
+  // Capped: the 50 last updated, and a line saying so.
+  await search(mod, 'backlog item');
+  assert.equal(row(mod, 'ji-found-text'), 'Text matches 50 of 60');
+  assert.equal(ids(mod.render(), 'ji-row-').length, 50);
+  assert.ok(mod.says('The 50 last updated of 60 matches: add words to narrow it down.'));
+  assert.equal(reads(fake, /jql=text ~ "backlog item"/).length, 1, 'one page of 50');
+  // A result opens as a row does, with its actions; back is the results.
+  await search(mod, 'other team');
+  await mod.click('ji-row-OTHER-3');
+  assert.equal(mod.view.view().key, 'OTHER-3');
+  assert.ok(byId(mod.render(), 'ji-act-status') && byId(mod.render(), 'ji-act-comment'));
+  await mod.click('ji-back');
+  assert.equal(row(mod, 'ji-found-text'), 'Text matches 3');
+  await fake.close();
+});
+
+test('the search field: no text breaks the JQL or adds to it; only Lucene\'s characters is no hits, asking nothing', async () => {
+  const fake = await startFakeJira();
+  const mod = await start(configured(fake));
+  await mod.tick();
+  const nasty = [
+    'sprint" OR project = OTHER OR text ~ "x', 'sprint\\" OR key = DEMO-1', 'a\\b', 'C++ (side) [panel] {x}', 'AND OR NOT',
+    'what? *wild* ~fuzzy^2 key:value /regex/ a&&b || !c', '\'single\' "double"', 'trailing\\', '\\"', 'ünïcödé 文字', 'sprint) OR (1=1',
+    'order by key', 'side panel ORDER BY created ASC', 'EMPTY null', '\u0000ctrl\u0007', 'DEMO-101 "',
+  ];
+  for (const text of nasty) {
+    const before = fake.requests.length;
+    await search(mod, text);
+    const asked = fake.requests.slice(before).filter((r) => TEXT.test(decodeURIComponent(r.query)));
+    for (const r of asked) assert.match(decodeURIComponent(r.query), /jql=text ~ "(?:[^"\\]|\\.)*" ORDER BY updated DESC&fields=/, text);
+    assert.ok(!mod.view.search.error, `${text}: ${mod.view.search.error?.message}`);
+    assert.ok(!mod.says('did not take') && !mod.says('Could not'), `${text}: ${mod.texts().join('|')}`);
+  }
+  // The quote did not end the string: OTHER's issues come only when their text has the words.
+  await search(mod, 'sprint" OR project = OTHER OR text ~ "x');
+  assert.ok(mod.says('No issue matches'), mod.texts().join('|'));
+  // Lucene's characters alone: no hits, and Jira not asked.
+  for (const text of ['()', '* ? :', '"""', '\\\\', '[]{}^~']) {
+    const before = fake.requests.length;
+    await search(mod, text);
+    assert.equal(fake.requests.length, before, text);
+    assert.ok(mod.says(`No issue matches “${text}”.`), mod.texts().join('|'));
+  }
+  await fake.close();
+});
+
+test('the search field: an error shows as a read\'s does; a slow answer is given up on; an older answer never replaces a newer; the timed reads leave the results', async () => {
+  const fake = await startFakeJira();
+  const mod = await start(configured(fake));
+  await mod.tick();
+  // An error from Jira.
+  fake.fail({ mode: 'status', status: 503, path: '^/rest/api/2/search$' });
+  await search(mod, 'other team');
+  assert.ok(mod.says('Could not search for “other team”: Jira answered 503.'), mod.texts().join('|'));
+  fake.recover();
+  await mod.submit(mod.view.query);
+  assert.equal(row(mod, 'ji-found-text'), 'Text matches 3');
+  // A search with no answer: searching, then given up on after the read limit.
+  fake.fail({ mode: 'stall', path: '^/rest/api/2/search$', count: 1 });
+  mod.type(mod.view.query, 'long ago');
+  mod.view.query.handlers.submit({}, mod.cx);
+  await mod.poke();
+  assert.ok(mod.says('Searching Jira for “long ago”…'), mod.texts().join('|'));
+  skew += data.READ_LIMIT + 1_000;
+  assert.ok(mod.says('Jira gave no answer to the search for “long ago” in time. Enter searches again.'), mod.texts().join('|'));
+  fake.release();
+  for (let i = 0; i < 50; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(mod.says('in time'), 'its late answer (a 503) is dropped');
+  // Two in a row: the first stalls, the second answers; the first's late answer changes nothing.
+  fake.fail({ mode: 'stall', path: '^/rest/api/2/search$', count: 1 });
+  mod.type(mod.view.query, 'long ago');
+  mod.view.query.handlers.submit({}, mod.cx);
+  await mod.poke();
+  mod.type(mod.view.query, 'other team');
+  mod.view.query.handlers.submit({}, mod.cx);
+  for (let i = 0; i < 200 && !byId(mod.render(), 'ji-found-text'); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(row(mod, 'ji-found-text'), 'Text matches 3');
+  fake.recover();
+  fake.release();
+  await mod.settle();
+  assert.equal(row(mod, 'ji-found-text'), 'Text matches 3');
+  assert.ok(!mod.says('Could not') && !mod.says('long ago'), mod.texts().join('|'));
+  // The timed reads go on behind the results, and leave them.
+  const n = reads(fake, SPRINT).length;
+  await run([mod], 4 * 60_000);
+  assert.ok(reads(fake, SPRINT).length > n, 'the sprint is still read');
+  assert.equal(row(mod, 'ji-found-text'), 'Text matches 3');
+  assert.ok(byId(mod.render(), 'ji-results'));
+  // The refresh button searches again.
+  const asked = reads(fake, TEXT).length;
+  await mod.click('ji-refresh');
+  assert.equal(reads(fake, TEXT).length, asked + 1);
+  assert.equal(row(mod, 'ji-found-text'), 'Text matches 3');
+  await fake.close();
+});
 
 test('install.sh puts the mod\'s own files in an app home, once, checked first; --uninstall takes them out, --forget the settings too', () => {
   const h = appHome();
