@@ -409,7 +409,12 @@ Every agent's prompt cache in the canned status is `warm 55m`, and the
 latest call of each with a model is the moment the status is read
 (`w-cache`'s is 20 Nov 2026, for a date on a card): for other cache states
 or times, edit the agents' `cache` and `last_call` in `fake/status.json`
-after `start`. Change the made-up projects in `start_fakes` when a view needs
+after `start`. Equal times order a state's rows by task, so the order by
+latest call shows only with times that differ, and with more than one
+agent in a state: start more fake agents in `alpha` with `hc run` on the
+preview's core (as `fake_agent` does) and add their entries, by terminal,
+to `fake/status.json`. An agent that reports `done` there shows `IDLE`, as
+the supervisor does. Change the made-up projects in `start_fakes` when a view needs
 a state they lack. `scripts/test-app-preview` runs the script against a
 fake app, hc, AeroSpace and corgi, opening nothing: run it, and
 `shellcheck scripts/app-preview scripts/test-app-preview`, after changing

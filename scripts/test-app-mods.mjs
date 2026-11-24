@@ -1090,7 +1090,8 @@ async function projects(w, props = {}, module = undefined) {
 
 // Within a project, the supervisor first, then its agents by state:
 // blocked, working, MERGE, done, idle, then the rest (here one in no state); by
-// name within a state, case-insensitive, and by terminal when two names
+// name within a state (no agent here has a latest call; see the next case),
+// case-insensitive, and by terminal when two names
 // are the same. A row moves only when its agent's state changes, and keeps
 // its place while its state is missing for a moment.
 {
@@ -1175,6 +1176,108 @@ async function projects(w, props = {}, module = undefined) {
   click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
   assert.deepEqual(listed(), merging);
   assert.deepEqual(w.agentOrder, merging);
+}
+
+// Within every state but working, the newest latest call (`last_call`, the
+// time on the card) first, those with none after them by name, equal times
+// by name (decision 2026-11-24): an agent that finishes a turn goes to the
+// top of its state. The working stay by name, so calls never swap them. A
+// time missing for a moment (a refresh) keeps the row in place.
+{
+  const w = window();
+  w.agents.push(
+    agent('sp-calm', 't20', 'blocked', '✳ x'),
+    agent('sp-sunny', 't21', 'working', '✳ x'),
+    agent('sp-quiet', 't22', 'done', '✳ x'),
+    agent('sp-quiet', 't23', 'done', '✳ x'),
+    agent('sp-quiet', 't24', 'done', '✳ x'),
+    agent('sp-sunny', 't25', 'idle', '✳ x'),
+    agent('sp-sunny', 't26', 'idle', '✳ x'),
+    agent('sp-sunny', 't27', 'idle', '✳ x'),
+    agent('sp-calm', 't28', 'done', '✳ x'),
+    agent('sp-calm', 't29', 'done', '✳ x'),
+  );
+  const status = structuredClone(STATUS);
+  const at = (hhmm) => `2026-11-10T${hhmm}:00Z`;
+  const worker = (terminal, task, last_call, extra = {}) =>
+    ({ name: `w-${terminal}`, role: 'worker', state: 'done', task, terminal, worktree: null, cwd: REPO, ...(last_call ? { last_call } : {}), ...extra });
+  status.projects[0].agents[0].last_call = at('11:00'); // t3, working: Fix the cache
+  status.projects[0].agents.push(
+    worker('t20', 'Zap the bug', at('08:00'), { state: 'blocked' }),
+    worker('t21', 'add tests', at('11:30'), { state: 'working' }),
+    worker('t22', 'Alpha done', at('10:00')),
+    worker('t23', 'beta done', at('10:05')),
+    worker('t24', 'Gamma done', null),
+    worker('t25', 'a idle', at('09:00'), { state: 'idle' }),
+    worker('t26', 'c idle', at('09:30'), { state: 'idle' }),
+    worker('t27', 'B idle', at('09:30'), { state: 'idle' }),
+    worker('t28', 'merge a', at('07:00'), { tag: 'merge', branch: 'worktree/a' }),
+    worker('t29', 'merge b', at('07:30'), { tag: 'merge', branch: 'worktree/b' }),
+  );
+  w.programs[1] = corgi({ status });
+  const mod = await projects(w);
+  const refresh = async () => {
+    w.programs[1] = corgi({ status: structuredClone(status) });
+    for (const timer of mod.cx.timers.filter((timer) => timer.ms === 5000)) timer.tick(mod.cx);
+    await mod.settle();
+  };
+  const listed = () => ids(mod.render(), 'agent-').map((id) => id.slice('agent-'.length));
+  const ORDER = [
+    't2', // the supervisor
+    't20', 't4', // blocked: 08:00, then Review the cache fix (no time)
+    't21', 't3', // working, by name: add tests (11:30), Fix the cache (11:00)
+    't29', 't28', // MERGE: 07:30, 07:00
+    't23', 't22', 't24', // done: 10:05, 10:00, Gamma done (no time)
+    't27', 't26', 't25', // idle: B idle and c idle (both 09:30, by name), a idle (09:00)
+    't5', // in no state
+    't7', // the next space's
+  ];
+  assert.deepEqual(listed(), ORDER);
+  // agent.next and agent.prev follow the list.
+  assert.deepEqual(w.agentOrder, ORDER);
+
+  // The working make calls: Fix the cache's is now the newer, and neither moves.
+  const entry = (terminal) => status.projects[0].agents.find((a) => a.terminal === terminal);
+  entry('t3').last_call = at('12:00');
+  await refresh();
+  assert.deepEqual(listed(), ORDER, 'working agents do not swap');
+  entry('t21').last_call = at('12:10');
+  await refresh();
+  assert.deepEqual(listed(), ORDER);
+
+  // Alpha done finishes another turn: the top of the done.
+  entry('t22').last_call = at('12:20');
+  await refresh();
+  const again = ['t2', 't20', 't4', 't21', 't3', 't29', 't28', 't22', 't23', 't24', 't27', 't26', 't25', 't5', 't7'];
+  assert.deepEqual(listed(), again);
+  assert.deepEqual(w.agentOrder, again);
+  // a idle finishes one and is done: the top of the done, the rest stay.
+  entry('t25').last_call = at('12:30');
+  entry('t25').state = 'done';
+  w.agents.find((a) => a.address === 't25').status = 'done';
+  await refresh();
+  const finished = ['t2', 't20', 't4', 't21', 't3', 't29', 't28', 't25', 't22', 't23', 't24', 't27', 't26', 't5', 't7'];
+  assert.deepEqual(listed(), finished);
+  assert.deepEqual(w.agentOrder, finished);
+
+  // Alpha done's time is missing for a refresh: it keeps its place, then,
+  // missing for longer, goes with those with none, by name.
+  const realNow = Date.now;
+  try {
+    delete entry('t22').last_call;
+    await refresh();
+    assert.deepEqual(listed(), finished, 'a missing time keeps the row in place');
+    const missingAt = realNow();
+    Date.now = () => missingAt + 9000;
+    assert.deepEqual(listed(), finished, 'kept for a few seconds');
+    Date.now = () => missingAt + 11000;
+    assert.deepEqual(listed(), ['t2', 't20', 't4', 't21', 't3', 't29', 't28', 't25', 't23', 't22', 't24', 't27', 't26', 't5', 't7'], 'then with those with none');
+  } finally {
+    Date.now = realNow;
+  }
+  entry('t22').last_call = at('12:20');
+  await refresh();
+  assert.deepEqual(listed(), finished, 'and back with its time');
 }
 
 // Each project (a repository's space) sits in one rounded area: its row,
