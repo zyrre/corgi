@@ -9,7 +9,8 @@
 // requires a field) and work logged, behind the paths the mod asks a real
 // Jira for: `/rest/api/2/myself`, `search` (a board's filter and a sprint,
 // the token user's open issues, a project's open issues, and the token
-// user's issues updated lately with their changelog), `issue/<key>`, its
+// user's issues updated lately with their changelog, and a search of every
+// issue's text, `text ~ "<words>"`), `issue/<key>`, its
 // `transitions`, `assignee`, `comment` and `worklog`, and the agile API's
 // `board`, `board/<id>`, its `configuration`, `project`, `sprint` and
 // `sprint/<id>/issue`. Boards 7 and 6 say where they live (`location`),
@@ -225,6 +226,9 @@ export function makeJira({ backlog = 0 } = {}) {
     const b = BOARDS.find((x) => x.filter === id);
     return [...issues.values()].filter((i) => b?.projects.includes(i.fields.project.key));
   };
+  // The words of an issue a text search finds it by: its summary's,
+  // description's and comments', lower-cased.
+  const wordsOf = (i) => new Set(tokens([i.fields.summary, i.fields.description, ...i.comments.map((c) => c.body)].join(' ')));
   // A page of issues, 50 at most, as a search and the agile API give one.
   const paged = (found, q) => {
     const startAt = Number(q.get('startAt') ?? 0), max = Math.min(Number(q.get('maxResults') ?? 50), 50);
@@ -303,6 +307,15 @@ export function makeJira({ backlog = 0 } = {}) {
           const since = now() - Number(m[1]) * MIN;
           found = [...issues.values()].filter((i) => i.fields.assignee?.name === who && Date.parse(i.fields.updated) >= since)
             .sort((a, b) => Date.parse(b.fields.updated) - Date.parse(a.fields.updated));
+        } else if ((m = /^text ~ "((?:[^"\\]|\\.)*)" ORDER BY updated DESC$/.exec(jql))) {
+          // As strict as Jira or stricter: a JQL escape other than \\ and \" is an
+          // error, and so is a Lucene character or operator left unescaped.
+          const text = unquote(m[1]);
+          if (text === null) return refuse(400, `Error in the JQL Query: the string '${m[1]}' has an illegal escape.`);
+          const terms = luceneTerms(text);
+          if (terms === null) return refuse(400, `The text query '${text}' for field 'text' is not valid: probably your use of wild cards is not valid.`);
+          found = [...issues.values()].filter((i) => { const has = wordsOf(i); return terms.length > 0 && terms.every((t) => has.has(t)); })
+            .sort((a, b) => Date.parse(b.fields.updated) - Date.parse(a.fields.updated));
         } else return refuse(400, `The fake does not know this JQL: ${jql}`);
         return json(200, paged(found, q));
       }
@@ -353,6 +366,43 @@ export function makeJira({ backlog = 0 } = {}) {
       return refuse(404, 'Not found');
     },
   };
+}
+
+// A text's words as Jira's index keeps them: lower-cased, split at all but
+// letters and digits, without the commonest English words.
+const STOP = new Set(['a', 'an', 'and', 'are', 'as', 'at', 'be', 'but', 'by', 'for', 'if', 'in', 'into', 'is', 'it', 'no', 'not', 'of', 'on', 'or', 'such', 'that', 'the', 'their', 'then', 'there', 'these', 'they', 'this', 'to', 'was', 'will', 'with']);
+const tokens = (text) => String(text ?? '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w && !STOP.has(w));
+
+// A JQL string's text: \\ and \" are its escapes (JQL has a few more, which the mod never writes); null for another.
+function unquote(text) {
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '\\') { out += text[i]; continue; }
+    const next = text[++i];
+    if (next !== '\\' && next !== '"') return null;
+    out += next;
+  }
+  return out;
+}
+
+// A Lucene query's words, or null when a character with a meaning in Lucene
+// (or an operator, AND, OR, NOT) is in it unescaped: the fake takes only
+// plain words, each matched whole.
+function luceneTerms(query) {
+  const words = [];
+  let word = '';
+  for (let i = 0; i < query.length; i++) {
+    const c = query[i];
+    if (c === '\\') {
+      if (i + 1 >= query.length) return null;
+      word += query[++i];
+    } else if (/\s/.test(c)) { words.push(word); word = ''; }
+    else if ('+-&|!(){}[]^"~*?:/'.includes(c)) return null;
+    else word += c;
+  }
+  words.push(word);
+  if (words.some((w) => /^(AND|OR|NOT)$/.test(w))) return null;
+  return tokens(words.join(' '));
 }
 
 // The made-up Jira on a local port: `{ url, jira, requests, fail, recover, release, close }`.

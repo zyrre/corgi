@@ -9,6 +9,10 @@
 // Server or Data Center with a personal access token alone (api.js), so the
 // token's Jira user decides what it may do: what Jira refuses shows as a
 // line saying so, and nothing works around it.
+// A search field over the list finds any issue Jira lets the token see: a
+// key (or a bare number, as a key of the board's project) opens it, other
+// words search every issue's text, and the results show in the sections'
+// place until the field is emptied or Esc pressed.
 // One view at a time, in a stack: the list, an issue, its status choices,
 // the comment form, the work log form, the settings. Given `{ panel: true }`
 // as its props (a child of the layout's right-hand panel stack, beside
@@ -27,16 +31,16 @@
 // shown after the app started. `jira.open-<KEY>` shows the panel on an issue.
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, TextareaState, Textarea } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, TextareaState, Textarea, ScrollHandle } from "gpui-base";
 import { theme, home, nextCommand, settings as look, shared, setShared, props as given, notify, layout, run } from "herdr";
-import { Client, loadSettings, saveSettings, settingsPath, ready, blank } from "./api.js";
+import { Client, JiraError, loadSettings, saveSettings, settingsPath, ready, blank, ISSUE_FIELDS, LIST_FIELDS } from "./api.js";
 import {
   normalizeBase, hostOf, parseBoard, keyOf, isMe, nameOf, groups, sections, categoryOf, ago, lastRead, timeOf, sprintEnds,
-  parseTimeSpent, parseDay, dayOf, startedOn, requiredFields, oneLine, explain,
+  parseTimeSpent, parseDay, dayOf, startedOn, requiredFields, oneLine, explain, parseQuery, textJql, SEARCH_MOST,
 } from "./util.js";
 import { blocks } from "./wiki.js";
 import { icon, spinner, categoryColor, typeMark, statusPill, iconButton, pill } from "./ui.js";
-import { store } from "./data.js";
+import { store, READ_LIMIT } from "./data.js";
 import { MUTED, OPEN, AT_ONCE, muted, toast, summary, panelBlock, panelSelected, panelShows, showCommands, showStep } from "./alerts.js";
 
 const LIST_EVERY = 60000; // the sprint's issues while the list shows
@@ -91,6 +95,15 @@ export default class Jira extends View {
     this.inputs.token.set_masked(true);
     this.order = Object.values(this.inputs); // Tab's order in the form on screen
     for (const input of this.order) this.wire(input, (cx) => this.save(cx));
+    // The search field over the list: Enter searches Jira, and emptying it
+    // brings the sections back. While a search shows, its results replace
+    // the sections, which go on being read and keep their folds and scroll.
+    this.query = InputState.new({ placeholder: "Search Jira: a key, a number or words" });
+    this.wire(this.query, (cx) => this.runSearch(cx), (cx) => { if (!this.query.value().trim() && this.search) this.clearSearch(cx); });
+    // { text, plan, seq, started, loading, result: { keys, missing, text: { issues, total } | null }, error }
+    this.search = null;
+    this.searched = 0; // bumped by each search begun and each dropped: an answer for an older one is dropped
+    this.listScroll = ScrollHandle.new(); // the sections' position, kept while results show over them
 
     cx.spawn(async (cx) => {
       let s;
@@ -116,9 +129,9 @@ export default class Jira extends View {
   }
 
   // An input of a form: Enter submits it (an input, not a textarea), and it knows when it has the keyboard.
-  wire(input, submit) {
+  wire(input, submit, change) {
     if (submit) input.on("submit", (_e, cx) => submit(cx));
-    input.on("change", (_e, cx) => cx.notify());
+    input.on("change", (_e, cx) => { change?.(cx); cx.notify(); });
     input.on("focus", (_e, cx) => { this.typing = input; cx.notify(); });
     input.on("blur", (_e, cx) => { if (this.typing === input) this.typing = null; cx.notify(); });
   }
@@ -134,6 +147,10 @@ export default class Jira extends View {
     this.src = ready(s) ? store.source(s) : null;
     this.form = null; this.confirm = null;
     this.stack = this.stack.filter((v) => v.kind === "settings");
+    // Results from the last settings' Jira are not this one's.
+    this.search = null;
+    this.searched += 1;
+    this.query.set_value("");
     for (const key of Object.keys(this.inputs)) this.inputs[key].set_value(s[key] ?? "");
     if (this.src) this.poll(cx);
   }
@@ -255,7 +272,7 @@ export default class Jira extends View {
     const board = this.board;
     if (!board) return;
     this.src?.read("issues", this.sprintKey(sprint), (c) => c.sprintIssues(sprint.id, board), cx, {
-      every: this.slow(this.view().kind === "list" ? LIST_EVERY : BEHIND_EVERY), ...opts,
+      every: this.slow(this.view().kind === "list" && !this.search ? LIST_EVERY : BEHIND_EVERY), ...opts,
     });
   }
 
@@ -307,6 +324,7 @@ export default class Jira extends View {
   refresh(cx) {
     if (!this.src) return;
     const view = this.view(), force = { force: true };
+    if (view.kind === "list" && this.search) this.runSearch(cx, this.search.text, true);
     if (!this.me) this.readWho(cx, force);
     if (!this.board) this.readBoard(cx, force);
     this.readSprints(cx, force);
@@ -355,6 +373,7 @@ export default class Jira extends View {
     this.hidden = Boolean(tree) && !panelShows(tree);
     this.selected = !tree || panelSelected(tree);
     this.clicked(was, selected, tree);
+    if (this.expireSearch()) cx.notify();
     this.takeShared(cx);
     this.takeGoto(cx);
     this.poll(cx);
@@ -506,6 +525,76 @@ export default class Jira extends View {
     try { cx.open_url(url); } catch (e) { this.notice = { tone: "error", text: `Could not open ${url}: ${e?.message ?? e}` }; cx.notify(); }
   }
 
+  // --- searching -----------------------------------------------------------------
+  // A search is this copy's own, not the store's: each copy has its field.
+  // It runs on Enter: the keys in the query are looked up one by one (an
+  // issue that is not there, or that the token may not see, is 404), the
+  // other words searched for in every issue's text, both at once. A key
+  // alone that is found opens; one that is not says so, and nothing else
+  // is searched for it. Only the last search's answer is taken.
+
+  // The projects a bare number is a key of: the board's, or the one the
+  // settings name while the board is being found.
+  searchProjects() {
+    const named = parseBoard(this.settings?.board ?? "")?.project;
+    return this.board?.projects?.length ? this.board.projects : named ? [named] : [];
+  }
+
+  // Searches for `text` (the field's), dropping any search still running.
+  // `again`: the same search read anew (the refresh button, an action),
+  // keeping its results on screen meanwhile, and opening nothing.
+  runSearch(cx, text = this.query.value(), again = false) {
+    const plan = parseQuery(text, this.searchProjects());
+    if (!plan) { this.clearSearch(cx); return; }
+    if (!this.client) return;
+    const jql = plan.words ? textJql(plan.words) : null, client = this.client, src = this.src;
+    const seq = (this.searched += 1), kept = again && this.search?.text === text.trim() ? this.search.result : null;
+    this.search = { text: text.trim(), plan, seq, started: Date.now(), loading: true, result: kept, error: null };
+    const fields = plan.open ? ISSUE_FIELDS : LIST_FIELDS;
+    const look = (key) => client.issue(key, fields).then((issue) => ({ key, issue }), (e) => {
+      if (e?.kind === "missing") return { key, issue: null };
+      throw e;
+    });
+    cx.spawn(async (cx) => {
+      let result = null, error = null;
+      try {
+        const [found, words] = await Promise.all([Promise.all(plan.keys.map(look)), jql ? client.textSearch(jql, SEARCH_MOST) : null]);
+        const keys = [], seen = new Set();
+        for (const { issue } of found) if (issue?.key && !seen.has(issue.key)) { seen.add(issue.key); keys.push(issue); }
+        const missing = found.filter((f) => !f.issue).map((f) => f.key);
+        const text = words ? { issues: words.issues.filter((i) => i?.key && !seen.has(i.key)), total: words.total, shown: words.issues.length } : null;
+        result = { keys, missing, text };
+      } catch (e) { error = e; }
+      if (this.search?.seq !== seq) return; // a newer search, cleared, or given up on
+      Object.assign(this.search, { loading: false, error, result: error ? kept : result });
+      // An id alone, found once: its issue opens, read already.
+      if (!error && plan.open && !again && result.keys.length === 1 && this.view().kind === "list") {
+        const issue = result.keys[0], e = src.entry("issue", issue.key);
+        if (!e.loading) { e.succeeded(issue); store.version += 1; }
+        this.show({ kind: "issue", key: issue.key }, cx);
+      }
+      cx.notify();
+    });
+    cx.notify();
+  }
+
+  // Back to the sections as they were; a search still running is dropped.
+  clearSearch(cx) {
+    this.searched += 1;
+    this.search = null;
+    if (this.query.value()) this.query.set_value("");
+    cx.notify();
+  }
+
+  // A search with no answer after READ_LIMIT failed, as a read does; its
+  // late answer is dropped. True when it gave one up.
+  expireSearch(now = Date.now()) {
+    const s = this.search;
+    if (!s?.loading || now - s.started < READ_LIMIT) return false;
+    Object.assign(s, { seq: 0, loading: false, error: new JiraError("timeout", `no answer in ${READ_LIMIT / 1000} s`) });
+    return true;
+  }
+
   // --- acting --------------------------------------------------------------------
 
   // What Jira refusing an action says. Jira Server answers 401, not 403, to
@@ -523,6 +612,7 @@ export default class Jira extends View {
     for (const s of this.sprints()) this.readIssues(s, cx, { force: true });
     this.readMine(cx, { force: true });
     this.readProject(cx, { force: true });
+    if (this.search && !this.search.loading) this.runSearch(cx, this.search.text, true);
   }
 
   // Runs an action against Jira: `busy` while it runs, then a notice of
@@ -663,7 +753,7 @@ export default class Jira extends View {
   }
 
   refreshButton(t) {
-    const loading = this.src?.busy(["issues", "mine", "project", "issue", "sprints", "board", "transitions"]);
+    const loading = this.src?.busy(["issues", "mine", "project", "issue", "sprints", "board", "transitions"]) || Boolean(this.view().kind === "list" && this.search?.loading);
     return div().id("ji-refresh").size(24).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim)
       .cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip("Refresh")
       .on_click((_e, cx) => { this.refresh(cx); cx.notify(); })
@@ -711,13 +801,15 @@ export default class Jira extends View {
   }
 
   // An issue of the list: its type, key and summary, and the assignee (the
-  // rest) or its status (the token user's). A click opens it.
-  issueRow(issue, t, mutes, mine) {
+  // rest) or its status (the token user's, and a search's results). A click
+  // opens it. `faded`: a closed one among a search's results.
+  issueRow(issue, t, mutes, mine, faded = false) {
     const f = issue.fields ?? {}, id = `ji-row-${issue.key}`, category = categoryOf(issue);
     const right = mine
       ? div().flex_none().max_w(110).truncate().text_size(11).text_color(categoryColor(category, t)).child(f.status?.name ?? "")
       : div().flex_none().max_w(110).truncate().text_size(11).text_color(t.dim).child(f.assignee ? nameOf(f.assignee) : "Unassigned");
     return h_flex().id(id).h(30).flex_none().pl(8).pr(2).gap(8).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+      .when(faded, (el) => el.opacity(0.6))
       .tooltip(`${issue.key}: ${oneLine(f.summary)}\n${f.issuetype?.name ?? "Issue"} · ${f.status?.name ?? ""} · ${f.assignee ? nameOf(f.assignee) : "Unassigned"}`)
       .on_click((_e, cx) => this.show({ kind: "issue", key: issue.key }, cx))
       .on_hover((on, cx) => this.hovered(id, on, cx))
@@ -860,16 +952,66 @@ export default class Jira extends View {
     });
   }
 
-  body(id, rows) {
+  body(id, rows, scroll = null) {
     return v_flex().id(id).flex_1().min_h(0).items_center().overflow_y_scrollbar()
+      .when(Boolean(scroll), (el) => el.track_scroll(scroll))
       .child(v_flex().w_full().max_w(820).px(6).pb(12).children(rows));
   }
 
   // --- views ---------------------------------------------------------------------
 
+  // The search field: Enter searches, × (or Esc) empties it.
+  searchField(t) {
+    const on = this.typing === this.query, any = Boolean(this.query.value() || this.search);
+    return h_flex().id("ji-search").h(32).flex_none().mx(10).mt(8).pl(10).pr(4).gap(6).items_center().rounded(7).border_1()
+      .border_color(on ? t.accent : t.input).bg(t.background).cursor_text()
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .child(svg(icon("search")).size(13).flex_none().text_color(t.dim))
+      .child(div().flex_1().min_w(0).h_full().child(Input.new(this.query).w_full().h_full().text_size(12.5).text_color(t.foreground)))
+      .child(any ? iconButton("ji-search-clear", "x", "Clear the search (Esc)", (cx) => this.clearSearch(cx), t, { size: 22 }) : div().size(22).flex_none());
+  }
+
+  // A heading of the results: what they are and how many.
+  resultHead(id, title, count, t) {
+    return h_flex().id(`ji-found-${id}`).h(30).flex_none().mt(6).px(8).gap(8).items_center()
+      .child(div().flex_1().min_w(0).truncate().font_semibold().child(title))
+      .child(div().flex_none().text_size(12).text_color(t.dim).child(count));
+  }
+
+  // A search's results in the sections' place: the issues the query's keys
+  // name, then those whose text has its words, each once; or what it came to.
+  searchRows(t, now, mutes) {
+    const s = this.search, r = s.result, rows = [], q = `“${s.text}”`;
+    const row = (issue) => this.issueRow(issue, t, mutes, true, categoryOf(issue) === "done");
+    if (s.error) {
+      rows.push(this.line(s.error.kind === "timeout" ? `Jira gave no answer to the search for ${q} in time. Enter searches again.`
+        : explain(s.error, `search for ${q}`, this.me?.name), t, t.blocked));
+    }
+    if (!r) {
+      if (s.loading) rows.push(h_flex().px(10).py(6).gap(6).items_center().text_size(12).text_color(t.dim).child(spinner(t, 12)).child(`Searching Jira for ${q}…`));
+      return rows;
+    }
+    for (const key of r.missing) rows.push(this.line(`${key} does not exist, or this token may not see it.`, t, t.ansi3));
+    if (r.keys.length) {
+      rows.push(this.resultHead("keys", r.keys.length === 1 ? "Key match" : "Key matches", String(r.keys.length), t));
+      rows.push(...r.keys.map(row));
+    }
+    if (r.text) {
+      const more = r.text.total > r.text.shown;
+      rows.push(this.resultHead("text", "Text matches", more ? `${r.text.issues.length} of ${r.text.total}` : String(r.text.issues.length), t));
+      if (more) rows.push(this.line(`The ${r.text.shown} last updated of ${r.text.total} matches: add words to narrow it down.`, t, t.ansi3));
+      if (!r.text.issues.length && r.keys.length) rows.push(this.line(`No other issue mentions “${s.plan.words}”.`, t));
+      rows.push(...r.text.issues.map(row));
+    }
+    if (!r.keys.length && !r.text?.issues.length && !r.missing.length) rows.push(this.line(`No issue matches ${q}.`, t));
+    return rows;
+  }
+
   renderList(t, now) {
     const host = hostOf(this.settings.url), board = this.board, me = this.me;
     const rows = [...this.cards(t)], mutes = this.mutes();
+    this.expireSearch(now);
+    if (this.search) return [this.listHeader(t, host, board, me), this.searchField(t), this.body("ji-results", [...rows, ...this.searchRows(t, now, mutes)])];
     const whoError = this.errorOf(this.entry("who"), "ask who this token is");
     if (whoError) rows.push(this.line(whoError, t, t.blocked));
     const spec = parseBoard(this.settings.board);
@@ -890,19 +1032,20 @@ export default class Jira extends View {
       rows.push(...this.minePart(parts.mine, parts.above, t, now, mutes));
       if (board) rows.push(...this.projectPart(parts.project, t, now, mutes));
     }
-    return [
-      this.header(t, [
-        svg(icon("jira")).size(16).ml(4).flex_none().text_color(t.muted),
-        div().flex_none().font_semibold().child("Jira"),
-        div().id("ji-who").flex_1().min_w(0).truncate().text_size(11).text_color(t.dim)
-          .when(Boolean(me), (el) => el.tooltip(`Authenticated as ${this.meName()} (${me.name}) on ${host}: what this Jira user may do, this panel may do`))
-          .child(board ? `${board.name}${me ? ` · ${me.name}` : ""}` : host),
-        this.refreshButton(t),
-        board ? iconButton("ji-board-open", "external", "Open the board in the browser", (cx) => this.open(this.client.boardPage(board.id), cx), t) : null,
-        iconButton("ji-settings", "settings", "Settings", (cx) => this.show({ kind: "settings" }, cx), t),
-      ]),
-      this.body("ji-list", rows),
-    ];
+    return [this.listHeader(t, host, board, me), this.searchField(t), this.body("ji-list", rows, this.listScroll)];
+  }
+
+  listHeader(t, host, board, me) {
+    return this.header(t, [
+      svg(icon("jira")).size(16).ml(4).flex_none().text_color(t.muted),
+      div().flex_none().font_semibold().child("Jira"),
+      div().id("ji-who").flex_1().min_w(0).truncate().text_size(11).text_color(t.dim)
+        .when(Boolean(me), (el) => el.tooltip(`Authenticated as ${this.meName()} (${me.name}) on ${host}: what this Jira user may do, this panel may do`))
+        .child(board ? `${board.name}${me ? ` · ${me.name}` : ""}` : host),
+      this.refreshButton(t),
+      board ? iconButton("ji-board-open", "external", "Open the board in the browser", (cx) => this.open(this.client.boardPage(board.id), cx), t) : null,
+      iconButton("ji-settings", "settings", "Settings", (cx) => this.show({ kind: "settings" }, cx), t),
+    ]);
   }
 
   // Wiki markup's blocks (wiki.js) drawn: headings, lines, list items, code,
@@ -1143,6 +1286,7 @@ export default class Jira extends View {
     const view = this.view(), forms = ["comment", "worklog", "settings"];
     if (e.key === "escape") {
       if (this.confirm) this.confirm = null;
+      else if (view.kind === "list" && (this.search || this.query.value())) this.clearSearch(cx);
       else if (!this.back(cx)) return;
     } else if (e.key === "tab" && this.order.length && forms.includes(view.kind)) {
       const at = this.order.indexOf(this.typing), step = e.modifiers?.shift ? -1 : 1;

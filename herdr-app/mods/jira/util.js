@@ -59,6 +59,52 @@ export function keyOf(command) {
 // The project part of a key: DEMO-12 is DEMO.
 export const projectOf = (key) => String(key ?? "").replace(/-\d+$/, "");
 
+// --- searching -------------------------------------------------------------------
+
+export const SEARCH_MOST = 50; // text matches a search shows at most: a line says when there are more
+const KEYS_MOST = 10; // keys a query is looked up by at most
+
+// What the search field's text asks for: { keys, open, words, number }.
+// `keys`: issue keys to look up, upper-cased, each once. `open`: the query is
+// an id alone (a key, or a bare number tried as a key in each of `projects`,
+// the board's), so the issue opens when exactly one is found. `words`: the
+// rest, for a text search (`textJql`), "" when there is none. `number`: the
+// bare number, when the query was one. null for an empty query.
+export function parseQuery(text, projects = []) {
+  const words = String(text ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  const valid = (projects ?? []).filter((p) => PROJECT.test(p ?? ""));
+  if (words.length === 1 && /^\d+$/.test(words[0]) && valid.length) {
+    const n = words[0].replace(/^0+(?=\d)/, "");
+    return { keys: valid.slice(0, KEYS_MOST).map((p) => `${p}-${n}`), open: true, words: "", number: n };
+  }
+  const keys = [], rest = [];
+  for (const w of words) {
+    const key = w.toUpperCase();
+    if (KEY.test(key) && keys.length < KEYS_MOST) { if (!keys.includes(key)) keys.push(key); } else rest.push(w);
+  }
+  return { keys, open: keys.length === 1 && !rest.length, words: rest.join(" "), number: "" };
+}
+
+// Lucene's characters with a meaning in a text query, and its operators.
+const LUCENE = /[+\-&|!(){}[\]^"~*?:\\/]/g;
+const OPERATOR = /^(AND|OR|NOT|TO)$/;
+
+// The JQL for a search of every issue's text (summary, description,
+// comments: `text ~`), the last updated first, or null when `words` has
+// nothing to search for (only Lucene's or JQL's characters, or nothing).
+// The words are quoted for JQL, and Lucene's characters and operators
+// escaped inside the quotes, so that no text breaks the query or adds a
+// clause to it: Lucene's characters each get a backslash (written twice in
+// the JQL string, whose own escape it is), an upper-case operator becomes a
+// plain word, and a quote or backslash of the person's is escaped for both.
+export function textJql(words) {
+  const text = String(words ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+  if (!/[\p{L}\p{N}]/u.test(text)) return null;
+  const lucene = text.split(" ").map((w) => (OPERATOR.test(w) ? w.toLowerCase() : w).replace(LUCENE, "\\$&")).join(" ");
+  return `text ~ "${lucene.replace(/[\\"]/g, "\\$&")}" ORDER BY updated DESC`;
+}
+
 // --- people ------------------------------------------------------------------------
 
 // Whether a Jira user (an issue's assignee, a comment's author) is `me`, the
