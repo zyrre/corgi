@@ -416,7 +416,12 @@ Every agent's prompt cache in the canned status is `warm 55m`, and the
 latest call of each with a model is the moment the status is read
 (`w-cache`'s is 20 Nov 2026, for a date on a card): for other cache states
 or times, edit the agents' `cache` and `last_call` in `fake/status.json`
-after `start`. Change the made-up projects in `start_fakes` when a view needs
+after `start`. Equal times order a state's rows by task, so the order by
+latest call shows only with times that differ, and with more than one
+agent in a state: start more fake agents in `alpha` with `hc run` on the
+preview's core (as `fake_agent` does) and add their entries, by terminal,
+to `fake/status.json`. An agent that reports `done` there shows `IDLE`, as
+the supervisor does. Change the made-up projects in `start_fakes` when a view needs
 a state they lack. `scripts/test-app-preview` runs the script against a
 fake app, hc, AeroSpace and corgi, opening nothing: run it, and
 `shellcheck scripts/app-preview scripts/test-app-preview`, after changing
@@ -1038,6 +1043,22 @@ What its choices rest on:
   while the panel shows and every three while hidden (no watcher block);
   `alerts.js`'s `Watch` counts history entries and comments made after its
   first read, by someone other than the token's user, once each.
+- The search field (2026-11-24) is each copy's own (`this.search`), not
+  the store's: Enter runs it (`runSearch`), and only the answer of the
+  last one begun is taken (`searched`, as `Entry.seq`); one past
+  `READ_LIMIT` is given up (`expireSearch`). Its results replace the
+  sections while the list stays the view under the stack, so the periodic
+  reads go on (the sprint at `BEHIND_EVERY`) and an issue's back arrow
+  comes back to them. The sections' scroll is a `ScrollHandle` of the
+  view (`listScroll`), so it outlasts frames that draw results instead.
+  Keys are looked up with `issue/<key>` (404: not there), never put into
+  JQL, where a key that does not exist is a 400 on Jira Server. The words
+  go through `textJql` (util.js): escaped for Lucene, then quoted for
+  JQL. The fake's `text ~` matches whole words of summary, description
+  and comments, and refuses any Lucene character left unescaped and any
+  JQL escape but `\\` and `\"`, so a quoting slip fails the tests. Not
+  checked on a real Jira: what it answers to a query of stopwords alone
+  (`the`), which the fake answers with no hits.
 - Seen in the preview (2026-11-17): `herdr-app do jira.open-DEMO-101`
   arrives (capitals and dashes are fine; `keyOf` takes any case). With no
   copy shown the app refuses the command (`unknown command … need the mod
@@ -1064,8 +1085,9 @@ scripts/app-preview do jira.open-DEMO-101
 ```
 
 The views behind a click (the status choices, the confirm cards, the
-forms) are reached by a preview-home copy of `main.js` whose command loop
-calls what the clicks call (`this.show({ kind: "status", key }, cx)`,
+forms, a search) are reached by a preview-home copy of `main.js` whose
+command loop calls what the clicks call (`this.query.set_value(…)` then
+`this.runSearch(cx)`, `this.clearSearch(cx)`, `this.show({ kind: "status", key }, cx)`,
 `this.askTransition(key, transition, cx)`, `this.transition(cx)`,
 `this.askAssign(key, cx)`, `this.assign(cx)`, `this.askComment(key, cx)`
 then `this.form.body.set_value(…)` and `this.sendComment(cx)`,

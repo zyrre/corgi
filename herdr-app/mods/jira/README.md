@@ -4,7 +4,8 @@ A mod for the [Herdr](https://herdr.dev) app that shows your team's work in
 Jira and lets you act on it without leaving the window: the active sprint
 as your board shows it (your issues first, the rest grouped by status),
 then your other open issues, then the other open issues of the board's
-project, each section and heading folding; an issue with its type, status, assignee, description (Jira's wiki markup made
+project, each section and heading folding; a search field above them that
+finds any issue by its key or its text; an issue with its type, status, assignee, description (Jira's wiki markup made
 readable: headings, lists, code, quotes, tables, links), subtasks, links
 and comments; and four actions, each asked about first: change its status,
 assign it to you, add a comment, log work. Popups tell you when an issue is
@@ -191,6 +192,29 @@ environment, which an app started from the Dock usually has not.
   list shows, the sprint is read again every minute (every three while an
   issue shows over it), your issues every two and the project's every five;
   the header's arrows read all of it now.
+- **Search.** The field above the sections finds any issue the token's
+  user may see, in every project, open or closed. Type and press Enter (it
+  does not search while you type):
+  - **A key** (`DEMO-12`, any case) opens that issue. **A bare number**
+    (`12`) is a key of the board's project (of each, when the board covers
+    several). A key that is not there says so (`DEMO-999 does not exist, or
+    this token may not see it.`), and nothing else is searched.
+  - **Words** search Jira itself: every issue's summary, description and
+    comments (JQL `text ~`), not only the issues the list has read. The
+    results show in the sections' place, the last updated first, closed
+    ones dimmed; at most 50, with a line saying how many there are when
+    there are more.
+  - **Both** (`DEMO-12 timeout`): the keys' issues first, under `Key
+    match`, then the issues whose text has the other words, each issue
+    once.
+
+  A result opens as a row of the list does, with the same actions, and Esc
+  (or the back arrow) comes back to the results. Esc in the field, the ×,
+  or emptying the field brings the sections back as they were, folded and
+  scrolled as you left them. The header's arrows search again. Your text
+  is quoted and escaped before it goes into JQL, so no text breaks the
+  query or adds to it; one of only Lucene's characters (`()*?`) finds
+  nothing and asks Jira nothing.
 - **An issue**: click a row. Its summary, type, priority, assignee,
   reporter, when it changed, the work logged; its description with Jira's
   wiki markup made readable (headings, `*bold*` without its stars, lists,
@@ -231,7 +255,7 @@ environment, which an app started from the Dock usually has not.
 - **Mute.** The bell on an issue's row (it shows while the pointer is over
   the row) and in its view mutes its popups, or unmutes them; a muted issue
   shows a crossed-out bell. The app remembers it across restarts.
-- Esc goes back a view, or drops the question asked.
+- Esc goes back a view, drops the question asked, or ends a search.
 
 ### Commands
 
@@ -296,7 +320,9 @@ same more slowly. Then
 `transitions?expand=transitions.fields`, and for the popups
 `search` with `assignee = currentUser() AND updated >= -<minutes>m` and
 `expand=changelog` (the history, for assignments and status changes, and
-the comments). Only from the buttons: `POST issue/<key>/transitions`,
+the comments). The search field reads `issue/<key>` for each key in the
+query (a 404 is a key that is not there) and `search` with `text ~
+"<words>" ORDER BY updated DESC`, 50 at most. Only from the buttons: `POST issue/<key>/transitions`,
 `PUT issue/<key>/assignee`, `POST issue/<key>/comment` and `POST
 issue/<key>/worklog`, each with `X-Atlassian-Token: no-check`. Jira Server
 answers an assignment the user may not make with 401: with a token that

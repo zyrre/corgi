@@ -256,8 +256,16 @@ export class Client {
     return this.search(`project in (${list}) AND ${OPEN} ORDER BY Rank ASC`, LIST_FIELDS, { most: PROJECT_MOST });
   }
 
-  issue(key) {
-    return this.get(`/rest/api/2/issue/${encodeURIComponent(key)}?fields=${ISSUE_FIELDS}`);
+  // An issue: what its view shows, or the `fields` asked for (LIST_FIELDS for a row).
+  issue(key, fields = ISSUE_FIELDS) {
+    return this.get(`/rest/api/2/issue/${encodeURIComponent(key)}?fields=${fields}`);
+  }
+
+  // The issues whose text has the words (`textJql`, util.js), in every
+  // project the token's user may see, open or closed, the last updated
+  // first: the first `most` of them (`total` says how many there are).
+  textSearch(jql, most) {
+    return this.search(jql, LIST_FIELDS, { most });
   }
 
   // The transitions the token's user may take on an issue now, with the
