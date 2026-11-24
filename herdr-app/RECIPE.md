@@ -386,11 +386,15 @@ The `projects` view fills its block on `chrome`, text 13 px:
     (`worktree-calm-forest-4f96`; nothing on the primary checkout) is not
     drawn; it is the row's tooltip. The supervisor is first, then the
     project's agents by state: blocked, working, `MERGE`, done, idle,
-    then the rest (paused, exited, in no state); within a state by the
-    task, case-insensitive, then by terminal, so a row moves only when its
-    state changes. A state missing for a moment (a refresh) keeps the last
-    one's place for 10 seconds. `agent.next` and `agent.prev` follow this
-    order. The badge, the icon, the fill and the cache figure stay whole,
+    then the rest (paused, exited, in no state). Within each state but
+    working, the newest latest call (`last_call`, the time on the card)
+    first, those with none after them; equal times, no time and the
+    working by the task, case-insensitive, then by terminal (decision
+    2026-11-24). So a row moves only when its state changes or its agent
+    finishes a turn (to the top of its state), and the working, whose time
+    moves with every call, never swap. A state or a time missing for a
+    moment (a refresh) keeps the last one's place for 10 seconds.
+    `agent.next` and `agent.prev` follow this order. The badge, the icon, the fill and the cache figure stay whole,
     and the time of the latest call is whole or left out.
   - A project's area (decision 2026-11-16): its row, its pull card, its
     agents' cards, their merge cards and its worktrees' rows, only its row

@@ -315,9 +315,13 @@ const STATUS = { working: "working", blocked: "blocked", done: "done", idle: "id
 // exited, in no state).
 const PLACES = { blocked: 0, working: 1, merge: 2, done: 3, idle: 4 };
 const LAST_PLACE = 5;
-// How long a row keeps its state's place while its state is missing (a
-// refresh of the app's agents or of `corgi status` in between).
+// How long a row keeps its state's place, and its latest call's, while
+// either is missing (a refresh of the app's agents or of `corgi status` in
+// between).
 const STATE_KEPT_MS = 10_000;
+// Two agents' latest calls (ms, or null when unknown) in the order of a
+// state's rows: the newest first, unknown ones last.
+const byCall = (x, y) => (x === y ? 0 : x === null ? 1 : y === null ? -1 : y - x);
 // Two texts in code-point order, the same in every engine (no locale).
 const compare = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
 
@@ -381,6 +385,9 @@ export default class Projects {
     // Each agent's last known state, by its terminal: { key, missing }, its
     // badge's key and since when it has had none (see `placeOf`).
     this.lastStates = new Map();
+    // Each agent's latest call known last, by its terminal: { at, missing },
+    // its time in ms and since when it has had none (see `callOf`).
+    this.lastCalls = new Map();
 
     // The store's version this copy drew last, and how many answers each
     // machine's Corgi had given then (see `sync`).
@@ -1531,12 +1538,16 @@ export default class Projects {
       const kids = [];
       while (rows[n + 1]?.tree) kids.push(rows[++n]);
       const members = [head, ...kids].flatMap((r) => (by[r.w.id] ?? []).map((a) => ({ a, r })));
-      // The supervisor first, the rest by state, then by name (decision
-      // 2026-09-28, "Agents within a project are ordered by state"), so a
-      // row moves only when its agent's state changes.
+      // The supervisor first, the rest by state (decision 2026-11-17, "Order
+      // agents within project by state"), then, in every state but working,
+      // by latest call, the newest first, those with none last (decision
+      // 2026-11-24), then by name. A row moves only when its agent's state
+      // changes or it finishes a turn: a working agent's time moves with
+      // every call, so the working stay by name.
       const now = Date.now();
-      const keyed = members.map((m) => ({ ...m, place: this.placeOf(m.a, now), name: (m.a.task ?? "").toLowerCase() }));
+      const keyed = members.map((m) => ({ ...m, place: this.placeOf(m.a, now), call: this.callOf(m.a, now), name: (m.a.task ?? "").toLowerCase() }));
       keyed.sort((x, y) => Number(y.a.supervisor) - Number(x.a.supervisor) || x.place - y.place
+        || (x.place === PLACES.working ? 0 : byCall(x.call, y.call))
         || compare(x.name, y.name) || compare(x.a.address, y.a.address));
       members.splice(0, members.length, ...keyed);
       // A project (a repository's space) folds; a space outside any does not.
@@ -1610,6 +1621,21 @@ export default class Projects {
     return PLACES[key] ?? LAST_PLACE;
   }
 
+  // The time of `a`'s latest call (`last_call`, as its card shows it) in ms,
+  // or null when unknown. While it is missing, the last one known stands for
+  // STATE_KEPT_MS from when it went missing, as a state does (`placeOf`).
+  callOf(a, now) {
+    const at = typeof a.corgi?.last_call === "string" ? Date.parse(a.corgi.last_call) : NaN;
+    if (Number.isFinite(at)) {
+      this.lastCalls.set(a.address, { at, missing: null });
+      return at;
+    }
+    const last = this.lastCalls.get(a.address);
+    if (!last) return null;
+    last.missing ??= now;
+    return now - last.missing < STATE_KEPT_MS ? last.at : null;
+  }
+
   // A project's area (decision 2026-11-16): `els`, its row, its agents'
   // cards and its worktrees' rows (only its row and supervisor while it is
   // folded), on one rounded faint tint inside a soft 1 px outline, both in
@@ -1645,10 +1671,12 @@ export default class Projects {
   grouped(t, collapsed, sp, ps) {
     const rows = this.ordered(sp, ps);
     const by = collapsed ? {} : this.agentsBySpace(sp, ps);
-    // The states of agents no longer listed are forgotten.
+    // The states and calls of agents no longer listed are forgotten.
     if (!collapsed) {
       const listed = new Set(Object.values(by).flat().map((a) => a.address));
-      for (const address of this.lastStates.keys()) if (!listed.has(address)) this.lastStates.delete(address);
+      for (const kept of [this.lastStates, this.lastCalls]) {
+        for (const address of kept.keys()) if (!listed.has(address)) kept.delete(address);
+      }
     }
     this.current = this.currentOf(rows, by);
     const order = [];
