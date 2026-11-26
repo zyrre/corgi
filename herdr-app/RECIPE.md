@@ -11,7 +11,9 @@ its supervisor or starts it. Each project sits in a faint tint and outline
 of its avatar's color, so you see where it ends and which project an agent
 is in. A project's row counts its agents by state in
 small colored numbers, and a click on it folds the project to its
-supervisor, or unfolds it. A worker Corgi tagged ready to merge has a
+supervisor, or unfolds it. A click on a project's icon, the colored
+square before its name, opens a small popup under it to change the
+icon: its color, a letter or emoji, or a picture. A worker Corgi tagged ready to merge has a
 `MERGE` badge in its row, in place of its state's: click it, confirm, and its branch is merged into
 the project's base branch and pushed (`corgi merge`);
 then it offers to close the worker and remove its worktree, keeping the
@@ -301,7 +303,54 @@ The `projects` view fills its block on `chrome`, text 13 px:
   `dim`, cut with `…`: `Corgi isn't installed on <machine>`; its rows show
   as an agent started by hand shows, with no second-line data or `MERGE`.
   - A space outside any repository (`~`, another folder):
-    30 px, a colored 18 px avatar with its initial, its name.
+    30 px, its 18 px icon (below), its name.
+  - The icon, before the name of every row but a worktree's (which has its
+    `branch` glyph): an 18 px square, radius 5, in its color (the stored
+    one, `space.colors`, teal when it has none), holding its picture,
+    filling the square and cut to its rounding, else its symbol, else
+    the name's leading emoji (Herdr's Spaces list's rule, whole emoji
+    sequences kept), else its first letter in capitals; 10.5 px bold,
+    white. Pointer, 85 % opacity on hover, tooltip `Change its icon`. A
+    click on it opens the **icon popup** under it (decision 2026-11-26),
+    and a second click closes it; the icon takes the press and the
+    release itself, so the row neither folds, shows its space nor starts
+    a drag (a drag let go on an icon is still the row's). The popup is
+    anchored to the icon (its top left under it, 4 px down), above the
+    rest of the window, and may stand past a narrow sidebar's edge: 252
+    px wide, padding 8, 7 px between its lines, radius 9, `surface` in a
+    `border` outline with a shadow, text 11.5 px:
+    - the six avatar colors in the order spaces are given them (teal,
+      orange, blue, violet, green, pink, `MARK`'s), 22 px dots 6 px
+      apart, each named in its tooltip; the space's own ringed (2 px,
+      `foreground`). A click stores it in `space.colors` at once: the
+      icon, the project's area and Herdr's Spaces list follow.
+    - `Symbol` (in `dim`, 44 px) and a field (26 px, `border` outline on
+      `background`, 12 px, placeholder `A letter or emoji`): what is
+      typed shows at once. The first letter (with its accents) or emoji
+      (with its skin tone, flag pair or joined sequence) is taken; more
+      says `One letter or emoji: W is used.` under it in `muted`.
+      Emptied, the icon goes back to its letter. Enter closes the popup.
+    - `Picture`, a field (placeholder `Path, or drop it`) and `Choose…`
+      (`raised`, tooltip `A PNG, JPEG or SVG`), which opens the system's
+      file picker. Enter in the field takes the path typed or pasted
+      (quotes, `file://` and a shell's backslashes taken off, `~`
+      expanded); a file dropped from the Finder anywhere on the popup is
+      taken too. The file is told by its first bytes, not its name, and
+      must be under 5 MB; it is copied into the app's home
+      (`corgi/icons/<new name>.<png|jpg|svg>`, since the app draws only
+      images there and keeps one it drew by its path), and the copy it
+      replaces is removed. While it copies, a spinner and `Copying the
+      picture…`; a refusal says why in `blocked` (`No file at
+      ~/x.png.`, `Not a picture Corgi takes: use a PNG, JPEG or SVG.`,
+      `Too big: use a picture under 5 MB.`, a folder, a relative path),
+      and the icon keeps what it had.
+    - `Esc closes` in `dim` 10.5 px, then `Remove picture` while it has
+      one (its symbol or letter is back) and `Reset` (tooltip `Its
+      automatic color and its first letter`): the color a space without
+      one is given, the first letter or name's emoji, no picture, the
+      copy removed.
+    Esc, Enter in the symbol, or a press outside the popup closes it;
+    presses inside it never reach the rows under it.
   - A project, a repository: the space on its primary checkout, drawn the
     same way, with a 10 px chevron in `dim` 3 px after its name (down while
     unfolded, right while folded; none while it has nothing but its
@@ -318,6 +367,7 @@ The `projects` view fills its block on `chrome`, text 13 px:
     their cards are not drawn; `agent.next` and `agent.prev` pass them by.
     Another click unfolds it. Which projects are folded is kept across
     restarts (the mod's `localStorage`, `projects.folded`, by repository).
+    A click on its icon opens the icon popup instead (above).
     The row is never lit, and a click on it does not show its space. The `↓N` is a button
     (pointer, a faint `ansi1` tint on hover, radius 4, tooltip `Pull 3
     commits from origin/main`); while it pulls it is dimmed with a 10 px
@@ -483,6 +533,20 @@ The `projects` view fills its block on `chrome`, text 13 px:
   `Supervisor` for a supervisor; one started by hand shows the title it gave
   its terminal when that says something (not a folder, not `user@host`),
   else its tab's name, else its program's.
+- A space's icon is changed in its popup. Its color is the space's, in
+  the shared `space.colors` that Herdr's Spaces list reads and fills in
+  for a space with none. Its symbol and picture are the mod's own, in its
+  `localStorage` (`projects.icons`), and so, for a project, is the color
+  chosen there: by repository on its machine (`[machine, git common
+  dir]`, as `projects.folded`), so that the project closed and opened
+  again in a new space has them back, the color given to the new space
+  on its primary checkout once the one it was given to is gone (a color
+  given to that space elsewhere since is kept, and remembered). A
+  worktree's space takes none of them. A space outside any repository
+  (`~`, a plain folder) keeps its symbol and picture by the space, while
+  it lives: once it is gone (its machine's spaces read), they go, its
+  picture's copy too. Pictures are drawn on this computer, whichever
+  machine the space is on.
 - Clicking a space shows it (`space.select`); dragging one reorders it
   within its machine; clicking an agent shows its terminal (`agent.focus`);
   a right-click on either opens the space's menu (Herdr's `menu` mod).
@@ -696,10 +760,11 @@ The `projects` view fills its block on `chrome`, text 13 px:
   - `projects.js`, the Projects list. It began as a copy of Herdr's
     `spaces` mod (herdr-app 0.1.14) and is Corgi's own since: it follows no
     later version of it. Imports: `div`, `image`, `svg` from `gpui-kit`;
-    `v_flex`, `h_flex`, `InputState`, `Input` from `gpui-base`; `spaces`,
-    `machines`, `panes`, `agents`, `focused`, `run`, `openOverlay`,
-    `exec`, `hc`, `theme`, `shared`, `setShared`, `setAgentOrder`,
-    `watchFolder`, `window`, `home`, `nextCommand`, `notify` from `herdr`.
+    `v_flex`, `h_flex`, `InputState`, `Input`, `Popup` from `gpui-base`;
+    `spaces`, `machines`, `panes`, `agents`, `focused`, `run`,
+    `openOverlay`, `exec`, `hc`, `theme`, `shared`, `setShared`,
+    `setAgentOrder`, `watchFolder`, `window`, `home`, `appHome`,
+    `nextCommand`, `notify`, `pickFiles` from `herdr`.
     App commands: `space.select`, `space.move`, `space.new`,
     `agent.focus`, `layout.resize`; its own command `open` (`corgi.open`).
     It opens Herdr's `menu` mod as a popup and draws Herdr's icons
@@ -708,7 +773,10 @@ The `projects` view fills its block on `chrome`, text 13 px:
     per space), `corgi projects --json …`, `corgi open … --json`, `corgi
     merge … --json` (with `--pull`, `--skip-upstream`, or
     `--ask-supervisor <error> [--commit <commit>]`), `corgi close`, `corgi
-    pause`, `corgi resume`, and `sh -c` for a pull. On another machine,
+    pause`, `corgi resume`, `sh -c` for a pull, and on this computer `sh
+    -c` copying an icon's picture into `corgi/icons/` of the app's home
+    and `rm -f` of a copy no icon uses. Shared: `space.colors`, read and
+    written. On another machine,
     through `exec`'s `on`: `git`, the pull's `sh -c`, and that machine's
     `corgi`'s `merge`, `close`, `pause` and `resume`; `corgi projects`,
     `open` and `usage` run on this computer only.
