@@ -9,6 +9,10 @@
 
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const HOME = '/Users/jane';
 const APP = `${HOME}/.config/herdr-app`;
@@ -29,7 +33,8 @@ function element(kind, args = []) {
     get(_target, name) {
       if (typeof name !== 'string' || name === 'then') return undefined;
       return (...a) => {
-        if (name === 'child') target.children.push(a[0]);
+        // A Popup's content is drawn with it, above the window: a child here.
+        if (name === 'child' || name === 'content') target.children.push(a[0]);
         else if (name === 'children') target.children.push(...a[0]);
         else if (name === 'when') {
           if (a[0]) assert.equal(a[1](proxy), proxy, 'a .when callback must return the element it was given');
@@ -84,6 +89,13 @@ const kit = {
   h_flex: () => element('h_flex'),
   InputState,
   Input: { new: (state) => element('input', [state]) },
+  // An anchored surface: its trigger first, then its content, when filled.
+  Popup: {
+    new: (id, trigger) => {
+      const el = element('popup', [id]).id(id);
+      return el.child(trigger);
+    },
+  },
 };
 
 // What the window holds and what the mod did to it.
@@ -154,6 +166,8 @@ function world(overrides = {}) {
       return null;
     },
     checking: () => false,
+    // The system's file picker: what `w.picked` holds (null: cancelled).
+    pickFiles: async () => w.picked ?? null,
     // The commands sent so far, then none: a mod's loop for them ends.
     nextCommand: () => (w.commands.length ? Promise.resolve(w.commands.shift()) : Promise.reject(new Error('no more commands in a test'))),
     // No folder is watched here: a mod falls back to its timers.
@@ -183,11 +197,11 @@ function world(overrides = {}) {
 const HERDR_EXPORTS = [
   'spaces', 'panes', 'agents', 'terminals', 'machines', 'focused', 'layout', 'window', 'theme', 'shared', 'setShared',
   'setAgentOrder', 'run', 'notify', 'openOverlay', 'home', 'appHome', 'readTextFile', 'writeTextFile', 'watchFolder', 'nextCommand',
-  'hc', 'exec', 'props', 'checking',
+  'hc', 'exec', 'props', 'checking', 'pickFiles',
 ];
 const sources = {
   'gpui-kit': 'const k = globalThis.__kit; export const View = k.View, div = k.div, svg = k.svg, image = k.image;',
-  'gpui-base': 'const k = globalThis.__kit; export const v_flex = k.v_flex, h_flex = k.h_flex, InputState = k.InputState, Input = k.Input;',
+  'gpui-base': 'const k = globalThis.__kit; export const v_flex = k.v_flex, h_flex = k.h_flex, InputState = k.InputState, Input = k.Input, Popup = k.Popup;',
   herdr: HERDR_EXPORTS.map((name) => `export const ${name} = (...a) => globalThis.__world.api.${name}(...a);`).join('\n'),
 };
 globalThis.__kit = kit;
@@ -1295,7 +1309,7 @@ async function projects(w, props = {}, module = undefined) {
   const area = byId(root, 'area-sp-weather');
   assert.deepEqual([area.calls.bg, area.calls.border_color], [['#5b8def12'], ['#5b8def59']], 'its avatar\'s blue');
   assert.ok('border_1' in area.calls && 'rounded' in area.calls);
-  const avatar = kept(kept(byId(area, 'space-sp-weather').children.at(-1)).children[0]);
+  const avatar = byId(area, 'icon-sp-weather');
   assert.deepEqual([texts(avatar), avatar.calls.bg], [['W'], ['#5b8def']], 'the avatar in the same color');
   assert.deepEqual(ids(area, 'space-'), ['space-sp-weather', 'space-sp-quiet'], 'its row and its worktree\'s with no agent');
   assert.deepEqual(ids(area, 'agent-'), ['agent-t2', 'agent-t4', 'agent-t3', 'agent-t5']);
@@ -1651,6 +1665,367 @@ function pressPull(root, key, cx) {
   root = mod.render();
   assert.deepEqual(ids(root, 'pull-'), [`pull-${REPO_KEY}`]);
 }
+
+// --- The icon: a click on a space's avatar ------------------------------------------------
+
+// The mod's localStorage, kept in a Map for the copies `run` starts; the
+// stand-in's own forgets everything.
+async function withStorage(stored, run) {
+  const before = globalThis.localStorage;
+  globalThis.localStorage = { getItem: (k) => stored.get(k) ?? null, setItem: (k, v) => stored.set(k, String(v)), removeItem: (k) => stored.delete(k) };
+  try {
+    await run();
+  } finally {
+    globalThis.localStorage = before;
+  }
+}
+// Pictures to take, in a scratch folder, and the app home's icons folder
+// there: the copy runs the mod's own script in the real `sh`, with the app
+// home's folder moved to the scratch one; `rm` removes from it too.
+const PICS = mkdtempSync(join(tmpdir(), 'corgi-icons-'));
+const ICON_COPIES = `${PICS}/home/corgi/icons`;
+const PIC = {
+  png: `${PICS}/in/logo.png`,
+  jpeg: `${PICS}/in/photo.jpeg`,
+  svg: `${PICS}/in/star.svg`,
+  text: `${PICS}/in/notes.png`,
+  big: `${PICS}/in/huge.png`,
+  folder: `${PICS}/in/folder`,
+  spaced: `${PICS}/in/my logo.png`,
+};
+mkdirSync(PIC.folder, { recursive: true });
+writeFileSync(PIC.png, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]));
+writeFileSync(PIC.spaced, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 4]));
+writeFileSync(PIC.jpeg, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]));
+writeFileSync(PIC.svg, '<?xml version="1.0"?>\n<!-- a star -->\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8"/></svg>\n');
+writeFileSync(PIC.text, 'not a picture, whatever its name says\n');
+writeFileSync(PIC.big, Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47]), Buffer.alloc(5 * 1024 * 1024)]));
+function pictureCopies(w) {
+  w.removed = [];
+  return (command, args) => {
+    if (command === 'sh' && args[0] === '-c' && args.length === 6) {
+      assert.equal(args[4], `${APP}/corgi/icons`, 'copied into the app\'s home');
+      const r = spawnSync('sh', ['-c', args[1], 'sh', args[3], ICON_COPIES, args[5]], { encoding: 'utf8' });
+      return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+    }
+    if (command === 'rm') {
+      assert.equal(args[0], '-f');
+      w.removed.push(args[1]);
+      rmSync(args[1].replace(`${APP}/corgi/icons`, ICON_COPIES), { force: true });
+      return {};
+    }
+    return undefined;
+  };
+}
+function iconWindow() {
+  const w = window();
+  w.programs.unshift(pictureCopies(w));
+  return w;
+}
+// A click on a space's icon: the press and the release, both its own.
+function pressIcon(root, id, cx) {
+  const before = cx.stopped;
+  click(root, `icon-${id}`, cx, 'on_mouse_down:left');
+  click(root, `icon-${id}`, cx, 'on_mouse_up:left');
+  assert.equal(cx.stopped, before + 2, 'the row under the icon neither folds, shows its space nor drags');
+}
+// What a space's icon shows: its picture's path, else its text; and its color.
+function look(root, id) {
+  const node = byId(root, `icon-${id}`);
+  const inner = kept(node.children[0]);
+  return { shows: inner?.kind === 'image' ? inner.args[0] : inner, fill: node.calls.bg?.[0] };
+}
+async function typeSymbol(mod, text) {
+  mod.view.iconSymbol.text = text;
+  mod.view.iconSymbol.handlers.change({}, mod.cx);
+  await mod.settle();
+}
+async function givePath(mod, text) {
+  mod.view.iconPath.text = text;
+  mod.view.iconPath.handlers.submit({}, mod.cx);
+  await mod.settle();
+}
+const WEATHER = JSON.stringify([null, `${REPO}/.git`]);
+// The avatar colors, as the mod draws each name.
+const AVATAR = { ansi6: '#22a99a', ansi3: '#e3814f', ansi4: '#5b8def', ansi5: '#8b7cf6', ansi2: '#3fae6a', ansi1: '#d9649a' };
+
+// A click on a project's icon opens the popup under it, and neither folds
+// the project, shows its space nor starts a drag; another closes it. A click
+// on the rest of the row still folds, and a drag still reorders.
+await withStorage(new Map(), async () => {
+  const w = iconWindow();
+  const mod = await projects(w);
+  let root = mod.render();
+  assert.deepEqual(look(root, 'sp-weather'), { shows: 'W', fill: AVATAR.ansi3 }, 'its first letter on the color it was given');
+  assert.deepEqual(byId(root, 'icon-sp-weather').calls.tooltip, ['Change its icon']);
+  assert.equal(byId(root, 'icon-popup'), null);
+  const ran = w.ran.length;
+  pressIcon(root, 'sp-weather', mod.cx);
+  root = mod.render();
+  assert.equal(w.ran.length, ran, 'no space shown, nothing moved');
+  assert.equal(mod.view.pressed, null);
+  assert.deepEqual(ids(root, 'agent-'), ['agent-t2', 'agent-t4', 'agent-t3', 'agent-t5', 'agent-t7'], 'not folded');
+  const popup = byId(root, 'icon-popup');
+  assert.ok(popup, 'the popup');
+  assert.equal(kept(byId(root, 'icon-popup-sp-weather').children[1]), popup, 'anchored to the icon');
+  assert.deepEqual(ids(popup, 'icon-color-'), ['ansi6', 'ansi3', 'ansi4', 'ansi5', 'ansi2', 'ansi1'].map((c) => `icon-color-${c}`));
+  assert.ok('border_2' in byId(popup, 'icon-color-ansi3').calls, 'its color ringed');
+  assert.ok(!('border_2' in byId(popup, 'icon-color-ansi4').calls));
+  assert.ok(texts(popup).includes('Symbol') && texts(popup).includes('Picture') && texts(popup).includes('Reset'));
+  assert.ok(!texts(popup).includes('Remove picture'), 'no picture to remove');
+  assert.ok(mod.view.iconSymbol.focused > 0, 'the symbol takes the keyboard');
+  assert.equal(byId(root, 'icon-sp-calm'), null, 'a worktree\'s row keeps its branch glyph');
+  pressIcon(root, 'sp-weather', mod.cx);
+  assert.equal(byId(mod.render(), 'icon-popup'), null, 'a second click closes it');
+
+  // The rest of the row folds the project, as before.
+  root = mod.render();
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_down:left');
+  click(root, 'space-sp-weather', mod.cx, 'on_mouse_up:left');
+  assert.deepEqual(ids(mod.render(), 'agent-'), ['agent-t2', 'agent-t7'], 'folded');
+  // And a row dragged onto another moves its space there.
+  root = mod.render();
+  click(root, 'space-sp-corgi', mod.cx, 'on_mouse_down:left');
+  byId(root, 'space-sp-home').handlers.on_mouse_move({}, mod.cx);
+  click(root, 'space-sp-home', mod.cx, 'on_mouse_up:left');
+  assert.deepEqual(w.ran.at(-1), ['space.move', { id: 'sp-corgi', index: 6 }]);
+  // A drag let go on an icon is the row's, not a click on the icon.
+  root = mod.render();
+  click(root, 'space-sp-corgi', mod.cx, 'on_mouse_down:left');
+  byId(root, 'space-sp-weather').handlers.on_mouse_move({}, mod.cx);
+  const stopped = mod.cx.stopped;
+  click(root, 'icon-sp-weather', mod.cx, 'on_mouse_up:left');
+  assert.equal(mod.cx.stopped, stopped, 'the release goes on to the row');
+  assert.equal(mod.view.iconFor, null);
+
+  // Esc closes it; so does a press outside, and a press on the icon then
+  // does not open it again.
+  pressIcon(mod.render(), 'sp-weather', mod.cx);
+  byId(mod.render(), 'icon-popup').handlers.on_key_down({ key: 'escape', modifiers: {} }, mod.cx);
+  assert.equal(byId(mod.render(), 'icon-popup'), null, 'Esc');
+  pressIcon(mod.render(), 'sp-weather', mod.cx);
+  root = mod.render();
+  byId(root, 'icon-popup').handlers.on_mouse_down_out({}, mod.cx);
+  pressIcon(root, 'sp-weather', mod.cx);
+  assert.equal(byId(mod.render(), 'icon-popup'), null, 'the press that closed it');
+  pressIcon(mod.render(), 'sp-weather', mod.cx);
+  assert.ok(byId(mod.render(), 'icon-popup'), 'a later one opens it');
+  // A press outside that lands on another space's icon opens that one's.
+  root = mod.render();
+  byId(root, 'icon-popup').handlers.on_mouse_down_out({}, mod.cx);
+  pressIcon(root, 'sp-corgi', mod.cx);
+  assert.equal(mod.view.iconFor.id, 'sp-corgi');
+});
+
+// A color shows at once on the icon and the project's area, and is the
+// space's in `space.colors`, which Herdr's Spaces list reads too. A symbol
+// typed replaces the letter: one letter or emoji, whole.
+await withStorage(new Map(), async () => {
+  const w = iconWindow();
+  const mod = await projects(w);
+  pressIcon(mod.render(), 'sp-weather', mod.cx);
+  click(mod.render(), 'icon-color-ansi5', mod.cx);
+  assert.equal(w.shared['space.colors']['sp-weather'], 'ansi5');
+  let root = mod.render();
+  assert.equal(look(root, 'sp-weather').fill, AVATAR.ansi5);
+  assert.deepEqual(byId(root, 'area-sp-weather').calls.border_color, [`${AVATAR.ansi5}59`], 'the area follows');
+  assert.ok('border_2' in byId(root, 'icon-color-ansi5').calls);
+  assert.equal(w.shared['space.colors']['sp-corgi'], 'ansi6', 'the others keep theirs');
+
+  for (const [typed, shows, note] of [
+    ['q', 'q', null],
+    ['🐶', '🐶', null],
+    ['  👩🏽‍💻  ', '👩🏽‍💻', null],
+    ['🇸🇪', '🇸🇪', null],
+    ['❤️', '❤️', null],
+    ['é', 'é', null],
+    ['Weather', 'W', 'One letter or emoji: W is used.'],
+    ['🐶🐱', '🐶', 'One letter or emoji: 🐶 is used.'],
+  ]) {
+    await typeSymbol(mod, typed);
+    root = mod.render();
+    assert.equal(look(root, 'sp-weather').shows, shows, typed);
+    assert.deepEqual(byId(root, 'icon-said') && texts(byId(root, 'icon-said')), note && [note], typed);
+  }
+  // Emptied, the letter is back.
+  await typeSymbol(mod, '');
+  assert.equal(look(mod.render(), 'sp-weather').shows, 'W');
+  // Enter in the symbol closes the popup.
+  await typeSymbol(mod, '🌦');
+  mod.view.iconSymbol.handlers.submit({}, mod.cx);
+  root = mod.render();
+  assert.equal(byId(root, 'icon-popup'), null);
+  assert.equal(look(root, 'sp-weather').shows, '🌦');
+});
+
+// With no symbol, a name's leading emoji is the icon, as in Herdr's Spaces list.
+await withStorage(new Map(), async () => {
+  const w = iconWindow();
+  w.spaces[0].name = '🐕‍🦺 Corgi';
+  w.spaces[1].name = '⛅️ weather';
+  const root = (await projects(w)).render();
+  assert.equal(look(root, 'sp-corgi').shows, '🐕‍🦺');
+  assert.equal(look(root, 'sp-weather').shows, '⛅️');
+});
+
+// A picture's path, typed or pasted, chosen in the file picker or dropped on
+// the popup: a PNG, JPEG or SVG by its first bytes, copied into the app's
+// home under a new name and drawn instead of the letter; the copy it
+// replaces is removed. Anything else is refused, and the popup says why.
+await withStorage(new Map(), async () => {
+  const w = iconWindow();
+  const mod = await projects(w);
+  pressIcon(mod.render(), 'sp-weather', mod.cx);
+  await typeSymbol(mod, 'Q');
+  await givePath(mod, PIC.png);
+  let root = mod.render();
+  const png = look(root, 'sp-weather').shows;
+  assert.match(png, /^corgi\/icons\/[a-z0-9]+-[a-z0-9]+\.png$/, 'relative to the app\'s home, as image() wants it');
+  assert.ok(existsSync(`${PICS}/home/${png}`), 'a copy of its own');
+  assert.equal(kept(byId(root, 'icon-sp-weather').children[0]).calls.size[0], 18, 'filling the square');
+  assert.equal(mod.view.iconPath.value(), '', 'the field is emptied');
+  assert.ok(texts(byId(root, 'icon-popup')).includes('Remove picture'));
+
+  // The file picker.
+  w.picked = [PIC.jpeg];
+  click(root, 'icon-choose', mod.cx);
+  await mod.settle();
+  const jpeg = look(mod.render(), 'sp-weather').shows;
+  assert.match(jpeg, /\.jpg$/);
+  assert.deepEqual(w.removed, [`${APP}/${png}`], 'the copy it replaced is removed');
+  assert.ok(!existsSync(`${PICS}/home/${png}`));
+  // Cancelled: nothing changes.
+  w.picked = null;
+  click(mod.render(), 'icon-choose', mod.cx);
+  await mod.settle();
+  assert.equal(look(mod.render(), 'sp-weather').shows, jpeg);
+
+  // A file dropped from the Finder onto the popup.
+  byId(mod.render(), 'icon-popup').handlers.on_drop({ paths: [PIC.svg] }, mod.cx);
+  await mod.settle();
+  const svgPath = look(mod.render(), 'sp-weather').shows;
+  assert.match(svgPath, /\.svg$/, 'an SVG, told by its <svg after a comment');
+
+  // A path as a shell or the Finder writes it.
+  for (const pasted of [`'${PIC.spaced}'`, PIC.spaced.replace(/ /g, '\\ '), `file://${PIC.spaced.replace(/ /g, '%20')}`]) {
+    const before = look(mod.render(), 'sp-weather').shows;
+    await givePath(mod, pasted);
+    const after = look(mod.render(), 'sp-weather').shows;
+    assert.ok(after !== before && after.endsWith('.png'), pasted);
+  }
+
+  // What is refused, said in the popup; the picture stays.
+  const kept_ = look(mod.render(), 'sp-weather').shows;
+  for (const [given, said] of [
+    [PIC.text, 'Not a picture Corgi takes: use a PNG, JPEG or SVG.'],
+    [PIC.big, 'Too big: use a picture under 5 MB.'],
+    [`${PICS}/in/gone.png`, `No file at ${PICS}/in/gone.png.`],
+    ['~/nowhere/x.png', 'No file at ~/nowhere/x.png.'],
+    [PIC.folder, `${PIC.folder} is a folder, or a file that can't be read.`],
+    ['logo.png', 'Give the picture\'s whole path: /… or ~/…'],
+    ['  ', 'Type or paste a picture\'s path, or choose one.'],
+  ]) {
+    await givePath(mod, given);
+    root = mod.render();
+    assert.deepEqual(texts(byId(root, 'icon-said')), [said], given);
+    assert.equal(kept(byId(root, 'icon-said')).calls.text_color[0], '#blocked');
+    assert.equal(look(root, 'sp-weather').shows, kept_);
+  }
+  // Typing again clears it.
+  mod.view.iconPath.text = '/';
+  mod.view.iconPath.handlers.change({}, mod.cx);
+  assert.equal(byId(mod.render(), 'icon-said'), null);
+  // A failed picker says so.
+  w.api.pickFiles = async () => { throw new Error('no window'); };
+  click(mod.render(), 'icon-choose', mod.cx);
+  await mod.settle();
+  assert.deepEqual(texts(byId(mod.render(), 'icon-said')), ['The file picker failed: no window']);
+
+  // Remove picture: the symbol is back, and the copy goes.
+  click(mod.render(), 'icon-no-picture', mod.cx);
+  root = mod.render();
+  assert.equal(look(root, 'sp-weather').shows, 'Q');
+  assert.ok(!texts(byId(root, 'icon-popup')).includes('Remove picture'));
+  assert.deepEqual(readdirSync(ICON_COPIES), [], 'every copy it made is gone');
+});
+
+// A project's symbol, picture and color are its repository's: closed and
+// opened again in a new space, it has them back; a worktree's space of the
+// same repository does not take its color. A color given to that new space
+// elsewhere since is the one it keeps. Reset gives back the automatic color,
+// the first letter, and removes the copy.
+await withStorage(new Map(), async () => {
+  const w = iconWindow();
+  const mod = await projects(w);
+  pressIcon(mod.render(), 'sp-weather', mod.cx);
+  click(mod.render(), 'icon-color-ansi1', mod.cx);
+  await typeSymbol(mod, '🌦');
+  await givePath(mod, PIC.png);
+  const picture = look(mod.render(), 'sp-weather').shows;
+  assert.deepEqual(mod.view.icons[WEATHER], { color: 'ansi1', space: 'sp-weather', symbol: '🌦', picture });
+
+  // Closed, and opened again in a new space, with the app restarted.
+  const again = iconWindow();
+  again.spaces = again.spaces.filter((s) => s.id !== 'sp-weather');
+  again.spaces.push(space('sp-weather-2', 'weather', REPO));
+  again.panes = again.panes.map((p) => (p.tab === 'tab-sp-weather' ? { ...p, tab: 'tab-sp-weather-2' } : p));
+  again.shared['space.colors'] = { ...w.shared['space.colors'] };
+  const reopened = await projects(again);
+  let root = reopened.render();
+  assert.deepEqual(look(root, 'sp-weather-2'), { shows: picture, fill: AVATAR.ansi1 });
+  assert.equal(again.shared['space.colors']['sp-weather-2'], 'ansi1');
+  assert.equal(again.shared['space.colors']['sp-weather'], undefined, 'the gone space\'s entry goes, as before');
+  assert.notEqual(again.shared['space.colors']['sp-calm'], undefined);
+  assert.equal(reopened.view.icons[WEATHER].space, 'sp-weather-2');
+  // Given another color elsewhere (Herdr's own picker), that one stays.
+  again.shared['space.colors'] = { ...again.shared['space.colors'], 'sp-weather-2': 'ansi4' };
+  root = reopened.render();
+  assert.equal(again.shared['space.colors']['sp-weather-2'], 'ansi4');
+  assert.equal(reopened.view.icons[WEATHER].color, 'ansi4');
+
+  // Reset: the automatic color (the one fewest spaces have), the first letter, no copy.
+  pressIcon(root, 'sp-weather-2', reopened.cx);
+  click(reopened.render(), 'icon-reset', reopened.cx);
+  root = reopened.render();
+  assert.deepEqual(look(root, 'sp-weather-2'), { shows: 'W', fill: AVATAR.ansi3 });
+  assert.equal(again.shared['space.colors']['sp-weather-2'], 'ansi3');
+  assert.equal(reopened.view.icons[WEATHER], undefined);
+  assert.deepEqual(again.removed, [`${APP}/${picture}`]);
+  assert.deepEqual(readdirSync(ICON_COPIES), []);
+  assert.equal(reopened.view.iconSymbol.value(), '');
+  // And a new start keeps it reset.
+  const third = iconWindow();
+  third.spaces = again.spaces;
+  third.panes = again.panes;
+  assert.equal(look((await projects(third)).render(), 'sp-weather-2').shows, 'W');
+});
+
+// A space outside any repository keeps its icon while it lives, by the
+// space; once it is gone, so are its icon and picture.
+await withStorage(new Map(), async () => {
+  const w = iconWindow();
+  const mod = await projects(w);
+  pressIcon(mod.render(), 'sp-corgi', mod.cx);
+  click(mod.render(), 'icon-color-ansi2', mod.cx);
+  await typeSymbol(mod, '🐶');
+  await givePath(mod, PIC.svg);
+  const key = JSON.stringify(['space', null, 'sp-corgi']);
+  assert.deepEqual(Object.keys(mod.view.icons), [key]);
+  assert.equal(mod.view.icons[key].color, undefined, 'its color is the space\'s alone');
+  assert.equal(w.shared['space.colors']['sp-corgi'], 'ansi2');
+  await mod.tick(1000);
+  assert.ok(mod.view.icons[key], 'kept while the space lives');
+  w.spaces = w.spaces.filter((s) => s.id !== 'sp-corgi');
+  await mod.tick(1000);
+  assert.deepEqual(mod.view.icons, {});
+  assert.equal(mod.view.iconFor, null, 'its popup closes');
+  assert.deepEqual(readdirSync(ICON_COPIES), []);
+  // `~` too has an icon to change.
+  pressIcon(mod.render(), 'sp-home', mod.cx);
+  click(mod.render(), 'icon-color-ansi4', mod.cx);
+  assert.equal(look(mod.render(), 'sp-home').fill, AVATAR.ansi4);
+});
+rmSync(PICS, { recursive: true, force: true });
 
 // --- Open project ----------------------------------------------------------------------
 

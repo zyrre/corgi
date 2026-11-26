@@ -20,6 +20,18 @@
 // command `corgi.open` does what the + does, for a key of the person's
 // (keys.json: "cmd-o": "corgi.open").
 //
+// A click on a space's icon (the rounded square before its name; not on a
+// worktree's row) opens a popup under it instead (decision 2026-11-26): the
+// six avatar colors, a symbol (one letter or emoji), a picture (a PNG, JPEG
+// or SVG: a path typed or pasted, the file picker, or a file dropped on the
+// popup, copied into the app's home), and Reset. The color is the space's
+// in the shared `space.colors`, so its area and Herdr's Spaces list follow.
+// The symbol and picture, and a project's color too, are kept in the mod's
+// localStorage by repository and machine, so a project opened again in a
+// new space has them back; a space outside any repository keeps them while
+// it lives. With no symbol the icon shows the name's leading emoji, as
+// Herdr's Spaces list does, else its first letter.
+//
 // Each agent's row ends with its state's badge (WORKING, BLOCKED, DONE,
 // IDLE, PAUSED, EXITED), the words `corgi fleet` uses for a state. A
 // supervisor's first line ends with a blue "? N" when N of its questions
@@ -57,10 +69,10 @@
 // It began as a copy of Herdr's `spaces` mod and is Corgi's own since.
 
 import { div, image, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, Popup } from "gpui-base";
 import {
   spaces, machines, panes, agents, focused, run, openOverlay, exec, hc, theme, shared, setShared, setAgentOrder,
-  watchFolder, window, home, nextCommand, notify,
+  watchFolder, window, home, appHome, nextCommand, notify, pickFiles,
 } from "herdr";
 import { narrow, toggleSidebar, sidebarPx, oneLine, tildePaths, spinner, BADGES, badgeKey, badge, STATES, stateCounts, stateColor } from "./ui.js";
 import { store, POLL_MS, USAGE_POLL_MS, MACHINES_MS, NO_CORGI, CURRENT, COUNT, PICK, QUESTIONS_BLOCK } from "./data.js";
@@ -214,6 +226,68 @@ function markOf(w, t) {
   const color = (shared("space.colors") ?? {})[w.id];
   if (!color) return null;
   return color.startsWith("#") ? color : (MARK[color] ?? t[color] ?? null);
+}
+// The avatar colors, in the order a space without one is given the one
+// fewest spaces use (as every mod that draws space avatars does), and as
+// the icon popup offers them.
+const PALETTE = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
+const PALETTE_NAMES = { ansi6: "Teal", ansi3: "Orange", ansi4: "Blue", ansi5: "Violet", ansi2: "Green", ansi1: "Pink" };
+// A whole leading emoji, as Herdr's Spaces list and picker take one for a
+// space's avatar (the same rule): newer pictographs such as 🖥 may be drawn
+// as emoji without VS16, and a trailing selector, modifier or joiner says
+// only part of a glyph was matched.
+const EMOJI = /^(?:[#*0-9]\uFE0F?\u20E3|\p{Regional_Indicator}{2}|(?:\p{Emoji_Presentation}|(?=[\u{1F000}-\u{1FFFF}])\p{Extended_Pictographic}|\p{Extended_Pictographic}(?=\uFE0F)|\p{Emoji_Modifier_Base}(?=\p{Emoji_Modifier}))\uFE0F?[\p{Emoji_Modifier}\u{E0020}-\u{E007F}]*(?:\u200D\p{Extended_Pictographic}\uFE0F?\p{Emoji_Modifier}?)*)(?![\p{Grapheme_Extend}\p{Emoji_Modifier}\u200D])/u;
+// What an avatar shows by itself: the name's leading emoji, else its first
+// letter in capitals.
+const avatarText = (name) => EMOJI.exec(name)?.[0] ?? ([...name][0]?.toUpperCase() ?? "?");
+// The symbol typed into the icon popup: its first letter or emoji, whole
+// (an emoji's skin tone, flag or joined sequence; a letter's accents), and
+// whether more was typed after it. "" for nothing typed.
+function firstSymbol(text) {
+  const s = (text ?? "").trim();
+  const one = EMOJI.exec(s)?.[0] ?? s.match(/^.[\p{M}\uFE0E\uFE0F]*/su)?.[0] ?? "";
+  return { symbol: one, more: s.length > one.length };
+}
+// A picture's copy, in the app's home (`image()` draws only a path relative
+// to it, and a mod writes there): one file per picture, a new name each
+// time, since the app keeps an image it drew by its path.
+const ICONS_DIR = "corgi/icons";
+const PICTURE_MAX = 5 * 1024 * 1024;
+// Copies the picture $1 into the folder $2 as $3.<png|jpg|svg>, told apart
+// by its first bytes, not its name, and prints the extension. Exits 3: no
+// such file, 4: not a readable file, 5: not a PNG, JPEG or SVG, 6: too
+// big, 7: the copy failed.
+const PICTURE_SCRIPT = `f=$1; [ -e "$f" ] || exit 3; [ -f "$f" ] && [ -r "$f" ] || exit 4
+[ "$(wc -c < "$f" | tr -d ' ')" -le ${PICTURE_MAX} ] || exit 6
+case $(head -c 4 "$f" | od -An -tx1 | tr -d ' \\n') in
+  89504e47) ext=png ;;
+  ffd8ff*) ext=jpg ;;
+  *) head -c 4096 "$f" | LC_ALL=C grep -qi '<svg' || exit 5; ext=svg ;;
+esac
+mkdir -p "$2" && cp "$f" "$2/$3.$ext" || exit 7
+printf '%s' "$ext"`;
+const PICTURE_PROBLEMS = {
+  3: (p) => `No file at ${p}.`,
+  4: (p) => `${p} is a folder, or a file that can't be read.`,
+  5: "Not a picture Corgi takes: use a PNG, JPEG or SVG.",
+  6: "Too big: use a picture under 5 MB.",
+  7: "Couldn't copy it into Herdr's folder.",
+};
+// The file a typed, pasted or dropped path names: quotes, a `file://` and a
+// shell's backslashes taken off, `~` expanded. Null for nothing.
+function picturePath(raw, h) {
+  let p = String(raw ?? "").trim().replace(/^(['"])(.*)\1$/s, "$2");
+  if (/^file:\/\//i.test(p)) {
+    try {
+      p = decodeURIComponent(p.replace(/^file:\/\/(localhost)?/i, ""));
+    } catch {
+      return p;
+    }
+  }
+  p = p.replace(/\\(.)/g, "$1");
+  if (p === "~") return h;
+  if (p.startsWith("~/")) return `${h}/${p.slice(2)}`;
+  return p || null;
 }
 // A project's area (`projectArea`): its corners' rounding, and the room
 // between its outline and what is in it.
@@ -382,6 +456,39 @@ export default class Projects {
     // The projects folded to their supervisor, by their repository (a
     // project's row's `g.repo`), kept across restarts as the machines are.
     this.foldedProjects = new Set(JSON.parse(localStorage.getItem("projects.folded") ?? "[]"));
+    // The icons set in the icon popup, by `iconKey`: { symbol, picture
+    // (relative to the app's home), color, space (the space the color was
+    // last given to) }, each left out when unset. A project's are kept by
+    // its repository and come back with it; a space outside any
+    // repository's go with the space.
+    this.icons = JSON.parse(localStorage.getItem("projects.icons") ?? "{}");
+    // The icon popup: { id, key, machine } of the space whose icon was
+    // clicked, while open; what it says (`iconNote`, `iconProblem`) and
+    // whether a picture is being copied. `iconClosed`: the space whose
+    // popup a press outside closed, and when, so that a press on its icon
+    // closes it rather than opening it again.
+    this.iconFor = null;
+    this.iconNote = null;
+    this.iconProblem = null;
+    this.iconBusy = false;
+    this.iconClosed = null;
+    this.pressedIcon = null; // the space whose icon the pointer went down on
+    this.iconHandle = cx.focus_handle();
+    this.iconSymbol = InputState.new({ placeholder: "A letter or emoji" });
+    this.iconSymbol.on("change", (_e, cx) => {
+      if (!this.iconFor) return;
+      const { symbol, more } = firstSymbol(this.iconSymbol.value());
+      this.setIcon(this.iconFor.key, { symbol: symbol || null });
+      this.iconNote = more ? `One letter or emoji: ${symbol} is used.` : null;
+      cx.notify();
+    });
+    this.iconSymbol.on("submit", (_e, cx) => this.closeIcon(cx));
+    this.iconPath = InputState.new({ placeholder: "Path, or drop it" });
+    this.iconPath.on("change", (_e, cx) => {
+      this.iconProblem = null;
+      cx.notify();
+    });
+    this.iconPath.on("submit", (_e, cx) => this.takePicture(this.iconPath.value(), cx));
     // Each agent's last known state, by its terminal: { key, missing }, its
     // badge's key and since when it has had none (see `placeOf`).
     this.lastStates = new Map();
@@ -462,6 +569,7 @@ export default class Projects {
       this.shellsKey = shells;
       if (this.cacheTurned() || synced || shellsTurned) cx.notify();
       this.publishQuestions();
+      this.dropGoneIcons();
     });
     // `corgi.open`, from a key or `herdr-app do`.
     cx.spawn(async (cx) => {
@@ -1667,6 +1775,321 @@ export default class Projects {
     cx.notify();
   }
 
+  // --- The icon: its color, symbol or picture --------------------------------------
+
+  // Where a space's icon is kept: a project's (`g`, its git) by its
+  // repository, on its machine (`g.repo`), so that it comes back when the
+  // project is opened again in a new space; a space outside any repository's
+  // by the space itself.
+  iconKey(w, g) {
+    return g ? g.repo : JSON.stringify(["space", w.machine ?? null, w.id]);
+  }
+
+  saveIcons() {
+    localStorage.setItem("projects.icons", JSON.stringify(this.icons));
+  }
+
+  // Sets or (null) clears what `changes` names in the icon kept at `key`.
+  setIcon(key, changes) {
+    const icon = { ...this.icons[key], ...changes };
+    for (const [k, v] of Object.entries(icon)) if (v === null || v === undefined) delete icon[k];
+    const kept = Object.keys(icon).filter((k) => k !== "space");
+    if (kept.length) this.icons[key] = icon;
+    else delete this.icons[key];
+    this.saveIcons();
+  }
+
+  // A picture's copy no icon uses any longer.
+  removePicture(rel) {
+    if (typeof rel !== "string" || !rel.startsWith(`${ICONS_DIR}/`) || rel.includes("..")) return;
+    exec("rm", ["-f", `${appHome()}/${rel}`]).catch(() => {});
+  }
+
+  // A press on a space's icon opens its popup, or closes it while open.
+  toggleIcon(w, g, cx) {
+    const closed = this.iconClosed;
+    this.iconClosed = null;
+    if (this.iconFor?.id === w.id) {
+      this.closeIcon(cx);
+      return;
+    }
+    // This press closed it already (outside the popup, before reaching here).
+    if (closed?.id === w.id && Date.now() - closed.at < 500) return;
+    const key = this.iconKey(w, g);
+    this.iconSymbol.set_value(this.icons[key]?.symbol ?? "");
+    this.iconPath.set_value("");
+    // `keepsColor`: a project's primary checkout, whose color comes back
+    // with its repository.
+    this.iconFor = { id: w.id, key, keepsColor: Boolean(g && !g.linked) };
+    this.iconNote = null;
+    this.iconProblem = null;
+    this.iconSymbol.focus();
+    // The field is drawn after this press: focus it again once it is there.
+    cx.timer.after(120, () => this.iconFor?.id === w.id && this.iconSymbol.focus());
+    cx.notify();
+  }
+
+  closeIcon(cx, byPress = false) {
+    if (!this.iconFor) return;
+    if (byPress) this.iconClosed = { id: this.iconFor.id, at: Date.now() };
+    this.iconFor = null;
+    cx.notify();
+  }
+
+  // The popup's space takes color `c` (a name in MARK): in `space.colors`,
+  // which the area, Herdr's Spaces list and every mod drawing the space
+  // follow, and, for a project, with its repository.
+  setColor(c, cx) {
+    const { id, key, keepsColor } = this.iconFor;
+    setShared("space.colors", { ...(shared("space.colors") ?? {}), [id]: c });
+    if (keepsColor) this.setIcon(key, { color: c, space: id });
+    cx.notify();
+  }
+
+  // Copies the picture a path names into the app's home and puts it on the
+  // popup's space's icon, or says in the popup why not.
+  takePicture(raw, cx) {
+    if (!this.iconFor || this.iconBusy) return;
+    const src = picturePath(raw, home());
+    if (!src) {
+      this.iconProblem = "Type or paste a picture's path, or choose one.";
+      cx.notify();
+      return;
+    }
+    if (!src.startsWith("/")) {
+      this.iconProblem = "Give the picture's whole path: /… or ~/…";
+      cx.notify();
+      return;
+    }
+    const { key } = this.iconFor;
+    const name = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.iconBusy = true;
+    this.iconProblem = null;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      let r;
+      try {
+        r = await exec("sh", ["-c", PICTURE_SCRIPT, "sh", src, `${appHome()}/${ICONS_DIR}`, name]);
+      } catch (e) {
+        r = { code: -1, stdout: "", stderr: String(e?.message ?? e) };
+      }
+      this.iconBusy = false;
+      const ext = r.stdout?.trim();
+      if (r.code === 0 && ["png", "jpg", "svg"].includes(ext)) {
+        const old = this.icons[key]?.picture;
+        this.setIcon(key, { picture: `${ICONS_DIR}/${name}.${ext}` });
+        this.removePicture(old);
+        if (this.iconFor?.key === key) this.iconPath.set_value("");
+      } else {
+        const problem = PICTURE_PROBLEMS[r.code];
+        this.iconProblem = typeof problem === "function" ? problem(tildePaths(src)) : problem ?? (oneLine(r.stderr ?? "") || "Couldn't take that picture.");
+      }
+      cx.notify();
+    });
+  }
+
+  // The system's file picker, for a picture.
+  choosePicture(cx) {
+    if (!this.iconFor || this.iconBusy) return;
+    cx.spawn(async (cx) => {
+      let paths;
+      try {
+        paths = await pickFiles({ prompt: "Use" });
+      } catch (e) {
+        this.iconProblem = `The file picker failed: ${oneLine(String(e?.message ?? e))}`;
+        cx.notify();
+        return;
+      }
+      if (paths?.[0]) this.takePicture(paths[0], cx);
+    });
+  }
+
+  clearPicture(cx) {
+    const { key } = this.iconFor;
+    const old = this.icons[key]?.picture;
+    this.setIcon(key, { picture: null });
+    this.removePicture(old);
+    cx.notify();
+  }
+
+  // Back to the automatic look: the color a space without one is given,
+  // the name's first letter (or leading emoji), no picture.
+  resetIcon(cx) {
+    const { id, key } = this.iconFor;
+    const colors = { ...(shared("space.colors") ?? {}) };
+    delete colors[id];
+    setShared("space.colors", colors);
+    const old = this.icons[key]?.picture;
+    delete this.icons[key];
+    this.saveIcons();
+    this.removePicture(old);
+    this.iconSymbol.set_value("");
+    this.iconPath.set_value("");
+    this.iconNote = null;
+    this.iconProblem = null;
+    cx.notify();
+  }
+
+  // A space outside any repository keeps its icon while it lives: once it
+  // is gone (its machine's spaces read), so is the icon and its picture.
+  dropGoneIcons() {
+    const keys = Object.keys(this.icons).filter((k) => k.startsWith('["space",'));
+    const sp = spaces();
+    if (this.iconFor && !sp.some((s) => s.id === this.iconFor.id)) this.iconFor = null;
+    if (!keys.length) return;
+    const ready = new Set(machines().filter((m) => m.layout === "ready").map((m) => m.name ?? null));
+    const live = new Set(sp.map((s) => this.iconKey(s, null)));
+    let gone = false;
+    for (const k of keys) {
+      if (live.has(k) || !ready.has(JSON.parse(k)[1])) continue;
+      this.removePicture(this.icons[k].picture);
+      delete this.icons[k];
+      gone = true;
+    }
+    if (gone) this.saveIcons();
+  }
+
+  // A project's color, chosen in the popup, comes back with it: a space on
+  // its primary checkout is given it once the space it was given to is
+  // gone (`kept`, the colors by space, changed in place; true when one
+  // was). A color the space was given since, elsewhere, is the one kept.
+  restoreColors(kept, sp, ps) {
+    const ids = new Set(sp.map((s) => s.id));
+    let changed = false;
+    for (const w of sp) {
+      const g = this.git[where(w, ps)];
+      const icon = g && !g.linked ? this.icons[g.repo] : null;
+      if (!icon?.color) continue;
+      if (icon.space === w.id) {
+        if (kept[w.id] && kept[w.id] !== icon.color) this.setIcon(g.repo, { color: kept[w.id] });
+      } else if (!ids.has(icon.space)) {
+        kept[w.id] = icon.color;
+        this.setIcon(g.repo, { space: w.id });
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // A space's icon, the 18 px rounded square before its name: its picture,
+  // else its symbol, else its name's leading emoji or first letter, on its
+  // color (`fill`). A click opens the popup under it; it takes the press
+  // and the release itself, so the row neither folds, shows its space nor
+  // starts a drag.
+  avatar(w, g, fill, t) {
+    const look = this.icons[this.iconKey(w, g)];
+    const square = h_flex()
+      .id(`icon-${w.id}`)
+      .size(18)
+      .flex_none()
+      .rounded(5)
+      .overflow_hidden()
+      .bg(fill)
+      .items_center()
+      .justify_center()
+      .text_size(10.5)
+      .font_bold()
+      .text_color("#ffffff")
+      .cursor_pointer()
+      .hover((s) => s.opacity(0.85))
+      .tooltip("Change its icon")
+      .on_mouse_down("left", (_e, cx) => {
+        cx.stop_propagation();
+        this.pressedIcon = w.id;
+      })
+      .on_mouse_up("left", (_e, cx) => {
+        // A drag let go here is the row's.
+        if (this.pressedIcon !== w.id) return;
+        cx.stop_propagation();
+        this.pressedIcon = null;
+        this.toggleIcon(w, g, cx);
+      })
+      .child(look?.picture ? image(look.picture).size(18).flex_none() : (look?.symbol || avatarText(w.name)));
+    const open = this.iconFor?.id === w.id;
+    return Popup.new(`icon-popup-${w.id}`, square)
+      .anchor("top_left")
+      .when(open, (el) => el.content(this.iconPopup(w, t)));
+  }
+
+  // The popup under a space's icon: the six colors, a symbol, a picture,
+  // and Reset. What is picked shows at once; Esc, Enter in the symbol or a
+  // press outside closes it.
+  iconPopup(w, t) {
+    const { key } = this.iconFor;
+    const look = this.icons[key] ?? {};
+    const color = (shared("space.colors") ?? {})[w.id];
+    const swatch = (c) => div()
+      .id(`icon-color-${c}`)
+      .size(22)
+      .flex_none()
+      .rounded(11)
+      .bg(MARK[c])
+      .cursor_pointer()
+      .when(color === c, (el) => el.border_2().border_color(t.foreground))
+      .when(color !== c, (el) => el.hover((s) => s.opacity(0.8)))
+      .tooltip(PALETTE_NAMES[c])
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        this.setColor(c, cx);
+      });
+    const label = (text) => div().w(44).flex_none().text_color(t.dim).child(text);
+    const field = (state) => Input.new(state).flex_1().min_w(0).h(26).px(6).rounded(6).border_1().border_color(t.border).bg(t.background).text_size(12).text_color(t.foreground);
+    const button = (id, text, tip, onClick, tone = t.foreground) => div()
+      .id(id)
+      .flex_none()
+      .px(7)
+      .h(24)
+      .flex()
+      .items_center()
+      .rounded(5)
+      .bg(t.raised)
+      .text_color(tone)
+      .cursor_pointer()
+      .hover((s) => s.opacity(0.88))
+      .when(Boolean(tip), (el) => el.tooltip(tip))
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        onClick(cx);
+      })
+      .child(text);
+    const said = this.iconBusy ? null : this.iconProblem ?? this.iconNote;
+    return v_flex()
+      .id("icon-popup")
+      .track_focus(this.iconHandle)
+      .w(252)
+      .mt(4)
+      .p(8)
+      .gap(7)
+      .rounded(9)
+      .border_1()
+      .border_color(t.border)
+      .bg(t.surface)
+      .shadow_md()
+      .text_size(11.5)
+      .text_color(t.foreground)
+      // Presses here are the popup's, not the rows' under it.
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_mouse_up("left", (_e, cx) => cx.stop_propagation())
+      .on_mouse_down_out((_e, cx) => this.closeIcon(cx, true))
+      .on_key_down((e, cx) => {
+        if (e.key !== "escape") return;
+        cx.stop_propagation();
+        this.closeIcon(cx);
+      })
+      .on_drop((e, cx) => this.takePicture(e.paths?.[0], cx))
+      .child(h_flex().id("icon-colors").gap(6).items_center().children(PALETTE.map(swatch)))
+      .child(h_flex().gap(6).items_center().child(label("Symbol")).child(field(this.iconSymbol)))
+      .child(h_flex().gap(6).items_center().child(label("Picture")).child(field(this.iconPath))
+        .child(button("icon-choose", "Choose…", "A PNG, JPEG or SVG", (cx) => this.choosePicture(cx))))
+      .when(this.iconBusy, (el) => el.child(h_flex().gap(7).items_center().text_color(t.muted).child(spinner(t)).child("Copying the picture…")))
+      .when(Boolean(said), (el) => el.child(div().id("icon-said").whitespace_normal()
+        .text_color(this.iconProblem ? t.blocked : t.muted).child(said)))
+      .child(h_flex().gap(6).items_center().pt(1)
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child("Esc closes"))
+        .when(Boolean(look.picture), (el) => el.child(button("icon-no-picture", "Remove picture", null, (cx) => this.clearPicture(cx))))
+        .child(button("icon-reset", "Reset", "Its automatic color and its first letter", (cx) => this.resetIcon(cx))));
+  }
+
   // The rows, under a header per machine once one isn't this computer.
   grouped(t, collapsed, sp, ps) {
     const rows = this.ordered(sp, ps);
@@ -1934,7 +2357,7 @@ export default class Projects {
           .gap(tight ? 6 : 9)
           .items_center()
           .when(tree, (el) => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
-          .when(!tree, (el) => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
+          .when(!tree, (el) => el.child(this.avatar(w, g, fill, t)))
           // The name gives way first: the counts and arrows after it stay whole.
           .child(h_flex().flex_shrink(1).min_w(0).max_w(150).gap(3).items_center()
             .child(div().min_w(0).truncate().text_color(t.foreground).child(w.name))
@@ -2146,16 +2569,16 @@ export default class Projects {
     const t = theme();
     const collapsed = narrow();
     const version = collapsed ? null : this.versionLine(t);
-    const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
     const sp = spaces();
     const ps = panes();
     const ids = new Set(sp.map((p) => p.id));
     const kept = Object.fromEntries(Object.entries(shared("space.colors") ?? {}).filter(([id]) => ids.has(id)));
     let changed = Object.keys(kept).length !== Object.keys(shared("space.colors") ?? {}).length;
+    if (this.restoreColors(kept, sp, ps)) changed = true;
     for (const p of sp) {
       if (kept[p.id] || p.name === "~") continue;
       const uses = (c) => Object.values(kept).filter((v) => v === c).length;
-      kept[p.id] = palette.reduce((best, c) => (uses(c) < uses(best) ? c : best));
+      kept[p.id] = PALETTE.reduce((best, c) => (uses(c) < uses(best) ? c : best));
       changed = true;
     }
     if (changed) setShared("space.colors", kept);
@@ -2179,7 +2602,7 @@ export default class Projects {
       .when(Boolean(this.pausing) && !collapsed, (el) => el.child(this.pausePanel(t)))
       .when(this.open && !collapsed, (el) => el.child(this.openPanel(t)))
       .child(v_flex().flex_1().min_h(0).px(collapsed ? 0 : sidebarPx() < CARD_ROOMY ? LIST_MARGIN_TIGHT : LIST_MARGIN).pb(14).overflow_y_scrollbar().mode("always")
-        .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.pressedPull = null; cx.notify(); })
+        .on_mouse_up("left", (_e, cx) => { this.pressed = null; this.pressedPull = null; this.pressedIcon = null; cx.notify(); })
         .children(this.grouped(t, collapsed, sp, ps)))
       .when(Boolean(version), (el) => el.child(version))
       // Herdr's own layout unfolds the rail from its agents list, which Corgi's has not.

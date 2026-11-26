@@ -582,6 +582,23 @@ the preview window, `fake/pause.json` and `fake/resume.json` (with
 `paused` and an agent's `"state": "paused", "paused": true` are what the
 list shows.
 
+A space's icon popup (`avatar`, `iconPopup` in `projects.js`) is a
+`Popup` from `gpui-base` anchored to the icon: the app paints its content
+above the window and keeps it inside it, and the content's own
+`on_mouse_down_out` and `on_key_down` close it. The app has a file picker
+for mods (`pickFiles`) and takes files dropped from the Finder
+(`on_drop`); `image()` draws only a path relative to the app's home (see
+"The media mod"), so a picture is copied into `corgi/icons/` there, under
+a new name each time, since the app keeps an image it drew by its path. In
+the preview window, reach the popup from a preview-home copy of the mod
+whose command loop calls `this.toggleIcon(w, this.git[where(w, panes())],
+cx)` for a space `w`, then `this.setColor("ansi5", cx)`,
+`this.takePicture(<path>, cx)` or `this.resetIcon(cx)`; a symbol is
+`this.iconSymbol.set_value(…)` with `this.setIcon(this.iconFor.key, {
+symbol })`. A new space on a made-up project's folder (`hc run --bg --keep
+--label herdr.space=<id> --cwd <dir>`) after `hc kill` of its old one's
+terminals shows what comes back with a repository.
+
 The Projects list also reads the Corgi of each other machine the window
 shows (`exec(…, { on })`, see RECIPE.md "How it behaves"): it runs merge,
 close and pause there, so every such call passes the worker's machine, and
